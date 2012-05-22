@@ -11,9 +11,9 @@ public class Document extends CharacterStream {
 	
 	private CharacterWithPosition nextCharacter = null;
 	
-	public Document(String path)
+	public Document(File file)
 	{
-		file = new File(path);
+		this.file = file;
 		
 		try
 		{
@@ -21,7 +21,7 @@ public class Document extends CharacterStream {
 		}
 		catch(IOException e)
 		{
-			throw new RuntimeException("Le fichier indiqué n'existe pas : "+path);
+			throw new RuntimeException("Le fichier indiqué n'existe pas : "+file.getAbsolutePath());
 		}
 		
 		currentPosition = new Position(this,-1);
@@ -65,5 +65,11 @@ public class Document extends CharacterStream {
 		CharacterWithPosition res = this.nextCharacter;
 		this.nextCharacter = null;
 		return res;
+	}
+	
+	public ComparisonResult compareWith(Document doc2)
+	{
+		//TODO Programmer la comparaison de documents
+		return null;
 	}
 }
