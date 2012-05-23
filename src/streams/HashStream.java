@@ -1,19 +1,48 @@
 package streams;
 
-import structures.Hash;
+import structures.*;
 
 public class HashStream implements Stream<Hash> {
+	
+	private CharacterStream stream;
+	private Hash hash = null;
+	
+	public HashStream(CharacterStream stream)
+	{
+		this.stream = stream;
+		
+		Kgram kgram = new Kgram();
+		
+		for(int i=0 ; i<Kgram.kgramSize && stream.hasNext() ; i++)
+		{
+			kgram.add(stream.next());
+		}
+		
+		if(kgram.size()>0)
+		{
+			hash = new Hash(kgram);
+		}
+	}
 
 	@Override
 	public boolean hasNext() {
-		// TODO Auto-generated method stub
-		return false;
+		return (hash!=null);
 	}
 
 	@Override
 	public Hash next() {
-		// TODO Auto-generated method stub
-		return null;
+		Hash res = hash.unmutableClone();
+		
+		if(stream.hasNext())
+		{
+			hash.updateHash(stream.next());
+		}
+		else
+		{
+			hash = null;
+		}
+		
+		return res;
 	}
 
 }

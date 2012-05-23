@@ -1,25 +1,35 @@
 package structures;
 
+import java.util.*;
+
 public class ComparisonResult {
 
 	private Document documents[] = new Document[2];
 	
 	private int[] nbOfExtractedFingerprints = new int[2];
-	private SharedFingerprint[] shared;
 	
-	public ComparisonResult()
+	private List<SharedFingerprint> shared;
+	
+	public ComparisonResult(Document doc1, Document doc2)
 	{
-		//TODO écrire le constructeur de ComparisonResult
+		documents[0] = doc1;
+		documents[1] = doc2;
+		shared = new LinkedList<SharedFingerprint>();
+	}
+	
+	public void add(SharedFingerprint fingerprint)
+	{
+		shared.add(fingerprint);
 	}
 	
 	public double ratioSharedVSExtracted()
 	{
-		return shared.length/(Math.min(nbOfExtractedFingerprints[0], nbOfExtractedFingerprints[1]));
+		return shared.size()/(Math.min(nbOfExtractedFingerprints[0], nbOfExtractedFingerprints[1]));
 	}
 	
 	public int nbOfSharedFingerprints()
 	{
-		return shared.length;
+		return shared.size();
 	}
 	
 	public void display(boolean showRequested)

@@ -69,7 +69,63 @@ public class Document extends CharacterStream {
 	
 	public ComparisonResult compareWith(Document doc2)
 	{
-		//TODO Programmer la comparaison de documents
-		return null;
+		this.reset();
+		doc2.reset();
+		
+		HashStream hashStream1 = new HashStream(this);
+		HashStream hashStream2 = new HashStream(doc2);
+		
+		FingerprintStream fingerprint1 = new FingerprintStream(hashStream1);
+		FingerprintStream fingerprint2 = new FingerprintStream(hashStream2);
+		
+		//TODO Finir la fonction de comparaison de 2 documents
+	}
+	
+	public String extract(Position start, Position end)
+	{
+		if(!start.document().equals(this) || !end.document().equals(this))
+		{
+			throw new IllegalArgumentException("Les documents ne correspondent pas !");
+		}
+		
+		this.reset();
+		
+		try
+		{
+			this.reader.skip(start.position());
+		}
+		catch(IOException e)
+		{
+			throw new RuntimeException("Une erreur s'est produite : "+e.getLocalizedMessage());
+		}
+		
+		String res = "";
+		
+		Position current = new Position(this,start.position());
+		
+		while(current.compareTo(end)<=0 && this.hasNext())
+		{
+			CharacterWithPosition tmp = this.next();
+			
+			current = tmp.position();
+			res += tmp.character();
+		}
+		
+		return res;
+	}
+	
+	public void reset()
+	{
+		try
+		{
+			reader.reset();
+		}
+		catch(IOException e)
+		{
+			throw new RuntimeException("Une erreur s'est produite : "+e.getLocalizedMessage());
+		}
+		
+		this.currentPosition = new Position(this,-1);
+		this.nextCharacter = null;
 	}
 }

@@ -7,7 +7,15 @@ public class SharedFingerprint {
 	
 	public void display()
 	{
-		System.out.display("Position dans le fichier "+documents[0].name()+ " : indice "+fingerprints[0].);
-		//TODO finir la fonction d'affichage d'une empreinte
+		System.out.println("Position dans le fichier "+documents[0].name()+" :");
+		System.out.println("Début : "+fingerprints[0].start().position());
+		System.out.println("Fin : "+fingerprints[0].end().position());
+		System.out.println("Extrait : "+documents[0].extract(fingerprints[0].start(), fingerprints[0].end()));
+		System.out.println();
+		System.out.println("Position dans le fichier "+documents[1].name()+ " : indice "+fingerprints[1].start().position());
+		System.out.println("Début : "+fingerprints[1].start().position());
+		System.out.println("Fin : "+fingerprints[1].end().position());
+		System.out.println("Extrait : "+documents[1].extract(fingerprints[1].start(), fingerprints[1].end()));
+		System.out.println();
 	}
 }
