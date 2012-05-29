@@ -1,0 +1,1314 @@
+
+
+Syntactic  Closures 
+
+Alan  Bawden 
+Jonathan  Rees 
+
+Artificial  Intelligence  Laboratory 
+Massachusetts  Institute  of  Technology 
+
+Cambridge,  Massachusetts  02139 
+
+Abstract 
+In  this  paper  we  describe  syntactic  closures.  Syntactic  closures 
+address  the  scoping  problems  that  arise  when  writing  macros. 
+
+We  discuss  some  issues  raised  by  introducing  syntactic  closures into  the  macro  expansion  interface,  and  we  compare  syntactic 
+
+closures  with  other  approaches.  Included  is  a  complete  imple- 
+mentation. 
+
+1  The  trouble  with  macros 
+Macros  are  an  essential  programmin  g  tool.  Many  programming 
+languages  support  them,  including  virtually  all  dialects  of  Lisp. 
+
+The  use  of  macros  can  make  programs  easier  to  understand  and 
+maintain  by  allowing  the  programmer  to  extend  the  language 
+
+with  new  constructs  that  suit  his  application.[3] Macros  are  traditionally  implemented  using  simple  textual  ma- 
+
+nipulations.  Some  examples  of  familiar  macros  in  a  .hypothetical 
+
+dialect  of  Scheme  might  be: 
+
+(define-macro  (push  obj-exp  list-var) 
+
+`(set!  .list-var  (cons  .obj-exp  ,list-var))) 
+
+(define-macro  (or  exp-1  exp-2) 
+
+`(let  ((temp  ,exp-I)) 
+
+(if  temp  temp  ,exp-2))) 
+
+(define-macro  (catch  body-exp) 
+
+`(call-with-current-continuation 
+
+(Lambda  (throw)  ,body-exp))) 
+
+In  each  of  these  examples,  the  formal  parameters  to  the  macro 
+
+are  bound  to  source  text,  represented  as  S-expressions,  and  the 
+body  of  the  macro  computes  a replacement  text,  also  represented 
+as  an  S-expression. 
+
+This  style  of  macro  facility  is  simple  and  general,  but  it  is 
+prone  to  various  kinds  of  scoping  errors: 
+
+Permission  to  copy  without  fee  all  or  part  of  this  material  is granted provided  that  the  copies  are  not  made  or  distributed  for  direct 
+commercial  advantage,  the  ACM  copyright  notice  and  the  title  of the  publication  and  its  date  appear,  and  notice  is given  that  copying 
+
+is  by  permission  of  the  Association  for  Computing  Machinery.  To copy  otherwise,  or  to  republish,  requires  a  fee  and/or  specfic 
+
+permission. 
+
+0  1988  ACM  0-89791-273-X/88/0007/0086  $1.50 
+
+Variable  references  introduced  by  the  macro  can  be  inadver- 
+tently  captured  by  lexical  bindings  in  the  client  code.  For 
+example, 
+
+(let.  ((cons  6)) 
+
+(push  `foe  stack)) 
+
+would  expand  into 
+
+(let  ((cons  6)) 
+
+(set!  stack  (cons  `foe  stack))) 
+
+which  is  probably  not  what  was  intended.  The  client  of 
+push  shouldn't  have  to  know  that  push  is  implemented  using 
+
+cons. 
+
+1 
+
+2.  A  client's  lexical  reference  can  conflict  with  a  binding  intro- 
+
+duced  by  the  macro.  For  example, 
+
+(or  (memq  x  y)  temp) 
+would  expand  into 
+
+(let  ((temp  (memq  x  y)>) 
+
+(if  temp  temp  temp)) 
+
+which  is  even  less  likely  to  be  what  was  intended.  The  client 
+shouldn't  have  to  be  aware  of  this  detail  of  or's  implemen- 
+tation. 
+
+3.  Assuming  that  our  hypothetical  Scheme  dialect  also  sup- 
+
+ports  some  kind  of  with-macro  construct  for  defining  local 
+
+macros,  syntactic  keywords  introduced  by  the  macro  can  be 
+inadvertently  captured.  For  example, 
+
+(with-macro  (set!  flag) `(set-flag!  `.flag) 
+
+(push  `foe  stack)) 
+would  expand  into 
+
+(aith-macro  (set!  flag) 
+
+`(set-flag!  `.flag) 
+(set!  stack  (cons  `foe  stack))). 
+
+This  is  analogous  to  the  first  case  above.  In  the  first  case 
+we  were  binding  identifiers,  while  in  this  case  we  are  binding 
+syntactic  keywords. 
+
+4.  An  example  similar  to  case  2,  but  involving  keywords,  is possible,  but  never  seems  to  happen  in  practice,  so  a  good 
+
+example  is  hard  to  provide.  Our  best  attempt  is  as  follows: 
+
+86 
+
+(define-macro  (contorted  test  x  y) 
+
+`(with-macro  (use  and/or) 
+
+`(sand/or  ,`,x  ,`,y) (if  ,test 
+
+(use  and) 
+(use  or)))) 
+
+The  client  of  contorted  shouldn't  have  to  be  aware  that 
+the  subexpressions  named  by  test,  x,  and  y  will  be  within the  scope  of  contorted's  auxiliary  keyword  use. 
+
+All  of  these  problems  are  consequences  of  the  fact  that  macros 
+are  oblivious  to  the  lexical  scoping  of  the  program  text  that  they are  constructing.  Any  macro  facility  that  proposes  to  address 
+
+this  shortcoming  also  has  to  take  into  account  that  sometimes 
+the  macro  writer  needs  explicit  control  over  scoping.  For  example 
+when 
+
+(catch  (+  5  (throw  `x)>> 
+expands  into 
+
+(call-with-current-continuation 
+
+(lambda  (throw) 
+
+(+  5  (throw  `x)))) 
+
+the  client's  use  of  throv  should  refer  to  the  binding  of  throv 
+introduced  by  the  macro.  This  contrasts  with  case  2  above, where  such  capture  was  undesirable.  There  is  an  analogous  case 
+
+for  binding  of  syntactic  keywords. 
+
+In  this  paper  we  will  present  a  solution  to  these  scoping  prob- 
+lems.  We  will  also  examine  some  of  the  related  design  issues,  and 
+discuss  some  remaining  difficulties.  In  an  appendix,  we  present 
+a  complete  implementation  of  our  solution. 
+
+2  Terminology 
+We  need  to  precisely  distinguish  between  various  different  kinds 
+of  names  and  environments.  The  following  terminology  will  be 
+used  throughout  this  paper: 
+
+.  A  ncln~c is  auy  token  used  to  name  something.  Traditionally 
+
+Lisp  uses  symbols,  such  as  quote  and  car,  for  this  purpose. 
+
+9  A  keyu)ord  (or  a  syntactic  keyword)  is  a  name  used  to  in- 
+
+troduce  some  special  syntactic  construct.  Lambda  and  set  ! 
+are  fauliliar  examples. 
+
+.  An  idenlifier  is  a  name  used  to  denote  a  variable.  Familiar 
+
+examples  are  cdaadr  and  f  oo. 
+
+.  A  oc1Grt6le is  a  particular  binding  of  an  identifier.  For  ex- 
+
+ample,  in 
+
+(lambda  (x) 
+
+(f  x (lambda  (x) 
+
+(g  x)))) 
+there  are  two  variables  named  by  the  identifier  x. 
+.  A  syntactic  environment  maps  identifiers  to  variables,  and 
+
+contains  an  interpretation  for  a  number  of  syntactic  key- 
+words.  Syntactic  environments  contain  all  of  the  contextual information  necessary  for  interpreting  the  meaning  of  a  par- 
+
+t icular  expression. 
+
+.  A  v&e  environn~nt  maps  variables  to  their  values  (or  more 
+
+precisely,  to  locations  that  hold  those  values).  Value  envi- 
+ronments  contain  the  additional  information  necessary  to 
+execute  au  expression. 
+
+3  Our  solution 
+In  the  same  way  that  closures  of  lambda-expressions  solve  scop- 
+ing  problems  at  run  time,  we  propose  to  introduce  syntactic  clo- 
+
+s~re3  as  a  way  to  solve  scoping  problems  at  macro  expansion 
+time. 
+
+3.1  Syntactic  closures 
+Like  the  closure  returned  by  a  lambda-expression,  a  syntactic 
+closure  consists  of  an  environmeut  of  some  kind,  a  list  of  names, 
+and  an  expression.  With  both  k'  d  f  1  . m  s  0  c obures,  all  names  oc- 
+
+curring  in  the  expression  are  taken  relative  to  the  environment, 
+except  those  in  the  given  list.  The  names  in  the  list  are  to  have 
+their  meanings  determined  later.  In  both  cases  a  closure  is  a  way 
+of  pararneteriziug  an  expression. 
+
+The  difference  is that  the  lambda-expression  closure  is  invoked 
+with  positional  argument.s,  while  the  syntactic  closure  is  invoked 
+in  a  "call-by-context"  fashion.  Call-by-context  is  natural  in  a 
+situation  where  expressions  <are constructed  out  of  other  expres- sions;  such  context-dependence  is  the  normal  way  expressions 
+
+are  combined. 
+
+Syntactic  closures  are  created  by  the  procedure 
+make-syntactic-closure.  It  takes  three  arguments:  a  syn- 
+
+tactic  environment,  a  list  of  names,  and  an  expression.  It  re- 
+turns  a  closure  of  the  expression  in  the  environment,  leaving 
+the  names  free.  Expressions  are  represented  in  the  usual  way, 
+as  S-expressions.  A  syntactic  closure  can  be  thought.  of  as  a new  kind  of  S-expression  that  does  not  have  a  printed  repre- 
+
+sentation.  A  syntactic  closure  can  appear  as  a  subexpression  of 
+another  expression.  (It  can  even  appear  as  the  left  hand  side  of 
+an  assignment  statement.) 
+
+Ordinarily,  an  expression  inherits  the  meaning  of  the  keywords 
+and  identifiers  it,  contains  from  the  context  in  which  it.  appears, 
+but  a  synt.actic  closure  carries  its  own  context  with  it.  This  ell- 
+ables  tools  that  manipulate  expressions  to  avoid  identifier  and 
+keyword  scoping  prohlcms,  while  retaining  the  ahitity  to  cou- 
+
+struct  expressions  in  the  familiar  way. 
+
+3.2  Writing  expanders 
+The  progranuner  defines  macros  by  writing  procedures  called  e+- 
+panders.  An  expander  is  applied  to  a  syntactic  environment  and 
+an  expression,  and  returns  a  syntactic  closure.  The  expression 
+is  the  piece  of  program  rext  that  is  to  be  expanded,  and  t.he 
+
+syntactic  environment  is  derived  from  the  context  in  which  the 
+expression  occurred.  The  resulting  syntactic  closure  is  to  be  used 
+
+in  place  of  the  original  expression. 
+
+For  example,  here  is  the  expander  for  the  push  macro: 
+
+87 
+
+(define  (push-expander  syntactic-env  exp) 
+
+(let  ((obj-exp  (make-syntactic-closure 
+
+syntactic-env  `() 
+
+(cadr  exp))) 
+(list-var  (make-syntactic-closure syntactic-env  `0 
+
+(caddr  exp)))) (make-syntactic-closure 
+scheme-syntactic-environment  `0 `(set!  , list-var 
+
+(cons  ,obj-exp  ,list-var))))) 
+
+In  a  production  implementation  it  would  be  unnecessary  to 
+write  t.his  expander  by  hand.  Since  most  expanders  follow  a 
+common  pattern,  a  convenient  user  interface  can  hide  the  calls 
+tomake-syntactic-closure  except  in  cases  where  the  program 
+mer  needs  more  precise  control  of  syntactic  environments.  A 
+front  er~d can  he  designed  that  allows  programmers  to  define  the 
+push  macro  in  a  more  familiar  and  readable  way.  We  are  not 
+advocating  a  user  interface,  but  rather  a  set  of  tools  suitable 
+for  constructing  such  user  interfaces.  (We  will  have  more  to  say 
+about  the  design  of  such  user  interfaces  in  the  next  section.) 
+
+The  pattern  folIowed  by  most  expanders  is  as  follows: 
+
+The  subexpressions  of  the  input  expression  are  closed  in 
+
+the  syntactic  environment  in  which  they  occurred,  that 
+is,  in  the  syntactic  environment  which  was  the  argument 
+
+to  the  expander.  Note  that  these  suhexpre>,sions  might 
+already  be  syntactic  closures  before  they  are  passed  to 
+make-syntactic-closure.  This  isn't  a  problem,  as  any  ex- 
+
+pression  can  be  syntactically  closed,  even  a  syntactic  closure 
+that  ia  already  context  insensitive. 
+
+An  expression  is  created  (typically  using  backquote)  that 
+is  the  expansion  of  the  original  expression.  This  expansion 
+will  include  as  subexpressions  the  syntactic  closures  created 
+in  step  I. 
+
+The  expansion  is  then  closed  in  a  syntactic  enviromnent 
+
+known  to  the  expander.  In  the  example  this  is  I:he  standard 
+Scheme  syntactic  environment. 
+
+This  avuitls  all  capture  problems  by  carefully  clo:,ing  each  ex- 
+pressiull  ill  t hc  syntactic  environment  appropriate  to  the  nillnes 
+it  contailis.  Thus,  the  subexpressions  of  the  input  iare  closed  in 
+the  envirorulrrnt  of  the  input,  and  any  new  natlle:+  introduced 
+hy  tht,  expander  are  resolved  in  an  environment  known  to  the exp"n'l~T. 
+
+In  the  push  example,  the  programmer  need  not  he  concerned 
+that  the  tlrfinition  of  the  keyword  set,!  might  be  locally  re- 
+defined  in  the  location  where  the  push-expression  rbccurred,  be- 
+
+cause  he  uses  a  known  syntactic  environment  to  close  the  set.! 
+expression  he  constructs.  He  needn't  worry  about  any  local  re- 
+
+bindings  of  cons  either,  because  the  mapping  of  the  identifier named  "cons"  found  in  scheme-syntactic-environment  will 
+
+be  the  gtohnl  variable  named  "cons",  rather  than  any  local  vari- ables  that  happen  to  have  the  same  name. 
+
+To  illustrate  how  <another  kind  of  capture  is  avoided,  here  is  a 
+definition  of  a  simple  version  of  or: 
+
+(define  (or-expander  syntactic-env  exp) 
+
+(let  ((exp-1  (make-syntactic-closure 
+
+syntactic-env  ' () 
+
+(cadr  exp))) 
+(exp-2  (make-syntactic-closure syntactic-env  `0 
+
+(caddr  exp)))) (make-syntactic-closure 
+scheme-syntactic-environment  `0 `((lambda  (temp) 
+
+(if  temp  temp  ,exp-2)) 
+.exp-1)))) 
+
+As  before,  the  programmer  doesn't  need  to  worry  about  local 
+redefinitions  of  the  keywords  lambda  and  if,  but  notice  that  he 
+doesn't  have  to  worry  that  his  use  of  a  variable  named  "temp" 
+will  accidentally  capture  any  variables  of  the  same  name  in  the 
+second  operand.  This  is  because  the  second  operand  is  closed 
+in  the  syntactic  environment  that  was  current  where  the  or- 
+expression  occurred,  and  thus  any  identifiers  it  may  have  con- 
+
+tained  named  "temp"  have  already  been  resolved  to  the  correct 
+variable  named  "temp". 
+
+The  second  argument  to  make-syntactic-closure  is  used  in those  situations  where  the  programmer  wants  a capture  to  occur. 
+
+It  is  a  list  of  names  which  are  to  be  left  syntactically  free  in  the 
+resulting  expression.  To  illustrate,  here  is  an  expander  for  catch: 
+
+(define  (catch-expander  syntactic-env  exp) 
+
+(let  ((body-exp  (make-syntactic-closure 
+
+syntactic-env  `(throw) 
+
+(cadr  exp)))) 
+(make-syntactic-closure 
+
+scheme-syntactic-environment  `0 
+
+`(call-with-current-continuation 
+
+(lambda  (throw)  ,body-exp))))) 
+
+Here  the  expression  in  the  body  of  a  catch  is  closed  using 
+the  syntactic  environment  current  where  the  catch-expression 
+occurred,  with  the  name  "throv"  excepted.  Thus  the  meaning 
+of  all  the  names  in  the  expression  will  be  correctly  determined, 
+
+with  the  name  "throv"  left  free  to  be  captured  by  the  lambda- 
+expression  in  which  it  is  embedded. 
+
+4  Pragmatics 
+The  process  of  macro  expansion  is  overseen  hy  a  preprocessor 
+
+whose  nature  is  not  specified  here:  it  could  be  a  simple  rewrite 
+phase  that  precedes  (or  is  interleaved  with)  interpretation,  or  it 
+could  he  integral  to  the  front  end  of  a  compiler.  The  prepro- 
+cessor  starts  with  an  input  expression-perhaps  read  from  a  file 
+or  terminal-and  sOme  known  syntactic  environnrent.  The  en- vironment  gives  meaning  to  top  level  identifiers  (such  as  car) 
+
+and  keywords  (such  as  if).  Identifier  bindings  are  added  to 
+the  syntactic  environment.  as  the  preprocessor  descends  through lambda-expressions.  Keyword  hindings  are  added  hy  constructs 
+
+like  with-macro. 
+
+The  traditional  interface  between  expanders  and  the  prepro- 
+cessor  is  defined  only  in  terms  of  program  text.  We  have  aug- 
+mented  this  interface  by  introducing  syntactic  environments  and 
+
+closures.  This  raises  a  number  of  design  questions  that  have  to 
+be  answered  somehow  in  any  practical  implementation.  For  ex- 
+ample:  Can  programmers  create  new  syntactic  environments,  or 
+add  new  keywords  to  existing  syntactic  environments?  And  are 
+
+there  any  operations  on  syntactic  closures,  such  as extracting  the 
+
+88 
+
+original  expression,  or  detecting  that  it  represents  a  call  to  the 
+
+car  procedure? 
+
+The  previous  section  describes  the  general  low-level  mecha- 
+nism  by  which  expanders  communicate  with  the  preprocessor. This  section  suggests  a  rudimentary  framework  that  might  help 
+
+support  any  practical  implementation  of  syntactic  closures.  We 
+give  an  implementation  of  this  framework  in  the  appendix. 
+
+4.1  Extend-syntactic-environment 
+It  is  useful  to  have  a  procedure  that  extends  a  syntactic  envi- 
+ronment  by  associating  an  expander  with  a  given  keyword.  For 
+
+example 
+
+(extend-syntactic-environment 
+
+scheme-syntactic-environment 
+
+`push 
+push-expander) 
+
+returns  a  new  syntactic  environment  in  which  expressions 
+of  the  form  (push  . . .)  are  expanded  by  the  expander 
+push-expander.  Any  other  expression  is  interpreted  according to  scheme-syntactic-environment. 
+
+4.2  Advertised  syntactic  environments 
+We  have  already  seen  several  examples  in  which  a  known  syn- 
+tactic  environment  was  needed.  In  particular,  when  an  expander 
+
+introduces  a  name  into  an  expansion,  it  needs  to  be  certain 
+that  the  name  has  the  intended  meaning.  For  example,  the  ex- 
+pander  for  push  requires  that  cons  and  set!  have  the  mean- ings  documented  in  the  Scheme  manual.  The  expander  for  a 
+
+without-interrupts  macro  might  wish  to  employ  names  that 
+
+are  defined  in  an  internal  system  syntactic  environment. 
+
+Both  Scheme  and  Common  Lisp  draw  a  distinction  between 
+primitive  keywords  such  as  lambda  and  quote  and  derived  key- 
+
+words  such  as  and  and  case  that  can  be  expressed  in  terms  of 
+the  primitive  ones.  Thus  the  scheme-syntactic-environment 
+itself  might  be  constructed  by  adding  macro  bindings  to  a 
+
+core-syntactic-environment  whose  only  keyword  bindings  are 
+those  for  the  primitive  keywords. 
+
+4.3  Macrologies 
+The  scheme-syntactic-environment  is  a  function  of  the 
+
+core-syntactic-environment.  This  function  is  itself  a  useful 
+abstraction  that  can  be  made  available  as  a  procedure.  We  call 
+
+such  functions  from  syntactic  environments  to  syntactic  environ- 
+ments  macrologies.  A  macrology  is  an  abstraction  that  captures 
+
+the  process  of  defining  one  language  in  terms  of  another. 
+
+Given  any  syntactic  environment  that  assigns  meanings  to  the 
+primitive  keywords,  the  scheme-macrology  assigns  meanings  to 
+all  of  the  derived  keywords.  A  programmer  who  wanted  to  ex- 
+periment  with  an  alternate  definition  of  if  couId  write 
+
+(define  nerr-if-syntactic-environment 
+
+(scheme-macrology 
+
+(extend-syntactic-environment 
+
+core-syntactic-environment 
+
+`if 
+new-if-expander))) 
+
+to  obtain  a syntactic  environment  in  which  the  derived  keywords 
+and,  or,  and  cond  were  all  defined  in  terms  of  the  new  version 
+
+of  the  primitive  keyword  if. 
+
+It  is  common  to  design  a facility  that  introduces  a  collection  of 
+related  syntactic  extensions.  Such  a  facility  can  be  conveniently 
+implemented  as  a  macrology.  For  example,  a  stack-macrology 
+
+might  be  written  that  that  extends  a given  syntactic  environment by  adding  push  and  pop  macros. 
+
+4.4  Locally  defined  macros 
+Designing  a  user  interface  for  a  macro  facility  that  uses  syntactic 
+
+closures  and  environments  raises  a  number  of  questions.  While 
+
+we  don't  intend  to  advocate  any  particular  front  end,  these  issues 
+must  be  addressed  by  any  such  interface. 
+
+If  keywords  are  subject  to  the  same  scoping  rules  as identifiers, 
+it  is  natural  to  have  a  construct  for  introducing  a  local  macro 
+
+definition.  For  example,  the  programmer  might  write 
+
+(vith-macro  (push  frob  stack) 
+
+`(set!  ,stack  (cons  ,frob  ,stack)) 
+. . . ) 
+
+to  introduce  a  local  push  macro.  For  convenience,  the  variables 
+frob  and  stack  will  be  bound  to  syntactic  closures  of  the  ar- 
+
+gument  expressions.  The  syntactic  environment  in  which  the arguments  are  closed  will  be  the  one  that  was  in  force  where  the 
+
+push-expression  occurred.  (This  is  not  a  very  general  interface, 
+
+but  it  will  serve  to  illustrate  the  environment  issues.) 
+
+After  the  replacement  expression  has  been  computed,  it  should 
+be  closed  in  some  relevant  syntactic  environment.  We  could decree  that  some  known  syntactic  environment,  such  as  the 
+
+scheme-syntactic-environment,  is  always  used.  Thus  in  the 
+example  above,  the  standard  definitions  of  set!  and  cons  would 
+be  obtained.  But  a  convincing  case  can  be  made  that 
+
+(let  ((adjoin  cons)) 
+
+(with-macro  (push  frob  stack) 
+
+`(set!  ,stack 
+
+(adjoin  ,frob  .stack)) 
+(let  ((adjoin  +)) 
+
+(push  (adjoin  n  m)  sum-stack 
+
+should  behave  the  same  as 
+
+))I) 
+
+(set!  sum-stack  (cons  (+  n  m)  sum- stack)). 
+That  is,  the  replacement  should  be  closed  in  the  syntactic  en- 
+vironment  that  was  in  force  where  the  with-macro-expression 
+occurred.  The  definition  of  vith-macro  given  in  the  appendix 
+
+works  this  way. Alternatively,  the  replacement  could  be  closed  in  the  syntactic 
+
+environment  that  is  in  effect  inside  the  body  of  the  with-macro 
+
+expression.  This  would  permit  the  definition  of  recursive  macros 
+that  expand  into  expressions  that  employ  the  same  macro  again. 
+
+An  appropriate  name  for  this  variant  of  vith-macro  would  be 
+
+vith-macro-ret,  since  it  bears  the  same  relation  to  Pith-macro 
+as  letrec  does  to  let. 
+
+(vith-macro-ret  (or  exp  .  other-exps) 
+
+(if  (null?  other-exps) 
+
+-7 `(let  ((tamp  ,oxp)) 
+
+(if  temp 
+
+temp 
+
+(or  ,Oother-exps)))) 
+. . . ) 
+
+One  often  needs  to  introduce  several  macros  simultaneously, 
+especially  if  they  are  mutually  recursive.  With-macro  and 
+
+89 
+
+with-macro-ret  would  therefore  be  more  useful  if  they  followed 
+the  syntax  of  let  and  letrec. 
+
+The  expression  that  computes  the  replacement  raises  a  differ- 
+ent  environment  issue:  where  to  obtain  the  syntactic  and  value 
+environments  in  which  to  evaluate  it.  It  will  not  work  to  use  the syntactic  environment  from  where  the  with-macro  occurred,  be- 
+
+cause  that  environment  maps  identifiers  to  variables  that  will  not 
+exist  until  runtime.  The  implementation  in  the  appendix  simply 
+uses  fixed  syntactic  and  value  environments.  Thus,  the  bodies 
+
+of  macros  are  always  written  in  standard  Scheme,  even  if  the 
+program  itself  is  written  in  a  different  language. 
+
+4.5  Pattern  matching 
+Uith-macro's  limited  pattern  matching  ability  would  also  have to  be  remedied  in  any  real  implementation.  As  it  stands,  it  as- 
+
+sumes  that  the  expression  to  be  expanded  always  consists  of  the 
+keyword  followed  by  a  sequence  of  subexpressions,  and  it  assumes 
+
+that  it  is  correct  to  close  the  subexpressions  in  the  environment 
+in  which  the  expression  occurred. 
+
+more  general  solution  would  have  the  following  capabilities: 
+
+Checking  that  the  input  expression  is  properly  formed. 
+Selecting  between  alternatives  based  on  the  form  of  the  in- 
+put  expression. 
+
+Destructuring  the  input  expression,  to  arbitrary  depth,  and 
+binding  variables  to  its  component  parts. 
+
+Declaring  which  components  are  expressions  to  be  syntac- tically  closed,  and  in  each  case,  what  names  are  to  be  left 
+
+free. 
+At  the  same  time,  this  flexibility  must  be  provided  in  such  a  way 
+that  the  most  common  cases  are  concise. 
+
+The  usual  approach  is  to  design  a  pattern  matching  language. 
+Our  experience  is  that  this  is  as  difficult  as  most  other  kinds 
+of  language  design.  The  pattern  language  may  resemble  Lisp, 
+
+e.g.  by  employing  constructors  such  as  cons  to  indicate  destruc- 
+turing,  but  this  can  lead  to  confusion  because  not  all  pattern 
+operations  have  obvious  analogues  in  Lisp,  and  not  all  Lisp  con- 
+
+structs  make  sense  in  patterns.  The  pattern  language  may  re- semble  Lisp  data  structures,  e.g.  by  using  a  pair  to  match  a pair 
+
+(as  in  [2]  and  [4]),  but  this  leaves  no  room  to  express  additional 
+pattern  operations  without  introducing  special  keywords.  Such 
+
+languages  quickly  become  verbose  and  baroque. 
+
+We  regard  this  area  as  suitable  for  future  research  and  do  not 
+choose  to  address  it  at  this  time. 
+
+5  Previous  work 
+Many  users  of  conventional  macro  systems  are  sensitive  to  scop- 
+ing  problems.  Several  techniques  to  ameliorate  these  problems 
+have  been  discovered  and  rediscovered  over  the  years: 
+
+s  One  way  to  avoid  capture  problems  (like  or's  problem  with 
+
+temp)  is  to  use  names  so  obscure  that  the  macro's  client  is 
+unlikely  to  discover  them  accidentally. 
+
+l  An  improvement  on  the  use  of  obscure  names  is  to  use  a 
+
+gensym  utility  that  generates  an  unlimited  supply  of  names 
+that  are  guaranteed  not  to  conflict  with  other  names. 
+
+s  Another  way  to  come  up  with  obscure  names  is  to  directly 
+
+manipulate  the  mapping  from  character  string:s  to  names. 
+
+Common  Lisp's  packages[4]  can  be  used  in  this  manner: 
+when  a  macro  is  defined  in  one  package,  and  a  client  of 
+the  macro  resides  in  a  different  package,  then  a  given  char- 
+acter  string  in  the  macro  definition  is  effectively  a  different 
+name  from  the  same  str.ing  occurring  in  the  client. 
+
+.  In  [5],  Steele  advocates  the  use  of  thunks  to  avoid  capture 
+
+problems.  He  would  define  or  as  follows: 
+
+(define-macro  (or  exp-1  exp-2) 
+
+`(let  ((temp  ,exp-I) 
+
+(thunk  (lambda  0  ,exp-2))) (if  temp  temp  (thunk)))) 
+
+s  Some  Lisp  dialects  provide  a  mechanism  that  enables  the 
+
+macro  writer  to  insert  absolute  references  into  the  replace- 
+
+ment  expression.  Instead  of 
+
+` (cons  .exp-I  .exp-2) 
+the  macro  writer  could  write 
+
+`(,(make-absolute-reference-to 
+
+t cons 
+standard-scheme-environment) 
+) exp-  1 
+
+,exp-2)  . 
+
+Each  of  these  solutions  is  incomplete.  Clients  may  unwittingly 
+stumble  on  obscure  names;  packages  are  not  integrated  with  lexi- 
+
+cal  scoping;  thunks  can't  deal  with  scoping  of  keywords;  absolute 
+references  are  clumsy  and  error  prone. 
+
+Some  Scheme  dialects  provide  interfaces  that  are  similar  in 
+spirit  to  syntactic  closures  and  environments.  Syntax  tables  in 
+MIT  Scheme  and  T  contain  bindings  for  keywords,  but  do  not 
+
+contain  anything  corresponding  to  our  identifier-to-variable  map- 
+ping. 
+
+Syntactic  environments  also  bear  a  strong  resemblance  to  the 
+expansion  functions  of  Dybvig  et  al.[l]  Their  expanders  follow 
+
+the  same  general  protocol  for  processing  expressions,  and  can  be 
+used  to  solve  some  scoping  problems,  but  they  lack  the  generality 
+provided  by  syntactic  closures. 
+
+MIT  Scheme  also  has  parsed  expressions  (called  S-code)  that 
+resemble  our  syntactic  closures  in  that  they  do  not  contain  free 
+keyword  references.  Syntactic  closures  may  additionally  leave 
+
+some  keywords  free  to  be  determined  later. 
+
+It  has  been  suggested  that  if  macros  were  always  written  in  a 
+restricted  pattern  language,  then  the  implementor  of  the  pattern 
+
+language  could  solve  scoping  problems  once  and  for  all.  While  we 
+believe  that  it  is  good  to  have  a  convenient  notation  for  defiulng 
+
+the  most  common  kinds  of  macros,  we  believe  that  there  are 
+occasions  in  which  nothing  less  than  the  full  power  of  Lisp  will 
+suffice. 
+
+"Hygienic  macro  expansion"[2]  is  the  only  other  complete  so- 
+lution  to  the  macro  scoping  problems  of  which  we  are  aware.  Hy- 
+
+gienic  expansion  works  by  "painting"  the  entire  input  expression 
+
+with  some  distinctive  color  before  passing  it  in  to  the  expander. 
+
+Then  the  returned  replacement  expression  is  examined  to  find those  parts  that  originated  from  the  input  expression;  these  can 
+
+be  identified  by  their  color.  The  names  in  the  unpainted  text  are protected  from  capture  by  the  painted  text,  and  vice  versa. 
+
+The  painting  is  done  without  any  understanding  of  the  syn- 
+tax  of  the  input  expression.  Faint  is  applied  to  expressions, 
+
+quoted  constants,  cond-clauses,  and  the  bound  variablelists  from 
+
+lambda-expressions.  This  strikes  us  as  being  very  undisciplined. 
+
+90 
+
+We  prefer  a scheme  that  is everywhere  sensitive  to  the  underlying 
+syntactic  and  semantic  structure  of  the  language. 
+
+ln  addition,  it  is  difficult  to  comprehend  how  hygienic  expan- 
+sion  operates  and  why  it  is  correct.  We  feel  that  syntactic  clo- 
+
+sures  solve  scoping  problems  in  a  natural,  straightforward  way. 
+
+6  Conclusions 
+The  implementation  given  in  the  appendix  was  written  for  ex- 
+pository  purposes.  To  gain  practical  experience  with  syntactic 
+
+closures,  we  have  also  written  a complete  Scheme  system  in  which 
+macros  (including  most  of  Scheme's  built-in  special  forms)  are 
+
+defined  using  the  tools  described  here.  The  additional  control 
+provided  by  syntactic  closures  proved  to  be  quite  beneficial  in 
+practice.  Syntactic  closures  allowed  us  to  solve  scoping  prob- lems  that  have  plagued  Lisp  implementations  for  years. 
+
+The  following  areas  deserve  further  exploration: 
+Some  versions  of  Scheme  allow  one  to  write  definitions  (define 
+forms)  at  the  beginning  of  the  body  of  various  constructs  as 
+a  more  convenient  way  of  writing  a  letrec.  Definitions  syn- tactically  resemble  expressions,  and  this  suggests  that  macros 
+
+should  be  able  to  expand  into  them.  It  also  suggests  that  a 
+define-macro  form  should  be  allowed  in  the  same  contexts.  Al- 
+
+though  these  extensions  are  intuitively  appealing,  it  is  difficult 
+to  give  them  a  precise  meaning. 
+
+As  noted  above,  expressive  language  constructs  for  defining 
+macros  remain  to  be  designed,  including  possibly  a  perspicuous 
+pattern  matching  language. 
+
+One  might  want  to  do  things  to  syntactic  closures  other  than 
+just  inserting  them  into  expressions.  For  example,  the  Common 
+
+Lisp  setf  macro[4]  needs  to  examine  an  expression  that  accesses 
+a  value  in  order  to  determine  how  to  transform  it  into  a  corre- 
+
+sponding  assignment  expression.  Other  macros  may  need  to  do 
+more  sophisticated  kinds  of  analysis. 
+
+We  would  also  like  to  investigate  the  application  of  syntac- 
+tic  closures  and  environments  to  problems  of  programming  in 
+the  large.  When  a  system  is  composed  of  several  modules,  each 
+
+consisting  of  a  number  of  procedure,  variable,  and  macro  defi- 
+nitions,  it  becomes  necessary  to  have  a  language  for  describing 
+
+the  interactions  between  the  modules.  We  believe  that  syntactic 
+environments  must  play  an  important  role  in  any  such  language. 
+
+Syntactic  closures  are  a  powerful  and  convenient  tool  for  solv- 
+ing  macro  scoping  problems.  As  experienced  macrologists,  we 
+have  found  them  to  be  a  pleasure  to  use.  They  enable  one  to 
+
+write  correct  macros  with  ease  and  confidence. 
+
+Acknowledgments 
+
+David  Moon  and  Kent  Pitman  made  useful  comments  on  drafts 
+of  this  paper.  We  also  wish  to  thank  the  participants  at  an  infor- 
+mal  workshop  on  macros,  held  at  MIT  in  May  1987:  Chris  Han- 
+
+son,  Eugene  Kohlbecker,  Richard  Mlynarik,  Jim  Philbin,  Kent 
+Pitman,  Bill  Rozas,  Gerald  Jay  Sussman,  and  Mitch  Wand. 
+
+References 
+
+(l]  R.  Kent  Dybvig,  Daniel  P.  Friedman,  and  Christopher T.  Haynes.  "Expansion-passing  style:  Beyond  conventional 
+
+macros."  1986  ACM  Conference  on  Lisp  and  Functional  Pro- 
+
+gramming,  pp.  143-150. 
+
+PI 
+
+PI 
+
+[41 
+[51 
+
+Eugene  Kohlbecker,  Daniel  P.  Friedman,  Matthias  Felleisen, 
+and  Bruce  Duba.  "Hygienic  macro  expansion."  1986  ACM 
+
+Conference  on  Lisp  and  Functional  Programming,  pp.  151- 
+159. 
+
+Kent  M.  Pitman.  "Special  forms  in  Lisp."  Conference  Record 
+
+of  the  1980  Lisp  Conference,  pp.  179-187.  Reprinted  by ACM. 
+
+Guy  Lewis  Steele,  Jr.  Common  Lisp:  The  Langtiage.  Digital 
+Press,  Burlington  MA,  1984. 
+
+Guy  Lewis  Steele  Jr.  "Rabbit:  a  compiler  for  Scheme."  MIT 
+Artificial  Intelligence  Laboratory  Technical  Report  474,  May 
+
+1978. 
+
+91 
+
+Appendix:  an  implementation 
+The  implementation  consists  of  two  parts:  a  compiler,  and  the definition  of  scheme-macrology.  The  compiler  is  extremely  sim- 
+
+ple;  it  generates  an  expression  written  in  a  subset  of  Scheme. 
+However,  the  reader  should  not  be  misled  by  this  into  thinking 
+that  we  are  proposing  to  standardize  a  macro  expa.nsion  pro- 
+
+cedure;  in  a  practical  system  the  compiler  might  well  generate 
+
+PDP-10  instructions. 
+
+The  compiler  consists  of  the  implementations  for  syntactic  en- 
+vironments,  syntactic  closures,  and  the  core  syntactic  environ- ment. 
+
+The  implementation  of  the  Scheme  macrology  is  self- 
+contained;  it  does  not  depend  on  any  details  of  the  compiler.  It 
+illustrates  how  many  standard  macros  can  be  written  using  syn- 
+
+tactic  closures,  and  includes  an  implementation  of  a  sith-macro 
+keyword. The  user  visible  entry  points  are: 
+
+extend-syntactic-environment 
+make-syntactic-closure core-syntactic-environment 
+
+scheme-macrology 
+scheme-syntactic-environment 
+
+all  of  which  ace  described  above. 
+
+;  Utilities: 
+(define  unique-symbol-counter  0) 
+(define  (make-unique-symbol  symbol) 
+
+(set!  unique-symbol-counter 
+
+(+  1  unique-symbol-counter)) 
+(string->symbol 
+
+(string-append 
+
+(symbol->string  symbol) "@" 
+
+(number->string  unique-symbol-counter 
+
+`(heur))))) 
+
+Simple  little  runtime  system: 
+
+Object  code  is  represented  as  ordinary  Scheme 
+expressions,  except  that  combinations  are 
+
+introduced  by  a  CALL  "keyword".  This  makes  the 
+runtime  extremely  simple. 
+
+(define  (execute  code) 
+
+(eval  code  user-initial-environment)) 
+
+(define  (call  proc  .  args) 
+
+(apply  proc  args)) 
+
+The  compiler: 
+
+A  syntactic  environment  is  implemented  as  a procedure  that  is  applied  to  a  second 
+
+syntactic 
+environment  and  an  expression.  It  is  expected  to 
+return  the  compiled  form  of  the  expression.  The 
+
+second  syntactic  environment  is  used  to  compile  the 
+
+subexpressions  of  the  expression. 
+
+(define  (compile  syntactic-env  exp) 
+
+(syntactic-env  syntactic-env  exp)) 
+
+(define  (compile-list  syntactic-env  oxps) (map  (lambda  (exp) 
+
+(syntactic-env  syntactic-env  exp)) 
+exps)) 
+
+;  Syntactic  environments: 
+(define  (extend-syntactic-environment 
+
+outer-syntactic-env  keyword  expander) 
+(lambda  (syntactic-env  oxp) 
+
+(if  (and  (pair?  exp) 
+
+(eq?  (car  exp)  keyword)) 
+(compile  null-syntactic-environment 
+
+(expander  syntactic-env  exp)) 
+(outer-syntactic-env  syntactic-env  exp)))) 
+
+;  ADD-IDENTIFIER-LIST  is  used  internally  by  LAHBDA  to 
+;  introduce  nes  identifiers  into  the  syntactic 
+;  environment. (define  (add-identifier-list 
+
+syntactic-env  identifiers) 
+(if  (null?  identifiers) 
+
+syntactic-env 
+
+(add-identifier  (add-identifier-list 
+
+syntactic-env 
+
+(cdr  identifiers)) 
+(car  identifiers)))) 
+
+(define  (add-identifier 
+
+outer-syntactic-env  identifier) 
+(let  ((variable  (make-unique-symbol  identifier))) 
+
+(lambda  (syntactic-env  exp) 
+
+(if  (eq?  exp  identifier) variable 
+
+(outer-syntactic-env  syntactic-env  exp))))) 
+;  FILTER-SYNTACTIC-ENV  creates  a  nerr  syntactic ;  environment  in  which  a  given  list  of  names  take 
+
+;  their  meaning  from  one  syntactic  environment.  while 
+
+.  all  other  names  take  their  meaning  from  another. 
+tdefine  (filter-syntactic-env  names 
+
+names-syntactic-env  else-syntactic-env) 
+(lambda  (syntactic-env  exp) 
+
+((if  (memq  (if  (pair?  exp)  (car  exp)  exp)  names) 
+
+names-syntactic-env 
+
+else-syntactic-env) syntactic-env 
+
+exp)>> 
+
+92 
+
+;  The  null  syntactic  environment  is  used  to  ensure ;  that  the  expressions  returned  by  expanders  are 
+
+;  syntactic  thunks  (i.e.  have  no  free  names). (define  (null-syntactic-environment 
+
+syntactic-env  exp) (if  (syntactic-closure?  exp) 
+(compile-syntactic-closure  syntactic-env  exp) (error  "Unclosed  expression:  'S"  exp))) 
+
+;  The  core  syntactic  environment  is  actually  a  part ;  of  the  compiler.  since  it  determines  how  code  is  to 
+;  be  generated  for  the  primitive  constructs. 
+(define  (core-syntactic-environment syntactic-env  exp) 
+
+((cond  ((syntactic-closure?  exp) compile-syntactic-closure) 
+
+((symbol?  exp) compile-free-variable) 
+((not  (pair?  exp)) compile-constant) 
+
+(else  (case  (car  exp) ((quote)  compile-constant) 
+
+((if  begin  set!)  compile-simple) ((lambda)  compile-lambda) 
+(else  compile-combination)))) syntactic-env 
+exp)) 
+(define  (compile-constant  syntactic-env  exp) exp) 
+
+(define  (compile-free-variable  syntactic-env  exp) exp) 
+(define  (compile-combination  syntactic-env  exp) `(call  ,O(compile-list  syntactic-env  exp))) 
+
+(define  (compile-simple  syntactic-env  exp) `(,(car  exp) 
+
+,Q(compile-list  syntactic-env  (cdr  exp>))) 
+(define  (compile-lambda  syntactic-env  exp) (let  ((syntactic-env  (add-identifier-list 
+
+syntactic-env (cad=  exp)))> 
+`(lambda  ,(compile-list  syntactic-env  (cadr  exp)) ,Q(compile-list  syntactic-env  (cddr  exp))))) 
+
+;  Syntactic  closures: 
+
+;  A  syntactic  closure  is  implemented  as  a  procedure ;  that  is  marked  so  that  it  can  be  recognized  when  it 
+
+;  is  found  in  an  expression.  The  procedure  is ;  applied  to  the  syntactic  environment  in  which  the 
+;  closure's  free  names  will  be  resolved.  The ;  procedure  returns  the  compiled  form  of  the 
+
+;  expression. 
+(define  (make-syntactic-closure syntactic-env  free-names  exp) 
+
+(vector  'syntactic-closure (lambda  (free-names-syntactic-env) 
+
+(compile  (filter-syntactic-env free-mm.9 
+
+free-names-syntactic-env syntactic-env) 
+exp)))) 
+(define  (make-syntactic-closure-list syntactic-env  free-names  exps) 
+
+(map  (lambda  (exp) (make-syntactic-closure  syntactic-env 
+
+free-names exp)) 
+exps)) 
+(define  (syntactic-closure?  x) (and  (vector?  x) 
+
+(=  2  (vector-length  x)) (eq?  ' syntactic-closure  (vector-ref  x  0)))) 
+
+(define  (compile-syntactic-closure syntactic-T,nv  syntactic-closure) 
+
+((vector-ref  syntactic-closure  1)  syntactic-env)) 
+;  Here  ends  the  compiler. 
+
+93 
+
+;  The  Scheme  Macrology: 
+
+;  The  scheme  macrology  assume  that  it  is  applied  to  a 
+;  syntactic  environment  in  which  the  names  LAMBDA, 
+;  QUOTE,  IF,  BEGIN,  SET!,  MEW,  and  MAKE-PROMISE  are 
+;  defined. 
+
+(define  (scheme-macrology  base-syntactic-env) 
+
+(define  (delay-expander  syntactic-env  exp) 
+
+(let  ((delayed  (make-syntactic-closure 
+
+syntactic-env  '0 
+
+(cati  exp)))) (make-syntactic-closure  final-syntactic-env  '0 
+
+`(make-promise  (lambda  0  ,delayed))))) 
+
+(define  (and-expander  syntactic-env  exp) 
+
+(let  ((operands  (make-syntactic-closure-list 
+
+syntactic-env  '0 
+
+(cdr  exp)))) 
+(cond  ((null?  operands) 
+
+(make-syntactic-closure 
+
+final-syntactic-env  '0 
+
+`St)) ((null?  (cdr  operands))  (car  operands)) 
+
+(else 
+
+(make-syntactic-closure 
+
+final-syntactic-env  '0 `(let  ((temp 
+
+,(car  operands))) 
+(if  temp 
+
+(and  ,O(cdr  operands)) 
+temp))))))) 
+
+(define  (or-expander  syntactic-env  exp) 
+
+(let  ((operands  (make-syntactic-closure-list 
+
+syntactic-env  '0 
+
+(cdr  exp)))) (cond  ((null?  operands) 
+
+(make-syntactic-closure 
+
+final-syntactic-env  '0 
+
+`#f)) ((null?  (cdr  operands))  (car  operands)) 
+
+(elW3 
+
+(make-syntactic-closure 
+
+final-syntactic-env  '0 `(let  ((tamp  .(car  operands))) 
+
+(if  temp 
+
+temp 
+
+(or  ,@(cdr  operands))))))))) 
+
+(define  (let-expander  syntactic-env  exp) 
+
+(let  ((identifiers  (map  car  (cadr  exp)))) 
+
+(make-syntactic-closure  final-syntactic-env  '0 
+
+`((lambda  ,identifiers 
+
+,O(make-syntactic-closure-list 
+
+syntactic-env  identifiers 
+
+(cd*  exp))) .Q(make-syntactic-closure-list 
+
+syntactic-env  '0 
+
+(map  cadr  (cadr  exp))))))) 
+
+(define  (cond-expander  syntactic-env  exp) 
+
+(make-syntactic-closure  final-syntactic-env  '() (process-cond-clauses  syntactic-env 
+
+(cdr  exp)))) 
+(define  (process-cond-clauses 
+
+syntactic-env  clauses) 
+(let  ((body  (make-syntactic-closure-list 
+
+syntactic-env  '0 (cdar  clauses)))) 
+
+(cond  ((not  (null?  (cdr  clauses))) 
+
+(let  ((test  (make-syntactic-closure 
+
+syntactic-env  '0 
+
+(caar  clauses))) 
+(rest  (process-cond-clauses 
+
+syntactic-env (cdr  clauses)))) 
+
+(if  (null?  body) ` (or  ,test  .rest) 
+
+`(if  ,test 
+
+(begin  .Obody) 
+
+,rest)>)) ((eq?  (caar  clauses)  'else) 
+
+`(begin  ,Obody)) 
+(else 
+
+(let  ((test  (make-syntactic-closure 
+
+syntactic-T,nv  '  0 
+
+(caar  clauses)))) (if  (null?  body) 
+
+test 
+
+`(if  ,test  (begin  ,Qbody))))) 
+
+(define  (case-expander  syntactic-env  exp) 
+
+(make-syntactic-closure  final-syntactic-env  $0 
+
+'(let  ((temp  ,(make-syntactic-closure 
+
+syntactic-env  '0 
+
+(cadr  exp)))) .(process-case-clauses  syntactic-env 
+
+(cddr  exp))))) 
+(define  (process-case-clauses 
+
+syntactic-env  clauses) (let  ((data  (caar  clauses)) 
+
+(body  (make-syntactic-closure-list 
+
+syntactic-env  '0 
+
+(cdar  clauses)))) (cond  ((not  (null?  (cdr  clauses))) 
+
+(let  ((rest  (process-case-clauses 
+
+syntactic-env 
+
+(cdr  clauses)))) 
+'(if  (memv  temp  '.data) 
+
+(begin  ,Qbody) 
+
+.rest))) ((es?  data  'else)  `(begin  ,Qbody)) 
+
+(else  '(if  (memv  temp  ',data) 
+
+(begin  .Qbody)))))) 
+
+94 
+
+(define  (vith-macro-expander with-macro-syntactic-env  exp) 
+
+(let*  ((keyword  (caadr  exp)) (transformer  (execute 
+
+(compile scheme-syntactic-env 
+
+`(lambda  .(cdadr  exp) .(caddr  exp))))) 
+(expander (lambda  (syntactic-env  exp) 
+
+(make-syntactic-closure with-macro-syntactic-env  '(1 
+
+(apply  transformer (make-syntactic-closure-list 
+
+syntactic-env  '0 (cdr  exp))))))> 
+(make-syntactic-closure  final-syntactic-env  '0 `(begin 
+
+,Q(make-syntactic-closure-list (extend-syntactic-environment 
+
+with-macro-syntactic-env 
+keyword expander) 
+
+'0 (cdddr  exp)))>)) 
+
+(define  (with-macro-ret-expander with-macro-syntactic-env  exp) 
+
+(let*  ((keyword  (caadr  exp)) (transformer  (execute 
+
+(compile scheme-syntactic-env 
+
+`(lambda  ,(cdadr  exp) 
+
+.(caddr  exp)>>>) (extended-syntactic-env  tf) 
+
+(expander (lambda  (syntactic-env  exp) 
+
+(make-syntactic-closure extended-syntactic-env  '0 
+
+(apply  transformer (make-syntactic-closure-list 
+
+syntactic-env  '0 (cdr  exp))))))) 
+(set!  extended-syntactic-env (extend-syntactic-environment 
+
+with-macro-syntactic-env keyword 
+expander)) (make-syntactic-closure  final-syntactic-env  '0 
+`(begin ,O(make-syntactic-closure-list 
+
+extended-syntactic-env  '(1 (cdddr  exp)))))) 
+
+(define  final-syntactic-env  #f) 
+
+;  A  careful  reading  of  the  Scheme  report  reveals ;  that  you  can't  put  this  DO inside  the  previous 
+
+;  DEFINE. (do  ((syntactic-env  base-syntactic-env 
+
+(extend-syntactic-environment syntactic-env 
+
+(caar  pairs) (cadar  pairs))) 
+(pairs  (list  (list  'delay  delay-expander) (list  'or  or-expander) 
+
+(list  'and  and-expander) (list  'let  let-expander) 
+
+(list  'cond  cond-expander) (list  'case  case-expander) 
+
+(list  'with-macro with-macro-expander) 
+
+(list  'with-macro-ret pith-macro-ret-expander) 
+) (cdr  pairs))) 
+((null?  pairs) (set!  final-syntactic-env  syntactic-env))) 
+
+final-syntactic-env 
+
+)  ;end  (define  (scheme-macrology  . ..)  . ..) 
+(define  scheme-syntactic-environment (scheme-macrology  core-syntactic-environment)) 
+
+95 

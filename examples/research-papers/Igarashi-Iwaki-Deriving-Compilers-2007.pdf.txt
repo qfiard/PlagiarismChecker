@@ -1,0 +1,822 @@
+
+
+Deriving Compilers and Virtual Machines
+
+for a Multi-Level Language?
+
+Atsushi Igarashi1 and Masashi Iwaki2
+1 Kyoto University, Japan, igarashi@kuis.kyoto-u.ac.jp
+
+2 Hitachi, Ltd., Japan, masashi.iwaki.ew@hitachi.com
+
+Abstract. We develop virtual machines and compilers for a multi-level
+language, which supports multi-stage specialization by composing program fragments with quotation mechanisms. We consider two styles of
+virtual machines--ones equipped with special instructions for code generation and ones without--and show that the latter kind can deal with,
+more easily, low-level code generation, which avoids the overhead of (runtime) compilation by manipulating instruction sequences, rather than
+source-level terms, as data. The virtual machines and accompanying
+compilers are derived by program transformation, which extends Ager
+et al.'s derivation of virtual machines from evaluators.
+
+1 Introduction
+Multi-level (or multi-stage) languages are designed to support manipulation ofprogram fragments as data and execution of generated code, often by the mechanism of quasi-quotation and eval as in Lisp. Most of those languages are consid-ered extensions of the two-level
+
+y"-calculus [1] to an arbitrary number of levels,which has been proposed and studied by Gl"uck and J#rgensen [2].
+
+In the last decade, designs, semantics, and type systems of multi-level lan-guages have been studied fairly extensively by many people [3-11]. On the other
+hand, implementation issues have been discussed mostly in the context of two-level systems [12-15], in which generated code itself does not generate code. As is
+pointed out by Wickline et al. [4], implementation of two-level languages does notextend straightforwardly to multi-level, especially when one wants a program to
+generate low-level machine code directly, since there is possible code-size blow-upin generating instructions that themselves generate instructions.
+
+Wickline et al. [4] have addressed this problem by developing an extension ofthe Categorical Abstract Machine (CAM) [16] with a facility for run-time code
+generation and a compilation scheme for a multi-level extension of ML calledMLd^. Unfortunately, however, the design of the extended CAM is rather ad-hoc
+and it is not clear how their technique can be applied to dio""erent settings.
+
+? Supported in part by Grant-in-Aid for Scientir'c Research No. 19300007 from MEXT
+
+of Japan.
+
+Our Approach and Contributions. We develop virtual machines (VMs) and com-pilers for multi-level languages as systematically as possible, by extending Ager
+et al.'s technique [17, 18] to derive from evaluators, by a sequence of well-knownprogram transformations, abstract machines (which take a source term as an input) or VMs (which take an instruction sequence) with compilers. Although thistechnique has been shown to be applicable to various evaluation strategies including call-by-value, call-by-name, call-by-need, and even strong reduction [19],application to multi-level languages is new (at least, to our knowledge).
+
+We also identify the following two aspects of compilation schemes and howthey appear in the derivation of VMs.
+
+- One aspect is whether a VM generates low-level code or source-level code.It would be desirable that a VM support low-level code generation since the
+
+overhead of compilation of the generated code can be reduced.- The other is whether or not a VM is equipped with instructions dedicated
+for emitting instructions. At r'rst, it may sound counter-intuitive that a VMsupports code generation without such instructions. It is, however, possible
+by introducing two execution modes to a VM: in one mode, an instruction isexecuted as usual, and in the other, the same instruction emits some code.
+Correspondingly, a compiler will generate the same instruction for the samesource language construct, however deep it appears under quotation. We
+call this scheme uniform compilation, while we call the other scheme, usinga dedicated instruction set for code generation, non-uniform compilation.
+
+Interestingly, the choice between uniform or non-uniform compilation naturallyarises during the derivation process. We also r'nd out that deriving VMs supporting low-level code generation fails when non-uniform compilation is chosen;we discuss why it is dis'cult from the viewpoint of our derivation scheme.
+
+Our main technical contributions can be summarized as follows:
+- Derivation of compilers and VMs for a foundational typed calculus y"r^ byDavies [3] for multi-level languages; and
+
+- Identir'cation of the two compilation schemes of uniform and non-uniformcompilation, which, in fact, arise naturally during derivation.
+
+Although we omit it from this paper for brevity, we have also succeeded to applythe same derivation scheme to another calculus
+
+y"d^ [8] of multi-level languages.
+
+The Rest of the Paper. We start with reviewing y"r^ in Section 2. Then, we r'rstdescribe the uniform compilation scheme and a VM that generates low-level
+
+code in Section 3 and then the non-uniform compilation, which fails at low-levelcode generation, in Section 4. After discussing related work in Section 5, we
+conclude in Section 6. The concrete OCaml code of the derivation is available at
+http://www.sato.kuis.kyoto-u.ac.jp/z.igarashi/papers/VMcircle.html.
+
+2 y"r^
+y"r^ [3] is a typed y"-calculus, which corresponds to linear-time temporal logicwith the temporal operator r^ ("next") by the Curry-Howard isomorphism. A
+
+y"r^-term is considered a multi-level generating extension, which repeatedly takespart of the input of a program and yields a residual program, which is a specialized generating extension; and its type system can be considered that fora multi-level binding-time analysis [2, 3]. The term syntax includes
+
+next and
+prev, which roughly correspond to backquote and unquote in Lisp, respectively.So, in addition to the usual
+
+r'-reduction, y"r^ has reduction to cancel next by
+prev: prev(next t) a,! t. Unlike Lisp, however, all variables are statically boundand substitution is capture-avoiding, or "hygienic" [20]. For example, the term
+
+(y"x. next(y"y. prev x)) (next y) reduces to next(y"z. y) in two steps--notice thatthe bound variable
+
+y has been renamed to a fresh one to avoid variable capture.It is a common practice to generate fresh names in implementations where variables have named representation. In this paper, we adopt de Bruijn indices torepresent variable binding with a low-level, nameless implementation in mind.
+So, index shifting will be used to avoid variable capture, instead of renamingbound variables.
+
+2.1 Syntax and Operational Semantics
+We r'rst give the syntax and a big-step semantics of a variant of y"r^, in whichvariables are represented by de Bruijn indices. The der'nitions of terms
+
+t, values
+v, and environments E, are given by the following grammar:
+
+t ::= n | y"t | t0 t1 | next t | prev t v ::= hE, ti | ptq E ::= c' | v :: E
+The level of a (sub)term is the number of nexts minus the number of prevs toreach the (sub)term. A variable
+
+n refers to the n-th y"-binder at the same level.For example,
+y"y. next(y"x. x(prev y)) will be represented by y" next(y"0(prev 0)),not
+y" next(y"0(prev 1)), since x appears at level 1 but y at level 0. This indexingscheme is required because an environment is a list of bindings of level-0 variables
+
+and variables at higher levels are treated like constants--so, in order for indices tocorrectly work, binders at higher levels have to be ignored in computing indices.
+A value is either a function closure hE, ti or a quotation ptq3. An environment
+E is a list of values. We focus on a minimal set of language features in this paperbut our derivation works when recursion or integers are added.
+
+These der'nitions can be easily represented by datatype der'nitions in OCaml,which we use as a meta language in this paper.
+
+type term = Var of int | Abs of term | App of term * term
+
+| Next of term | Prev of term
+type value = Clos of env * term | Quot of term and env = value list
+
+As we have mentioned evaluation in y"r^ can go under y"-binders. To deal withit, we need "shift" operations to adjust indices. The expression
+
+t "`j denotes aterm obtained by incrementing the indices of free level` variables by 1. The
+
+3 In Davies [3], next is used for pc'q. Our intention here is to distinguish an operator
+
+for quotation and the result of applying it. Also, we do not stratify values by levels
+as in [3] since it is not really necessary--the type system does the stratir'cation.
+
+auxiliary argument j counts the number of y"-binders encountered, in order toavoid incrementing the indices of bound variables.
+
+n "`j = (n + 1 (if n y" j and ` = 0)n (otherwise)
+(y"t) "`j = y"(t "`j+1)
+
+(t0 t1) "`j = (t0 "`j) (t1 "`j)
+(next t) "`j = next(t "`a,1j )
+
+(prev t) "`j = prev(t "`+1j )
+
+Notice that ` is adjusted when next or prev is encountered. Shifting E "` ofenvironments is der'ned as a pointwise extension of term shifting; we omit the
+der'nition. We implement these functions as shift and shiftE, respectively,whose straightforward der'nitions are also omitted.
+
+Now, we der'ne the call-by-value, big-step operational semantics of y"r^ withthe judgment
+
+E ` t +` r where r is either a value v (when ` = 0) or a term t0(otherwise), read "level` term t evaluates to r under environment E". The infer-ence rules for this judgment are given in Fig. 1, in which
+
+E(n) stands for the n-thelement of
+E. As usual, bottom-up reading gives how to evaluate an expression,given an environment and a level. The rules for the case
+
+` = 0 are straightfor-ward extensions of those for the
+y"-calculus. The rules Eq--- mean that, when
+` y" 1 (i.e., the term is under next), the result of evaluation is almost the inputterm; only subterms inside
+
+prev at level 1 is evaluated, as is shown in E-Prev, inwhich the quotation of the value is canceled. To avoid variable capture, indices of
+
+quoted terms in the environment have to be shifted (by E "`), when evaluationgoes under
+
+y"-bindings (Eq-Abs).4 Fig. 2 shows the derivation for the evaluationof
+next(y" prev(y" next(y" prev 0)) (next 0)), which could be written `(lambda (x)
+,((lambda (y) `(lambda (z) ,y)) `x)) in Scheme.The type system, which we omit mainly for brevity, guarantees the absence
+
+of type errors and that a term of a quotation type evaluates to a quoted termp
+
+tq, where t is well typed at level 0 and does not contain subterms at a negativelevel. Our evaluator simply discards type information and types do not play
+
+important roles in our development. We assume every term is well typed.
+
+2.2 Environment-Passing, Continuation-Passing Evaluator for y"r^
+Once an operational semantics is der'ned, it is a straightforward task to write anenvironment-passing, continuation-passing evaluator. It takes not only a term,
+
+an environment, and a continuation, but also a level of the input term; hence, theevaluator has type
+
+term * int * env * (value -> value) -> value (the re-turn type of continuations is r'xed to
+
+value).
+
+type cont = value -> value
+(* eval0 : term * int * env * cont -> value *)
+let rec eval0 (t, l, e, k) = match t, l with
+
+Var n, 0 -> k (List.nth e n)
+
+4 In the implementation below, shifting is applied to values in an environment eagerly,
+
+but it can be delayed to reduce overhead, until the values are referred to by a
+corresponding variable.
+
+E ` t +0 v
+
+(E(n) = v)
+
+E ` n +0 v (E-Var)
+
+E ` y"t +0 hE, ti (E-Abs)
+E ` t0 +0 hE0, ti E ` t1 +0 v
+
+v :: E0 ` t +0 v0
+
+E ` t0 t1 +0 v0 (E-App)
+
+E ` t +1 t0
+E ` next t +0 pt0q (E-Next)
+
+E ` t +` t0 (` y" 1)
+
+E ` t +0 pt0q
+E ` prev t +1 t0 (E-Prev)
+
+E ` n +` n (Eq-Var)
+E "`` t +` t0
+E ` y"t +` y"t0 (Eq-Abs)
+
+E ` t0 +` t00
+E ` t1 +` t01
+
+E ` t0 t1 +` t00 t01 (Eq-App)
+
+E ` t +`+1 t0
+E ` next t +` next t0 (Eq-Next)
+
+E ` t +` t0
+E ` prev t +`+1 prev t0 (Eq-Prev)
+
+Fig. 1. The operational semantics of y"r^.
+
+D t^
+
+p1q :: c' ` 0 +0 p1q E-Var
+p1q :: c' ` prev 0 +1 1 E-Prev
+p0q :: c' ` y" prev 0 +1 y"1 Eq-Abs
+p0q :: c' ` next(y" prev 0) +0 py"1q E-Next
+
+c' ` y" next(y" prev 0) +0 hc', next(y" prev 0)i E-Abs c' `
+
+0 +1 0 Eq-Varc' `
+next 0 +0 p0q E-Next
+
+...
+.D
+
+c' ` (y" next(y" prev 0)) next 0 +0 py"1q E-Appc' `
+
+prev((y" next(y" prev 0)) next 0) +1 y"1 E-Prevc' `
+y" prev((y" next(y" prev 0)) next 0) +1 y"y"1 Eq-Absc' `
+next(y" prev((y" next(y" prev 0)) next 0)) +0 py"y"1q E-Next
+
+Fig. 2. The derivation of c' ` next(y" prev((y" next(y" prev 0)) next 0)) +0 py"y"1q.
+
+| Abs t0, 0 -> k (Clos (e, t0))
+| App(t0, t1), 0 -> eval0 (t0, 0, e, fun1 (Clos(e',t')) ->
+
+eval0 (t1, 0, e, fun2 v -> eval0 (t', v::e', k)))
+| Next t0, 0 -> eval0 (t0, 1, e, fun3 (Quot t) -> k (Quot t))
+| Prev t0, 1 -> eval0 (t0, 0, e, fun4 (Quot t) -> k (Quot t))
+| Var n, l -> k (Quot (Var n))
+| Abs t0, l -> eval0 (t0, l, shiftE (e, l), fun5 (Quot t) ->
+
+k (Quot (Abs t)))
+| App(t0, t1), l -> eval0 (t0, l, e, fun6 (Quot t2) ->
+
+eval0 (t1, l, e, fun7 (Quot t3) ->
+
+k (Quot (App(t2, t3)))))
+| Next t0, l -> eval0 (t0, l+1, e, fun8 (Quot t) -> k (Quot (Next t)))
+| Prev t0, l -> eval0 (t0, l-1, e, fun9 (Quot t) -> k (Quot (Prev t)))
+(* main0 : term -> value *)
+let main0 t = eval0 (t, 0, [], fun0 v -> v)
+
+Underlines with subscripts are not part of the program--they will be used toidentify function abstractions in the next section. We use a constructor
+
+Quot of
+value to represent both quoted values ptq and terms returned when l > 0. So,the continuations in the fourth and r'fth branches (corresponding to
+
+E-Nextand
+E-Prev) are (essentially) the identity function (except for checking theconstructor). Note that, in the last r've branches, which correspond to the rules
+
+Eq---, a term is constructed by using the same constructor as the input.
+
+3 Deriving a Uniform Compiler and VM with Low-Level
+
+Code Generation
+
+We r'rst give a very brief review of Ager et al.'s functional derivation of a compilerand a VM [17, 18]. A derivation from a continuation-passing evaluator consists
+of the following steps:
+
+1. defunctionalization [21] to represent continuations by r'rst-order data;2. currying transformation to split compile- and run-time computation; and
+
+3. defunctionalization to represent run-time computation by r'rst-order data.
+The r'rst step makes a tail-recursive, r'rst-order evaluator, which can be viewedas an abstract machine.
+
+5 The succeeding steps decompose the abstract machine
+
+into two functions: the r'rst function that takes a y"-term and generates an in-termediate datum is a compiler and the second function that interprets intermediate data is a VM--the intermediate data, obtained by the the third step ofdefunctionalization, are VM instructions.
+
+We will follow these steps mostly but claim, however, that it is not just anexercise. We will see an interesting issue of the distinction between uniform and
+non-uniform compilation naturally arises from how the abstract machine can becurried. Also, a VM with low-level code generation cannot be obtained solely
+
+5 According to Ager et al.'s terminology, an abstract machine takes a y"-term as an
+
+input whereas a VM takes an instruction sequence obtained by compiling a term.
+
+by following this scheme: since these derivation steps preserve the behavior ofthe original evaluator, the resulting VM would yield quoted source terms even
+when VM instructions are introduced. So, we have to devise an additional stepto derive a new VM for low-level code generation.
+
+The following commuting diagram illustrates our derivation scheme:
+
+terms: t0 AM //
+
+compile """b"b
+
+"b"b p
+
+t1q //
+
+###c
+#c#c
+#c pt2q //
+
+###c
+#c#c
+#c
+
+instructions: I0
+
+V MH 7?wwwww
+
+ww
+
+wwwww
+
+ww V ML +3 I
+
+1
+
+7?www
+wwww wwwwwww
+
++3 I2
+
+:B""""""
+"""""""" """"""""""""""
+
+The solid arrows on top represent executions of an abstract machine, which isextensionally equal to the initial evaluator; since
+
+y"r^-terms are multi-level gener-ating extensions, a residual program
+t1 (possibly with further inputs) obtainedby executing
+t0 will be executed again. We decompose a,! into a compiler A~
+
+and a VM V MH=) ; and then derive a VM V ML=) with low-level code generation,
+which commutes with V MH=) followed by compilation. So, once t0 is compiled, the
+run-time system (that is, V ML=) ) can forget about source-level terms.The following subsections describe each step of the derivation in detail.
+
+3.1 Defunctionalizing Continuations
+The r'rst step is defunctionalization of continuations. The basic idea of defunc-tionalization [21] is to represent functional values by datatype constructors and
+
+to replace function applications by calls to an "apply" function. This functionexecutes the function body corresponding to the given constructor, which also
+carries the value of free variables in the original function abstraction. In the def-inition of the evaluator in the last section, there are ten function abstractions of
+type value -> value: one in main0 and nine in eval0. So, the datatype contis given ten constructors.
+
+The resulting code is as follows (throughout the paper, shaded part representsmain changes from the previous version):
+
+type cont = Cont0 | Cont1 of term * env * cont | ... | Cont9 of cont
+(* eval1 : term * int * env * cont -> value *)
+let rec eval1 (t, l, e, k) = match t, l with
+
+Var n, 0 -> appK1 (k, List.nth e n )
+
+| App (t0, t1), 0 -> eval1 (t0, 0, e, Cont1 (t1, e, k) )
+| Var n, l -> appK1 (k, Quot (Var n) )
+| App (t0, t1), l -> eval1 (t0, l, e, Cont6 (t1, l, e, k) ) ...
+
+(* appK1 : cont * value -> value *)
+and appK1 (k, v) = match k, v with
+
+Cont0, v -> v
+| Cont1 (t1, e, k), v -> eval1 (t1, e, Cont2 (v, k))
+| Cont2 (Clos (e', t'), k), v -> eval1 (t', v::e', k)
+
+| Cont5 k, Quot t -> appK1 (k, Quot (Abs t))
+| Cont6 (t1, l, e, k), Quot t2 -> eval1 (t1, l, e, Cont7 (t2, k))
+| Cont7 (t2, k), Quot t3 -> appK1 (k, Quot (App (t2, t3)))
+...
+
+(* main1 : term -> value *)
+let main1 t = eval1 (t, 0, [], Cont0)
+
+The occurrences of funi have been replaced with constructors Conti, appliedto free variables in the function body. The bodies of those functions are moved
+
+to branches of the apply function appK1. For example, the initial continuationis represented by
+
+Cont0 (without arguments) and the corresponding branch in
+appK1 just returns the input v.
+
+The derived evaluator can be viewed as a CEK-style abstract machine [22]for
+
+y"r^. Indeed, for the pure y"-calculus fragment, this evaluator behaves exactlylike the CEK-machine [18].
+
+3.2 Currying and Primitive Recursive Evaluator
+Now, we decompose eval1 above into two functions for compilation and ex-ecution. For this purpose, we r'rst curry
+
+eval1 so that it takes compile-timeentities such as terms as arguments and returns a "run-time computation," i.e.,
+
+a function, which takes run-time entities such as environments and continua-tions as arguments and returns a value. Also, the evaluator is transformed into
+a primitive recursive form in such a way that closures carry run-time computa-tion, instead of terms. This transformation removes the dependency of run-time
+entities on compile-time entities.Actually, at this point, we have two choices about how it is curried: one choice
+is to curry to term * int -> env * cont -> value and the other is to term
+-> int * env * cont -> value. The former choice amounts to regarding alevel as compile-time information, so the resulting compiler can generate dio""erent
+
+instructions from the same term, depending on its levels; it leads to non-uniformcompilation, which will be discussed in Section 4. In this section, we proceed
+with the latter choice, in which the resulting compiler will depend only on theinput term, so it necessarily generates the same instruction from the same term,
+regardless of its levels.The currying transformation yields the following code:
+
+type value = Clos of env * compt | Quot of term and env = ...
+
+and compt = int * env * cont -> value
+and cont = Cont0 | Cont1 of compt * env * cont | ...
+| Cont6 of compt * int * env * cont | Cont7 of term * cont | ...
+(* appK2 : cont * value -> value *)
+let rec appK2 (k, v) = match k, v with
+
+Cont0, v -> v
+| Cont1 (c1, e, k), v -> c1 ( 0, e, Cont2 (v, k) )
+
+| Cont6 (c1, l, e, k), Quot t2 -> c1 ( l, e, Cont7 (t2, k) )
+
+| Cont7 (t2, k), Quot t3 -> appK2 (k, Quot (App (t2, t3)))
+...
+(* eval2 : term -> compt *)
+
+let rec eval2 t = match t with
+
+Var n -> (fun0 (l, e, k) -> if l = 0 then appK2 (k, List.nth e n)
+
+else appK2 (k, Quot (Var n)))
+| Abs t0 -> let c0 = eval t0 in
+
+(fun1 (l, e, k) -> if l = 0 then appK2 (k, Clos (e, c0))
+
+else c0 (l, shiftE (e, l), Cont5 k))
+| App(t0,t1) -> let c0 = eval2 t0 and c1 = eval2 t1 in
+
+(fun2 (l, e, k) -> if l = 0 then c0 (0, e, Cont1 (c1, e, k))
+
+else c0 (l, e, Cont6 (c1, l, e, k))) ...
+(* main2 : term -> value *)
+let main2 t = eval2 t (0, [], Cont0)
+
+Case branching in eval2 is now in two steps and the second branching on levelsis under function abstractions, which represent run-time computation. Some
+
+occurrences of term in cont have been replaced with compt, but argumentsto
+
+Cont7 (as well as Quot) remains the same because it records the result ofevaluation of the function part of an application at a level greater than 0.
+
+Note that the der'nitions of value, env and cont are now independent ofthat of
+
+term, indicating the separation of compile- and run-time. Also, unlikethe previous version, functions
+
+appK2 and eval2 are not mutually recursive. Thefunction
+eval2 becomes primitive recursive and also higher-order (it returns afunctional value); we get rid of
+
+funs by another defunctionalization.
+
+3.3 Defunctionalizing Run-Time Computation
+The next step is to make compt r'rst-order data by applying defunctionalization.Here, the datatype for
+
+compt will be represented by using lists:
+
+type compt = inst list
+and inst = Compt0 of int | Compt1 of compt | Compt2 of compt | ...
+
+rather than
+
+type compt = Compt0' of int | Compt1' of compt
+
+| Compt2' of compt * compt | ...
+
+which would be obtained by straightforward defunctionalization. In fact, thelatter can be embedded into the former--
+
+Compt0' n and Compt2'(c0,c1) arerepresented by
+[Compt0 n] and [Compt2 c1; c0], respectively. This schemeallows defunctionalized run-time computation to be represented by a linear data
+
+structure, that is, a sequence of instructions. Indeed, as its name suggests, instcan be viewed as machine instructions. The resulting evaluator
+
+eval3, whichgenerates a value of type
+compt from a term, is a compiler; a new apply function
+appC3, which interprets compt, together with appK3 is a VM. In the followingcode, constructors of
+
+inst are given mnemonic names.
+
+type value = ... and env = ... and cont = ... and compt = inst list
+
+and inst = Access of int | Close of compt | Push of compt | Enter | Leave
+(* eval3 : term -> compt *)
+let rec eval3 t = match t with
+
+Var n -> [Access n] | Abs t0 -> [Close (eval3 t0)]
+
+| App (t0, t1) -> Push (eval3 t1) :: (eval3 t0)
+| Next t0 -> Enter :: eval3 t0 | Prev t0 -> Leave :: eval3 t0
+(* appK3 : cont * value -> value *)
+let rec appK3 (k, v) = match k, v with ...
+
+| Cont1 (c1, e, k), v -> appC3 (c1, 0, e, Cont2 (v,k) )
+
+| Cont6 (c1, l, e, k), Quot t2 -> appC3 (c1, l, e, Cont7(t2, k) )
+...
+(* appC3 : compt * int * env * cont -> value *)
+
+and appC3 (c, l, e, k) = match c, l with
+
+[Access n], 0 -> appK3 (k, List.nth e n)
+| [Access n], l -> appK3 (k, Quot (Var n))
+| [Close c0], 0 -> appK3 (k, Clos (e, c0))
+| [Close c0], l -> appC3 (c0, l, shiftE (e, l), Cont5 k)
+| Push c1::c0, 0 -> appC3 (c0, 0, e, Cont1 (c1, e, k))
+| Push c1::c0, l -> appC3 (c0, l, e, Cont6 (c1, l, e, k))
+...
+
+(* main3 : term -> value *)
+let main3 t = appC3 (eval3 t, 0, [], Cont0)
+
+The compiler eval3 is uniform since it generates the same instruction regardlessof the levels of subterms and the VM interprets the same instruction dio""erently,
+
+according to the level.
+
+3.4 Virtual Machine for Low-Level Code Generation
+Code generation in the VM derived above is still high-level: as shown in thebranch for
+
+Cont7 of appK3 (or appK2), terms, not instructions, are generatedduring execution. The r'nal step is to derive a VM that generates instructions.
+
+This is, in fact, rather easy--everywhere a term constructor appears, we applythe compiler by hand (but leave variables unchanged): for example, the branch
+
+| [Access n], l -> appK3 (k, Quot (Var n))
+in appC3 becomes
+
+| [Access n], l -> appK3 (k, Quot [Access n ]))
+Other changes include replacement of type term with compt in value or contand new der'nitions to shift indices in an instruction list.
+
+Here is the r'nal code:
+type value = ... | Quot of compt and compt = ... and inst = ...
+
+and cont = ... | Cont7 of compt * cont | ... and env = ...
+let rec shift_inst (i, l, j) = ... and shift_compt (c, l, j) = ...
+let rec shiftE (e, l) = ...
+
+(* eval4 : term -> compt *)
+let rec eval4 t = ... (* the same as eval3 *)
+
+(* appK4 : cont * value -> value *)
+and appK4 (k, v) = match k, v with ...
+
+| Cont7 (c2, k), Quot c3 -> appK4 (k, Quot (Push c3::c2))
+...
+(* appC4 : compt * int * env * cont -> value *)
+and appC4 (c, l, e, k) = match (c, l) with
+
+| [Access n], l -> appK4 (k, Quot [Access n])
+...
+(* main4 : term -> value *)
+let main4 t = appC4 (eval4 t, 0, [], Cont0)
+
+The der'nitions of code blocks c, instructions I, continuations k, the compiler[[
+t]], and the transition =) of the VM states are summarized in Fig. 3 (in whichthe names of continuation constructors are also renamed). An (intermediate)
+
+state is of the form hc, `, E, ki (corresponding to an input to appC4), hk, vi,or h
+
+k, ci (corresponding to an input to appK4). A VM instruction is executeddio""erently according to
+
+`. For example, close(c) creates a function closure andpasses it to the current continuation when
+
+` = 0, whereas the same instructiongenerates code to build a closure when
+` > 0, by r'rst pushing QAbs onto thecontinuation stack and executing the body--when this execution r'nished, the
+
+VM reaches the state hQAbs(k), ci, in which c is the generated function body;r'nally the VM returns an instruction to build a closure (that is,
+
+close).
+
+4 Non-Uniform Compilation and Failure of Low-level
+
+Code Generation
+
+In this section, we brier^y describe the derivation of a non-uniform compilerwith a VM and see how and why low-level code generation fails. As we already
+mentioned, currying the evaluation function as term * int -> env * cont ->
+value, by regarding levels as compile-time information, leads us to a non-uniformcompiler, which generates special instructions for code generation if the given
+
+level is greater than 0. We skip the intermediate steps and show only the resultingnon-uniform compiler and VM for high-level code generation, obtained after
+defunctionalizing compt, which is r'rst der'ned to be env * cont -> value.
+
+type value = ... and env = ... and cont = ... and compt = inst list
+and inst = Access of int | ... | Leave | QVar of int | PushQAbs of int
+
+| PushQApp of compt | PushQNext | PushQPrev
+
+Instructions, values, and continuations:
+
+I ::= access n | close(c) | push(c) | enter | leave
+
+c ::= I0; c' c' c' ; In
+v ::= hE, ci | pcq
+k ::= Halt | EvArg(c, E, k) | EvBody(v, k) | Quote(k) | Unquote(k)|
+
+QAbs(k) | QApp'(c, `, E, k) | QApp(c, k) | QNext(k) | QPrev(k)
+
+Compilation:
+
+[[n]] = access n
+[[y"t]] = close([[t]])
+[[t0 t1]] = push([[t1]]); [[t0]]
+
+[[next t]] = enter; [[t]]
+
+[[prev t]] = leave; [[t]]
+
+VM transition:
+
+c =) hc, 0, c', Haltih
+access n, 0, E, ki =) hk, E(n)ih
+
+close(c), 0, E, ki =) hk, hE, ciih
+push(c0); c, 0, E, ki =) hc, 0, E, EvArg(c0, E, k)ih
+
+enter; c, 0, E, ki =) hc, 1, E, Quote(k)ih
+
+leave; c, 1, E, ki =) hc, 0, E, Unquote(k)ih
+access n, `, E, ki =) hk, access ni (` y" 1)h
+
+close(c), `, E, ki =) hc, `, E "`, QAbs(k)i (` y" 1)h
+push(c0); c, `, E, ki =) hc, `, E, QApp'(c0, `, E, k)i (` y" 1)h
+
+enter; c, `, E, ki =) hc, ` + 1, E, QNext(k)i (` y" 1)h
+leave; c, ` + 1, E, ki =) hc, `, E, QPrev(k)i (` y" 1)
+
+hEvArg(c, E, k), vi =) hc, 0, E, EvBody(v, k)ih
+EvBody(hE, ci, k), vi =) hc, 0, v :: E, kih
+
+Quote(k), ci =) hk, pcqih
+Unquote(k), pcqi =) hk, cih
+
+QAbs(k), ci =) hk, close(c)ih
+QApp'(c0, `, E, k), ci =) hc0, `, E, QApp(c, k)ih
+
+QApp(c, k), c0i =) hk, push(c0); cih
+
+QNext(k), ci =) hk, enter; cih
+QPrev(k), ci =) hk, leave; cih
+
+Halt, vi =) v
+
+Fig. 3. The derived uniform compiler and VM with low-level code generation.
+
+(* eval3' : term * int -> inst list *)
+let rec eval3' (t, l) = match t, l with
+
+Var n , 0 -> [Access n] | Var n, l -> [QVar n]
+| App (t0, t1) , 0 -> Push (eval3' (t1, 0)) :: eval3' (t0, 0)
+
+| App (t0, t1), l -> PushQApp (eval3' (t1, l)) :: eval3' (t0, l)
+...
+(* appK3' : cont * value -> value *)
+let rec appK3' (k, v) = (* the same as appK2 *) ...
+| Cont7 (t2, k), Quot t3 -> appK3' (k, Quot (App (t2, t3)))
+...
+(* appC3' : compt * env * cont -> value *)
+and appC3' (c, e, k) = match c with
+
+[Access n] -> appK3' (k, List.nth e n)
+| [QVar n] -> appK3' (k, Quot (Var n))
+
+| Push c1::c0 -> appC3' (c0, e, Cont1 (c1, e, k))
+
+| PushQApp c1::c0 -> appC3' (c0, e, Cont6 (c1, e, k))
+...
+(* main3' : term -> value *)
+let main3' t = appC3' ( eval3' (t, 0), [], Cont0 )
+
+The resulting instruction set is twice as large as that for uniform compila-tion. Instructions
+
+PushQXXX push onto a continuation stack a marker that repre-sents the corresponding term constructor; the marker is eventually consumed by
+
+appK3' to attach a term constructor to the current result: for example, Cont6and
+
+Cont7 are markers for application.Unfortunately, we fail to derive a VM for low-level code generation. This is
+
+simply because the compiler now takes a pair of a term and a level but a levelis missing around term constructors in
+
+appK3' or appC3'!We think that this failure is inherent in multi-level languages. In a multilevel language, one language construct has dio""erent meanings, depending onwhere it appears: for example, in
+
+y"r^, a y"-abstraction at level 0 evaluates to afunction closure, whereas one at level
+
+` > 0 evaluates to quoted y"-abstraction atlevel
+` a, 1. Now, notice that the compiler derived here is still uniform at levelsgreater than 0 (one term constructor is always compiled to the same instruction,
+
+regardless of its level). So, it would not be possible for a VM to emit dio""erentinstructions without level information, which, however, has been compiled away.
+If the number of possible levels is bounded, "true" non-uniform compilationwould be possible but would require dio""erent instructions for each level, which
+would be unrealistic. We conjecture that this problem can be solved by a hybridof uniform and non-uniform compilation, which is left for future work.
+
+5 Related Work
+Implementation of Multi-Level Languages A most closely related piece of workis Wickline et al. [4], who have developed a compiler of MLd^, which is an extension of ML with the constructs of y"d^ [8], and the target virtual machine CCAM,
+
+an extension of the Categorical Abstract Machine [16]. The CCAM is equippedwith, among others, a set of special (pseudo) instructions emit
+
+I, which emitthe single instruction
+I to a code block and are used to implement generatingextensions. The instruction emit, however, is not allowed to be nested because
+
+such nested emits would be represented by real instructions whose size is expo-nential in the depth of nesting. They developed a strategy for compiling nested
+quotation by exploiting another special instruction lift to transform a value intoa code generator that generates the value and the fact that environments are
+r'rst-class values in the CAM. In short, their work supports both non-uniformcompilation and low-level code generation in one system. Unfortunately, the design of the abstract machine is fairly ad hoc and it is not clear how the proposedcompilation scheme can be exported to other combinations of programming languages and VMs. Our method solves the exponential blow-up problem abovesimply because a compound instruction
+
+emit I is represented by a single VMinstruction
+I. Although our method does not support non-uniform compilationwith low-level code generation, it would be possible to derive a compiler and
+
+a VM for one's favorite multi-level language in a fairly systematic manner. Itmight be interesting future work to incorporate their ideas into our framework
+to realize non-uniform compilation with low-level code generation.
+
+MetaOCaml6 is a multi-level extension of Objective Caml7. Calcagno etal. [23] have reported its implementation by translation to a high-level language
+
+with datatypes for ASTs, gensyms, and run-time compilation but do not take di-rect low-level code generation into account. We believe our method is applicable
+to MetaOCaml, too.
+
+As mentioned in Section 1, there are several practical systems that are ca-pable of run-time low-level (native or VM) code generation. Tempo [14] is a
+
+compile-time and run-time specialization system for the C language; DyC [15] isalso a run-time specialization system for C; `C [12] is an extension of C, where
+programmers can explicitly manipulate, compile, and run code fragments as r'rst-class values with (non-nested) backquote and unquote; Fabius [24] is a run-time
+specialization system for a subset of ML. They are basically two-level systems butTempo supports multi-level specialization by incremental self-application [2, 25].
+The code-size blowup problem is solved by the template r'lling technique [14, 26],which amounts to allowing the operand to the emit instruction to be (a pointer
+to) a block of instructions.
+
+Functional Derivation of Abstract and Virtual Machines. Ager et al. describederivations of abstract and virtual machines from evaluation functions by program transformation [18, 17] and have shown that the Krivine machine [27] isderived from a call-by-name evaluator and that the CEK machine [22] indeed
+corresponds to a call-by-value evaluator. They also applied the same techniqueto call-by-need [28], monadic evaluators [29], or strong reduction [19, 17]. How6 http://www.metaocaml.org/
+7 http://caml.inria.fr/ocaml/
+
+ever, they mainly focus on dio""erent evaluation strategy or side-eo""ects and havenot attempted to apply their technique to multi-level languages.
+6 Conclusions
+In this paper, we have shown derivations of compilers and VMs for a foundationalmulti-level language
+
+y"r^. We have investigated the two compilation schemes ofuniform compilation, which compiles a term constructor to the same instruction
+
+regardless of the level at which the term appears, and non-uniform compila-tion, which generates dio""erent instructions from the same term according to its
+level, and have shown that the former is more suitable for low-level code gen-eration. Our derivation is fairly systematic and would be applicable to one's
+favorite multi-level language. In fact, although omitted from this paper, we havesuccessfully derived a compiler and a VM for another calculus
+
+y"d^ [8].The r'nal derivation step for low-level code generation may appear informal
+
+and ad hoc. We are developing a formal translation based on function fusion.Although it would not be easy to implement our machines for uniform compilation directly by the current, real processor architecture, we think they still canbe implemented fairly es'ciently as a VM. Our future work includes implementation of a uniform compiler and a corresponding VM by extending an existingVM, such as the ZINC abstract machine [30]. We believe our method is applicable to VMs with dio""erent architectures, which correspond to dio""erent evaluationsemantics of the
+
+y"-calculus, and is useful to see how they can be extended formulti-level languages.
+
+Acknowledgments We thank anonymous reviewers for providing useful commentsand for pointing out missing related work.
+
+References
+
+1. Nielson, F., Nielson, H.R.: Two-Level Functional Languages. Cambridge University
+
+Press (1992)
+2. Gl"uck, R., J#rgensen, J.: Es'cient multi-level generating extensions for program
+
+specialization. In: Proc. of PLILP. LNCS 982. (1995) 259-278
+3. Davies, R.: A temporal-logic approach to binding-time analysis. In: Proc. of IEEE
+
+LICS. (July 1996) 184-195
+4. Wickline, P., Lee, P., Pfenning, F.: Run-time code generation and Modal-ML. In:
+
+Proc. of ACM PLDI. (1998) 224-235
+5. Taha, W., Benaissa, Z.E.A., Sheard, T.: Multi-stage programming: Axiomatization
+
+and type-safety. In: Proc. of ICALP. LNCS 1443. (1998) 918-929
+6. Moggi, E., Taha, W., Benaissa, Z.E.A., Sheard, T.: An idealized MetaML: Simpler,
+
+and more expressive. In: Proc. of ESOP. LNCS 1576. (1999) 193-207
+7. Taha, W., Sheard, T.: MetaML and multi-stage programming with explicit annotations. Theoretical Computer Science 248 (2000) 211-242
+8. Davies, R., Pfenning, F.: A modal analysis of staged computation. Journal of the
+
+ACM 48(3) (2001) 555-604
+
+9. Taha, W., Nielsen, M.F.: Environment classir'ers. In: Proc. of ACM POPL. (2003)
+
+26-37
+10. Calcagno, C., Moggi, E., Taha, W.: ML-like inference for classir'ers. In: Proc. of
+
+ESOP. LNCS 2986. (2004) 79-93
+11. Yuse, Y., Igarashi, A.: A modal type system for multi-level generating extensions
+
+with persistent code. In: Proc. of ACM PPDP. (2006) 201-212
+12. Poletto, M., Hsieh, W.C., Engler, D.R., Kaashoek, M.F.: `C and tcc: A language
+
+and compiler for dynamic code generation. ACM Transactions on Programming
+Languages and Systems 21(2) (1999) 324-369
+13. Masuhara, H., Yonezawa, A.: Run-time bytecode specialization: A portable approach to generating optimized specialized code. In: Proc. of PADO-II. LNCS
+2053. (2001) 138-154
+14. Consel, C., Lawall, J.L., Meur, A.F.L.: A tour of Tempo: A program specializer
+
+for the C language. Science of Computer Programming 52(1-3) (2004) 341-370
+15. Grant, B., Mock, M., Philipose, M., Chambers, C., Eggers, S.J.: DyC: An expressive annotation-directed dynamic compiler for C. Theoretical Computer Science
+248(1-2) (2000) 147-199
+16. Cousineau, G., Curien, P.L., Mauny, M.: The categorical abstract machine. Science
+
+of Computer Programming 8(2) (1987) 173-202
+17. Ager, M.S., Biernacki, D., Danvy, O., Midtgaard, J.: From interpreter to compiler
+
+and virtual machine: A functional derivation. Technical Report RS-03-14, BRICS
+(March 2003)
+18. Ager, M.S., Biernacki, D., Danvy, O., Midtgaard, J.: A functional correspondence
+
+between evaluators and abstract machines. In: Proc. of ACM PPDP. (2003) 8-19
+19. Gru""egoire, B., Leroy, X.: A compiled implementation of strong reduction. In: Proc.
+
+of ACM ICFP. (2002) 235-246
+20. Kohlbecker, E., Friedman, D.P., Felleisen, M., Duba, B.: Hygienic macro expansion.
+
+In: Proc. of ACM LFP. (1986) 151-161
+21. Reynolds, J.C.: Der'nitional interpreters for higher-order programming languages.
+
+Higher-Order Symbolic Computation 11(4) (1998) 363-397
+22. Felleisen, M., Friedman, D.P.: Control operators, the SECD machine, and the
+
+y"-calculus. In: Proc. Formal Description of Prog. Concepts III. (1986) 193-217
+23. Calcagno, C., Taha, W., Huang, L., Leroy, X.: Implementing multi-stage languages
+
+using ASTs, gensym, and rer^ection. In: Proc. of GPCE. LNCS 2830. (2003) 57-76
+24. Leone, M., Lee, P.: Optimizing ML with run-time code generation. In: Proc. of
+
+ACM PLDI. (1996) 137-148
+25. Marlet, R., Consel, C., Boinot, P.: Es'cient incremental run-time specialization for
+
+free. In: Proc. of ACM PLDI. (1999) 281-292
+26. Consel, C., No"el, F.: A general approach for run-time specialization and its application to C. In: Proc. of ACM POPL. (1996) 145-156
+27. Krivine, J.L.: A call-by-name lambda-calculus machine. Available online from
+
+http://www.pps.jussieu.fr/z.krivine
+28. Ager, M.S., Danvy, O., Midtgaard, J.: A functional correspondence between callby-need evaluators and lazy abstract machines. Information Processing Letters
+90(5) (2004) 223-232
+29. Ager, M.S., Danvy, O., Midtgaard, J.: A functional correspondence between
+
+monadic evaluators and abstract machines for languages with computational effects. Theoretical Computer Science 342(1) (2005) 149-172
+30. Leroy, X.: The ZINC experiment: An economical implementation of the ML language. Technical Report 117, INRIA (1990)

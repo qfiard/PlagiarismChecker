@@ -1,0 +1,2022 @@
+
+
+JFP 12 (6): 567-600, November 2002. cfl 2002 Cambridge University Press
+DOI: 10.1017/S0956796801004282 Printed in the United Kingdom
+
+567
+
+Intensional polymorphism in type-erasure
+
+semantics
+
+KARL CRARY
+Carnegie Mellon University, School of Computer Science, Carnegie Mellon University,
+
+5000 Forbes Avenue, Pittsburgh, PA 15213, USA
+
+STEPHANIE WEIRICH and GREG MORRISETT
+
+Department of Computer Science, Cornell University,
+
+4130 Upson Hall, Ithaca, NY 14853-7501, USA
+
+Abstract
+Intensional polymorphism, the ability to dispatch to different routines based on types at run
+time, enables a variety of advanced implementation techniques for polymorphic languages,
+including tag-free garbage collection, unboxed function arguments, polymorphic marshalling
+and flattened data structures. To date, languages that support intensional polymorphism
+have required a type-passing (as opposed to type-erasure) interpretation where types are
+constructed and passed to polymorphic functions at run time. Unfortunately, type-passing
+suffers from a number of drawbacks: it requires duplication of run-time constructs at the
+term and type levels, it prevents abstraction, and it severely complicates polymorphic closure
+conversion. We present a type-theoretic framework that supports intensional polymorphism,
+but avoids many of the disadvantages of type passing. In our approach, run-time type
+information is represented by ordinary terms. This avoids the duplication problem, allows us
+to recover abstraction, and avoids complications with closure conversion. In addition, our
+type system provides another improvement in expressiveness; it allows unknown types to be
+refined in place, thereby avoiding certain beta-expansions required by other frameworks.
+
+Capsule Review
+Intensional polymorphism has been advocated as a technique for the implementation of
+polymorphism in functional languages. It is the basis for the TIL compiler and the FLINT
+backend for SML/NJ. At the heart of intensional polymorphism is passing types to polymorphic functions at run-time, leading to type-passing implementations. Type-passing has a cost,
+both in terms of complicating the type theory of the compiler intermediate language, as well
+as the run-time cost of building type representations. This paper mainly addresses the first
+of these issues, providing an alternative to type-passing, where instead the representations of
+types are passed at run-time. The payoff for this, for example, is a much simpler typing for
+closures in a typed compiler intermediate language.
+
+1 Introduction
+Type-directed compilers use type information to enable optimizations and transformations that are difficult or impossible without such information (Leroy, 1992;
+
+568 K. Crary et al.
+Harper & Morrisett, 1995; Morrisett, 1995; Birkedal et al., 1996; Ruf, 1997; Shao,
+1997a). However, type-directed compilers for some languages such as ML face the
+difficulty that some type information cannot be known at compile time. For example, polymorphic code in ML may operate on inputs of type ff where ff is not only
+unknown, but may in fact be instantiated by a variety of different types.
+
+To use type information in contexts where it cannot be provided statically, a
+number of advanced implementation techniques process type information at run
+time (Harper & Morrisett, 1995; Morrisett, 1995; Tolmach, 1994; Morrisett &
+Harper, 1997; Shao, 1997a). Such type information is used in two ways: behind
+the scenes, typically by tag-free garbage collectors (Tolmach, 1994; Aditya & Caro,
+1993), and explicitly in program code, for a variety of purposes such as efficient data
+representation and marshaling (Morrisett, 1995; Harper & Morrisett, 1995; Shao,
+1997b). In this paper we focus on the latter area of applications.
+
+To lay a solid foundation for programs that analyze types at run time, Harper
+and Morrisett devised an internal language, called *MLi , which supports the firstclass intensional analysis1 of type information (following earlier work by Constable
+(Constable, 1982; Constable & Zlatin, 1984)). The *MLi language and its derivatives
+were then used extensively in the high-performance ML compilers TIL/ML (Tarditi
+et al., 1996; Morrisett et al., 1996) and FLINT (Shao, 1997b). Type constructors
+may be analyzed by `typecase' operators in both the term and the type constructor
+languages; these operators allow computations and type expressions to depend upon
+the values of other type expressions at run time.
+
+Supporting intensional type analysis (and the use of type information at run time
+in general) seems to require semantics where type information is formed and passed
+to polymorphic functions during computation. However, there are three significant
+reasons why such a type-passing semantics is unattractive:
+
+* A type-passing language such as *MLi requires that type information always be
+
+constructed and passed to polymorphic functions, even when one does not
+desire to do so. For example, passing type information at run time comes
+with a cost, and the type-passing framework cannot express the elimination of
+that information where appropriate to optimize performance. Also, one may
+wish to withhold run-time type information from a function to enforce type
+abstraction, but this is impossible in the type-passing framework.*
+Because both terms and type constructors describe run-time execution, type
+passing results in considerable complexity in language semantics, as a number
+of run-time semantic devices must be duplicated for both terms and type
+constructors. Although this duplication does not induce substantial complexity
+in the substitution-based semantics of *MLi , it does as one attempts to give *MLi
+a semantics more faithful to real machines. For example, in semantics that
+make memory allocation explicit (Morrisett et al., 1995) a central device is a
+formal heap in which data is stored; in a type-erasure framework one such
+
+1 Type analysis is `intensional' when types are analyzed by their structure, rather than by what terms
+
+they contain.
+
+Intensional polymorphism in type-erasure semantics 569
+heap suffices, but when types are passed it is necessary to add a second heap
+(Morrisett & Harper, 1997), and all the attendant machinery, for type data.
+
+Type passing also greatly complicates low-level intermediate languages,
+due to the need to support mixed-phase devices (constructs with both type
+constructor and term level components). This can pose a serious problem for
+typed intermediate languages, because these devices can disrupt the essential
+symmetries on which elegant type systems depend. For example, a type-passing
+semantics for Typed Assembly Language (Morrisett et al., 1999) would require
+additional instructions for allocating and initializing type constructors, which
+in turn requires the typing machinery for allocation and initialization to be
+lifted an additional level into the kind structure.*
+As a particularly important example of the second issue, type passing severely
+complicates typed closure conversion (compare the type-passing system of
+Minamide et al. (1996) to the type-erasure system of Morrisett et al. (1999)).
+In a type-erasure framework, the partial application of a polymorphic function
+to a type may still be considered a value (since the application has no run-time
+significance), which means that closed code may simply be instantiated with
+its type environment when a closure is created. In a type-passing framework,
+the instantiation with a type environment can have some run-time effect, so
+it must be delayed until the function is invoked. Consequently, closures must
+include a type environment, necessitating complicated mechanisms including
+abstract kinds and translucent types (Minamide et al., 1996).
+
+A possible solution to the first problem (but not the second or third) would be to
+introduce a phase distinction between type constructors: Those purely necessary for
+type checking would be marked static and the remainder dynamic, with restrictions
+prohibiting dynamic type information from depending on static type constructors.
+A framework of how to construct such a language appears in Abadi et al. (1999).
+A possible solution to the second problem (but not the first or third) would be to
+combine the type and term languages together in the same syntactic class, as in Pure
+Type Systems (Barendregt, 1992). However, then the constructs used to describe
+run-time execution would also complicate compile-time type checking.
+
+In this paper we propose a typed calculus, called *R, that ameliorates all three
+problems of type passing without sacrificing intensional type analysis. The fundamental idea behind our approach is to move the dynamic aspect of the type
+information from the level of types to the level of ordinary terms. This works by
+constructing and passing values that represent types instead of the types themselves.
+The connection between a type constructor o/ and its term representation v is made
+in the static semantics by assigning v the special type R(o/). Semantically, we may
+interpret R(o/) as a singleton type that contains only the representation of o/.
+
+This framework resolves the difficulties with type-passing semantics discussed
+above. In particular, as representations of types are simply terms, we can use the
+pre-existing term operations to deal with run-time type information in languages
+and their semantics. Furthermore, we can eliminate the difficulties associated with
+polymorphic closure conversion, as we show in section 5. Finally, by making dynamic
+
+570 K. Crary et al.
+type information explicit and separable from types, our approach enables the choice
+not to pass representations. In turn, this choice allows us to eliminate the overhead of
+constructing and passing representations of types where it is not necessary. Current
+type-passing compilers, such as TIL/ML, already perform this optimization by using
+annotations that mark whether a type must be passed at run-time. However, these
+types may not be eliminated until late, untyped phases of the compiler. Our system
+provides a formal, typed basis for that mechanism.
+
+Perhaps more importantly, the ability not to pass types allows abstraction and
+parametricity to be recovered. In most type systems, abstraction may be achieved
+by hiding the identity of types either through parametric polymorphism (Reynolds,
+1983) or through existential types (Mitchell & Plotkin, 1988). However, when all
+types are passed and may be analyzed (as in *MLi ), the identity of types cannot be
+hidden and consequently abstraction is impossible. In contrast, a *R type can be
+analyzed only when its representation is available at run time, so abstraction can
+be achieved simply by not supplying type representations.
+
+For example, consider the type 9ff.ff. When all types may be analyzed, this type
+implements a dynamic type; an expression of this type provides an object of some
+unknown type, and that unknown type's identity can be determined at run time
+by analyzing ff. In *R, as in most other type systems, 9ff.ff implements an abstract
+type (in this particular example, a useless one), because no representation of ff is
+provided. Dynamic types are implemented in *R by including a representation of the
+unknown type, as in 9ff. R(ff) * ff.
+
+1.1 Expressiveness
+In the interest of clarity of presentation, we express *R as an extension of Harper
+and Morrisett's *MLi and focus on their differences. The principal difference is the
+restriction of type analysis to those types for which representations are provided. This
+change does not diminish the expressiveness of our calculus; *MLi may be translated
+in a straightforward syntax-directed manner into *R, as described in section 4.
+
+Moreover, we incorporate into the *R calculus an additional improvement in expressiveness over *MLi that is independent of explicit type passing: In *MLi , information
+gained by analyzing a type is not propagated to other variables having that type.
+Consequently, when analyzing a type ff with the interest of processing an object of
+type ff, it is necessary to create a function with argument type ff and then apply that
+function to the object of interest. In other words, the type system of *MLi requires the
+use of beta-expansions that are not operationally necessary. In *R we resolve this
+shortcoming by strengthening the typing rule for typecase so that it refines types
+in place. This strengthening is not intrinsic to *R, and an analogous rule could be
+added to *MLi to the same benefit.
+
+1.2 Overview
+The remainder of this paper is organized as follows. In section 2 we review the
+*MLi calculus. We then present, in Section 3, our *R calculus and discuss its formal
+
+Intensional polymorphism in type-erasure semantics 571
+semantics, including representation terms, R-types, and the strengthened typecase
+rule. As examples of its expressiveness, in section 4 we give an embedding of *MLi in
+*R, and in section 5, we discuss the simplification of polymorphic closure conversion
+by explicit type passing. We end with discussion of related work and conclusions
+in sections 6 and 7. In the appendices we relate our typed semantics to an untyped
+one through type erasure (Appendix A), and provide the formal static semantics
+(Appendix B).
+
+2 Intensional type analysis
+Suppose we wanted to store efficiently an array of boolean values. Most computer
+architectures require that memory accesses are a word at a time, but it is a waste
+of space to store booleans as integers. A solution is to pack 32 booleans into one
+word and use bit manipulations to retrieve the correct value. To subscript from a
+packed boolean array, we might use the following function (with << for shift left, &
+for bitwise and, and <> for inequality):
+
+val bitsub : array[int] * int -> bool =
+
+fn (a,i) =>
+
+sub(a,i div 32) & (1<<(i mod 32)) <> 0
+
+This function is fine when we know a given array contains boolean values, but we
+would like code polymorphic over all arrays to be able to use this mechanism. Below
+we define a new array constructor, PackedArray, which will produce an array of
+integers to hold booleans, and an ordinary array for other types. We also define an
+associated subscript operation, packedsub, which calls bitsub on arrays of booleans
+and the ordinary subscript operator on arrays of other types. These constructs can
+be implemented with intensional type analysis, where in both cases an argument
+type is examined with a `typecase' construct:
+
+type PackedArray[ff] =
+
+Typecase ff of
+
+bool => array[int]
+| => array[ff]
+
+val packedsub : 8ff. PackedArray[ff] * int -> ff =
+
+Fn ff =>
+
+typecase ff of
+
+bool => bitsub
+| => sub
+
+2.1 The *MLi calculus
+To formalize the tools of intensional type analysis, we begin by summarizing Harper
+and Morrisett's *MLi calculus (1995). The *MLi calculus provides these tools in a form
+that is relatively simple, but already quite powerful.
+
+The syntax of *MLi , with some minor modifications, appears in figure 1. The
+
+572 K. Crary et al.
+
+(kinds) ^ :: = Type | ^1 ! ^2
+(con0s) c :: = ff | *ff:^.c | c1c2 | ^int | c1 ^!c2 | c1 ^*c2|
+
+Typerec c (cint, c!, c*)
+
+(types) oe :: = T (c) | int | oe1 ! oe2 | oe1 * oe2 | 8ff:^.oe | 9ff:^.oe
+(terms) e :: = i | x | *x:oe.e | fix f:oe.v | e1e2 | he1, e2i | ss1e | ss2e | \Lambda ff:^.e | e[c]|
+
+pack e as 9ff:^.oe hiding c | unpack hff, xi = e1 in e2|
+typecase[ff.oe] c of
+
+int ) eint
+fi ! fl ) e!
+fi * fl ) e*
+
+(values) v :: = i | *x:oe.e | fix x:oe.v | hv1, v2i | \Lambda ff:^.e | pack v as 9ff.oe hiding c
+
+Fig. 1. Syntax of *MLi .
+
+(*x:oe.e)v 7! e[v/x] (fix f:oe.v)v0 7!i (v[fix f:oe.v/f])v0
+
+ss1hv1, v2i 7! v1 ss2hv1, v2i 7! v2
+unpack hff, xi = (pack v as 9fi.oe hiding c) in e2 7! e2[oe2/ff, v/x]
+
+e1 7! e01
+e1e2 7! e01e2
+
+e 7! e0
+ve 7! ve0
+
+e 7! e0
+e[c] 7! e0[c]
+
+e 7! e0
+ssie 7! ssie0
+
+e1 7! e01h
+e1, e2i 7! he01, e2i
+
+e 7! e0h
+v, ei 7! hv, e0i
+
+e 7! e0
+pack e as 9fi.oe hiding c 7! pack e0 as 9fi.oe hiding c
+
+e 7! e0
+unpack hff, xi = e in e2 7! unpack hff, xi = e0 in e2
+
+Fig. 2. Operational semantics for core language.
+complete static semantics appears in Appendix B, though we will include relevant
+rules in this section. A small-step call-by-value operational semantics of *MLi appears
+in figures 2 and 3. We write 7! for evaluation steps that apply to both *MLi and *R, and7!
+
+i for evaluation steps that apply only to *
+
+MLi . We write E[E0/X] for the captureavoiding substitution of E0 for X in E. In all cases, we consider alpha-equivalent
+expressions to be identical.
+
+The backbone of *MLi is a predicative variant of Girard's F! (1972; 1971) in which
+the quantified type 8ff:^.oe ranges only over type constructors and "small" types (i .e.,
+monotypes), which do not include the quantified types. An explicit injection T (c)
+converts a type constructor into a type. For example, T ( ^int) is equal to the type int,
+and T (c1 ^!c2) is equal to T (c1) ! T (c2).
+
+The type analysis operators are Typerec and typecase at the constructor and
+
+Intensional polymorphism in type-erasure semantics 573
+(\Lambda ff:^.e)[c] 7!i e[c/ff] (fix f:oe.v)[c] 7!i (v[fix f:oe.v/f])[c]
+
+c normalizes to ^int
+typecase c (eint, fifl.e!, fifl.e*) 7!i eint
+
+c normalizes to (c1 ^!c2)
+typecase c (eint, fifl.e!, fifl.e*) 7!i e![c1/fi, c2/fl]
+
+c normalizes to (c1 ^*c2)
+typecase c (eint, fifl.e!, fifl.e*) 7!i e*[c1/fi, c2/fl]
+
+Fig. 3. Operational semantics for type application and typecase.
+
+fix tostring : (8ff: Type . T (ff) ! string).
+
+\Lambda ff: Type .
+
+typecase[ffi. T (ffi) ! string] ff of
+
+^int ) int2string
+
+string ) *obj : string .obj
+fi ^!fl )
+
+*obj :T (fi ^!fl)."function"
+fi ^*fl )
+
+*obj :T (fi ^*fl).
+
+"<" ^ (tostring[fi](ss1 obj )) ^ "," ^ (tostring[fl](ss2 obj )) ^ ">"
+
+Fig. 4. The function tostring.
+
+term levels respectively. These operators, given an argument type c, dispatch to an
+appropriate branch based on whether c is ^int, a constructor for a function type or a
+product type. The [ff.oe] annotation in a typecase term is used to make type checking
+syntax-directed, and indicates that when given a type argument c, the typecase is to
+return a value of type oe[c/ff]. When ff does not appear free in oe we often omit it.
+
+Occasionally, for brevity, we will write typecase terms as
+
+typecase[ff.oe] c (eint, fifl.e!, fifl.e*).
+As an example of the use of type analysis in *MLi (with the addition of another
+base type, string), consider the function tostring in figure 4. This function uses
+typecase to produce a string representation of a data object. For example, the call
+tostring [ ^int] 3 returns the string "3". As we cannot provide any information about
+the implementation of functions, we just return the word "function" when one is
+encountered, as in the call:
+
+tostring [( ^int ^! ^int) ^* ^int] h*x: int . x + 1, 3i
+which returns:
+
+"hfunction, 3i"
+
+574 K. Crary et al.
+
+Judgment Meaning
+\Gamma  ` c : ^ c is a valid constructor of kind ^
+\Gamma  ` c1 = c2 : ^ c1 and c2 are equal constructors
+\Gamma  ` oe oe is a valid type
+\Gamma  ` oe1 = oe2 oe1 and oe2 are equal types
+\Gamma  ` e : oe e is a term of type oe
+
+Fig. 5. Judgments of *MLi .
+
+When the argument to tostring is a product type, the function calls itself recursively. In this branch, the type variables fi and fl are bound to the types of the first
+and second components of the tuple, so that the recursive call can be instantiated
+with the correct type.
+
+Type checking *MLi is based on the judgments in figure 5, which define wellformedness of type constructors, types and terms, as well as equivalence of type
+constructors and types. In these judgments, \Gamma  is a unified type and kind context:
+an ordered, partial map from constructor variables (ff, fi, . . .) to kinds, and term
+variables (x, y, . . .) to types. As before, we use ` for rules of these judgments that
+apply to both *MLi and *R, employing `i for rules specific to *MLi .
+
+With this intuition, the typing rule for typecase is the natural one (but we will see
+that this rule is unnecessarily restrictive):
+
+\Gamma  `i c : Type \Gamma , ffi: Type `i oe \Gamma  `i eint : oe[ ^int/ffi]
+
+\Gamma , fi: Type, fl: Type `i e! : oe[(fi ^!fl)/ffi]
+
+\Gamma , fi: Type, fl: Type `i e* : oe[(fi ^*fl)/ffi]
+
+\Gamma  `i 0BB@
+
+typecase[ffi.oe] c of
+
+^int ) eint
+
+fi ^!fl ) e!
+fi ^*fl ) e*
+
+1CCA
+
+: oe[c/ffi]
+
+Often, to compute the result type oe of a typecase expression the constructorlevel Typerec on the argument ff will be required. Typerec allows the creation of
+new types by similar intensional analysis. Several examples of its use appear in
+Harper and Morrisett (1995), including type-directed data layout, marshalling and
+unboxing.
+
+While recursion in the term-level typecase is handled by fix, at the the constructor
+level there is no such mechanism. For this reason, Typerec is essentially a `fold'
+operation (or catamorphism) over inductively defined types. It provides primitive
+recursion by calling itself recursively on all of the components of the argument
+type. Also unlike typecase, where the branches explicitly bind arguments for the
+components of the type, the c! and c* branches of Typerec are constructor functions.
+For example, if the argument of a Typerec operation is c1 ^*c2, then that operation
+reduces to its c* branch (a constructor function of four arguments) applied to
+the components c1 and c2, and to the result of recursively computing the Typerec
+
+Intensional polymorphism in type-erasure semantics 575
+(types) oe ::= T (c) | int | oe1 ! oe2 | oe1 * oe2 | 8ff:^.oe | 9ff:^.oe | R(c)
+(terms) e ::= i | x | *x:oe.e | fix f:oe.v | e1e2 | he1, e2i | ss1e | ss2e|
+
+\Lambda ff:^.v | e[c] | pack e as 9ff:^.oe hiding c|
+unpack hff, xi = e1 in e2|
+
+| Rint | R![c1, c2](e1, e2) | R*[c1, c2](e1, e2)typecase[ff.oe] e of
+
+Rint ) eint
+R![fi, fl](x, y) ) e!
+R*[fi, fl](x, y) ) e*
+
+(values) v ::= i | *x:oe.e | fix f:oe.v | hv1, v2i|
+
+\Lambda ff:^.v | (fix f:oe.v)[c1] . . . [cn] | pack v as 9ff.oe hiding c|
+
+Rint | R![c1, c2](v1, v2) | R*[c1, c2](v1, v2)
+
+Fig. 6. Syntax of *R.
+operation on those components.
+
+Typerec (c1 ^*c2) (cint, c!, c*) =
+
+c* c1 c2
+
+(Typerec c1 (cint, c!, c*))
+(Typerec c2 (cint, c!, c*))
+
+The kinding rule for Typerec is again the natural one. To compute a constructor
+of kind ^, present a type argument and three branches returning ^ constructors:
+
+\Gamma  ` c : Type \Gamma  ` cint : ^
+\Gamma  ` c! : Type ! Type ! ^ ! ^ ! ^
+
+\Gamma  ` c* : Type ! Type ! ^ ! ^ ! ^
+
+\Gamma  ` Typerec c (cint, c!, c*) : ^
+
+3 The *R calculus
+Figure 6 presents the syntax of *R, which we describe in detail in the following section.
+The features distinguishing *R from *MLi are highlighted. The syntactic classes for
+kinds and constructors of *R are identical to those of *MLi , and are accordingly
+omitted from the figure.
+
+3.1 Term representations of types
+The key feature we add to the term language of *R is the representations of types as
+terms, which remain when the types themselves are ultimately erased. The base type,
+
+^int, has a corresponding representation constant Rint. Likewise, non-base types have
+
+representation constructors; for example, the type constructor ^int ^! ^int is represented
+by the term R![ ^int, ^int](Rint, Rint).
+
+576 K. Crary et al.
+
+(\Lambda ff:^.v)[c] 7!R (v[c/ff])
+(fix f:oe.v)[c1] . . . [cn]v0 7!R (v[fix f:oe.v/f])[c1] . . . [cn]v0
+
+typecase[ffi.oe] Rint (eint, fiflxy.e!, fiflxy.e*) 7!R eint
+typecase[ffi.oe](R![c1, c2](v1, v2))(eint, fiflxy.e!, fiflxy.e*) 7!R e![c1/fi, c2/fl, v1/x, v2/y]
+
+typecase[ffi.oe](R*[c1, c2](v1, v2))(eint, fiflxy.e!, fiflxy.e*) 7!R e*[c1/fi, c2/fl, v1/x, v2/y]
+
+e 7!R e0
+typecase[ffi.oe] e (eint, fiflxy.e!, fiflxy.e*) 7!R typecase[ffi.oe] e0 (eint, fiflxy.e!, fiflxy.e*)
+
+e1 7!R e01
+R![c1, c2](e1, e2) 7!R R![c1, c2](e01, e2)
+
+e 7!R e0
+R![c1, c2](v, e) 7!R R![c1, c2](v, e0)
+
+e1 7!R e01
+R*[c1, c2](e1, e2) 7!R R*[c1, c2](e01, e2)
+
+e 7!R e0
+R*[c1, c2](v, e) 7!R R*[c1, c2](v, e0)
+
+Fig. 7. Operational semantics for *R.
+
+The argument to the term level typecase is a type representation, instead of an
+actual type. For example, if the argument is of the form R![c1, c2](v1, v2), the arrow
+branch (e!) is taken. The type variables fi and fl are still bound to c1 and c2, the
+types that v1 and v2 represent. Because we need not only the component types but
+also their representations, x and y are bound to v1 and v2. Hence, the operational
+semantics establishes the following rule for evaluating typecases over arrow types:
+
+typecase[ffi.c] (R![c1, c2](v1, v2)) (eint, fiflxy.e!, fiflxy.e*)7!
+
+R
+e![c1/fi, c2/fl, v1/x, v2/y]
+
+The operational semantics for *R is given in figures 2 and 7. Recall that evaluation
+steps applying to both *MLi and *R are written with 7!. Evaluation steps applying
+only to *R are written with 7!R.
+
+The operational semantics is designed to permit a type erasure interpretation.
+In the main body of this paper, we give the semantics with types included (this
+makes programs more readable, and greatly eases the proof of type safety); but
+the semantics is designed so that programs behave in the same manner with types
+(and attendant machinery such as type abstractions and applications) removed. This
+erasure property is verifiable by inspection, and is formalized in Appendix A.
+
+To achieve the desired erasure property, a number of changes are made from *MLi .
+Aside from the most notable change, the use of type representations in typecase
+expressions, there are other minor changes as well. For example, *R imposes a
+value restriction on type abstractions. Without this restriction, a type abstraction
+(necessarily a value (Harper & Lillibridge, 1993)) could erase to a non-value, thereby
+defeating the erasure property. Similarly, if (fix f:oe.v)[c] stepped to v[fix f:oe.v/f][c],
+as in *MLi , then when viewed under the lens of erasure, (fix f.v) would unroll for no
+
+Intensional polymorphism in type-erasure semantics 577
+
+\Gamma  `R o/ : Type
+
+\Gamma  `R R(o/)
+
+\Gamma  `R Rint : R( ^int)
+
+\Gamma  `R e1 : R(o/1) \Gamma  `R e2 : R(o/2)
+
+\Gamma  `R R![o/1, o/2](e1, e2) : R(o/1 ^!o/2)
+
+\Gamma  `R e1 : R(o/1) \Gamma  ` e2 : R(o/2)
+\Gamma  `R R*[o/1, o/2](e1, e2) : R(o/1 ^*o/2)
+
+Fig. 8. Formation rules for representation type and representation terms.
+reason, despite being a value. Consequently, (fix f:oe.v)[c1] * * * [cn] is taken to be a
+value; the internal fix does not unroll until the recursive function is applied to an
+actual value.
+
+To assign types to term representations of types, we have extended the types of
+*R to include the R construct, where the representation of a type o/ is given the type
+R(o/). The formation rules for the type R(o/) and for the representation terms appear
+in figure 8. For example, the formation rule for the representation of function types
+states that if the two subterms, e1 and e2, are type representations of o/1 and o/2, then
+R![o/1, o/2](e1, e2) will be a representation of o/1 ^!o/2.
+
+As an example of the use of *R, the tostring function from the previous section
+can be translated into *R by requiring it to take an additional term argument, xff for
+the representation of the argument type:
+
+fix tostring : (8ff: Type . R(ff) ! T (ff) ! string).
+
+\Lambda ff: Type . *xff:R(ff).
+
+typecase[ffi. T (ffi) ! string] xff of
+
+Rint ) int2string
+Rstring ) *obj : string .obj
+R![fi, fl](x, y) )
+
+*obj :T (fi ^!fl). "function"
+
+R*[fi, fl](x, y) )
+
+*obj :T (fi ^*fl).
+
+"<"^(tostring [fi] x (ss1 obj ))^
+","^(tostring [fl] y (ss2 obj ))^">"
+
+The static semantics we have defined ensures that these R-types are singleton
+types; for each one there is exactly one value which inhabits it. This fact allows
+us to express constraints between types and their representations at a very fine
+level. For instance, in the tostring example, the representation argument must be the
+representation of the type of the object.
+
+3.2 In-place refinement of types
+The typing rules of *MLi often force an inelegant use of typecase. In the tostring
+example in section 2, and in its *R rendition above, we created closures in each of
+
+578 K. Crary et al.
+
+\Gamma , ff: Type, \Gamma 0 `R e : R(ff)
+\Gamma , \Gamma 0[ ^int/ff] `R eint[ ^int/ff] : oe[ ^int/ff, ^int/ffi]
+\Gamma , fi: Type, fl: Type, x:R(fi), y:R(fl), \Gamma 0[(fi ! fl)/ff] `R
+
+e![(fi ! fl)/ff] : oe[(fi ! fl)/ff, (fi ! fl)/ffi]
+\Gamma , fi: Type, fl: Type, x:R(fi), y:R(fl), \Gamma 0[(fi ^*fl)/ff] `R
+
+e*[(fi ^*fl)/ff] : oe[(fi ^*fl)/ff, (fi ^*fl)/ffi]
+
+(ff, fi, fl 62 Dom(\Gamma , \Gamma 0))
+
+\Gamma , ff: Type, \Gamma 0 `R typecase[ffi.oe] e (eint, fiflxy.e!, fiflxy.e*) : oe[ff/ffi]
+
+Fig. 9. The variable refining typecase rule.
+the branches of the typecase. It would be slightly more efficient and much more
+convenient, in this case, if we could lift the lambdas outside of the typecase, so that
+the branches of the typecase are not functions. This would allow the application to
+the type information and argument to be uncurried. Then, instead of a closure, each
+branch of the typecase would return a string. We could then write this function as:
+
+fix tostring : (8ff: Type . R(ff) ! T (ff) ! string).
+
+\Lambda ff: Type . *xff:R(ff). *obj :T (ff).
+
+typecase[8. string] xff of
+
+Rint ) int2string obj
+Rstring ) obj
+R![fi, fl](x, y) )
+
+"function"
+
+R*[fi, fl](x, y) )
+
+"<"^(tostring [fi] x (ss1 obj ))^
+","^(tostring [fl] y (ss2 obj ))^">"
+
+The reason we could not write this function in *MLi is that it requires the type of obj to
+change based on which branch of the typecase is selected. In *MLi , all that is known in
+the product branch is that obj has type T (ff); it is not known that it has type T (fi ^*fl).
+To project from it in the recursive calls, the typing rules would have to update the
+type of obj to reflect the fact that we know that ff is fi ^*fl in the product branch.
+
+With the right enhancement to the static semantics this optimization is possible.
+We have held off discussion of the *R's typecase typing rule in order to emphasize
+this point. The basic idea is that in some cases typecase increases our knowledge of
+the argument type, and we can propagate this knowledge back to the type system.
+In the rule for type checking a typecase term, when the argument has type R(ff), we
+refine all types containing ff to reflect the gain in information. This refinement is
+done using a simple substitution, as shown in figure 9.
+
+For example, to typecheck the e! branch, we substitute fi ^!fl for ff everywhere,
+including the surrounding context.2 Consequently, the types of the variables bound
+
+2 The substitution for ff is applied within the branches themselves in order to avoid creating a hole in
+
+the scope of ff. In practice, a typechecker would implement this operation by a local type definition,
+rather than by substitution.
+
+Intensional polymorphism in type-erasure semantics 579
+\Gamma  `R e : R(c) \Gamma  `R eint : oe[ ^int/ffi]
+\Gamma , fi: Type, fl: Type, x:R(fi), y:R(fl) `R e! : oe[(fi ^!fl)/ffi]
+
+\Gamma , fi: Type, fl: Type, x:R(fi), y:R(fl) `R e* : oe[(fi ^*fl)/ffi]
+
+\Gamma  `R typecase[ffi.oe] e (eint, fiflxy.e!, fiflxy.e*) : oe[c/ffi] (fi, fl 62 Dom(\Gamma , \Gamma 0))
+
+Fig. 10. Non-refining typecase rule.
+in the context will be refined by that substitution. In contrast, in *MLi this substitution
+is only made in the return type of each branch - not in the context - so in order to
+propagate the desired information one must abstract over all variables of interest.
+
+Sometimes refinement is not possible even with this rule; such cases arise when
+the type being analyzed is not a variable.3 For such cases, our type system includes
+an ordinary non-refining typing rule as well (figure 10).
+
+3.3 Semantics
+The static semantics of *R consists of a collection of rules for deriving judgments
+of the forms shown in figure 5. The formal operational and static semantics of *R
+appear in figure 7 and Appendix B, and from them we can prove several useful
+properties about *R.
+
+Theorem 3.1 (Decidability)
+It is decidable whether or not \Gamma  ` e : o/ is derivable in *R.
+
+The proof of decidability of *R typechecking is merely an extension of the decidability of *MLi typechecking to a few new constructs; full details of that proof appear
+in Morrisett (1995). This proof consists of two parts: showing that constructors and
+types may be reduced to a normal form, and showing that type derivations can be
+normalized to an equivalent syntax-directed version.
+
+Next, we would like to show that the static semantics guarantees safety; that is,
+if a term typechecks, then the operational semantics will not get stuck. As usual, a
+term is considered stuck if it is not a value and no rule of our operational semantics
+applies to it.
+
+Theorem 3.2 (Type Safety)
+If ; ` e : oe and e 7!* e0 then e0 is not stuck.
+
+Type safety is proved syntactically, in the manner popularized by Wright &
+Felleisen (1994), employing the usual Progress and Subject Reduction Lemmas.
+
+Lemma 3.3 (Progress)
+If ; ` e : o/ and e is not a value then there exists an e0 such that e 7! e0.
+
+3 Some non-variable cases can still be refined by the trivialization rules of the next section. Cases in
+
+which refinement is impossible are those in which the outermost type constructor cannot be determined
+statically, that is, irreducible application and Typerec expressions.
+
+580 K. Crary et al.
+Lemma 3.4 (Subject Reduction)
+If ; ` e : o/ and e 7! e0 then ; ` e0 : o/.
+
+The proof of these lemmas is largely standard, following the pattern in Morrisett (1995), for example. However, one subtlety does arise as a result of in-place
+refinement. This subtlety arises in one of the usual substitution lemmas used in the
+Subject Reduction lemma:
+
+Lemma 3.5 (Constructor Substitution into Terms)
+If \Gamma , ff:^, \Gamma 0 ` e : o/ and ; ` c : ^ then \Gamma , \Gamma 0[c/ff] ` e[c/ff] : o/[c/ff].
+
+In Lemma 3.5, suppose e is a typecase expression in which the type being
+analyzed is the variable of substitution ff, and suppose the refining rule is used to
+typecheck e:
+
+...
+\Gamma , ff: Type, \Gamma 0 ` e0 : R(ff)
+
+...
+\Gamma , \Gamma 0[ ^int/ff] ` eint[ ^int/ff] : oe[ ^int/ff, ^int/ffi] * * *
+\Gamma , ff: Type, \Gamma 0 ` typecase[ffi.oe] e0 (eint, fiflxy.e!, fiflxy.e*) : oe[ff/ffi]
+
+After substitution for ff, the type being analyzed is no longer a variable and the
+refining rule no longer applies. Not surprisingly, the non-refining rule does not
+generally suffice to typecheck these cases.
+
+We resolve this problem by adding three new rules for typechecking analyses of
+types whose outermost constructor is known:
+
+\Gamma  ` e : R( ^int) \Gamma  ` eint : oe[ ^int/ffi]
+\Gamma  ` typecase[ffi.oe] e (eint, fiflxy.e!, fiflxy.e*) : oe[ ^int/ffi]
+
+\Gamma  ` e : R(c1 ! c2) \Gamma , x:R(c1), y:R(c2) ` e![c1/fi, c2/fl] : oe[(c1 ^!c2)/ffi]
+
+\Gamma  ` typecase[ffi.oe] e (eint, fiflxy.e!, fiflxy.e*) : oe[(c1 ^!c2)/ffi]
+
+\Gamma  ` e : R(c1 ^*c2) \Gamma , x:R(c1), y:R(c2) ` e*[c1/fi, c2/fl] : oe[(c1 ^*c2)/ffi]
+
+\Gamma  ` typecase[ffi.oe] e (eint, fiflxy.e!, fiflxy.e*) : oe[(c1 ^*c2)/ffi]
+
+We call these trivialization rules because they typecheck trivial analyses, ones that
+can be eliminated statically. They operate by typechecking the relevant branch and
+discarding the remaining branches as dead code.
+
+For example, suppose the substitutend c is ^int. Then we obtain:
+
+(by substitution)
+\Gamma , \Gamma 0[ ^int/ff] ` e0[ ^int/ff] : R( ^int)
+
+(retained)
+\Gamma , \Gamma 0[ ^int/ff] ` eint[ ^int/ff] : oe[ ^int/ff][ ^int/ffi]
+\Gamma , \Gamma 0[ ^int/ff] ` (typecase[ffi.oe] e0 (eint, . . .))[ ^int/ff] : oe[ ^int/ff][ ^int/ffi]
+
+and observe that oe[ ^int/ff][ ^int/ffi] = oe[ff/ffi][ ^int/ff], as desired.
+
+In general, since c kindchecks in the empty context, it easy to show that c is
+equivalent to a constructor whose outermost constructor is known. It follows that
+one of the three trivialization rules must apply, since if (for example) c = c1 ^*c2,
+then R(c) = R(c1 * c2), and consequently e : R(c) implies e : R(c1 ^*c2).
+
+Intensional polymorphism in type-erasure semantics 581
+types |T (c)| = T (c)|
+
+int | = int|
+oe1 ! oe2| = |oe1| ! |oe2||
+
+oe1 * oe2| = |oe1| * |oe2||8
+
+ff:^.oe| = 8ff:^.R(ff:^) ! |oe||9
+ff:^.oe| = 9ff:^.R(ff:^) * |oe|
+
+expressions |x| = x|
+
+i| = i|
+*x:oe.e| = *x:|oe|.|e||
+fix f:oe.v| = fix f:|oe|.|v||
+
+e1e2| = |e1||e2||h
+e1, e2i| = h|e1|, |e2|i|
+
+ss1e| = ss1|e||
+ss2e| = ss2|e||
+\Lambda ff:^.e| = \Lambda ff:^.*xff:R(ff:^).|e||
+
+e[c]| = |e| [c] Rep(c)|
+pack e as (9ff:^.oe) hiding c| = pack hRep(|oe2|), |e|i
+
+as 9ff:^. R(ff:^) * |oe| hiding |c||
+unpack hff, xi = e1 in e2| = unpack hff, yi = |e1|
+
+in |e2|[ss1y/xff, ss2y/x]fifififififi
+
+fifi
+
+typecase[ff.oe] c of
+
+int ) eint
+fi ! fl ) e!
+fi * fl ) e*
+
+fififififififi
+fi
+
+=
+
+typecase[ff.|oe|] Rep(c) of
+
+Rint ) |eint|
+R![fi, fl](xfi, xfl) ) |e!|
+R*[fi, fl](xfi, xfl) ) |e*|
+
+Fig. 11. Translation from *MLi to *R.
+
+4 Embedding of *MLi
+We next describe an embedding of *MLi expressions into *R. We include this embedding
+for two reasons: first, to show that *R is as expressive as *MLi , and second, to
+demonstrate a simple use of *R as an intermediate language. The full details of the
+embedding appear in figures 11-13. The embedding of *MLi types and terms is written|
+
+oe| and |e|.
+
+The main difference between *MLi and *R is the typecase term; in *MLi it takes a type
+constructor as its argument, in *R it takes a term representing a type. Therefore, to
+simulate a *MLi typecase term with an *R typecase term, we need to be able to form
+the term representation of the type constructor argument. This operation, written
+Rep(*), appears in figure 12.
+
+Creating the representation of a given type constructor is complicated by the
+fact that the argument to Typerec can (and often will) contain constructors with
+free type variables. These type variables are translated to term variables that represent them, but in order to do this translation, we must maintain the invariant
+that for every accessible type variable, a corresponding term variable representing
+it is also accessible. We make this guarantee by a process reminiscent of phase
+splitting (Harper et al., 1990) or evidence passing (Jones, 1992). In the translation of
+constructor abstractions, we split the abstractions to take both the constructor and
+
+582 K. Crary et al.
+
+Rep( ^int) = Rint
+Rep(o/1 ^!o/2) = R![o/1, o/2](Rep(o/1), Rep(o/2))
+
+Rep(o/1 ^*o/2) = R*[o/1, o/2](Rep(o/1), Rep(o/2))
+
+Rep(ff) = xff
+Rep(*ff:^.c) = \Lambda ff:^.*xff:R(ff:^).Rep(c)
+
+Rep(c1c2) = Rep(c1)[c2]Rep(c2)
+Rep(Typerec o/(cint, c!, c*)) = (fix f:8ff: Type .R(ff) ! R(c*[ff]:^).
+
+\Lambda ff: Type .
+
+*xff:R(ff).
+
+typecase[R(c*[ff]:^)] xff
+
+Rint ) Rep(cint)
+R![fi, fl](xfi, xfl) )
+
+Rep(c!)[fi]xfi [fl]xfl
+
+[c*[fi]](f[fi]xfi) [c*[fl]](f[fl]xfl)
+R*[fi, fl](xfi, xfl) )
+
+Rep(c*)[fi]xfi [fl]xfl
+
+[c*[fi]](f[fi]xfi) [c*[fl]](f[fl]xfl)
+
+) [o/] Rep(o/)
+where c*[o/0] = Typerec o/0(cint, c!, c*)
+and ^ is the kind of the full Typerec expression
+
+Fig. 12. Translation of constructors to their representations.
+
+R(o/ : Type) def= R(o/)
+R(c : ^1 ! ^2) def= 8ff:^1. R(ff : ^1) ! R(cff : ^2)
+
+Fig. 13. Representations of higher constructors.
+a term variable, where the term variable is constrained to be the representation of
+that constructor, and application is also changed accordingly:|
+
+\Lambda ff:^.e| = \Lambda ff:^.*xff:R(ff:^).|e||
+
+e[c]| = |e| [c] Rep(c)
+
+Note that this translation also satisfies the value restriction placed on *R type
+abstractions. Dually, we also include the representation of a type constructor when
+we form an existential package. The notation R(ff:^) is defined shortly.
+
+The next issue to address is the representation of higher-order type constructors.
+If, for example, c has kind Type ! Type, it maps type arguments to type results.
+Accordingly, the representation of c maps the representation of c's type argument
+to the representation of c's type result. More generally, when c has kind ^1 ! ^2, its
+representation is a polymorphic function taking the representation of c's constructor
+argument to the representation of the result of applying c to that argument. When
+c has kind ^, we define R(c : ^) to be the type of c's representation, as given in
+figure 13.
+
+The last issue in our translation of type constructors to their representations is
+the definition of the representation of a Typerec constructor. We represent it as a
+
+Intensional polymorphism in type-erasure semantics 583
+
+Spl(*) = *
+Spl(\Gamma , x:o/) = Spl(\Gamma ), x:o/
+Spl(\Gamma , ff:^) = Spl(\Gamma ), ff:^, xff:R(ff:^)
+
+Fig. 14. Context splitting.
+typecase on the representation of the argument to the Typerec, but because Typerec
+is recursive, we must wrap the typecase in a recursive polymorphic function:
+
+Rep(Typerec o/(cint, c!, c*)) = ((fix f : 8ff: Type .R(ff) ! R(c*[ff]:^).
+
+\Lambda ff: Type . *xff:R(ff).
+
+typecase xff
+
+Rint ) Rep(cint)
+...)
+[o/] Rep(o/))
+
+where c*[o/] = Typerec o/(cint, c!, c*) and ^ is the result kind of the Typerec.
+
+In the arrow and product of the typecase, this function must be called recursively
+on the subcomponents of the type, just as in Typerec. For example, consider the
+arrow case:
+
+R![fi, fl](xfi, xfl) )
+
+Rep(c!) [fi] xfi [fl] xfl [c*[fi]] (f[fi] xfi) [c*[fl]] (f[fl] xfl)
+
+The c! arm of the Typerec is a function taking four type variables, the first two
+being fi and fl, the second two being the results of calling the Typerec recursively on
+fi and fl. However, because of phase splitting in the translation, each type argument
+has an associated term argument for its representation, so the translation of c!,
+takes four pairs of type and term arguments. For the first two pairs, fi and fl, their
+representations xfi and xfl are readily available from the typecase. For the recursive
+arguments, we use the original Typerec to find the resulting constructors and call f
+recursively to find the representations of those resulting constructors.
+
+4.1 Correctness of the embedding
+The static and dynamic correctness of the embedding is not difficult to show. In
+what follows, we write `i for typing derivations in *MLi and `R for typing derivations
+in *R.
+
+We begin by establishing a lemma, stating that the representations defined above
+have the appropriate type. Recall that the definition of representations required
+an inductive assumption that representations are always available for constructor
+variables. This invariant is enforced using an auxiliary definition to split contexts
+(written Spl(\Gamma )), explicitly adding representations for each variable in the context.
+
+Lemma 4.1
+If \Gamma  `R c : ^ then Spl(\Gamma ) `R Rep(c) : R(c : ^)
+
+Now we can establish the static correctness of the embedding:
+
+584 K. Crary et al.
+
+Rep[[ ^int]] = {Rint}
+Rep[[o/1 ^!o/2]] = {R![o/01, o/02](e1, e2) | \Gamma  ` o/i = o/0i: Type, ei 2 Rep[[o/i]], i = 1, 2}
+
+Rep[[o/1 ^*o/2]] = {R*[o/01, o/02](e1, e2) | \Gamma  ` o/i = o/0i: Type, ei 2 Rep[[o/i]], i = 1, 2}
+
+Rep[[ff]] = {xff}
+Rep[[*ff:^.c]] = {\Lambda ff:^.*xff:R(ff:^).e | e 2 Rep[[c]]}
+
+Rep[[c1c2]] = {e1[c02]e2 | e1 2 Rep[[c1]], \Gamma  ` c2 = c02 : ^, e2 2 Rep[[c2]]}
+Rep[[Typerec o/
+
+(cint, c!, c*)
+
+]] = {(fix f:8ff: Type .R(ff) ! R(c*[ff]:^).
+
+\Lambda ff: Type .*xff:R(ff).
+
+typecase[R(c*[ff]:^)] xff
+
+Rint ) eint
+R![fi, fl](xfi, xfl) )
+
+e![fi]xfi [fl]xfl
+
+[c*[fi]](f[fi]xfi) [c*[fl]](f[fl]xfl)
+R*[fi, fl](xfi, xfl) )
+
+e*[fi]xfi [fl]xfl
+
+[c*[fi]](f[fi]xfi) [c*[fl]](f[fl]xfl)
+) [o/0] e | eint 2 Rep[[cint]], e! 2 Rep[[c!]], e* 2 Rep[[c*]],
+
+\Gamma  ` o/0 = o/ : Type, e 2 Rep[[o/]] }
+where c*[o/0] = Typerec o/0(cint, c!, c*)
+and ^ is the kind of the full Typerec expression
+
+Rep[[c]] = {e | \Gamma  ` c = c0 : ^ & e 2 Rep[[c0]]}
+
+Fig. 15. Extended representations
+
+Theorem 4.2 (Static correctness)
+Define |\Gamma | as Spl(\Gamma 0), where \Gamma 0 is defined as the pointwise translation of \Gamma  (that is,
+for all x 2 \Gamma , \Gamma 0(x) = |\Gamma (x)|, and for all ff 2 \Gamma , \Gamma 0(ff) = \Gamma (ff)). Then:
+
+1. If \Gamma  `i c : ^ then |\Gamma | `R c : ^
+2. If \Gamma  `i c1 = c2 : ^ then |\Gamma | `R c1 = c2 : ^
+3. If \Gamma  `i oe then |\Gamma | `R |oe|
+4. If \Gamma  `i oe1 = oe2 then |\Gamma | `R |oe1| = |oe2|
+5. If \Gamma  `i e : o/ then |\Gamma | `R |e| : |o/|
+
+In order to show the dynamic correctness of the embedding, we must show
+that the result of translation simulates the operation of *MLi . However, because the
+the evaluation of the term representations does not exactly match the reduction of
+constructors, we must add some imprecision to the simulation. We allow constructors
+and their representations appearing in the result of the embedding to be of any
+equivalent constructor (based on the definition of constructor equality), instead of
+exactly matching the constructor appearing in the source *MLi term.
+
+We define the operation Rep[[c]] which produces a set of representations of the
+constructor c, in Figure 15. For any c, Rep(c) is in the set Rep[[c]]. The other
+members of this set differ from Rep(c) only in the embedded constructors. For
+example, Rep[[ ^int ^! ^int]] includes both R![ ^int, ^int](Rint, Rint), and
+R![(*fi: Type .fi) ^int, ^int](Rint, Rint). The set Rep[[c]], defined at the bottom of the
+figure, is even larger. It includes all representations of equivalent constructors. For
+
+Intensional polymorphism in type-erasure semantics 585
+types
+
+[[T (c)]] = {T (c0) | \Gamma  ` c = c0 : Type}
+
+[[int]] = {int}
+[[oe1 ! oe2]] = {oe01 ! oe02 | oei 2 [[oei]], i = 1, 2}
+
+[[oe1 * oe2]] = {oe01 * oe02 | oei 2 [[oei]], i = 1, 2}
+
+[[8ff:^.oe]] = {8ff:^.R(ff:^) ! oe0 | oe0 2 [[oe]]}
+
+[[9ff:^.oe]] = {9ff:^.R(ff:^) * oe0 | oe0 2 [[oe]]}
+
+expressions
+
+[[x]] = {x}
+
+[[i]] = {i}
+[[*x:oe.e]] = {*x:oe0.e0 | oe0 2 [[oe]], e0 2 [[e]]}
+[[fix f:oe.v]] = {fix f:oe0.v0 | oe0 2 [[oe]], v0 2 [[v]]}
+
+[[e1 e2]] = { e01 e02 | e01 2 [[e1]], e02 2 [[e2]]}
+[[he1, e2i]] = {he01, e02i | e01 2 [[e1]], e02 2 [[e2]]}
+
+[[ss1e]] = {ss1e0 | e0 2 [[e]]}
+[[ss2e]] = {ss2e0 | e0 2 [[e]]}
+[[\Lambda ff:^.e]] = {\Lambda ff:^.*xff:R(ff:^).e0 | e0 2 [[e]]}
+
+[[e[c]]] = {e0[c0] e00 | e0 2 [[e]], \Gamma  ` c = c0 : ^, e00 2 Rep[[c]]}^^
+
+pack e as (9ff:^.oe)
+
+hiding c ** = 8!:
+
+pack he00, e0i e00 2 Rep[[c]]
+
+as 9ff:^. R(ff:^) * oe0 e0 2 [[e]], oe0 2 [[oe]]
+hiding c0 \Gamma  ` c0 = c : ^ 9=;
+
+[[unpack hff, xi = e1 in e2]] = aeunpack hff, yi = e01 e01 2 [[e1]]in (*x
+
+ff:R(ff:^).*x:ff.e02)(ss1y)(ss2y) e02 2 [[e2]] oe2
+
+6642664
+
+typecase[ff.oe] c of
+
+^int ) eint
+
+fi ^!fl ) e!
+fi * fl ) e*
+
+37753775
+
+= 8????!????:
+
+typecase[ff.oe0] e of e 2 Rep[[c]]
+
+Rint ) e0int e0int2 [[eint]]
+R![fi, fl](xfi, xfl) ) e0! e0! 2 [[e!]]
+R*[fi, fl](xfi, xfl) ) e0* e0* 2 [[e*]]
+
+oe0 2 [[oe]]
+
+9????=
+????;
+
+Fig. 16. Extended translation
+example, not only does Rep[[ ^int ^! ^int]] include the above terms, but it also includes
+a representation of ((*fi: Type .fi) int) ! int
+
+R![(*fi: Type .fi) ^int, ^int]((\Lambda fi: Type .*xfi:R(fi).x)Rint), Rint).
+Likewise, the operations [[oe]] and [[e]] in Figure 16 generalize the translation of
+*MLi types and terms. Again |oe| is in the set [[oe]] and |e| is in [[e]]. In these sets,
+embedded constructors and their representations may be replaced with equivalent
+forms. For example, [[T ( ^int)]] includes both the types T ( ^int) and T ((*fi: Type .fi) ^int).
+For the translation of terms, [[x[ ^int]]] includes x[ ^int]Rint, x[(*fi: Type .fi) ^int]Rint, and
+x[ ^int]((\Lambda fi: Type .*xfi:R(fi).x)Rint).
+
+To begin, we must establish how substitution interacts with these operations. In
+the following, we will use the following abbreviations (where S1 and S2 are arbitrary
+
+586 K. Crary et al.
+sets of terms):
+
+S1[S2/x] def= {e[e0/x] | e 2 S1 & e0 2 S2}
+S1[e0/x] def= S1[{e0}/x]
+
+Lemma 4.3 (Substitution)
+
+1. If \Gamma , ff:^ ` c0 : ^0 and \Gamma  ` c : ^, then Rep[[c0]][c/ff][Rep[[c]]/xff] ` Rep[[c0[c/ff]]].
+2. If \Gamma , ff:^ ` c0 : ^0 and \Gamma  ` c : ^, then Rep[[c0]][c/ff][Rep[[c]]/xff] ` Rep[[c0[c/ff]]].
+3. If \Gamma , ff:^ ` c0 : ^0 and \Gamma  ` c : ^, then Rep[[c0]][c/ff][Rep[[c]]/xff] ` Rep[[c0[c/ff]]].
+4. If \Gamma , ff:^ `i oe and \Gamma  ` c : ^ then [[oe]][c/ff] ` [[oe[c/ff]]].
+5. If \Gamma , ff:^ `i e : oe and \Gamma  ` c0 = c : ^, then [[e]][c0/ff][Rep[[c0]]/xff] ` [[e[c/ff]]].
+6. If \Gamma , x:oe `i e : oe0 and \Gamma  `i v : oe then [[e]][[[v]]/x] = [[e[v/x]]].
+
+Next, we also need to establish that the evaluation of term representations agrees
+with constructor equality. In the end, our goal is to show that if e 2 Rep[[int]] then
+e must evaluate to Rint (and similar results for arrow and product types).
+
+Lemma 4.4
+For all ; ` c : ^, e 2 Rep[[c]] then either e is a value or there exists some e0 and c0
+such that e 7!+ e0 and e0 2 Rep[[c0]] and c reduces to c0.
+
+Lemma 4.5
+If e 2 Rep[[c]] then e evaluates to a value v 2 Rep[[c]].
+
+Corollary 4.6
+
+1. If e 2 Rep[[int]] then e evaluates to Rint.
+2. If e 2 Rep[[o/1 ^!o/2]] then e evaluates to R![o/01, o/02](v1, v2), where ; ` o/i = o/0i :
+
+Type and vi 2 Rep[[o/i]] for i = 1, 2.
+3. If e 2 Rep[[o/1 * o/2]] then e evaluates to R*[o/01, o/02](v1, v2), where ; ` o/i = o/0i :
+
+Type and vi 2 Rep[[o/i]] for i = 1, 2.
+
+Lemma 4.7 (Simulation)
+If `i e1 : oe and e1 7!i e2 then for all e01 2 [[e1]] there exists an e02 2 [[e2]] such that
+e1 7!*R e02.
+
+Now we can conclude the dynamic correctness of the translation:
+Theorem 4.8 (Dynamic Correctness)
+If ` e : int and e 7!*i i then |e| 7!*R i.
+
+5 Typed closure conversion
+As a final example, we consider typed closure conversion in an impredicative, *R-like
+framework. Our analysis will show that typed closure conversion is much simpler in
+our setting, and will shed light on which mechanisms from typed closure conversion
+in the type-passing setting are actually essential.
+
+The goal of closure conversion is to eliminate nested lambdas and produce an
+equivalent program where all functions are defined only at the top level. This is done
+by replacing all inner functions with explicit closures that are represented within
+the language as pairs consisting of a function pointer (the code of the closure), and
+
+Intensional polymorphism in type-erasure semantics 587
+a tuple (the environment of the closure). The environment contains values for the
+free variables of the function. The function pointer is bound globally to a function
+that abstracts the environment as well as the arguments of the function and is thus
+closed. Application is rewritten so that the code of a closure is first applied to its
+environment and then to its arguments.
+
+The development in this section is given at an informal level, as fully formalizing
+the type theory in our discussion would take us too far from our key points.
+Formalizations of the type theory necessary to this section are given for type erasure
+in Crary & Weirich (1999), and for type passing in Minamide et al. (1996).
+
+5.1 Monomorphic typed closure conversion
+The challenge of typed closure conversion is to preserve the typing properties of
+the program. If two source expressions have the same source type, they should have
+the same target type. Consider first the typed closure conversion of a monomorphic
+language (Minamide et al., 1996). So that functions having the same type but different
+free variables will have equivalent types after closure conversion, an existential type
+is used to hold the type of the environment abstract. Therefore, a function of type
+o/1 ! o/2 is translated to a closure of type 9ff.((o/1 * ff) ! o/2) * ff. For example,
+to closure convert the following function declaration (containing the free variables
+x : int and y : bool),
+
+val mymonofunc = *f: int ! int .hfx, yi
+we need to abstract over the free variables x and y. This changes the lambda to
+expect two arguments, the first being the argument f and the second being an
+environment consisting of a tuple containing the values for the free variables x
+and y.
+
+*z:(int ! int) * (int * bool).h(ss1z)(ss1(ss2z)), (ss2(ss2z))i
+To simplify the examples, we will use pattern matching syntax in lambdas, and write
+this function as:
+
+*hf: int ! int, hx: int, y: boolii.hfx, yi
+Since the argument f in the source term is a function, it too must be closure
+converted. Therefore, f is taken to have the type:
+
+oef = 9ff.(int *ff ! int) * ff
+To apply f, our main function must unpack it, extract the code pointer and its
+environment, and then apply the code to both x and that environment:
+
+*hf:oef, hx: int, y: boolii.h
+
+unpack hff, f0:(int *ff ! int) * ffi = f in (ss1f0)hx, ss2f0i, yi
+
+This lambda abstraction is closed and may be hoisted to the top level. Suppose
+this hoisting is performed and the closed lambda is given the name mymonocode.
+It remains to construct the closure for mymonofunc, by pairing the code pointer
+(mymonocode) with its environment, and then hiding the environment's type in an
+
+588 K. Crary et al.
+existential package:
+
+val mymonoclosure = pack hmymonocode, hx, yii as 9ff.(oef * ff ! int) * ff
+
+hiding int * bool
+
+5.2 Polymorphic typed closure conversion
+In the monomorphic case there is no discrepancy between type-passing (Minamide
+et al., 1996) and type-erasure (Morrisett et al., 1999) closure conversion. However,
+with the introduction of polymorphism, significant differences arise. The differences
+stem from the fact that functions may contain free type variables as well as free
+value variables, and closed code must abstract both. This abstraction of code over
+free type variables is performed in the same manner in both settings; the differences
+arise in when the closure is constructed.
+
+In a type-erasure semantics, where type application has no run-time effect, it is
+possible to resolve the code's abstracted type variables when the closure is created,
+simply by applying the code to the appropriate type arguments. In principle, this
+would mean performing the indicated type substitution at run time (an unacceptable
+run-time cost), but since types are erased this need not take place in reality; the
+instantiated `duplicate' is no different from the original and may share with it in
+memory.
+
+In a type-passing semantics, types are real run-time data so this strategy is
+impermissible. Instead, free type variables are collected into an environment in the
+same manner as free value variables. Operationally, this is dealt with in exactly the
+same manner as for value variables (as discussed above); however, considerably more
+type-theoretic machinery is required in the target language in order to typecheck the
+resulting closure (Minamide et al., 1996).
+
+For example, consider the following function declaration (containing the free
+type variables ff and fi and the free value variables y : fi and z : int, for some
+appropriately typed term ex,y,z):
+
+val myfunc : ff ! (int *fi) = *x:ff. ex,y,z
+The closed version of this function abstracts over the free type and value variables:
+
+\Lambda fl: Type * Type . *z:(ss1fl * (ss2fl * int)). e(ss1z),(ss1(ss2z)),(ss2(ss2z))
+In pattern matching notation:
+
+\Lambda hff: Type, fi: Typei. *hx:ff, hy:fi, z: intii. ex,y,z
+Suppose that this closed code is hoisted to the top level and given the name mycode.
+Observe that mycode has the type:
+
+8fl:^tenv . (ss1fl * o/venv ) ! (int *ss2fl)
+where ^tenv = Type * Type and o/venv = ss2fl * int. It remains to build a closure from
+mycode.
+
+Intensional polymorphism in type-erasure semantics 589
+
+5.2.1 Type-passing closures
+In the example above, observe that although the function is intended to take an
+argument of type ff, the type of mycode indicates an argument of type ss1fl, where
+fl is the type environment. Thus, if mycode is applied to the `wrong' type argument
+(one for which the first component is not ff), the code cannot be used as intended.
+However, nothing prevents mycode from being applied to any constructor having
+kind ^tenv . Therefore, the first step to building a closure is to constrain mycode to
+be applied only to the appropriate type argument:
+
+val myclosure 1 : 8fl:^tenv =hff, fii. (ff * o/venv ) ! (int *fi) = mycode
+This type uses a translucent type (Harper & Lillibridge, 1994) to dictate that the
+constructor argument fl must be hff, fii. This type constraint can be understood in
+two steps: first, a subtyping step to add the constraint, and, second, an equality step
+(since it follows from this constraint that ss1fl = ff and ss2fl = fi),
+
+8fl:^tenv . (ss1fl * o/venv ) ! (int *ss2fl)
+6 8fl:^tenv =hff, fii. (ss1fl * o/venv ) ! (int *ss2fl)
+= 8fl:^tenv =hff, fii. (ff * oevenv ) ! (int *fi)
+
+where oevenv = fi * int ,= o/venv [hff, fii/fl]. The need for this translucency mechanism
+and the type theory supporting it are described in much greater detail in Minamide
+et al. (1996).
+
+The next step in constructing a closure from mycode is to pair myclosure 1 with
+the value environment (hy, zi) and the type environment (hff, fii). The operator for
+pairing values with types is existential packaging, so we obtain:
+
+val myclosure 2 = pack hmyclosure 1, hy, zii as oemyclosure 2 hiding hff, fii
+with type:
+
+oemyclosure 2 =9
+
+ffitenv :^tenv . (8fl:^tenv =ffitenv . (ff * oevenv ) ! (int *fi)) * oevenv
+
+The final step is to hide (as before) the type of the value environment, and (unlike
+before) the kind of the type environment, obtaining:
+
+val myclosure = packkind
+
+pack myclosure 2 as . . . hiding oevenv
+as oemyclosure hiding ^tenv
+
+with type:
+
+oemyclosure =9
+
+ktenv : Kind . 9fflvenv : Type . 9ffitenv :ktenv .
+
+(8fl:ktenv =ffitenv . (ff * fflvenv ) ! (int *fi)) * fflvenv
+
+590 K. Crary et al.
+More generally, a closure for a function of type o/1 ! o/2 will have the type:4
+
+9ktenv : Kind . 9fflvenv : Type . 9ffitenv :ktenv .
+
+(8fl:ktenv =ffitenv . (o/1 * fflvenv ) ! o/2) * fflvenv
+
+This illustrates that building a closure in a type-passing setting requires two heavyweight type-theoretic constructs: first, a translucent type mechanism, so that the
+code may be constrained to be applied only to the correct type environment, and,
+second, a special form of existential type for abstracting kinds.5
+
+5.2.2 Type-erasure Closures
+In a type-erasure setting, things work out more simply than in the type-passing
+setting. Since type application has no run-time effect, the closed code can simply
+be applied to its type environment when the closure is constructed; there is no
+need to defer that application by including the type environment in the closure.
+Also, no explicit translucency mechanism is required to ensure that the correct type
+environment is used, since the code is eagerly applied to the correct type environment
+at the outset.
+
+The simplest account of typed closure conversion in a type-erasure setting is
+given in Morrisett et al. (1999), but that account does not support intensional type
+analysis, so it is not entirely comparable to the type-passing account of Minamide et
+al. (1996) summarized above. For comparable expressive power, the function requires
+representations of the free type variables ff and fi so that its body can analyze these
+types. Once we add these representations to the context, however, we may proceed
+using exactly the closure conversion process of Morrisett et al., and it is instructive
+to observe what happens.
+
+For example, myfunc is rewritten to
+
+val myfunc0 : ff ! (int *fi) = *x:ff. ex,y,z,wff,wfi
+containing the additional free value variables wff : R(ff) and wfi : R(fi).
+
+The closed version of this function (in pattern matching notation) is:
+
+\Lambda hff: Type, fi: Typei. *hx:ff, hy:fi, hz: int, hwff:R(ff), wfi:R(fi)iiii. ex,y,z,wff,wfi
+Again, suppose this code is hoisted and given the name mycode0. Then mycode0 has
+type: 8
+
+fl:^tenv . (ss1fl * o/0venv ) ! (int *ss2fl)
+where o/0venv = ss2fl * (int *(R(ss1fl) * R(ss2fl))).
+
+To build a closure from mycode0, we first apply it to the appropriate type environment:
+
+val myclosure 10 : (ff * oe0venv ) ! (int *fi) = mycode0[hff, fii]
+
+4 Except that any function types within o/1 and o/2 must be closure-converted themselves.
+5 By an abuse of terminology, this second mechanism is often called an `existential kind', even though
+
+the existential itself is a type.
+
+Intensional polymorphism in type-erasure semantics 591
+where oe0venv = fi * (int *(R(ff) * R(fi))) ,= o/0venv [hff, fii/fl]. Next we pair
+myclosure 10 with its value environment, obtaining:
+
+val myclosure 20 = hmyclosure 10, hx, hy, hwff, wfiiiii
+with type ((ff * oe0venv ) ! (int *fi)) * oe0venv .
+
+Finally, we hide the type of the value environment, obtaining:
+
+val myclosure0 = pack myclosure 20 as oe0myclosure hiding oe0venv
+with type:
+
+oe0myclosure = 9ffi. ((ff * ffi) ! (int *fi)) * ffi
+More generally, a closure for a function of type o/1 ! o/2 will have the type:
+
+9ffi. ((o/1 * ffi) ! o/2) * ffi
+Observe that, despite the support for intensional type analysis, like Morrisett et al.
+(1999) we are able to give the same type for closures as in the monomorphic case.
+
+Consider what remains of the key mechanisms of type-passing closure conversion,
+translucent types and abstract kinds: The type for myclosure 10 dictates that its
+environment contains representations for two types, and specifically (via the R-type
+mechanism) for the types ff and fi in particular. In other words, the R-type mechanism
+provides a sense of translucency; the code cannot be applied to (environments
+containing) representations of arbitrary types, just the particular indicated types.
+Thus, although we avoid the full-blown translucency mechanism of Minamide et
+al. (1996), some form of translucency nevertheless emerges as essential.
+
+On the other hand, the need for abstract kinds, like the particular form of translucency used by Minamide et al., appears to be a requirement of type-passing closure
+conversion only. In the quasi-type-passing system that we propose here, it is replaced
+by a standard existential over constructors, thereby simplifying the type theory.
+
+6 Related work
+Closely related to our work is the work of Minamide on lifting of type parameters
+for tag-free garbage collection (Minamide, 1997). Minamide was interested in lifting
+type parameters out of code so they could be preallocated at compile time. His
+lifting procedure required the maintenance of interrelated constraints between type
+parameters to retain type soundness, and he used a system similar to ours that makes
+explicit the passing of type parameters in order to simplify the expression of such
+constraints. The principal difference between Minamide's system and ours is that
+Minamide did not consider intensional type analysis. Minamide's system also makes
+a distinction between type representations (which he calls evidence, following Jones
+(1992)) and ordinary terms, while *R type representations are fully first-class. Finally,
+his system does not support separate compilation well while a transformation to *R
+can be applied uniformly across modules.
+
+The issue of type parameter lifting is an important one for compilers based on *R.
+The construction of type representations at run time would likely lead to significant
+
+592 K. Crary et al.
+cost and, in practice, should be lifted out to compile time whenever possible.
+(Unfortunately, in the presence of polymorphic recursion, which *R supports, it is
+not always possible.) Mechanisms for such lifting have been developed by Minamide
+(in the work discussed above) and by Saha & Shao (1998).
+
+Dubois et al. (1995) also pass explicit type representations to polymorphic functions when compiling ad-hoc polymorphism. However, their system differs from ours
+and Minamide's in that no mechanism is provided for connecting representations
+to the types they denote, and consequently, information gained by analyzing type
+representations does not propagate into the type system.
+
+Duggan (1998) proposes another typed framework for intensional type analysis
+that is similar in some ways to *MLi . Like *MLi , Duggan's system passes types implicitly
+and allows for the intensional analysis of types at the term level. Duggan's system
+does not support intensional type analysis at the constructor level, as *MLi and *R do,
+but it adds a facility for defining type classes (using union and recursive kinds) and
+allows type analysis to be restricted to members of such classes.
+
+Since the results of this paper were first announced (Crary et al., 1998), work has
+continued on the topic of intensional type analysis in type-erasure settings: Crary &
+Weirich (1999) proposed a somewhat involved but highly expressive type theory in
+which the mechanisms of this paper can be used as a simple programming idiom,
+instead of as primitive language mechanisms. This type theory has the advantage
+that the source-level type structure can be preserved for the purpose of intensional
+type analysis even through program transformations that change types. This makes
+the type theory compatible with low-level typed intermediate languages in a typepreserving compiler, resolving a proposed direction for future work from our original
+report. Furthermore, Crary and Weirich show that their type theory supports the
+intensional analysis of polymorphic types, which *MLi and *R do not.
+
+Also, the mechanisms of this paper were used by Saha et al. (2000) to develop a
+type-erasure-compatible version of the type system of Trifonov et al. (2000). Trifonov
+et al.'s type system extends *MLi with kind polymorphism, thereby allowing the
+analysis of polymorphic types represented with higher-order abstract syntax. Because
+the kind of the bound variable is held abstract, they may analyze polymorphic
+types with quantifiers ranging over higher kinds. In contrast, Crary and Weirich's
+mechanism limits quantifiers to the base kind and uses first-order analysis.
+
+7 Conclusions and future directions
+We have presented a type-theoretic framework that supports the passing and analysis
+of type information at run time, but avoids the shortcomings associated with
+previous such frameworks (e.g., duplication of constructs, lack of abstraction, and
+complication of closure conversion). This new framework makes it feasible to use
+intensional type analysis in settings where the shortcomings previously made it
+impractical.
+
+For example, Morrisett et al. (1999) developed typing mechanisms for low-level
+intermediate and target languages that allow type information to be used all the
+way to the end of compilation. It would be desirable, in a system based on those
+
+Intensional polymorphism in type-erasure semantics 593
+mechanisms, to be able to exploit that type information using intensional type analysis. Unfortunately, the shortcomings of type-passing semantics made it incompatible
+with some of those low-level typing mechanisms. This unfortunate incompatibility
+has made it infeasible to use the mechanisms of Morrisett et al. in type-analyzing
+compilers such as TIL/ML (Tarditi et al., 1996; Morrisett et al., 1996) and FLINT
+(Shao, 1997b), and has made it infeasible to use intensional type analysis in the
+end-to-end typed compiler TALC (Morrisett et al., 1999). The framework in this
+paper makes it possible to unify these two lines of work for the first time.
+
+Another important question is whether a parametricity theorem like that of
+Reynolds (1983) can be shown for *R. Polymorphism is clearly non-parametric in
+*MLi , but the lowering of type analysis to explicit term-level representatives makes it
+plausible that some sort of parametricity could be shown for *R. In other words, we
+discussed at an intuitive level in Section 1 how the explicit passing of types restores
+the ability to abstract types that was discarded by *MLi ; it would be interesting to
+explore how that intuition may be formalized.
+
+A Untyped variant of *R
+Although the formal static and operational semantics for *R are for a typed language,
+we would like to emphasize the point that types are unnecessary for computation
+and can safely be erased. Accordingly, we exhibit an untyped language, *Rffi, a
+translation of *R to this language through type erasure, and the following theorem,
+which states that execution in the untyped language mirrors execution in the typed
+language:
+
+Theorem A.1
+
+1. If e1 7!* e2 then e1ffi 7!* e2ffi.
+2. If ; ` e1 : o/ and e1ffi 7!* u then there exists e2 such that e1 7!* e2 and e2ffi = u.
+
+From this theorem and type safety for *R it follows that our untyped semantics is
+safe.
+
+Corollary A.2
+If ; ` e : o/ and effi 7!* u then u is not stuck.
+
+A.1 Syntax of untyped calculus
+(terms) u :: = i | x | *x.u | fix f.w | u1u2| h
+
+u1, u2i | ss1u | ss2u | Rint|
+R!(u1, u2) | R*(u1, u2)|
+typecase u of
+
+Rint ) uint
+R!(x, y) ) u!
+R*(x, y) ) u*
+
+(values) w :: = i | *x.u | fix f.w | hw1, w2i|
+
+Rint | R*(w1, w2) | R!(w1, w2)
+
+594 K. Crary et al.
+
+A.2 Type erasure
+
+xffi = x
+
+iffi = ih
+e1, e2iffi = he1ffi, e2ffii
+
+(ssie)ffi = ssieffi
+(*x:oe.e)ffi = *x.effi
+(\Lambda ff:^.v)ffi = vffi
+(fix f:oe.v)ffi = fix f.vffi
+
+(e1e2)ffi = e1ffie2ffi
+
+e[c]ffi = effi
+pack e as 9ff.oe hiding cffi = effi
+unpack hff, xi = e1 in e2ffi = (*x.e2ffi) e1ffi
+
+Rintffi = Rint
+R![c1, c2](e1, e2)ffi = R!(e1ffi, e2ffi)
+
+R*[c1, c2](e1, e2)ffi = R*(e1ffi, e2ffi)
+(typecase[ff.c] e of
+
+Rint ) eint
+R!(x, y) as (fi ! fl) ) e!
+R*(x, y) as (fi * fl) ) e*)ffi
+
+= typecase effi of
+
+Rint ) eintffi
+R!(x, y) ) e!ffi
+R*(x, y) ) e*ffi
+
+A.3 Operational semantics of *Rffi
+
+(*x.u)w 7! u[w/x]
+(fix f.w)w0 7! (w[fix f.w/f])w0
+ss1hw1, w2i 7! w1 ss2hw1, w2i 7! w2
+typecase Rint (uint, xy.u!, xy.u*) 7! uint
+
+typecase (R*(w1, w2)) (uint, xy.u!, xy.u*) 7! u*[w1, w2/x, y]
+typecase (R!(w1, w2)) (uint, xy.u!, xy.u*) 7! u![w1, w2/x, y]
+
+u1 7! u01
+u1u2 7! u01u2
+
+u 7! u0
+wu 7! wu0
+
+u1 7! u01h
+u1, u2i 7! hu01, u2i
+
+u 7! u0h
+w, ui 7! hw, u0i
+
+u 7! u0
+ss1u 7! ss1u0
+
+u 7! u0
+ss2u 7! ss2u0
+
+Intensional polymorphism in type-erasure semantics 595
+
+u1 7! u01
+R!(u1, u2) 7! R!(u01, u2)
+
+u 7! u0
+R!(w, u) 7! R!(w, u0)
+
+u1 7! u01
+R*(u1, u2) 7! R*(u01, u2)
+
+u 7! u
+R*(w, u) 7! R*(w, u0)
+
+u 7! u0
+typecase u (uint, xy.u!, xy.u*) 7!
+
+typecase u0 (uint, xy.u!, xy.u*)
+
+B Static semantics of *MLi and *R
+
+B.1 Constructor formation
+\Gamma  ` c : ^
+
+\Gamma  ` ^int : Type
+
+\Gamma  ` ff : ^ (\Gamma (ff) = ^)
+\Gamma  ` c1 : Type \Gamma  ` c2 : Type
+
+\Gamma  ` c1 ^!c2 : Type
+
+\Gamma  ` c1 : Type \Gamma  ` c2 : Type
+
+\Gamma  ` c1 ^*c2 : Type
+
+\Gamma , ff:^1 ` c : ^2
+\Gamma  ` *ff:^1.c : ^1 ! ^2 (ff 62 Dom(\Gamma ))
+
+\Gamma  ` c1 : ^1 ! ^2 \Gamma  ` c2 : ^1
+
+\Gamma  ` c1c2 : ^2
+
+\Gamma  ` c : Type \Gamma  ` cint : ^
+\Gamma  ` c! : Type ! Type ! ^ ! ^ ! ^
+
+\Gamma  ` c* : Type ! Type ! ^ ! ^ ! ^
+
+\Gamma  ` Typerec c (cint, c!, c*) : ^
+
+B.2 Constructor equivalence
+\Gamma  ` c1 = c2 : ^
+
+\Gamma , ff:^0 ` c1 : ^ \Gamma  ` c2 : ^0
+\Gamma  ` (*ff:^0.c1)c2 = c1[c2/ff] : ^ (ff 62 Dom(\Gamma ))
+
+\Gamma  ` c : ^1 ! ^2
+\Gamma  ` *ff:^1.c ff = c : ^1 ! ^2 (ff 62 Dom(\Gamma ))
+
+NNN
+
+\Gamma , ff:^ ` c = c0 : ^0
+\Gamma  ` *ff:^.c = *ff:^.c0 : ^ ! ^0
+
+596 K. Crary et al.
+
+\Gamma  ` c1 = c01 : ^0 ! ^ \Gamma  ` c2 = c02 : ^0
+
+\Gamma  ` c1c2 = c01c02 : ^
+
+\Gamma  ` c1 = c01 : Type \Gamma  ` c2 = c02 : Type
+
+\Gamma  ` c1 ! c2 = c01 ! c02 : Type
+
+\Gamma  ` c1 = c01 : Type \Gamma  ` c2 = c02 : Type
+
+\Gamma  ` c1 * c2 = c01 * c02 : Type
+
+\Gamma  ` c = c : ^
+
+\Gamma  ` c0 = c : ^
+\Gamma  ` c = c0 : ^
+
+\Gamma  ` c = c0 : ^ \Gamma  ` c0 = c00 : ^
+
+\Gamma  ` c = c00 : ^
+
+\Gamma  ` cint : ^
+\Gamma  ` c! : Type ! Type ! ^ ! ^ ! ^
+
+\Gamma  ` c* : Type ! Type ! ^ ! ^ ! ^
+
+\Gamma  ` Typerec( ^int) (cint, c!, c*) = cint : ^
+
+\Gamma  ` c1 : Type \Gamma  `i c2 : Type \Gamma  ` cint : ^
+
+\Gamma  ` c! : Type ! Type ! ^ ! ^ ! ^
+
+\Gamma  ` c* : Type ! Type ! ^ ! ^ ! ^8??!
+
+??:
+
+\Gamma  ` Typerec(c1 ^!c2) (cint, c!, c*) =
+
+c! c1 c2 (Typerec c1 (cint, c!, c*))(Typerec c2 (cint, c!, c*)) : ^
+\Gamma  ` Typerec(c1 ^*c2) (cint, c!, c*) =
+
+c* c1 c2 (Typerec c1 (cint, c!, c*))(Typerec c2 (cint, c!, c*)) : ^
+
+9??=??
+;
+\Gamma  ` c = c0 : Type
+
+\Gamma  ` cint = c0int : ^
+\Gamma  ` c! = c0! : Type ! Type ! ^ ! ^ ! ^
+
+\Gamma  ` c* = c0* : Type ! Type ! ^ ! ^ ! ^
+
+\Gamma  ` Typerec c (cint, c!, c*) = Typerec c0 (c0int, c0!, c0*) : ^
+
+B.3 Type formation
+\Gamma  ` oe
+
+\Gamma  ` c : Type
+
+\Gamma  ` T (c)
+
+\Gamma  ` int
+
+\Gamma  ` oe1 \Gamma  ` oe2
+
+\Gamma  ` oe1 * oe2
+
+\Gamma  ` oe1 \Gamma  ` oe2
+
+\Gamma  ` oe1 ! oe2
+
+\Gamma , ff:^ ` oe
+\Gamma  ` 8ff:^.oe (ff 62 Dom(\Gamma ))
+
+\Gamma , ff:^ ` oe
+\Gamma  ` 9ff:^.oe (ff 62 Dom(\Gamma ))
+
+B.3.1 Specific to *R
+
+\Gamma  `R c : Type
+
+\Gamma  `R R(c)
+
+Intensional polymorphism in type-erasure semantics 597
+
+B.4 Type equivalence
+\Gamma  ` oe1 = oe2
+
+\Gamma  ` c1 = c2 : ^
+\Gamma  ` T (c1) = T (c2)
+
+\Gamma  ` T ( ^int) = int \Gamma  ` T (c1 ^!c2) = T (c1) ! T (c2) \Gamma  ` T (c1 ^*c2) = T (c1) * T (c2)
+
+\Gamma  ` oe1 = oe01 \Gamma  ` oe2 = oe02
+
+\Gamma  ` oe1 ! oe2 = oe01 ! oe02
+
+\Gamma  ` oe1 = oe01 \Gamma  ` oe2 = oe02
+
+\Gamma  ` oe1 * oe2 = oe01 * oe02
+
+\Gamma , ff:^ ` oe = oe0
+\Gamma  ` 8ff:^.oe = 8ff:^.oe0
+
+\Gamma , ff:^ ` oe = oe0
+\Gamma  ` 9ff:^.oe = 9ff:^.oe0
+
+\Gamma  ` oe = oe
+
+\Gamma  ` oe0 = oe
+\Gamma  ` oe = oe0
+
+\Gamma  ` oe = oe0 \Gamma  ` oe0 = oe00
+
+\Gamma  ` oe = oe00
+
+B.5 Specific to *R
+
+\Gamma  `R c = c0 : Type
+
+\Gamma  `R R(c) = R(c0)
+
+B.6 Term formation
+\Gamma  ` e : oe
+
+\Gamma  ` i : int \Gamma  ` x : oe (\Gamma (x) = oe)
+
+\Gamma , x:oe2 ` e : oe1 \Gamma  ` oe2
+
+\Gamma  ` *x:oe2.e : oe2 ! oe1 (x 62 Dom(\Gamma ))
+
+\Gamma  ` e1 : oe2 ! oe1 \Gamma  ` e2 : oe2
+
+\Gamma  ` e1e2 : oe1
+
+\Gamma , f:oe ` e : oe \Gamma  ` oe
+
+\Gamma  ` fix f:oe. e : oe `
+
+oe = 8ff1:^1 * * * ffn:^n.oe1 ! oe2
+
+f 62 Dom(\Gamma ), n ? 0 '
+
+\Gamma  ` e1 : oe1 \Gamma  ` e2 : oe2
+
+\Gamma  ` he1, e2i : oe1 * oe2
+
+\Gamma  ` e : oe1 * oe2
+
+\Gamma  ` ss1e : oe1
+
+\Gamma  ` e : oe1 * oe2
+
+\Gamma  ` ss2e : oe2
+
+\Gamma  ` e : 8ff:^.oe \Gamma  ` c : ^
+
+\Gamma  ` e[c] : oe[c/ff]
+
+598 K. Crary et al.
+
+\Gamma , ff:^ ` e : oe
+\Gamma  ` \Lambda ff:^.e : 8ff:^.oe (x 62 Dom(\Gamma ))
+
+\Gamma , ff:^ ` oe : \Gamma  ` c : ^ \Gamma  ` e : oe[c/ff]
+
+\Gamma  ` pack e as 9ff:^.oe hiding c : 9ff:^.oe (ff 62 Dom(\Gamma ))
+
+\Gamma  ` e1 : 9ff:^.oe2 \Gamma , ff:^, x:oe2 ` e2 : oe1
+
+\Gamma  ` unpack hff, xi = e1 in e2 : oe1 (ff, x 62 Dom(\Gamma ))
+
+\Gamma  ` e : oe2 \Gamma  ` oe1 = oe2
+
+\Gamma  ` e : oe1
+
+B.6.1 Specific to *MLi
+\Gamma  `i c : Type \Gamma  `i eint : oe[ ^int/ff]
+\Gamma , fi: Type, fl: Type `i e! : oe[fi ^!fl/ff]
+
+\Gamma , fi: Type, fl: Type `i e* : oe[fi ^*fl/ff]
+
+\Gamma  `i typecase [ff.oe] c (eint, fifl.e!, fifl.e*) : oe[c/ff] (fi, fl 62 Dom(\Gamma ))
+
+B.6.2 Specific to *R
+\Gamma  `R Rint : R( ^int)
+
+\Gamma  `R e1 : R(c1) \Gamma  `R e2 : R(c2)
+
+\Gamma  `R R![c1, c2](e1, e2) : R(c1 ^!c2)
+
+\Gamma  `R e1 : R(c1) \Gamma  ` e2 : R(c2)
+\Gamma  `R R*[c1, c2](e1, e2) : R(c1 ^*c2)
+
+\Gamma , ffi: Type, \Gamma 0 `R e : R(ffi)
+\Gamma [ ^int/ffi] `R eint[ ^int/ffi] : oe[ ^int/ffi, ^int/ff]
+\Gamma , fi: Type, fl: Type, x:R(fi), y:R(fl), \Gamma 0[(fi ^!fl)/ffi] `R
+
+e![(fi ^!fl)/ffi] : oe[(fi ^!fl)/ffi, (fi ^!fl)/ff]
+\Gamma , fi: Type, fl: Type, x:R(fi), y:R(fl), \Gamma 0[(fi ^*fl)/ffi] `R
+
+e*[(fi ^*fl)/ffi] : oe[(fi ^*fl)/ffi, (fi ^*fl)/ff]
+
+(fi, fl, ffi 62 Dom(\Gamma , \Gamma 0))
+
+\Gamma , ffi: Type, \Gamma 0 `R typecase[ff.oe] e (eint, fiflxy.e!, fiflxy.e*) : oe[ffi/ff]
+
+\Gamma  `R e : R(c) \Gamma  `R eint : oe[ ^int/ff]
+\Gamma , fi: Type, fl: Type, x:R(fi), y:R(fl) `R e! : oe[fi ^!fl/ff]
+
+\Gamma , fi: Type, fl: Type, x:R(fi), y:R(fl) `R e* : oe[fi ^*fl/ff]
+
+(fi, fl 62 Dom(\Gamma ))
+
+\Gamma  `R typecase[ffi.oe] e (eint, fiflxy.e!, fiflxy.e*) : oe[c/ff]
+
+\Gamma  `R e : R( ^int) \Gamma  ` eint : oe[ ^int/ff]
+\Gamma  `R typecase[ffi.oe] e (eint, fiflxy.e!, fiflxy.e*) : oe[ ^int/ff]
+
+Intensional polymorphism in type-erasure semantics 599
+\Gamma  `R e : R(c1 ^!c2) \Gamma , x:R(c1), y:R(c2) `R e![c1/fi, c2/fl] : oe[(c1 ^!c2)/ff]
+
+\Gamma  `R typecase[ffi.oe] e (eint, fiflxy.e!, fiflxy.e*) : oe[(c1 ^!c2)/ff]
+
+\Gamma  `R e : R(c1 ^*c2) \Gamma , x:R(c1), y:R(c2) `R e*[c1/fi, c2/fl] : oe[(c1 ^*c2)/ff]
+
+\Gamma  `R typecase[ffi.oe] e (eint, fiflxy.e!, fiflxy.e*) : oe[(c1 ^*c2)/ff]
+
+References
+Abadi, M., Banerjee, A., Heintze, N. and Riecke, J. G. (1999) A core calculus of dependency. 26th ACM SIGACT-SIGPLAN Symposium on Principles of Programming Languages,
+pp. 147-160.
+
+Aditya, S. and Caro, A. (1993) Compiler-directed type reconstruction for polymorphic
+
+languages. Conference on Functional Programming Languages and Computer Architecture,
+pp. 74-82.
+
+Barendregt, H. P. (1992) Lambda calculi with types. In: Abramsky, S., Gabbay, D. M. and
+
+Maibaum, T. S. E. (editors), Handbook of Logic in Computer Science, vol. 2. Oxford Science.
+
+Birkedal, L., Tofte, M. and Vejlstrup, M. (1996) From region inference to von Neumann
+
+machines via region representation inference. 23rd ACM SIGACT-SIGPLAN Symposium
+on Principles of Programming Languages, pp. 171-183.
+
+Constable, R. L. (1982) Intensional analysis of functions and types. Technical report CSR-118-
+
+82, Department of Computer Science, University of Edinburgh.
+
+Constable, R. L. and Zlatin, D. R. (1984) The type theory of PL/CV3. ACM Trans. Programming Languages & Syst. 6(1), 94-117.
+
+Crary, K. and Weirich, S. (1999) Flexible type analysis. 1999 ACM SIGPLAN International
+
+Conference on Functional Programming, pp. 233-248.
+
+Crary, K., Weirich, S. and Morrisett, G. (1998) Intensional polymorphism in type-erasure
+
+semantics. 1998 ACM SIGPLAN International Conference on Functional Programming,
+pp. 301-312.
+
+Dubois, C., Rouaix, F. and Weis, P. (1995) Extensional polymorphism. 22nd ACM SIGACTSIGPLAN Symposium on Principles of Programming Languages, pp. 118-129.
+
+Duggan, D. (1998) A type-based semantics for user-defined marshalling in polymorphic
+
+languages. 2nd Workshop on Types in Compilation.
+
+Girard, J.-Y. (1971) Une extension de l'interpr'etation de G"odel `a l'analyse, et son application
+
+`a l''elimination de coupures dans l'analyse et la th'eorie des types. In: Fenstad, J. E. (editor),
+Proceedings 2nd Scandinavian Logic Symposium, pp. 63-92. North-Holland.
+
+Girard, J.-Y. (1972) Interpr'etation fonctionelle et 'elimination des coupures de l'arithm'etique
+
+d'ordre sup'erieur. PhD thesis, Universit'e Paris VII.
+
+Harper, R. and Lillibridge, M. (1993) Explicit polymorphism and CPS conversion. 20th ACM
+
+SIGACT-SIGPLAN Symposium on Principles of Programming Languages, pp. 206-219.
+
+Harper, R. and Lillibridge, M. (1994) A type-theoretic approach to higher-order modules
+
+with sharing. 21st ACM SIGACT-SIGPLAN Symposium on Principles of Programming Languages, pp. 123-137.
+
+Harper, R. and Morrisett, G. (1995) Compiling polymorphism using intensional type analysis. 22nd ACM SIGACT-SIGPLAN Symposium on Principles of Programming Languages,
+pp. 130-141.
+
+Harper, R., Mitchell, J. C. and Moggi, E. (1990) Higher-order modules and the phase distinction. 17th ACM SIGACT-SIGPLAN Symposium on Principles of Programming Languages,
+pp. 341-354.
+
+600 K. Crary et al.
+Jones, M. P. (1992) A theory of qualified types. 4th European Symposium on Programming:
+
+Lecture Notes in Computer Science 582. Springer-Verlag.
+
+Leroy, X. (1992) Unboxed objects and polymorphic typing. 19th ACM SIGACT-SIGPLAN
+
+Symposium on Principles of Programming Languages, pp. 177-188.
+
+Minamide, Y. (1997) Full lifting of type parameters. Submitted. (Earlier version published as
+
+`Compilation based on a calculus for explicit type-passing', 2nd Fuji International Workshop
+on Functional and Logic Programming, 1996.)
+
+Minamide, Y., Morrisett, G. and Harper, R. (1996) Typed closure conversion. 23rd ACM
+
+SIGACT-SIGPLAN Symposium on Principles of Programming Languages, pp. 271-283.
+
+Mitchell, J. C. and Plotkin, G. D. (1988) Abstract types have existential type. ACM Trans.
+
+Programming Lang. & Syst. 10(3), 470-502.
+
+Morrisett, G., Tarditi, D., Cheng, P., Stone, C., Harper, R. and Lee, P. (1996) (Feb.). The
+
+TIL/ML compiler: performance and safety through types. Workshop on Compiler Support
+for Systems Software.
+
+Morrisett, G. (1995) Compiling with types. PhD thesis, Carnegie Mellon University, School
+
+of Computer Science, Pittsburgh, Pennsylvania. (Published as Carnegie Mellon University
+School of Computer Science Technical Report CMU-CS-95-226.)
+
+Morrisett, G. and Harper, R. (1997) Semantics of memory management for polymorphic
+
+languages. In: Gordon, A. D. and Pitts, A. M. (editors), Higher Order Operational Techniques
+in Semantics. Cambridge University Press.
+
+Morrisett, G., Felleisen, M. and Harper, R. (1995) Abstract models of memory management.
+
+Conference on Functional Programming Languages and Computer Architecture.
+
+Morrisett, G., Walker, D., Crary, K. and Glew, N. (1999) From System F to typed assembly
+
+language. ACM Trans. Programming Lang. & Syst. 21(3), 527-568. (An earlier version
+appeared in the 1998 Symposium on Principles of Programming Languages.)
+
+Reynolds, J. C. (1983) Types, abstraction and parametric polymorphism. Information Processing '83: Proceedings of the IFIP 9th World Computer Congress., pp. 513-523. North-Holland.
+
+Ruf, E. (1997) Partitioning dataflow analyses using types. 24th ACM SIGACT-SIGPLAN
+
+Symposium on Principles of Programming Languages, pp. 15-26.
+
+Saha, B. and Shao, Z. (1998) Optimal type lifting. 2nd Workshop on Types in Compilation.
+Saha, B., Trifonov, V. and Shao, Z. (2000) Fully reflexive intensional type analysis in type
+
+erasure semantics. 3rd Workshop on Types in Compilation.
+
+Shao, Z. (1997a) Flexible representation analysis. 1997 ACM SIGPLAN International Conference on Functional Programming, pp. 85-98.
+
+Shao, Z. (1997b) An overview of the FLINT/ML compiler. 1997 Workshop on Types in
+
+Compilation. ACM SIGPLAN, Amsterdam. (Published as Boston College Computer Science
+Department Technical Report BCCS-97-03.)
+
+Tarditi, D., Morrisett, G., Cheng, P., Stone, C., Harper, R. and Lee, P. (1996) TIL: a typedirected optimizing compiler for ML. 1996 ACM SIGPLAN Conference on Programming
+Language Design and Implementation, pp. 181-192.
+
+Tolmach, A. (1994) Tag-free garbage collection using explicit type parameters. ACM Conference on Lisp and Functional Programming, pp. 1-11.
+
+Trifonov, V., Saha, B. and Shao, Z. (2000) Fully reflexive intensional type analysis. Fifth ACM
+
+SIGPLAN International Conference on Functional Programming, pp. 82-93.
+
+Wright, A. K. and Felleisen, M. (1994) A syntactic approach to type soundness. Information
+
+& Computation, 115, 38-94.

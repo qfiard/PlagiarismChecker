@@ -1,0 +1,1436 @@
+
+
+Implementation of the Typed Call-by-Value *-calculus using a Stack of
+
+Regions
+
+Mads Tofte, University of Copenhagen\Lambda 
+Jean-Pierre Talpin, European Computer-Industry Research Center y
+
+Abstract
+We present a translation scheme for the polymorphically typed call-by-value *-calculus. All runtime values, including function closures, are put into regions.
+The store consists of a stack of regions. Region inference and effect inference are used to infer where
+regions can be allocated and de-allocated. Recursive
+functions are handled using a limited form of polymorphic recursion. The translation is proved correct with
+respect to a store semantics, which models a regionbased run-time system. Experimental results suggest
+that regions tend to be small, that region allocation is
+frequent and that overall memory demands are usually
+modest, even without garbage collection.
+
+1 Introduction
+The stack allocation scheme for block-structured
+languages[9] often gives economical use of memory resources. Part of the reason for this is that the stack
+discipline is eager to reuse dead memory locations (i.e.
+locations, whose contents is of no consequence to the
+rest of the computation). Every point of allocation is
+matched by a point of de-allocation and these points
+can easily be identified in the source program.
+
+In heap-based storage management schemes[4,19,
+18], allocation is separate from de-allocation, the latter
+being handled by garbage collection. This separation
+is useful when the lifetime of values is not apparent
+
+\Lambda Postal address: Department of Computer Science (DIKU),
+University of Copenhagen, Universitetsparken 1, DK-2100
+Copenhagen O/, Denmark; email: tofte@diku.dk.
+
+yWork done while at Ecole des Mines de Paris. Current address: European Computer-Industry Research Center
+(ECRC GmbH), Arabella Strasse 17, D-81925 M"unchen; email:
+jp@ecrc.de
+
+Copyright 1994 ACM. Appeared in the Proceedings of
+
+the 21st Annual ACM SIGPLAN-SIGACT Symposium on
+Principles of Programming Languages, January 1994, pp.
+188-201. Permission to copy without fee all or part of
+this material is granted provided that the copies are not
+made or distributed for direct commercial advantage, the
+ACM copyright notice and the title of the publication and
+its date appear, and notice is given that copying is by
+permission of the Association for Computing Machinery.
+To copy otherwise, or to republish, requires a fee and/or
+specific permission.
+
+from the source program. Heap-based schemes are less
+eager to reuse memory. Generational garbage collection collects young objects when the allocation space
+is used up. Hayes[11] discusses how to reclaim large,
+old objects.
+
+Garbage collection can be very fast. Indeed, there
+is a much quoted argument that the amortized cost of
+copying garbage collection tends to zero, as memory
+tends to infinity[2, page 206]. Novice functional programmers often report that on their machines, memory is a constant, not a variable, and that this constant
+has to be uncomfortably large for their programs to
+run well. The practical ambition of our work is to
+reduce the required size of this constant significantly.
+We shall present measurements that indicate that our
+translation scheme holds some promise in this respect.
+
+In this paper, we propose a translation scheme for
+Milner's call-by-value *-calculus with recursive functions and polymorphic let[22,7]. The key features of
+our scheme are:
+
+1. It determines lexically scoped lifetimes for all runtime values, including function closures, base values and records;
+
+2. It is provably safe;
+3. It is able to distinguish the lifetimes of different
+
+invocations of the same recursive function;
+
+This last feature is essential for obtaining good memory usage (see Section 5).
+
+Our model of the runtime system involves a stack
+of regions, see Figure 1. We do not expect always to
+be able to determine the size of a region when we allocate it. Part of the reason for this is that we consider
+recursive datatypes, such as lists, a must; the size of
+a region which is supposed to hold the spine of a list,
+say, cannot in general be determined when the region
+is allocated. Therefore, not all regions can be allocated on a hardware stack, although regions of known
+size can.
+
+Our allocation scheme differs from the classical
+stack allocation scheme in that it admits functions as
+first-class values and is intended to work for recursive
+datatypes. (So far, the only recursive datatype we
+have dealt with is lists.)
+
+188
+
+r0 r1 r2 r3
+
+. . .
+
+Figure 1: The store is a stack of regions; a region is a
+box in the picture.
+
+Ruggieri and Murtagh[28] propose a stack of regions
+in conjunction with a traditional heap. Each region is
+associated with an activation record (this is not necessarily the case in our scheme). They use a combination
+of interprocedural and intraprocedural data-flow analysis to find suitable regions to put values in. We use a
+type-inference based analysis. They consider updates,
+which we do not. However, we deal with polymorphism and higher-order functions, which they do not.
+
+Inoue et al.[15] present an interesting technique for
+compile-time analysis of runtime garbage cells in lists.
+Their method inserts pairs of HOLD and RECLAIMj
+instructions in the target language. HOLD holds on
+to a pointer, p say, to the root cell of its argument
+and RECLAIMj collects those cells that are reachable
+from p and fit the path description j. HOLD and RECLAIM pairs are nested, so the HOLD pointers can be
+held in a stack, not entirely unlike our stack of regions.
+In our scheme, however, the unit of collection is one
+entire region, i.e., there is no traversal of values in connection with region collection. The path descriptions
+of Inoue et al. make it possible to distinguish between
+the individual members of a list. This is not possible
+in our scheme, as we treat all the elements of the same
+list as equal. Inoue et al. report a 100% reclamation
+rate for garbage list cells produced by Quicksort[15,
+page 575]. We obtain a 100% reclamation rate (but
+for 1 word) for all garbage produced by Quicksort,
+without garbage collection (see Section 5).
+
+Hudak[13] describes a reference counting scheme for
+a first-order call-by-value functional language. Reference counting may give more precise use information,
+than our scheme, as we only distinguish between "no
+use" and "perhaps some use."
+
+Georgeff[10] describes an implementation scheme
+for typed lambda expressions in so-called simple form
+together with a transformation of expressions into simple form. The transformation can result in an increase
+
+in the number of evaluation steps by an arbitrarily
+large factor[10, page 618]. Georgeff also presents an
+implementation scheme which does not involve translation, although this relies on not using call-by-value
+reduction, when actual parameters are functions.
+
+We translate every well-typed source language expression, e, into a target language expression, e0, which
+is identical with e, except for certain region annotations. The evaluation of e0 corresponds, step for step,
+to the evaluation of e. Two forms of annotations are
+
+e1 at ae
+letregion ae in e2 end
+
+The first form is used whenever e1 is an expression
+which directly produces a value. (Constant expressions, *-abstractions and tuple expressions fall into
+this category.) The ae is a region variable; it indicates
+that the value of e1 is to be put in the region bound
+to ae.
+
+The second form introduces a region variable ae with
+local scope e2. At runtime, first an unused region, r,
+is allocated and bound to ae. Then e2 is evaluated
+(probably using r). Finally, r is de-allocated. The
+letregion expression is the only way of introducing
+and eliminating regions. Hence regions are allocated
+and de-allocated in a stack-like manner.
+
+The device we use for grouping values according
+to regions is unification of region variables, using essentially the idea of Baker[3], namely that two valueproducing expressions e1 and e2 should be given the
+same "at ae" annotation, if and only if type checking, directly or indirectly, unifies the type of e1 and
+e2. Baker does not prove safety, however, nor does he
+deal with polymorphism.
+
+To obtain good separation of lifetimes, we introduce
+explicit region polymorphism, by which we mean that
+regions can be given as arguments to functions at runtime. For example, the successor function succ =
+*x:x + 1 is compiled into
+
+\Lambda [ae,ae0]:*x:letregion ae00
+
+in (x + (1 at ae00)) at ae0
+end
+
+which has the type scheme
+
+8ae; ae0:(int; ae) fget(ae);put(ae
+
+0)g\Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma !(int; ae0)
+
+meaning that, for any ae and ae0, the function accepts an
+integer at ae and produces an integer at ae0 (performing
+a get operation on region ae and a put operation on
+region ae0 in the process). Now succ will put its result
+in different regions, depending on the context:
+
+\Delta \Delta \Delta  succ[ae12; ae9](5 at ae12) \Delta \Delta \Delta  succ[ae1; ae4](x)
+
+189
+
+Moreover, we make the special provision that a recursive function, f , can call itself with region arguments
+which are different from its formal region parameters
+and which may well be local to the body of the recursive function. Such local regions resemble the activation records of the classical stack discipline.
+
+We use effect inference[20,21,14] to find out where to
+wrap letregion ae in . . . end around an expression.
+Most work on effect inference uses the word "effect" as
+a short-hand for "side-effect". We have no side-effects
+in our source language -- our effects are side-effects
+relative to an underlying region-based store model.
+
+The idea that effect inference makes it possible to
+delimit regions of memory and delimit their lifetimes
+goes back to early work on effect systems[6]. Lucassen
+and Gifford[21] call it effect masking; they prove that
+effect masking is sound with respect to a store semantics where regions are not reused. Talpin[29] and
+Talpin and Jouvelot[30] present a polymorphic effect
+system with effect masking and prove that it is sound,
+with respect to a store semantics where regions are
+not reused.
+
+We have found the notion of memory reuse surprisingly subtle, due to, among other things, pointers into
+de-allocated regions. Since memory reuse is at the
+heart of our translation scheme, we prove that our
+translation rules are sound with respect to a regionbased operational semantics, where regions explicitly
+are allocated and de-allocated. This is the main technical contribution of this paper.
+
+The rest of this paper is organised as follows. The
+source and target languages are presented in Section 2.
+The translation scheme is presented in Section 3. The
+correctness proof is in Section 4. In Section 5 we discuss strengths and weaknesses of the translation and
+give experimental results.
+
+Due to space limitations, most proofs have been
+omitted. Detailed proofs (and an inference algorithm)
+are available in a technical report[31].
+
+2 Source and target languages
+2.1 Source language
+We assume a denumerably infinite set Var of variables.
+Each variable is either an ordinary variable, x, or a
+letrec variable, f. The grammar for the source language is1
+
+e ::= x j f j *x:e j e1e2 j let x = e1 in e2 end
+
+j letrec f (x) = e1 in e2 end
+
+A finite map is a map with finite domain. The
+domain and range of a finite map f are denoted
+
+1For brevity, we omit pairs and projections from this paper.
+They are treated in [31].
+
+Dom(f ) and Rng(f ), respectively. When f and g
+are finite maps, f + g is the finite map whose domain is Dom(f ) [ Dom(g) and whose value is g(x), if
+x 2 Dom(g), and f (x) otherwise. f # A means the
+restriction of f to A.
+
+A (non-recursive) closure is a triple hx; e; Ei, where
+E is an environment, i.e. a finite map from variables to
+values. A (recursive) closure takes the form hx; e; E; f i
+where f is the name of the function in question. A
+value is either an integer or a closure. Evaluation rules
+appear below.
+
+Source Expressions E ` e ! v
+
+E(x) = v
+E ` x ! v
+
+E(f ) = v
+E ` f ! v (1)
+
+E ` *x:e ! hx; e; Ei (2)
+E ` e1 ! hx0; e0; E0i E ` e2 ! v2
+
+E0 + fx0 7! v2g ` e0 ! v
+
+E ` e1 e2 ! v (3)
+
+E ` e1 ! hx0; e0; E0; f i E ` e2 ! v2
+E0 + ff 7! hx0; e0; E0; f ig + fx0 7! v2g ` e0 ! v
+
+E ` e1 e2 ! v (4)
+
+E ` e1 ! v1 E + fx 7! v1g ` e2 ! v
+
+E ` let x = e1 in e2 end ! v (5)
+
+E + ff 7! hx; e1; E; f ig ` e2 ! v
+E ` letrec f (x) = e1 in e2 end ! v (6)
+
+2.2 Target language
+Let ae range over a denumerably infinite set RegVar of
+region variables. Let r range over a denumerably infinite set RegName = fr1; r2; . . .g of region names.
+Region names serve to identify regions uniquely at
+runtime, i.e. a store, s, is a finite map from region
+names to regions. Let p range over the set of places, a
+place being either a region variable or a region name.
+The grammar for the target language is:
+
+p ::= ae j r
+
+e ::= x j *x:e at p j e1e2
+
+j let x = e1 in e2 end
+j letrec f [~ae ](x) at p = e1 in e2 end
+j f [~p ] at p
+j letregion ae in e end
+
+190
+
+where ~ae ranges over finite sequences ae1,\Delta \Delta \Delta ,aek of region
+variables and ~p ranges over finite sequences p1,\Delta \Delta \Delta ,pk
+of places (k * 0). We write j~p j for the length of a sequence ~p. For any finite set fae1; . . . ; aekg of region variables (k * 0), we write letregion ~ae in e end for
+
+letregion ae1
+in \Delta \Delta \Delta  letregion aek in e end \Delta \Delta \Delta 
+end
+
+A region is a finite map from offsets, o, to storable
+values. A storable value, sv, is either an integer or a
+closure. A (plain) closure is a triple hx; e; VEi, where
+e is a target expression and VE is a variable environment, i.e. a finite map from variables to addresses. A
+region closure takes the form h~ae; x; e; VEi where ~ae is a
+(possible empty) sequence ae1,\Delta \Delta \Delta ,aek of distinct region
+variables, called the formal region parameters of the
+closure. Region closures represent region-polymorphic
+functions. For any sequence ~p = p1,\Delta \Delta \Delta ,pk, the simultaneous substitution of pi for free occurrences of aei in
+e (i = 1 . . . k), is written e[ ~p=~ae ].
+
+For simplicity, we assume that all values are boxed.
+Hence a value v is an address a = (r; o), where r is a
+region name and o is an offset.
+
+A region-based operational semantics appears below. We are brief about indirect addressing. Thus,
+whenever a is an address (r; o), we write s(a) to mean
+s(r)(o) and we write a 2 Dom(s) as a shorthand for
+r 2 Dom(s) and o 2 Dom(s(r)). Similarly, when s is a
+store and sv is a storable value, we write s + f(r; o) 7!
+sv g as a shorthand for s + fr 7! (s(r) + fo 7! sv g)g.
+We express the popping of an entire region r from a
+store s by writing "s nnfrg", which formally means the
+restriction of s to Dom(s) n frg.
+
+Target Expressions s; VE ` e ! v; s0
+
+VE(x) = v
+s; VE ` x ! v; s (7)
+
+VE(f ) = a; s(a) = h~ae; x; e; VE0i j~ae j = j~p j
+
+o =2 Dom(s(r)) sv = hx; e[ ~p=~ae ]; VE0i
+
+s; VE ` f [~p ] at r ! (r; o); s + f(r; o) 7! svg (8)
+
+o =2 Dom(s(r)) a = (r; o)
+s; VE ` *x:e at r ! a; s + fa 7! hx; e; VEig (9)
+
+s; VE ` e1 ! a1; s1 s1(a1) = hx0; e0; VE0i
+
+s1; VE ` e2 ! v2; s2
+s2; VE0 + fx0 7! v2g ` e0 ! v; s0
+
+s; VE ` e1 e2 ! v; s0 (10)
+
+s; VE ` e1 ! v1; s1 s1; VE + fx 7! v1g ` e2 ! v; s0
+
+s; VE ` let x = e1 in e2 end ! v; s0
+
+(11)
+
+o =2 Dom(s(r)) VE0 = VE + ff 7! (r; o)g
+s + f(r; o) 7! h~ae ; x; e1; VE0ig; VE0 ` e2 ! v; s0
+
+s; VE ` letrec f[~ae ](x) at r = e1 in e2 end ! v; s0
+
+(12)
+
+r =2 Dom(s) s + fr 7! fgg; VE ` e[r=ae] ! v; s1
+
+s; VE ` letregion ae in e end ! v; s1 nn frg
+
+(13)
+
+For arbitrary finite maps f1 and f2, we say that f2
+extends f1, written f1 ` f2, if Dom(f1) ` Dom(f2)
+and for all x 2 Dom(f1), f1(x) = f2(x). We then say
+that s2 succeeds s1, written s2 w s1 (or s1 v s2), if
+Dom(s1) ` Dom(s2) and s1(r) ` s2(r), for all r 2
+Dom(s1).
+
+Lemma 2.1 If s; VE ` e ! v; s0 then Dom(s) =
+Dom(s0) and s v s0.
+
+The proof is a straightforward induction on the depth
+of inference of s; VE ` e ! v; s0.
+
+Example The source expression
+
+let x = (2,3) in * y :(fst x, y)end 5
+translates into
+
+e0 j letregion ae4; ae5
+
+in letregion ae6
+
+in let x = (2 at ae2, 3 at ae6) at ae4
+
+in (* y :(fst x, y) at ae1) at ae5
+end
+end
+5 at ae3
+end
+
+Notice that ae1, ae2 and ae3 occur free in this expression.
+That is because they will hold the final result (a fact
+which the translation infers). To start the evaluation
+of e0, we first allocate three regions, say r1, r2 and
+r3. Then we substitute ri for aei in e0 (i = 1::3).
+Figure 2 shows three snapshots from the evaluation
+that follows, namely (a) just after the closure has been
+allocated; (b) just before the closure is applied and (c)
+at the end. The maximal depth of the region stack is
+6 regions and the final depth is 3 regions. Notice the
+dangling, but harmless, pointer at (b).
+
+191
+
+r1 r2 r3 r4
+
+(a)
+
+r5 r6
+
+6 6
+
+?
+2 ( ffl ; ffl ) hy; (fst x, y)at r1; fx 7! fflgi 3
+
+r1 r2 r3 r4
+
+(b)
+
+r5
+
+6 6
+
+?
+2 5 ( ffl ; ffl ) hy; (fst x, y)at r1; fx 7! fflgi
+
+r1 r2 r3
+
+(c)
+
+6
+
+?
+( ffl ; ffl ) 2 5
+
+Figure 2: Three snapshots of an evaluation
+3 The Translation
+Let ff and ffl range over denumerably infinite sets of
+type variables and effect variables, respectively. We
+assume that the sets of type variables, effect variables,
+region variables and region names are all pairwise disjoint. An effect, ', is a finite set of atomic effects. An
+atomic effect is either a token of the form get(ae) or
+put(ae), or it is an effect variable. Types, o/ , decorated
+types, _, simple type schemes, oe, and compound type
+schemes, ss, take the form:
+
+o/ ::= int j _ ffl:'\Gamma \Gamma \Gamma ! _ j ff
+_ ::= (o/; p)
+oe ::= o/ j 8ff:oe j 8ffl:oe
+ss ::= o/ j 8ff:ss j 8ffl:ss j 8ae:ss
+
+The reason for the apparent redundancy between
+the productions for simple and compound type
+schemes is this. In the target language there is
+a distinction between plain functions and regionpolymorphic functions. The former are represented
+by plain closures, the latter by region closures that
+must be applied to zero or more places in order to
+yield a plain closure. Thus plain functions and regionpolymorphic functions have different effects (even in
+the case of region-polymorphic functions that are applied to zero places). We choose to represent this distinction in the type system by a complete separation
+of simple and compound type schemes. Only regionpolymorphic functions have compound type schemes.
+(The underlining in the production ss ::= o/ makes it
+possible always to tell which kind a type scheme is.)
+When a type o/ is regarded as a type scheme, it is
+always regarded as a simple type scheme.
+
+An object of the form ffl:' (formally a pair (ffl; ')) is
+called an arrow effect. Here ' is the effect of calling
+the function. The "ffl:" is useful for type-checking purposes, as explained in more detail in Appendix A. A
+type environment, TE, is a finite map from ordinary
+variables to pairs of the form (oe; p) and from letrec
+variables to pairs of the form (ss; p).
+
+A substitution S is a triple (Sr; St; Se), where Sr is a
+finite map from region variables to places, St is a finite
+map from type variables to types and Se is a finite
+map from effect variables to arrow effects. Its effect is
+to carry out the three substitutions simultaneously on
+the three kinds of variables.
+
+192
+
+For any compound type scheme
+
+ss = 8ae1\Delta \Delta \Delta aek8ff1\Delta \Delta \Delta ffn8ffl1\Delta \Delta \Delta fflm:o/
+and type o/ 0, we say that o/ 0 is an instance of ss (via
+S), written ss * o/ 0, if there exists a substitution
+S = (fae1 7! p1; . . . ; aek 7! pkg; fff1 7! o/1; . . . ; ffn 7!
+o/ng; fffl1 7! ffl01:'1; . . . ; fflm 7! ffl0m:'mg) such that S(o/ ) =
+o/ 0. Similarly for simple type schemes.
+
+We infer sentences TE ` e ) e0 : _; ', read: in TE,
+e translates to e0, which has type and place _ and effect '. In the example in Section 2.2, _ is ((int; ae2) \Lambda 
+(int; ae3); ae1), ' is fput(ae1); put(ae2); put(ae3)g and
+TE is empty.
+
+Translation TE ` e ) e0 : _; '
+
+TE(x) = (oe; p) oe * o/
+
+TE ` x ) x : (o/; p); ; (14)
+
+TE + fx 7! _1g ` e ) e0 : _2; ' ' ` '0
+TE ` *x:e ) *x:e0 at p : (_1 ffl:'
+
+0\Gamma \Gamma \Gamma ! _
+
+2; p); fput(p)g
+
+(15)
+
+TE ` e1 ) e01 : (_0 ffl:'
+
+0\Gamma \Gamma \Gamma ! _; p); '1
+
+TE ` e2 ) e02 : _0; '2
+' = '0 [ '1 [ '2 [ ffflg [ fget(p)g
+
+TE ` e1 e2 ) e01 e02 : _; ' (16)
+
+TE ` e1 ) e01 : (o/1; p1); '1
+oe1 = 8~ff 8~ffl :o/1 fv(~ff;~ffl) " fv(TE; '1) = ;
+
+TE + fx 7! (oe1; p1)g ` e2 ) e02 : _; '2
+
+TE ` let x = e1 in e2 end )
+
+let x = e01 in e02 end : _; '1 [ '2
+
+(17)
+
+ss = 8~ae 8~ffl:o/ fv(~ae;~ffl) " fv(TE; '1) = ;
+TE + ff 7! (ss; p)g ` * x:e1 ) * x:e01 at p : (o/; p); '1
+
+ss0 = 8~ff:ss fv(~ff) " fv(TE; '1) = ;
+TE + ff 7! (ss0; p)g ` e2 ) e02 : _; '2
+
+TE ` letrec f (x) = e1 in e2 end )
+
+letrec f [~ae ](x)atp = e01 in e02 end : _; '1 [ '2
+
+(18)
+
+TE(f ) = (ss; p0) ss = 8ae1\Delta \Delta \Delta aek:8~ff:8~ffl:o/ 0
+
+ss * o/ via S ' = fget(p0); put(p)g
+
+TE ` f ) f [S(ae1),. . .,S(aek)] at p : (o/; p); ' (19)
+
+TE ` e ) e0 : _; ' '0 = Observe(TE; _)(')
+
+fae1; . . . ; aekg = frv(' n '0)
+
+TE ` e ) letregion ae1\Delta \Delta \Delta aek in e0 end : _; '0
+
+(20)
+
+For any semantic object A, frv(A) denotes the set
+of region variables that occur free in A, frn(A) denotes
+the set of region names that occur free in A, ftv(A)
+denotes the set of type variables that occur free in A,
+fev(A) denotes the set of effect variables that occur
+free in A and fv(A) denotes the union of all of the
+above.
+
+Rule 14 is essentially the usual instantiation rule for
+polymorphic variables in Milner's type discipline[22,
+7]. In rule 18, notice that f can be used regionpolymorphically, but not type-polymorphically, inside
+e01.
+
+As for rule 20, assume TE ` e ) e0 : _; ' and that
+ae is a region variable which occurs free in ', but does
+not occur free in TE or in _. Then ae is purely local to the evaluation of e0, in the sense that the rest
+of the computation will not access any value stored
+in ae. Since ae is no longer needed, we can introduce
+a "letregion ae in \Delta \Delta \Delta  end" around e0 and discharge
+any effect containing ae from '. Thus, following Talpin
+and Jouvelot [30], for every effect ' and semantic object A, we define the observable part of ' with respect
+to A, written Observe(A)('), to be the following subset of ':
+
+Observe(A)(') = fput(p) 2 ' j p 2 fv(A)g
+
+[ fget(p) 2 ' j p 2 fv(A)g
+[ fffl 2 ' j ffl 2 fev(A)g
+
+Every expression which is typable in Milner's type
+system[7] can be translated using our rules, by refraining from using region polymorphism, abstaining from
+rule 20, choosing a fixed region ae0 everywhere and
+choosing the arrow effect ffl0:fget(ae0); put(ae0); ffl0g everywhere. (A good region inference algorithm naturally does the exact opposite and makes all regions as
+distinct and local as possible.)
+
+Lemma 3.1 If TE ` e ) e0 : _; ' then S(TE) ` e )
+S(e0) : S(_); S('), for all substitutions S.
+
+An example of a translation where region polymorphism comes into play is found in Appendix B.
+
+4 Correctness
+In an attempt to prove that the translation rules are
+sound, one might try to define a "consistency relation"
+between values in the source language semantics and
+values in the target language semantics and prove a
+theorem to the effect that consistency is preserved: if
+E and VE are consistent in store s and e translates to
+e0 and E ` e ! v then there exists a store s0 and a
+value v0 such that s; VE ` e0 ! v0; s0 [25,8]. However,
+
+193
+
+Definition The relation Consistent is the largest relation satisfying:
+ffl Consistent(R; _; v; s; v0) w.r.t. ' () (writing _ as (o/; p) and v0 as (r0; o0))
+
+if get(p) 2 '
+then v0 2 Dom(s) and r0 = R(p) and
+
+1) If v is an integer i then o/ = int and s(v0) = i;
+2) If v is a closure hx; e; Ei then s(v0) is a closure hx; e0; VEi, for some e0 and VE,
+
+and there exist TE, R0 and e00 such that
+
+TE ` *x:e ) *x:e00 at p : _; fput(p)g
+and Consistent(R; TE; E; s; VE) w.r.t. '
+and R0 and R agree on '
+and R0(e00) = e0;
+3) If v is a closure hx; e; E; f i then s(v0) = hx; e0; VEi, for some e0 and VE, and
+
+there exist TE, oe, p0, R0 and e00 such that
+TE + ff 7! (oe; p0)g ` *x:e ) *x:e00 at p : _; fput(p)g
+
+and Consistent(R; TE + ff 7! (oe; p0)g; E + ff 7! vg; s; VE) w.r.t. '
+and R0 and R agree on '
+and R0(e00) = e0;
+
+ffl Consistent(R; (oe; p); v; s; v0) w.r.t. ' () (writing v0 as (r0; o0))
+
+if get(p) 2 '
+then v0 2 Dom(s) and r0 = R(p)
+
+and for all o/ , if oe * o/ then Consistent(R; (o/; p); v; s; v0) w.r.t. ';
+
+ffl Consistent(R; (ss; p); v; s; v0) w.r.t. ' () (writing v0 as (r0; o0))
+
+if get(p) 2 '
+then v is a recursive closure hx; e; E; f i
+
+and s(v0) = h~ae0; x; e0; VEi, for some ~ae0, e0 and VE,
+and there exist TE, R0 and e00 such that
+
+Consistent(R; TE + ff 7! (ss; p)g; E + ff 7! vg; s; VE) w.r.t. '
+and ss can be written in the form 8~ae:8~ff8~ffl:o/
+
+where none of the bound variables occur free in (TE; p),
+and TE + ff 7! (ss; p)g ` *x:e ) *x:e00 at p : (o/; p); fput(p)g
+and R0 and R agree on ' and R0h~ae; x; e00; VEi = h~ae0; x; e0; VEi
+
+ffl Consistent(R; TE; E; s; VE) w.r.t. ' ()
+
+Dom TE = Dom E = Dom VE and for all x 2 Dom TE, Consistent(R; TE(x); E(x); s; VE(x)) w.r.t. '
+
+Figure 3: The definition of Consistent
+
+no matter how we tried to define the notion of consistency, we were unable to prove such a preservation
+theorem.
+
+The key observation is that consistency, in an absolute sense, is not preserved - rather it decreases monotonically. In the example in Section 2, the consistency
+that existed between the pair (2,3) and its representation in the store at point (a) is obviously only partially
+preserved at point (b). The saving fact is that there
+is always enough consistency left!
+
+We therefore define consistency with respect to an
+effect, which, intuitively speaking, stands for the effect of executing the rest of the program. A region
+environment, R is a finite map from region variables
+to places. R connects ' to s, if frv(R(')) = ; and
+frn(R(')) ` Dom(s). Two region environments R1
+
+and R2 agree on effect ', if R1(ae) = R2(ae), for all
+ae 2 frv(').
+
+Region environments can be applied to target expressions and even to region closures h~ae; x; e; VEi provided one renames bound region variables, when necessary, to avoid capture.
+
+The consistency relation is defined in Figure 3. It
+is the maximal fixed point of a monotonic operator
+on sets; properties about consistency can therefore be
+proved using co-induction [23]. For example, one can
+prove[31] that consistency is preserved under increasing stores, with respect to decreasing effects:
+
+Lemma 4.1 If Consistent(R; _; v; s1; v0) w.r.t. '1 and
+'2 ` '1 and s1 v s2 then Consistent(R; _; v; s2; v0)
+w.r.t.'2.
+
+194
+
+This lemma is a special case of a the following lemma,
+which we shall see an application of later:
+
+Lemma 4.2 If Consistent(R1; _; v; s1; v0) w.r.t. '1
+and '2 ` '1 and R2 and R1 agree on '2 and s1 #
+frn(R2'2) v s2 then Consistent(R2; _; v; s2; v0) w.r.t.
+'2.
+
+The next lemma states that, in certain circumstances,
+consistency can even be preserved with respect to increasing effects!
+
+Lemma 4.3 If Consistent(R; TE; E; s; VE) w.r.t. '
+and ae =2 frv(TE; '), r =2 Dom(s) and '0 `
+fput(ae); get(ae)g [ fffl1; . . . ; fflkg, where ffl1; . . . ; fflk are
+effect variables (k * 0) then Consistent(R + fae 7!
+rg; TE; E; s + fr 7! fgg; VE) w.r.t. '0 [ '.
+
+The proof of Lemma 4.3 has to deal with the possibility that there are old pointers into r[31]. This lemma
+will be used in the proof of the soundness of rule 20.
+
+Here is the main theorem:
+
+Theorem 4.1 If TE ` e ) e0 : _; ' and
+Consistent(R; TE; E; s; VE)w.r.t.'['0 and E ` e ! v
+and R connects '['0 to s and R0 and R agree on '['0
+then there exist s0 and v0 such that s; VE ` R0(e0) !
+v0; s0 and Consistent(R; _; v; s0; v0) w.r.t. '0.
+
+Proof The proof is by depth of the derivation of E `
+e ! v with an inner induction on the number of rule 20
+steps that terminate the proof of TE ` e ) e0 : _; '.
+The inner inductive argument is independent of e. We
+show the (inner) inductive step concerning letregion
+and the (outer) case concerning function application,
+as examples. In both cases, we assume
+
+TE ` e ) e0 : _; ' (21)
+
+Consistent(R; TE; E; s; VE) w.r.t. ' [ '0 (22)
+
+E ` e ! v (23)
+R connects ' [ '0 to s (24)
+R0 and R agree on ' [ '0 (25)
+
+Inner proof case: the letregion rule was applied
+Assume (21) takes the form TE ` e )
+letregion ae1\Delta \Delta \Delta aek in e01 : _; ' which must have been
+inferred by rule 20 on the premises
+
+TE ` e ) e01 : _; '+ (26)
+' = Observe(TE; _)('+) (27)
+fae1; . . . ; aekg = frv('+ n ') (28)
+Without loss of generality we can choose ae1; . . . ; aek
+such that fae1; . . . ; aekg " frv('0) = ; as well as (27)-
+(28). Thus fae1; . . . ; aekg " frv(TE; ' [ '0) = ;. Let
+r1; . . . ; rk be distinct addresses none of which are in
+Dom(s). Then by repeated application of Lemma 4.3
+starting from (22) we get
+
+Consistent(R+; TE; E; s+; VE) w.r.t. '+ [ '0 (29)
+where R+ = R + fae1 7! r1; . . . ; aek 7! rkg and s+ =
+s + fr1 7! fg; . . . ; rk 7! fgg. Also by (24)
+
+R+ connects '+ [ '0 to s+ (30)
+and by (25)
+
+R0+ and R+ agree on '+ [ '0 (31)
+where R0+ = R0 + fae1 7! r1; . . . ; aek 7! rkg. By induction on (26), (29), (23), (30) and (31) there exist s01
+and v0 such that
+
+s+; VE ` R0+(e01) ! v0; s01 (32)
+Consistent(R+; _; v; s01; v0) w.r.t. '0 (33)
+Write R0(letregion ae1\Delta \Delta \Delta aek in e01 end) in the form
+letregion ae01\Delta \Delta \Delta ae0k in e001 end. Then
+
+e001[r1=ae01; . . . ; rk=ae0k] = R0+e01
+Thus, repeated application of rule 13 starting from
+(32) gives
+
+s; VE ` R0(letregion ae1\Delta \Delta \Delta aek in e01 end) ! v0; s0
+where s0 = s01 nn fr1; . . . ; rkg. Note that R+ and R
+agree on '0 (as fae1; . . . ; aekg " frv('0) = ;). Also, s01 #
+frn(R'0) v s0 by (24). Then by Lemma 4.2 on (33)
+we get Consistent(R; _; v; s0; v0) w.r.t. '0, as required.
+
+195
+
+Application of non-recursive closure, rule 3 Here
+e j e1e2, for some e1 and e2. For the base case of
+the inner inductive proof we have that e0 j e01e02, for
+some e01 and e02 and that (21) was inferred by rule 16
+on premises
+
+TE ` e1 ) e01 : (_0 ffl:'
+
+0\Gamma \Gamma \Gamma ! _; p); '1 (34)
+
+TE ` e2 ) e02 : _0; '2 (35)
+' = '1 [ '2 [ fffl; get(p)g [ '0 (36)
+Moreover, (23) was inferred by rule 3 on premises
+
+E ` e1 ! v1; v1 = hx0; e0; E0i (37)
+
+E ` e2 ! v2 (38)
+E0 + fx0 7! v2g ` e0 ! v (39)
+Let '01 = '2 [ fffl; get(p)g [ '0 [ '0, i.e. the effect
+that remains after the computation of e01. Note that
+' [ '0 = '1 [ '01 so from (22), (24) and (25) we get
+
+Consistent(R; TE; E; s; VE) w.r.t. '1 [ '01 (40)
+
+R connects '1 [ '01 to s (41)
+R0 and R agree on '1 [ '01 (42)
+By induction on (34), (40), (37), (41) and (42) there
+exist s1 and v01 such that
+
+s; VE ` R0(e01) ! v01; s1 (43)
+Consistent(R; (_0 ffl:'
+
+0\Gamma \Gamma \Gamma ! _; p); v1; s1; v01)w.r.t.'01 (44)
+
+Notice that get(p) 2 '01. Thus, by the definition of
+Consistent, (44) tells us that v01 2 Dom(s1) and r of
+v01 = R(p) and there exist e00, VE00, TE0, e000 and R0
+such that
+
+s1(v01) = hx0; e00; VE00i (45)
+
+TE0 ` *x0:e0 ) *x0:e000 at p : (_0 ffl:'
+
+0\Gamma \Gamma \Gamma ! _; p); fput(p)g
+
+(46)
+Consistent(R; TE0; E0; s1; VE0) w.r.t. '01 (47)
+
+R0 and R agree on '01 (48)
+
+R0(e000 ) = e00 (49)
+Let '02 = fffl; get(p)g [ '0 [ '0, i.e. the effect that
+remains after the computation of e02. Note that '2 [
+'02 ` ' [ '0 and s v s1, so by Lemma 4.1 on (22) we
+have
+
+Consistent(R; TE; E; s1; VE) w.r.t. '2 [ '02 (50)
+Also, from (24) and (25) we get
+
+R connects '2 [ '02 to s1 (51)
+R0 and R agree on '2 [ '02 (52)
+
+By induction on (35), (50), (38), (51) and (52) there
+exist s2 and v02 such that
+
+s1; VE ` R0(e02) ! v02; s2 (53)
+Consistent(R; _0; v2; s2; v02) w.r.t. '02 (54)
+Let TE+0 = TE0 + fx0 7! _0g. By (46) there exists a
+'00 such that '00 ` '0 and
+
+TE+0 ` e0 ) e000 : _; '00 (55)
+By Lemma 4.1 on (47) and '00 ` '0 we have
+
+Consistent(R; TE0; E0; s2; VE0) w.r.t. '00 [ '0 (56)
+and by Lemma 4.1 on (54) and '00 ` '0 we get
+
+Consistent(R; _0; v2; s2; v02) w.r.t. '00 [ '0 (57)
+Let E+0 = E0+fx0 7! v2g and let VE+0 = VE0+fx0 7!
+v02g. Combining (56) and (57) we get
+
+Consistent(R; TE+0 ; E+0 ; s2; VE+0 ) w.r.t. '00 [ '0 (58)
+Also, by (24) and s v s2 we get
+
+R connects '00 [ '0 to s2 (59)
+and by (48)
+
+R0 and R agree on '00 [ '0 (60)
+Then by induction on (55), (58), (39), (59) and (60)
+there exist s0 and v0 such that
+
+s2; VE+0 ` R0(e000) ! v0; s0 (61)
+Consistent(R; _; v; s0; v0) w.r.t. '0 (62)
+But by (49) we have R0(e000 ) = e00 so (61) reads
+
+s2; VE0 + fx0 7! v2g ` e00 ! v0; s0 (63)
+From (43), (45), (53) and (63) we get
+
+s; VE ` R0(e01 e02) ! v0; s0 (64)
+which together with (62) is the desired result.
+
+5 Strengths and weaknesses
+In Standard ML[24], recursive functions cannot be
+used polymorphically within their own declaration.
+At first sight, our translation rules resemble the Milner/Mycroft calculus[26], in which recursive functions
+can be used polymorphically within their own body.
+The type-checking problem for the Milner/Mycroft is
+equivalent to the semi-unification problem[12,1], and
+semi-unification is unfortunately undecidable[17].
+
+196
+
+fib(15) The computation of the 15th Fibonacci number by the "na"ive" method (e.g. [16,
+
+page 235]). The computation of fib(n) requires number of function calls which is
+exponential in n.
+sum(100) Here sum(n) computes the sum \Sigma ni=1i, by n recursive calls, none of which are tail
+
+recursive.sumit(100) As above, but the sum is computed iteratively, by n tail recursive calls.
+
+hsumit(100) As above, but computed by folding the plus operator over the list [1; ::; 100]:
+
+foldr (op +) 0 [1,..,100];
+acker(3,6) Ackermann's function, as defined in [16, page 239], except that our version is not
+
+curried.ackerMon(3,6) As above, but with Ackermann's function made region monomorphic.
+
+appel1(100) A program, which Appel discusses in his chapter on space complexity [2, page
+
+134]:
+
+fun s(0) = nil -- s(i) = 0 :: s(i-1)
+
+fun f (n,x) =
+
+let val z = length(x)
+
+fun g() = f(n-1, s(100))
+in
+
+if n=0 then 0 else g()
+end
+
+val result = f(100,nil);
+appel2(100) Same as appel1, but with g() replaced by g() + 1. (Discussed by Appel[2, page
+
+135]
+inline(100) A variant of the appel1 obtained by in-lining g and making f region monomorphic.
+
+(Not present in Appel's book.)
+quick(n) Generation of list of n random numbers, followed by Quicksort (from Paulson[27,
+
+pp. 96-98].)
+
+Figure 4: Test programs
+
+In a technical report[31] we describe an inference algorithm which appears to be sound with respect to the
+rules in this paper and appears always to terminate.
+(This rather weak statement due to the fact that we do
+not have a proof, as yet.) We know of examples (all of
+which involve subtle uses of region polymorphism) for
+which the algorithm finds a compound type scheme
+which is not the most general one permitted by the
+translation rules. The practical implications of this
+situation are discussed at the end of this section.
+
+The algorithm has been implemented. The implementation also handles pairs, lists, and conditionals,
+so that one can write non-trivial programs. We wrote
+roughly 1500 lines of test programs. After translation,
+the target programs were run on an instrumented interpreter, written in Standard ML. No garbage collector was implemented. The purpose of the experiments
+was to understand memory behaviour, not to estimate
+execution times.
+
+After translation, the system performs a simple storage mode analysis to discovers cases, where regions
+
+can be updated destructively. This helps to get a good
+handling of tail recursion. One more optimization is
+mentioned in Appendix B. These were the only optimizations performed.
+
+The quantities measured were:
+
+(1) Maximal depth of region stack (unit: one region)
+(2) Total number of region allocations
+(3) Total number of value allocations
+(4) Maximum number of storable values held (unit: 1
+
+sv)
+
+(5) Number of values stored in the final memory (unit:
+
+1 sv)
+
+The test programs in Figure 4 are representative of
+best and worst behaviour. The results are shown in
+the tables below. The numbers in the first column
+always refer to the the quantities enumerated above.
+
+197
+
+fib(15) sum(100) sum(n)
+(1) 47 205 2n + 5
+(2) 15,030 606 6n + 6
+(3) 15,030 606 6n + 6
+(4) 32 104 n + 4
+(5) 1 1 1
+
+Notice that fib and sum used very little memory, at
+the expense of very frequent region allocation and deallocation. From lines (2) and (3) we see that the region analysis can be so fine-grained that there is a oneto-one correspondence between values and regions. In
+the above examples, this is due to region polymorphism. The third column gives the exact figures, as a
+function of n. These are obtained by inspection of the
+target program, which appears in Appendix B.
+
+sumit(100) hsumit(100)
+(1) 6 12
+(2) 406 715
+(3) 707 1,214
+(4) 6 507
+(5) 1 101
+
+The results for sumit illustrate the behaviour on
+tight, tail-recursive loops. When computing sumit(n),
+the number of the highest region, namely 6, and the
+maximum memory size, also 6, are both independent
+of n.
+
+When we compute the sum by folding the plus operator over the list (hsumit(100)), all the results of
+the plus operation are put into one region, because the
+operator is a lambda-bound parameter of the fold operation and hence cannot be region-polymorphic. In
+this case, however, the analysis of storage modes does
+not discover that destructive updates are possible, so
+the final memory size is 101, of which only one word
+is live.
+
+acker(3,6) ackerMon(3,6)
+(1) 3.058 514
+(2) 1,378,366 1,119,767
+(3) 1,378,367 1,550,599
+(4) 2,043 86,880
+(5) 1 1
+
+The strength of region polymorphism is illustrated by the differences observed between acker and
+ackerMon. The latter, where region polymorphism has
+been disabled, has a much larger maximal memory
+size, 86,880, than the former, 2,043.
+
+quick(50) quick(500)
+(1) 170 1,520
+(2) 2,729 45,691
+(3) 3,684 65,266
+(4) 603 8,078
+(5) 152 1,502
+
+quick(1000) quick(5000)
+(1) 3,020 15,020
+(2) 86,915 556,369
+(3) 122,793 795,376
+(4) 10,525 61,909
+(5) 3,002 15,002
+
+A list occupies three regions: one for the elements,
+one for the constructors (cons and nil) and one for the
+pairs, to which cons is applied. Thus, a list with n
+different integers is represented by 3n + 1 values.
+
+We see that, apart from one word, the final results
+are the only values left at the end of the computation.2
+Also, the maximal number of regions allocated (line 1)
+is roughly the same as the number of values in the final
+result. The ratio between the maximal memory size
+and the final memory size varies between roughly 4.0
+and 5.5.
+
+appel1(100) appel2(100) inline(100)
+(1) 911 1,111 311
+(2) 81,714 81,914 81,113
+(3) 101,614 101,814 101,413
+(4) 20,709 20,709 411
+(5) 1 1 1
+
+The programs appel1 and appel2 use \Theta (N 2) space
+(line 4), although \Theta (N ) ought to be enough.
+This is an example of a deficiency which our scheme
+has in common with the classical stack discipline: creating a large argument for a function which only uses
+it for a small part of its activation leads to waste of
+memory (see also Chase [5]). inline(100) uses only
+\Theta (N ) space, as the storage mode analysis discovers
+that updates are possible.
+
+In cases where the algorithm infers a compound type
+scheme which is not the most general one permitted by
+the translation rules, the implementation detects the
+situation, prints a warning and completes the translation using a less general type scheme. Amongst our
+total supply of test programs, only those specifically
+designed to provoke the warning provoked it.
+
+Garbage collection
+If one wants to combine region allocation with garbage
+collection, dangling pointers are a worry. They can
+be avoided by adding the extra side-condition 8y 2
+FV(*x:e): frv(TE(y)) ` frv('0) to rule 15. This affects
+the precision of the inference rules, but obviously not
+their soundness.
+
+2The one additional value stems from the last iteration of
+the random number generator.
+
+198
+
+6 Conclusion
+The experiments presented in this report suggest that
+the scheme in many cases leads to very economical
+use of memory resources, even without the use of
+garbage collection. They also reveal that region allocation and de-allocation are very frequent and that
+many regions are small and short-lived. Regions with
+statically known, finite size can be allocated on a hardware stack; small regions can in principle even be held
+in machine registers. Magnus Vejlstrup is working on
+inferring the sizes of regions. Lars Birkedal is writing
+a compiler from region-annotated programs to C, together with a runtime system in C. In this system, a
+variable-sized region is represented by a linked list of
+fixed-size pages, which are taken from and returned to
+a free-list.
+
+Acknowledgments
+Fritz Henglein's expertise on semi-unification was
+most helpful. Peter Sestoft contributed in essential
+ways to the storage mode analysis mentioned in Section 5. Lars Birkedal wrote parts of the current implementation. Andrew Appel, David MacQueen, Flemming Nielson, Hanne Riis Nielson, David Schmidt and
+David N. Turner contributed with discussions and
+valuable criticism.
+
+This work is supported by Danish Research Council
+grant number 5.21.08.03 under the DART project.
+
+References
+
+[1] J. Tiuryn A. J. Kfoury and P. Urzyczyn. Type
+
+reconstruction in the presence of polymorphic
+recursion. ACM Transactions on Programming
+Languages and Systems, 15(2):290-311, April
+1993.
+
+[2] Andrew W. Appel. Compiling with Continuations. Cambridge University Press, 1992.
+
+[3] Henry G. Baker. Unify and conquer (garbage collection, updating, aliasing, ...) in functional languages. In Proceedings of the 1990 ACM Conference on Lisp and Functional Programming,
+pages 218-226, June 1990.
+
+[4] H.G. Baker. List processing in real time on a
+
+serial computer. Communications of the ACM,
+21(4):280-294, April 1978.
+
+[5] David R. Chase. Safety considerations for storage allocation optimizations. In Proceedings of
+the SIGPLAN '88 Conference on Programming
+Language Design and Implementation, pages 1-
+10, ACM Press, June 22-24 1988.
+
+[6] J. M. Lucassen D. K. Gifford, P. Jouvelot and
+
+M.A. Sheldon. FX-87 Reference Manual. Technical Report MIT/LCS/TR-407, MIT Laboratory
+for Computer Science, Sept 1987.
+
+[7] L. Damas and R. Milner. Principal type schemes
+
+for functional programs. In Proc. 9th Annual
+ACM Symp. on Principles of Programming Languages, pages 207-212, Jan. 1982.
+
+[8] Jo"elle Despeyroux. Proof of translation in natural semantics. In Proc. of the 1st Symp. on Logic
+in Computer Science, IEEE, Cambridge, USA,
+1986.
+
+[9] E. W. Dijkstra. Recursive programming. Numerische Math, 2:312-318, 1960. Also in
+Rosen: "Programming Systems and Languages",
+McGraw-Hill, 1967.
+
+[10] Michael Georgeff. Transformations and reduction strategies for typed lambda expressions.
+ACM Transactions on Programming Languages
+and Systems, 6(4):603-631, Oct 1984.
+
+[11] Barry Hayes. Using key object opportunism to
+
+collect old objects. In Proceedings: Conference
+on Object-Oriented Programming Systems, Languages and Applications, Sigplan Notices, Vol 26,
+Number 11, 1991.
+
+[12] Fritz Henglein. Type inference with polymorphic
+
+recursion. ACM Transactions on Programming
+Languages and Systems, 15(2):253, April 1993.
+
+[13] Paul Hudak. A semantic model of reference
+
+counting and its abstraction. In ACM Symposium
+on List and Functional Programming, pages 351-
+363, 1986.
+
+[14] Pierre Jouvelot and D.K. Gifford. Algebraic reconstruction of types and effects. In Proceedings
+of the 18th ACM Symposium on Principles of
+Programming Languages (POPL), 1991.
+
+[15] Hiroyuki Seki Katsuro Inoue and Hikaru Yagi.
+
+Analysis of functional programs to detect runtime garbage cells. ACM Transactions on Programming Languages and Systems, 10(4):555-
+578, 1988.
+
+[16] *Ake Wikstr"om. Functional Programming Using
+
+Standard ML. Series in Computer Science, Prentice Hall, 1987.
+
+[17] A. Kfoury, J. Tiuryn, and P. Urzyczyn. The
+
+undecidability of the semi-unification problem.
+In Proc. 22nd Annual ACM Symp. on Theory
+of Computation (STOC), Baltimore, Maryland,
+pages 468-476, May 1990.
+
+199
+
+[18] Donald E. Knuth. Fundamental Algorithms. Volume 1 of The Art of Computer Programming,
+Addison-Wesley, 1972.
+
+[19] Henry Lieberman and Carl Hewitt. A real-time
+
+garbage collector based on the lifetimes of objects. Communications of the ACM, 26(6):419-
+429, June 1983.
+
+[20] J. M. Lucassen. Types and Effects, towards the
+
+integration of functional and imperative programming. PhD thesis, MIT Laboratory for Computer
+Science, 1987. MIT/LCS/TR-408.
+
+[21] J.M. Lucassen and D.K. Gifford. Polymorphic
+
+effect systems. In Proceedings of the 1988 ACM
+Conference on Principles of Programming Languages, 1988.
+
+[22] R. Milner. A theory of type polymorphism in
+
+programming. J. Computer and System Sciences,
+17:348-375, 1978.
+
+[23] Robin Milner and Mads Tofte. Co-induction in
+
+relational semantics. Theoretical Computer Science, 87:209-220, 1991.
+
+[24] Robin Milner, Mads Tofte, and Robert Harper.
+
+The Definition of Standard ML. MIT Press, 1990.
+
+[25] F. L. Morris. Advice on structuring compilers
+
+and proving them correct. In Proc. ACM Symp.
+on Principles of Programming Languages, 1973.
+
+[26] A. Mycroft. Polymorphic type schemes and recursive definitions. In Proc. 6th Int. Conf. on
+Programming, LNCS 167, 1984.
+
+[27] Laurence C. Paulson. ML for the Working Programmer. Cambridge University Press, 1991.
+
+[28] Cristina Ruggieri and Thomas P. Murtagh. Lifetime analysis of dynamically allocated objects.
+In Proceedings of the 15th Annual ACM Symposium on Principles of Programming Languages,
+pages 285-293, January 1988.
+
+[29] Jean-Pierre Talpin. Theoretical and practical aspects of type and effect inference. Doctoral Dissertation. May 1993. Also available as Research
+Report EMP/CRI/A-236, Ecole des Mines de
+Paris.
+
+[30] Jean-Pierre Talpin and Pierre Jouvelot. Polymorphic type, region and effect inference. Journal of
+Functional Programming, 2(3), 1992.
+
+[31] Mads Tofte and Jean-Pierre Talpin. A Theory of
+
+Stack Allocation in Polymorphically Typed Languages. Technical Report DIKU-report 93/15,
+Department of Computer Science, University of
+Copenhagen, 1993.
+
+Appendix A. Arrow effects
+The purpose of this appendix is to motivate the use
+of arrow effects of the special form ffl:'. The "ffl:" has
+to do with type checking. Effects are sets. Having
+sets on the function arrow[14,30] forces one to re-think
+the use of unification as the basic mechanism for type
+checking.
+
+Milner's algorithm W [22] works on the following
+principle. Let e be an expression and let TE be a
+type environment giving the types of the free variables of e. Then W (TE; e) attempts to find not just
+a type o/ for e, but also a substitution S, such that
+S(TE) ` e : o/ . Informally speaking, the substitution
+says how the types in the type environment must be
+"refined" in order to make e typable.
+
+In effect systems an important form of "type refinement" is that of increasing an effect (under the ordering of set inclusion). For example, consider the type
+checking of the expression
+
+*h: if e then h else (*x:x + 1)
+where we assume that e is an expression which contains an application of h. Assume for the moment
+that arrow effects are just effects. After the then
+branch has been analysed, the type environment might
+
+contain the binding: fh 7! ((ff; ae1) ;\Gamma !(fi; ae2); ae3)g.
+Next, the type of (*x:x + 1) might be inferred to be
+
+((int; ae01) fget(ae
+
+0
+1);put(ae
+
+0
+2)g\Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma !(int; ae02); ae03). We want
+
+the unification of these types to refine the type of h
+to have the effect fget(ae01); put(ae02)g on the function
+arrow.
+
+Talpin and Jouvelot[30] introduce effect variables to
+achieve this. In their algorithm, one always has just
+an effect variable on every function arrow. In addition, their algorithm infers a set of constraints of the
+form ffl ' '. Their algorithm then alternates between
+solving constraint sets and inferring types. Our arrow
+effects give a variation of their scheme which allows
+substitution to do all "refinement" without constraint
+sets. In the present system, under the assumption
+
+fh 7! ((ff; ae1) ffl
+
+1:;\Gamma \Gamma \Gamma !(fi; ae2); ae3)g the type of the then
+
+branch above is ((ff; ae1) ffl
+
+1:;\Gamma \Gamma \Gamma !(fi; ae2); ae3) and the type
+
+of the else branch is
+
+((int; ae01) ffl
+
+2:fget(ae
+
+0
+
+1);put(ae
+
+0
+2)g\Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma !(int; ae02); ae03)
+
+Unification then gives a substitution on region and
+type variables, but it also produces the effect substitution
+
+Se = f ffl1 7! ffl1:fget(ae01); put(ae02)g;
+
+ffl2 7! ffl1:fget(ae01); put(ae02)gg
+
+Thus the resulting type of h in the type environment
+is
+
+((int; ae01) ffl
+
+1:fget(ae
+
+0
+
+1);put(ae
+
+0
+2)g\Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma \Gamma !(int; ae02); ae03)
+
+200
+
+Appendix B. A larger example
+The source program sum mentioned in Section 5 is
+
+letrec sum = * x .
+
+if x=0 then 1 else x+sum(x-1)
+in sum(100)
+end
+
+It translates into the target program:
+
+letregion ae1
+in
+
+letrec sum[ae2,ae3] at ae1 =
+
+(* x:(int,ae2).
+
+if letregion ae4
+
+in letregion ae5
+
+in (x=(0 at ae5)) at ae4
+end
+end
+then 1 at ae3
+else
+
+letregion ae6
+in
+
+(x+
+
+letregion ae7,ae8
+in
+
+sum[ae8,ae6] at ae7
+letregion ae9
+in (x-(1 at ae9)) at ae8
+end
+end
+) at ae3
+end
+) at ae1
+in letregion ae10,ae11
+
+in sum[ae11,ae0] at ae10
+
+(100 at ae11)
+end
+end
+end
+
+Note that sum becomes region-polymorphic and that
+this region polymorphism is exploited inside the body
+of sum itself: regions ae6 and ae8 are local to the function
+body and are passed to the recursive call (ae8 holds the
+argument and ae6 is where the result is to be placed).
+Note that the regions are allocated and de-allocated
+much as they would be in the classical stack discipline.
+In fact, we can count how many regions will be allocated, as a function of n. For n = 0, the maximal
+stack depth is 6 (ae0, ae1, ae10, ae11, ae4 and ae5). For
+n ? 0, the maximal stack depth is 6 + 3n (the factor 3 stems from regions ae6, ae7 and ae8; ae9 disappears
+before the recursive call). The optimization which we
+hinted at in Section 5 discovers that ae7 and ae10 can be
+de-allocated during the calls they serve, bringing the
+maximal stack depth down to 2n + 5.
+
+201

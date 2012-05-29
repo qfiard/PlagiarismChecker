@@ -1,0 +1,1676 @@
+
+
+Least Types for Memory Locations in (Java)
+Bytecode
+
+Zhenyu Qian
+Kestrel Institute, 3260 Hillview Avenue, Palo Alto, CA 94304, USA
+Email: qian@kestrel.edu Phone: (650) 493 6871 Fax: (650) 424-1807
+
+Abstract. (Java) bytecode verification should ensure type-safety for Java Virtual
+Machine (JVM) programs (bytecode) and form a basis for Java-based internet security. Recent research work has proposed using formal typing rules to enforce
+constraints on types for memory locations in bytecode and thus formally specify
+(part of) bytecode verification. In this paper, we take one step forward and show
+that typing rules can be non-deterministically and repeatedly used in an arbitrary
+order to compute the least types for memory locations satisfying the constraints, if
+there are any, or to report a failure, if there are none.
+
+The result implies that theoretically a bytecode verifier can have any strategy
+visiting program points in bytecode without affecting the acceptance of bytecode,
+i.e. without causing denial of services provided by bytecode. It also suggests ways
+to implement bytecode verification directly using formal specification.
+
+1 Introduction
+Java programs are usually compiled into Java bytecode, which is then interpreted by the Java Virtual Machine (JVM). Java bytecode is a program
+of JVM instructions (short instructions) that operate on the operand stack
+(short: the stack) and registers, called local variables. Stack entries and local
+variables are called memory locations in this paper. Memory locations hold
+data that are either object references1 or primitive values. In order for instructions to be executed in a defined way, we need to ensure that data are
+treated by instructions in a type-safe way. In this paper, we consider arbitrary
+classes of objects but only one type of primitive values, namely integers.
+
+According to the official JVM specification [5] (hereafter OJVMS), one
+main task of (Java) bytecode verification is to statically insure type-safe execution of instructions. For this purpose, bytecode verification should introduce certain types that classify all data, and attempt to assign these types
+to memory locations at program points in bytecode so that the following
+(soundness) results hold:
+
+- Memory locations may never hold data not of the assigned types.
+- Instructions accessing memory locations are always defined on the assigned types.
+
+1 Object references are pointers to objects stored in a heap. But we do not consider
+
+the heap in this paper.
+
+Bytecode is legal and should be accepted by bytecode verification if and only
+if types can be successfully assigned to all memory locations.
+
+Unfortunately, the OJVMS is ambiguous and does not define in an implementation-independent way when bytecode is legal. Since type-safety forms a
+basis for Java-based internet security, recent work (e.g. [10,2,8]) has proposed
+using formal typing rules to formally define legal bytecode and proved the
+soundness. The work thus specifies (part of) bytecode verification.
+
+In this paper, we show that the typing rules can be non-deterministically
+and repeatedly used in an arbitrary order to compute the least assigned types
+if there are any, or to report a failure if there are none. We follow the line
+in [8], though we strongly conjecture that our result applies to other related
+work (see Section 9).
+
+The paper is organized as follows: Section 2 intuitively explains what is
+bytecode and what are types for memory locations. The main problem and
+outlines of our solution are given in Section 3. Section 4 introduces some
+basic notations. Section 5 defines the types we will use. The typing rules are
+presented in Section 6. The algorithm is described in Section 7, and part of its
+proofs are included in Section 8. Section 9 discusses related work. Section 10
+contains conclusions.
+
+2 Bytecode
+Bytecode comes as so-called class files, which are in fact results obtained
+by compiling Java classes. A class file contains a method if and only if the
+original Java class contains the corresponding Java method.
+
+A method contains, among others, a name for the method, types for all
+parameters and return value, a number of local variables, and a body, which is
+actually a sequence of instructions. The position of an instruction in a body
+is called a program point.
+
+In this paper we consider the following instructions:
+
+- An instruction aload ix loads an object, and an instruction iload ix an
+
+integer value, from the local variable ix onto the stack.
+- An instruction astore ix stores an object, and an instruction istore ix
+
+an integer value, from the stack into the local variable ix .
+- An instruction if acmpeq pp compares the two top object references in
+
+the stack, transfers control to program point pp if they are the same.
+- An implicit instruction is assumed at the start of a method to set an
+
+empty stack, and to store the object, on which the method is invoked,
+and all actual parameters into local variables.
+- An instruction return terminates the current method.
+- Instructions jsr and ret build the mechanism for subroutines, typically
+
+to implement finally clauses in Java programs. More concretely, jsr sb
+calls a subroutine sb, which is in fact a program point, by first pushing
+the next program point as the return program point onto the stack and
+
+2
+
+then transferring control to sb, while ret j returns from a subroutine by
+transferring control to a return program point stored in local variable j.
+
+Method void m(int,int) // Method head.
+.limit locals 5 // Allocate space for 5 local variables.
+
+// Store this object and the actual parameters into the
+// first 3 local variables, create an empty stack.
+0 jsr 5 // Push program point 1+ onto the stack and go to 5.
+1 aload 1 // Copy the object in local variable 1 onto the stack
+2 astore 3 // Move the top object from the stack into local variable 3.
+3 jsr 5 // Push program point 4+ onto the stack and go to 5.
+4 return // The method returns.
+5 astore 4 // Move the top object from the stack into local variable 4.
+6 aload 1 // Copy the object in local variable 1 onto the stack
+7 aload 1 // Copy the object from local variable 1 onto the stack
+8 if.acmpeq 11 // If the two top objects in the stack are equal, go to 11.
+9 aload 1 // Copy the object in local variable 1 onto the stack
+10 astore 2 // Move the top object from the stack into local variable 2
+11 jsr 12 // Push program point 12+ onto the stack and go to 12.
+12 astore 5 // Move the top object from the stack into local variable 5.
+13 ret 4 // Return to the program point stored in local variable 4.
+
+Figure 1: A JVM program
+Consider, for example, the method in Figure 1. In the method, both jsr 5
+at 0 and 3 call subroutine 5. The astore instruction at 5 moves the return
+program point 1 or 4 from the stack into local variable 4. Subroutine 5 calls
+another subroutine 12 at 11, but the instruction ret 3 at 13 brings control
+from subroutine 12 directly back to the caller of subroutine 5, using the return
+program point (i.e. 1 or 4) stored in local variable 4. In general, a subroutine
+need not contain a ret instruction. If it does, then an astore instruction
+should be used to store the return program point on the stack into a local
+variable so that ret can access it.
+
+2.1 Types for memory locations
+As mentioned before, bytecode verification should attempt to assign a kind
+of types to memory locations in bytecode. Note that these types are not
+necessary the types in Java or JVM programs.
+
+As an example, Figure 2 gives types assigned to memory locations in the
+method in Figure 1. Note that the types are not the unique ones, but as we
+will see later, they are collectively the least ones. We write types for local
+variables at each program point under LV and those for stack entries under
+
+3
+
+ST . The column MD will be discussed later in this section. The column
+"Succ's" contains all static successor program points of a program point. It
+helps the illustration, since types at a program point are often related to
+those at static successors.
+
+Program LV ST MD Succ's
+Method void m(int,int)
+.limit locals 5
+
+0 jsr 5 [c;int;int;uu;uu] [] [] 5
+1 aload 1 [c;uu;int;uu;uu] [] [] 2
+2 astore 3 [c;uu;int;uu;uu] [c] [] 3
+3 jsr 5 [c;uu;c;uu;uu] [] [] 5
+4 return [c;uu;c;uu;uu] [] [] returns
+5 astore 4 [c;uu;uu;uu;uu] [mks(5)] [(5; fg)] 6
+6 aload 1 [c;uu;uu;mks(5);uu] [] [(5; f4g)] 7
+7 aload 1 [c;uu;uu;mks(5);uu] [c] [(5; f4g)] 8
+8 if.acmpeq 11 [c;uu;uu;mks(5);uu] [c;c] [(5; f4g)] 11,9
+9 aload 1 [c;uu;uu;mks(5);uu] [] [(5; f4g)] 10
+10 astore 2 [c;uu;uu;mks(5);uu] [c] [(5; f4g)] 11
+11 jsr 12 [c;uu;uu;mks(5);uu] [] [(5; f2;4g)] 12
+12 astore 5 [c;uu;uu;mks(5);uu] [mks(12)] [(5; f2;4g); (12; fg)] 13
+13 ret 4 [c;uu;uu;mks(5);mks(12)] [] [(5; f2;4g); (12; f5g)] 1,4
+
+Figure 2: Types for the method in Figure 1
+
+The types are c, int, mks(pp) and uu, where c is the class containing the
+method, int the type of all integers, mks(pp) the type of all return program
+points of subroutine pp, and uu the type of all data. Since uu is the type of
+all data, including data of c, int and mks(pp), memory locations with type
+uu are unusable (by most instructions)2.
+
+For the instruction jsr 5 at program point 0+, which calls subroutine 5,
+the program point 1 is a return program point of type mks(5).
+
+These types together with an artificial element ? build a lattice, whose
+partial ordering w is defined by that uu w c w ?, uu w int w ? and
+uu w mks(pp) w ? for all program points pp. For any types ty and ty0, we
+say that ty covers ty0, if ty w ty0.
+
+Now we may check the soundness property by flow analysis. For example,
+at program point 0+, the first three local variables will hold the this-object
+and the two actual parameters, respectively, thus their assigned types should
+be c, int and int, respectively. The last two local variables at 0 may contain
+any data, thus their types should be uu. The instruction jsr 5 at 0 and 3 will
+push its return program point onto the operand stack and transfer control to
+
+2 Some stack manipulation instructions like pop can handle memory locations with
+
+type uu. But we do not consider them in this paper.
+
+4
+
+5, thus local variables at 5 should have types covering those at 0 and 3, and
+the type of the stack entry at 5 should be type mks(5), and so on.
+
+The above analysis goes quite smoothly until we encounter the instruction
+ret 4 at 13. Basically, the instruction ret 4 needs three special treatments.
+
+First, the control flow, i.e. the successor program points, of the instruction
+depend on the type assigned to local variable 4. Since the assigned type is
+mks(5), the successors are the return program points of subroutine 5, i.e. the
+program points 1 and 4.
+
+Second, no subroutine types for subroutine 5 and all its inner subroutines
+should appear outside subroutine 5. Thus the subroutine types mks(5) and
+mks(12) for local variables 4 and 5 at 13 are replaced by type uu at 1 and 4.
+
+To understand the third special treatment, we need to consider a design
+decision made in the OJVMS, which enables a local variable that is not modified (by an astore instruction) in a subroutine, for example local variable
+3, to remain usable after each call of the subroutine. But the problem is that
+local variable 3 has different types int and c at different calling sites 0 and 3,
+and thus should be assigned with type uu in subroutine 5, covering different
+types at the calling sites. Now if we followed a naive approach by assigning
+type uu to local variable 3 after the subroutine, then local variable 3 would
+practically become unusable. In other words, if we inserted e.g. aload 2 at
+1 or 4, then the method would become illegal.
+
+To overcome the above difficulty, the OJVMS requires that if a local variable is impossible to be modified in a subroutine, then at each return program
+point, it should be assigned with a type covering that at the corresponding
+call site. This leads to the need of modification histories to record modified
+local variables.
+
+In Figure 2, modification histories are given under the column MD . Technically, a modification history contains a set of local variables for each enclosing subroutine such that the subroutine is the closest one containing modifications of these local variables. The set of all modified local variables for
+a given subroutine can then be computed as the union of the sets of local
+variables for all subroutines that the given subroutine encloses. For example,
+the modification history [(5; f2;4g); (12; f5g)] at 13 records that subroutine 5
+is the closest one containing modifications of local variables 2 and 4, and that
+subroutine 12 the closest one containing modifications of local variable 5. The
+set of all modified local variables for subroutine 5 is the union f2;4g [ f5g.
+
+The third special treatment for ret 4 is in fact a way to compute the
+types at each return program point using the information on modified local
+variables of the subroutine and the types both at the calling jsr and ret
+instruction of the subroutine. In the above example, we use the modification
+history at 13 to compute the set f2;4;5g of all modified local variables in
+subroutine 5. The assigned types for all modified local variables at 1 and 4
+are in fact those at 13. The assigned types for other local variables, i.e. local
+variables 1 and 3, at 1 and 4 are those at 0 and 3, respectively. This last
+point is in fact invisible for local variable 1, since its type is c everywhere.
+
+5
+
+But it is indeed visible for local variable 3, where its type at 1 and 4 is int
+and c, respectively, the same as its type at 0 and 3, respectively, independent
+of its type uu at 13.
+
+3 The problem and overview of our result
+Based on the discussion from the previous section, it does not seem difficult
+to write a non-deterministic fixed-point iteration algorithm, which repeatedly
+visits program points in some way, checks types at each program point against
+the constraints enforced by a typing rule, and computes the least types bigger the current ones at each successor so that the constraints enforced by
+the typing rule at that successor are satisfied. The algorithm is executed
+until all constraints are satisfied, or a failure is reported. The question is,
+however, whether the algorithm is terminating, computes types satisfying all
+constraints if assigning types is possible, and reports a failure if impossible.
+
+Unfortunately, the algorithm is not entirely a standard non-deterministic
+fixed-point iteration. In particular, the algorithm is not monotone.
+
+To demonstrate this, let us consider the method in Figure 3. We informally
+call a collection of all assigned types and modification histories a type. Let us
+first look at how the method types mty1 and mty01 are obtained. Actually if
+the algorithm visits the method head and the program points 0, 1, 2, 3, 5, 7,
+8, 9, 10 in that order, then it will compute the type int for local variable 2
+at the successors program points 0, 1, 2, 5, 7, 8, 9, 10, 11 and 13. Now if the
+algorithm visits the "else"-branch of the first if.acmpeq, i.e. the program
+points 3 and 4, then it will change the type int for local variable 2 at 5
+into uu, since local variable 2 at 5 may hold an integer or object. Since the
+algorithm has not visited the "else"-branch of the second if.acmpeq, i.e. 11
+and 12, the modification history [(7; fg)] at 13 does not record that local
+variable 2 is modified in subroutine 7. Now we have the method type mty 1. If
+the algorithm continues to visit program point 13, then it will take the type
+uu for local variable 2 at 5 as the type at the return program point 6. Now
+we have the method type mty01.
+
+If starting from the method type mty1 in the above, the algorithm continues to visit the "else"-branch of the second if.acmpeq, then we will obtain
+the method type mty2, where the modification history at 13 is changed into
+[(7; f2g)], recording that local variable 2 is modified in subroutine 7. Note
+that the notation in the figure means that the type or modification history
+is the same as in mty1. Now if the algorithm visits 13, it will take the type
+int for local variable 2 at 13 as the type at 6. The final stage is the method
+type mty02.
+
+Now it is easy to see that mty1 is covered by mty2 in the sense that each
+type or modification history in mty1 is covered by the corresponding one in
+mty2, whereas after an analysis step at 13, mty01 is not covered by mty02, since
+the type uu for local variable 2 at 6 in mty01 strictly covers the type int for
+
+6
+
+mty1 and mty01 mty2 and mty02
+Code VT KT MD VT KT MD
+
+Method void n(int)
+.limit locals 3
+
+0 aload 1 [c; int; uu] [] []
+1 aload 1 [c; int; uu] [c] []
+2 if acmpeq 5 [c; int; uu] [c; c] []
+3 aload 1 [c; int; uu] [] []
+4 astore 2 [c; int; uu] [c] []
+5 jsr 7 [c; uu; uu] [] []
+6 return [c; uu; uu] [] [] [c; int; uu]
+7 astore 3 [c; int; uu] [mks(7)] [(7; fg)]
+8 aload 1 [c; int; mks(7)] [] [(7; fg)]
+9 aload 1 [c; int; mks(7)] [c] [(7; fg)]
+10 if acmpeq 13 [c; int; mks(7)] [c; c] [(7; fg)]
+11 iload 2 [c; int; mks(7)] [] [(7; fg)]
+12 istore 2 [c; int; mks(7)] [int] [(7; fg)]
+13 ret 3 [c; int; mks(7)] [] [(7; fg)] [(7; f2g)]
+
+Figure 3: Analyzing another JVM program
+
+local variable 2 at 6 in mty02. This shows intuitively that the algorithm is not
+monotone.
+
+The problem lies in that the type uu for local variable 2 at 5 in mty1 is not
+covered by the type int for local variable 2 at 13 in mty2. We discovered that
+this problem would not exist if mty2 were a fixed point. The reason is that an
+analysis step actually always ensures that if a local variable is not modified,
+then its type at the current program point is covered by that at a successor
+program point. Thus if a method type is a fixed point, then for a path on
+which a local variable is not modified, its type at the beginning program point
+is always covered by that at the ending program point. Therefore, if mty 2
+were a fixed point, then the type for local variable 2 at 5 would be covered by
+that at 13. Since the type for local variable 2 at 5 in mty1 is covered by the
+corresponding one in mty2, the type for local variable 2 at 5 in mty1 would
+be covered by that at 13 in mty2.
+
+Fortunately, the monotonicity property for method types where the bigger
+one is a fixed point suffices for the completeness of our algorithm. In fact,
+using this property and an additional property that the algorithm always
+produces a finite strictly-increasing chain of method types, we can prove that
+the algorithm will definitely reach the least solution if there are any.
+
+To conclude this section, let us mention a temptation and dismiss it. The
+temptation is due to the fact that the problem in the above seems also to lie
+in that there are paths with the same beginning and ending program points,
+where some do and some do not modify the same local variable. One may
+ask why we don't try to first finish derivation of all modification histories
+
+7
+
+before starting the computation of types. The answer is that it is in general
+impossible to derive all modification histories before computing any types. In
+fact, in order to compute all modification histories, we need to consider all
+possible execution paths. But to determine all execution paths, we may need
+to know all successor program points of each ret. Unfortunately, in order to
+know all successors, we may have to know the type of the local variable it
+uses. For example, when a ret is within a nested subroutine, it may return
+either to an inner or outer calling jsr, depending on the type of the local
+variable.
+
+4 Preliminaries
+We use the notation ffn to denote a sequence of syntactical objects ff1; \Delta  \Delta  \Delta  ; ffn,
+and the notation f\Delta  \Delta  \Delta g to denote a set. We use fffn 7! ff0ng, where ffi 6= ffj
+holds for all 0 ^ i 6= j ^ n, to denote a (finite) mapping, which maps each ffi
+to ff0i. We define Dom(fffn 7! ff0ng) = fffng. For a mapping `, we use `(ff) to
+denote the result of the mapping for ff. Note that ` is not a function. Actually
+`(ff) denotes an application of a specific lookup function on two first-order
+terms ` and ff. We use `[ff 7! ff0] to denote the mapping that is equal to `
+except it maps ff to ff0. A list [ffn] is a special mapping fn 7! ffng. We define
+[ffn] + ff = [ffn; ff].
+
+In formalizing our specification, we chose to use a constraint-solving framework based on a first-order many-sorted order-sorted algebra, which consists
+of a collection of sets, called sorts, a subset relation among the sorts, functions
+and predicates on these sorts (cf. e.g. [9]). A function is uniquely determined
+by a name. A predicate is uniquely determined by a name and an arity.
+
+There is a set of variables for each sort.
+Terms are built by functions and variables. Terms are always well-sorted,
+and a term of a sort is automatically a term of each of its supersorts. Each
+term has a least sort.
+
+Logical formulas are built as usual in first-order predicate logic, using
+predicates, terms, usual logical constants, connectives, quantifiers. Predicates
+are applied in a well-sorted way. A variable may be bound (by 8 and 9) as
+usual. A variable is free if it is not bound. We use FV(s) to denote the set
+of all free variables in a term or a logical formula s. If FV(s) = ;, then s is
+closed.
+
+For simplicity, we may omit the explicit definition of a sort, function,
+predicate and variable in the paper, if it is standard or clear from the context.
+We will use names composed of low-case letters to denote sorts, functions and
+predicates. We will in general use the sort name to range over all elements
+in the sort, and the partially capitalized version of a sort name, where only
+the first letter is a capital, to range over all terms of the sort. Occasionally
+we will also use additional symbols to range over elements for the sake of
+clarity. For example, we will use pp and ty to denote an element of the sort
+
+8
+
+pp and ty, respectively, and Pp and Ty a term of these sorts, respectively. In
+addition, we will use sb to denote an element in pp for some special uses of
+program points.
+
+A constraint is a logical formula. A set of constraints fsmg represents the
+logical formula s1 ^ \Delta  \Delta  \Delta  ^ sm ^ true.
+
+A variable assignment is a mapping fXn 7! sng, where each Xi is a variable and each si is a closed term of the sort of Xi for all i = 1; \Delta  \Delta  \Delta  ; n. We use
+oe to range over all variable assignments. Applying a variable assignment oe
+to a term or logical formula s yields a result denoted as oe(s), where all free
+occurrences of X 2 Dom(oe) in s are replaced by oe(X), and bound variables
+in oe(s) are automatically renamed to avoid bound variable captures.
+
+A constraint s is satisfied under a variable assignment oe if and only if
+oe(s) is closed and holds. A constraint is satisfiable if and only if it is satisfied
+under a variable assignment.
+
+Throughout the paper, we only consider constraints whose variables are
+of sorts consisting of finitely many elements so that the computation of its
+satisfiability is terminating.
+
+5 The instance method Mth and the types
+In this paper, we consider an arbitrary but fixed instance method Mth. Formally Mth is a tuple (cls; tym; n; mth) consisting of a class cls declaring the
+method Mth, the sequence tym of the types of all formal parameters, the
+number n of local variables with m ^ n, and a nonempty list mth of instructions as the body of the method, where the positions of instructions are called
+program points. For convenience, we also use Mth for mth and Dom(Mth) for
+the set of all program points.
+
+We use pp and sb to range over all elements in Dom(Mth), where sb is
+used to represent (the starting program point of) a subroutine. We use ix to
+range over the indices of all local variables, and cn over all class names.
+
+5.1 Types
+In this paper we will consider the following types for memory locations:
+
+Object type: fcnng (n ? 0) Primitive type: int
+Subroutine type: mks(pp) Unusable value type: uu
+
+Intuitively, an object type is a class set, indicating that a memory location
+may only hold objects of the classes in the set. For this purpose, using a class
+set has the same effect as using the least common superclass of all classes
+of that set with respect to a subtyping relation. Thus we need not explicitly
+consider a subtyping relation any more in this paper. For convenience, we
+regard a singleton object type fcng and its class cn as the same.
+
+Type int corresponds to the JVM primitive type int.
+
+9
+
+Type mks(pp) intuitively indicates that a memory location may only hold
+return program points of subroutine pp, i.e. the next program points of all
+instructions of the form jsr pp. We regard mks(pp) and mks(pp0) with pp 6=
+pp0 as distinct. For example, the program points 1 and 4 in Figure 1 are of
+type mks(5), and program point 12 is of type mks(12).
+
+Type uu intuitively indicates that a memory location may hold all data.
+Such a memory location is unusable (by most instructions)3.
+
+We define some sorts in terms of the following syntax, where the nonterminals on the left of ::= are sorts.
+
+Object type ot ::= fcnng (n ? 0)
+Subroutine type st ::= mks(pp)
+Object or subroutine type os ::= ot j st
+Type ty ::= int j os j uu j ?
+
+The subsort relation on these sorts is defined as the subset relation. For
+example, ty is a supersort of os, os a supersort of ot and st, and so on.
+Furthermore, since a singleton object type fcng and its class cn are the
+same, ot is a supersort of cn.
+
+Note that we introduce an artificial bottom element ? in the sort ty.
+We define a partial relation w for the sort ty as follows: for any ty and
+ty0, ty w ty0 if and only if (1) ty = uu, (2) ty0 = ?, or (3) ty and ty0
+are both object types and ty ' ty0. Intuitively, for a memory location that
+may hold data of two types, if not both types are classes, then the memory
+location should have type uu; if both types are classes, then the memory
+location should have the common superclass of these two classes (i.e. the set
+containing both classes) as its type.
+
+Since we can easily define the meet and join operations u and t based on
+the w and there are only finite many types, the sort ty forms a finite lattice.
+
+5.2 Complex types and variable assignments
+We construct the following sorts for complex types:
+
+Type list lst ::= [tyn] (n * 0) j ? j ?
+Index set ixs ::= [ix n] (n * 0)
+Modification history mod ::= [(sbn; ixsn)] (n * 0; sbi 6= sbj for i 6= j)
+Program point type pty ::= (lst; lst0; mod) j ? j ?
+Method type mty ::= fpp 7! ptypp j pp 2 Dom(Mth)g j ? j ?
+
+The types of all local variables as a whole can be described a type list.
+The same holds for the types of all stack entries in a stack.
+
+Modification histories are used to record local variables modified (by
+an astore instruction) in subroutines. Intuitively, a modification history
+[(sbn; ixsn)] should represent the following:
+
+3 In the full JVM, some stack manipulation instructions like pop can handle a
+
+memory location with type uu.
+
+10
+
+- The subroutines sbn should be called (but not returned) in that order
+
+from the start of the method Mth to the current program point.
+- Each set ixsi with 1 ^ i ! n should consist of the indices of all those
+
+local variables modified from sbi to sbi+1, the set ixsn all those modified
+from sbn to the current program point.
+
+Note that in the full JVM, a modification history needs to be expressed as
+a directed acyclic graph, where a node stands for a subroutine and a directed
+edge represents that a subroutine calls another one, since more than one
+subroutine may call the same subroutine and one subroutine may call more
+than one subroutine. Although there are no fundamental problems at all to
+do this, we choose to consider a simplified case, where only a single list of
+called subroutines is allowed.
+
+A program point type (lst; lst0; mod) records a list lst for all types of local
+variables, a list lst0 for all types of stack entries, and a modification history
+mod.
+
+A method type fpp 7! ptypp j pp 2 Dom(Mth )g (for the method Mth) is
+defined to record all program point types in Mth.
+
+For each of the sorts lst, mod, pty and mty, we define a partial relation
+w that componentwise extends the partial relation w on the sort ty and the
+subset relation on the sort ixs in the standard way. In particular, the following
+properties hold.
+
+- ? and ? are the artificial bottom and top elements in the sorts lst, pty
+
+and mty.
+- All elements containing an occurrence of a ? (or ?) are regarded as
+
+identical to ? (or ?, respectively),
+
+- [tyn] w [ty0m] if and only if n = m and tyi w ty0i for all i = 1; \Delta  \Delta  \Delta ; n.
+- [(sbn; ixsn)] w [(sb0m; ixs0m)] if and only if n = m and sbi = sb0i and
+
+ixsi ' ixs0i for all i = 1; \Delta  \Delta  \Delta  ; n.
+
+For each of the sorts lst, mod , pty and mty, we can also define the meet
+and join operations u and tthat componentwise extend the meet and join
+operations u and t on the sort ty and the union and intersection operations
+on the sort ixs in the standard way. Therefore, these sorts are all finite lattices.
+
+For two variable assignments oe1 and oe2 with Dom(oe1) = Dom(oe2), we
+define the relation oe1 w oe2 by that for all X 2 Dom(oe1),
+
+oe1(X) w oe2(X) if w is defined for all elements in the sort of X
+oe1(X) = oe2(X) otherwise
+
+and define oe1 u oe2 by that Dom(oe1 u oe2) := Dom(oe1) and
+
+oe1uoe2(X) := ae oe1(X) u oe2(X) if w is defined for all elements in the sort of Xoe
+
+1(X) otherwise
+
+11
+
+6 Typing rules
+We use variables of sorts as given in the following table
+
+Variables P; S VT ; KT I O Y MD \Phi 
+Sort pp lst ix ot os mod mty
+where S typically stand for a subroutine, VT for types of all local variables
+and KT for types of all stack entries.
+
+A typing rule in our paper is in the form:
+
+AC
+CC
+
+SC
+where AC, CC and SC are sets of constraints.
+
+We distinguish between these three sets in a typing rule, since they are
+used in three different places in an analysis process. Roughly speaking, the
+constraints in AC should determine a program point pp of application, thus
+are called applicability conditions. The CC should contain constraints on the
+program point type at the determined pp. The SC should contain constraints,
+if any, on the program point type at successors of the determined pp.
+
+If any, all constraints in SC are of the form \Phi (Pp) w Pty, where Pp stands
+for a successor program point, saying that the method type \Phi  at Pp should
+cover the program point type Pty.
+
+Independent of any analysis process, the typing rules as a whole enforce
+constraints on one common method type \Phi  of Mth. Let Q = FV(AC) \Gamma  f\Phi g
+and Q0 = FV(CC [ SC) \Gamma  (f\Phi g [ Q). Then a typing rule formally denotes the
+constraint
+
+8Q:(AC ) 9Q0:(CC [ SC))
+
+We say that Mth has a method type mty, (or mty is a method type of Mth,) if
+and only if the union of the constraints of all typing rules are satisfied under
+the same variable assignment f\Phi  7! mtyg. Note that the variable \Phi  is global
+in all typing rules. The method Mth may have zero or more method type.
+
+A program is called legal or statically well-typed if and only if it has a
+method type.
+
+We are ready to give typing rules now. For notational simplicity, we assume the following:
+
+- In all typing rules except rule (1), the AC part always implicitly contains
+
+the constraint \Phi (P ) 6= ?.
+- In all typing rules, the CC part always implicitly contains all necessary
+
+checks ensuring e.g. that terms of the sort pp are in Dom(Mth ), and that
+terms of the sort ix are between 1 and n, etc.
+
+Figure 4 contains the first part of our typing rules. Rules (3) and (5) use
+the following auxiliary function to add a set of indices of local variables to
+
+12
+
+the set of modified local variable of the current subroutine:
+
+addmlvs(ixs; (sbn; ixsn)) = ae [(sbn\Gamma 1; ixsn\Gamma 1)] + (sbn; ixsn [ ixs) if n * 1[] if n = 0
+
+Rule (1) is always applicable since the AC part is an empty set. Remember
+that we have assumed that Mth = (cls; tym; n; mth). We use uun to denote
+a list consisting of n times uu. In Figure 2, we have that cls = c, ty1 = int,
+ty2 = int, m = 2, and n = 5.
+
+In Figure 2, rule (3) is applicable at program point 2 with P = 2 and
+I = 3. The CC and SC are satisfied at 2 with VT = [c; uu; int; uu; uu],
+KT = [], Y = c and MD = []. Note that addmlvs(f3g; []) = []. Rule (3) is
+also applicable at program point 5 with P = 5 and I = 4. The CC is satisfied
+with Y = mks(5).
+
+Note that both Y = c and Y = mks(5) in the above are well-sorted since
+both ot and st are subsorts of os. Actually, the well-sortedness here implies a
+membership constraint, which requires that the top entry in the stack must
+be either in ot or os. It is worth noticing that the variable O in rule (2)
+cannot be instantiated into an element of the sort st.
+
+Rule (7) introduces no successor program points. Note that a method
+body must contain a return instruction.
+
+The second part of the typing rules is given in Figure 5. They are typing
+rules for subroutines.
+
+In Figure 2, rule (8) is applicable at program point 0 with P = 0 and
+S = 5 and also at program point 3 with P = 3 and S = 5. The constraint
+S 62 Dom(MD ) ensures that no subroutines may be called recursively. The
+SC ensures that type mks(5) is pushed onto the stack at the successor 5 and
+the modification history is extended with (5; fg).
+
+Rules (9) and (10) are both for ret. They are complementary: rule (9)
+focuses on constraints at the current program point, whereas rule (10) those
+at successor program points, i.e. return program points of the subroutine. We
+could combine them into one, but the result would be too clumsy.
+
+In Figure 2, rule (9) is applicable at program point 13 with P = 13 and
+I = 4. The constraint VT (I ) = mks( ) ensures that local variable 4 at 13 has
+a subroutine type, and thus the local variable holds a return program point.
+The constraint 8P 08I 08VT 0: \Delta  \Delta  \Delta  ensures that no subroutines have multiple
+exits. This is not a serious restriction on programs, since multiple exits can
+always be changed into single exit using if.acmpeq (or goto in the full JVM).
+
+Rule (10) has a relatively large AC-part. If it is applicable under a variable
+assignment, then the variable assignment contains the information about the
+subroutine and a calling jsr. In Figure 2, rule (10) is applicable at program
+point 13 with P = 13, I = 4, S = 5 and P 0 = 0 or P 0 = 3. Thus the successor
+program point is either P 0 + 1 = 1 or P 0 + 1 = 4.
+
+The SC part of rule (10) uses the auxiliary function addmlvs and several
+other auxiliary functions. Let [(sbn; ixsn)] be a modification history, sbk a
+
+13
+
+\Phi (0) w (uun[07!cls; m7!tym]; []; []) (1)
+
+Mth(P ) = aload I
+\Phi (P ) = (VT ; KT ; MD)
+VT(I ) = O
+
+\Phi (P + 1) w (VT ; KT + O; MD) (2)
+
+Mth(P ) = astore I
+\Phi (P ) = (VT; KT + Y ; MD)
+\Phi (P + 1) w (VT [I 7! Y ]; KT ; addmlvs(fI g; MD)) (3)
+
+Mth(P ) = iload I
+\Phi (P ) = (VT ; KT ; MD)
+VT(I ) = int
+
+\Phi (P + 1) w (VT; KT + int; MD) (4)
+
+Mth(P ) = istore I
+\Phi (P ) = (VT ; KT + int; MD)
+\Phi (P + 1) w (VT [I 7! int]; KT ; addmlvs(fI g; MD)) (5)
+
+Mth(P ) = if acmpeq P 0
+\Phi (P ) = (VT; KT + O + O0; MD)
+
+\Phi (P 0) w (VT ; KT ; MD)
+\Phi (P + 1) w (VT ; KT ; MD)
+
+(6)
+
+Mth(P ) = return
+
+(7)
+
+Figure 4: Typing rules
+
+14
+
+Mth(P ) = jsr S
+\Phi (P ) = (VT ; KT ; MD)
+S 62 Dom(MD)
+
+\Phi (S) w (VT ; KT + mks(S); MD + (S; fg)) (8)
+
+Mth(P ) = ret I
+\Phi (P ) = (VT ; ; )
+VT (I ) = mks( )
+8P 08I 08VT 0:( (Mth(P 0)=ret I 0 ^ P 0 6=P ^ \Phi (P 0)=(VT 0; ; ) )
+
+) VT (I )6=VT 0(I 0) ) (9)
+
+Mth(P ) = ret I
+\Phi (P ) = (VT; KT ; MD)
+Mth(P 0) = jsr S
+VT (I ) = mks(S)
+\Phi (P 0) = (VT 0; KT 0; MD0)
+
+\Phi (P 0+1) w (VT0[j 7!chuu(VT (j); sbsin(MD;S)) j j 2mlvsin(MD;S)];
+
+chuulis(KT ; sbsin(MD; S));
+addmlvs(mlvsin(MD; S); modbef (MD; S))
+
+(10)
+
+Figure 5: Typing rules
+subroutine with 1 ^ k ^ n, E a set of subroutines, ty an arbitrary type, and
+[tym] a list of types. Then these functions are defined as follows:
+
+sbsin([(sbn; ixsn)]; sbk) = fsbk; \Delta  \Delta  \Delta  ; sbng
+mlvsin([(sbn; ixsn)]; sbk) = ixsk [ \Delta  \Delta  \Delta  [ ixsn
+modbef ([(sbn; ixsn)]; sbk) = [(sbk\Gamma 1; ixsk\Gamma 1)]
+
+chuu(ty; E) = ae uu if ty = mks(sb) and sb 2 Ety otherwise
+chuulis([tym]; E) = [chuu(tym; E)]
+If rule (10) is applicable at 13 as described above, then the modification
+history at 13 is MD = [(5; f2;4g); (12; f5g)]. Thus sbsin(MD;S ) = f5; 12g is
+the set of all subroutines called since S including S , mlvsin(MD; S ) = f2;4;5g
+the set of all local variables modified since S , and modbef (MD ; S ) = [] the
+part of modification history before calling the subroutine S . The modification history at the return program point P 0 + 1 = 1 or P 0 + 1 = 4 is
+addmlvs(mlvsin(MD ; S ); modbef (MD ; S )) = [], which is obtained by adding
+mlvsin(MD ; S ) to the current subroutine in modbef (MD ; S ).
+
+Furthermore, the functions chuu(ty; E) and chuulis([tym]; E) change the
+subroutine type ty and each subroutine type tyi into type uu if the subroutine
+type is for a subroutine in E. They serve to ensure that no return program
+points for subroutine 5 and all those subroutines directly or indirectly called
+
+15
+
+by subroutine 5 are usable after subroutine 5 returns. Actually, in the application described as above, we have that chuu(VT (j); sbsin(MD;S )) = uu for
+j = 2; 4 or 5 and chuulis(KT ; sbsin(MD ; S )) = []
+
+7 Computing a least method type or yielding a failure
+Although our typing rules enforce constraints on possible method types of
+bytecode, they do not directly tell us how to compute a method type or
+whether there is a least method type among all method types.
+
+We follow the idea in [11], which in turns follows the Cousots' approach to
+abstract interpretation [1], to write a non-deterministic (chaotic) fixed-point
+iteration algorithm. Roughly, the algorithm starts with the bottom method
+type ?, repeatedly calls a procedure to compute a sequence of strictlyincreasing method types until no new method types can be yielded, or a
+failure is reported by the procedure. The procedure always takes the last obtained method type, non-deterministically chooses a current program point
+and a typing rule applicable at the program point, checks the constraints enforced by the rule against the types at the current program point, attempts
+to compute a least method type, which is bigger than or equal to the last
+method type and satisfies the constraints enforced by the rule at each successor of the current program point. A failure will be reported if the constraints
+at the current program point are not satisfied, or the yielded method type is
+?.
+
+From now on, when discussing a particular typing rule, we can always
+use the general notations given at the beginning of Section 6 and the special
+notations in the formulation of the typing rule without explicitly saying.
+
+For formulating the algorithm, we need the following formal definitions.
+For each typing rule, if there is a variable assignment oe with
+
+Dom(oe) = FV(AC) [ f\Phi g
+such that AC is satisfied under oe, then the typing rule is said to be applicable
+under oe, at the program point oe(P ) or with respect to the method type oe(\Phi ).
+
+For each typing rule, if there is a variable assignment oe with
+
+Dom(oe) = FV(AC [ CC) [ f\Phi g
+such that
+
+- AC is satisfied under oe and
+- CC is satisfied under oe,
+
+then the typing rule is said to be pre-satisfied under oe.
+
+If a typing rule is pre-satisfied under oe and SC is satisfied under oe, then
+it is said to be satisfied under oe.
+
+16
+
+Input: The method Mth.
+Output: A method type or failure.
+Body:
+
+1. Let mty0 := ?.
+2. Assume that mtyk is the last obtained intermediate method type. Choose a
+
+typing rule and a variable assignment oe such that oe(\Phi ) = mtyk holds and the
+rule is applicable under oe. Let apply a rule take the rule and oe as arguments.
+
+(a) If apply a rule reports a failure, then the algorithm terminates with a
+
+failure;
+(b) otherwise, if apply a rule yields a method type different than mtyk, then
+
+let mtyk+1 be the yielded method type.
+3. Repeat the above step with k := k + 1, until the algorithm terminates with a
+
+failure, or apply a rule does not yield a new intermediate method type for every
+typing rule and variable assignment chosen as above. The algorithm terminates
+with either a failure or the last computed intermediate method type.
+
+Figure 6: The algorithm analyzer
+
+Input: A typing rule and a variable assignment oe such that the typing rule is
+applicable under oe.
+Output: A method type or failure.
+Body:
+
+1. Call the procedure find a subst for the given typing rule and oe. If the result
+
+is a variable assignment oe0 such that the method type
+
+oe0(\Phi )[oe0(P p)7!oe0(\Phi (P p)) t oe0(Pty) j \Phi (P p)wPty 2 SC]
+is not ?, then yield the method type;
+2. otherwise, report a failure.
+
+Figure 7: The procedure apply a rule
+
+17
+
+We formulate our algorithm analyzer in Figure 6. It produces a sequence
+of intermediate method types mty0; mty2; \Delta  \Delta  \Delta , and finally terminates with either a method type of the method Mth or a failure.
+
+The algorithm analyzer calls the procedure apply a rule in Figure 7 to
+compute an intermediate method type. The procedure apply a rule takes a
+typing rule and a variable assignment oe as arguments, where oe(\Phi ) is the
+last obtained mtyk. The reason for the procedure to take an entire variable
+assignment oe, instead of the single method type mtyk, is that AC part of a
+typing rule may contain other variables than \Phi , and that a variable assignment determines the assignment of these other variables as well.
+
+The procedure apply a rule calls the procedure find a subst in Figure 8
+to compute a variable assignment oe0 such that oe0(\Phi ) w mtyk and the typing
+rule is pre-satisfied under oe0, or reports a failure if such a oe0 does not exists.
+This implies that the procedure apply a rule checks the CC against the types
+at the current program point in the method type mty k.
+
+Note that the definition in Figure 8 is naive and inefficient. We could have
+written a more efficient one, but the proof would become complicated.
+
+Input: A typing rule and a variable assignment oe such that the typing rule is
+applicable under oe.
+Output: A variable assignment or failure.
+Body:
+
+1. Construct all variable assignments oe0 such that oe0jFV(AC)[f\Phi g w oe holds and
+
+the typing rule is pre-satisfied under oe0.
+2. If no such variable assignments exist, then reprot a failure;
+3. Otherwise, yield the result of applying the operation u to all these variable
+
+assignments.
+
+Figure 8: The procedure find a subst
+
+After the procedure find a subst returns, the procedure apply a rule attempts to compute a new method type mtyk+1, which should be bigger than
+mtyk, not be ?, and satisfy all constraints enforced by the typing rule.
+
+7.1 Example
+Figure 9 describes a computation of the method type in Figure 2 using the
+algorithm analyzer . Each row in Figure 9 records a program point type at
+a program point in an intermediate method type, together with some information about the application of a typing rule. The column "Step" contains
+numbers indicating the order of applications, the column "Rule" the names of
+the applied typing rules and the column "Succ's" all static successor program
+points. An application of a typing rule includes a check of the CC-part and a
+computation of a new program point type at each successor program point. If
+
+18
+
+more than one program point type has been computed at one program point,
+then from the second one on, only the changed parts are explicitly written.
+The last program point types for all program points are exactly those in
+Figure 2.
+
+P VT KT MD StepRule Succ.'s
+Method void m(int,int) 1 (1) 0
+0 [c;int;int;uu;uu] [] [] 2 (8) 5
+1 [c;uu;int;uu;uu] [] [] 16 (2) 2
+2 [c;uu;int;uu;uu] [c] [] 17 (3) 3
+3 [c;uu;c;uu;uu] [] [] 18 (8) 5
+4 [c;uu;c;uu;uu] [] [] 30 (7) returns
+5 [c;int;int;uu;uu] [mks(5)] [(5;fg)] 3 (3) 6
+
+[c;uu;uu;uu;uu] 19 (3) 6
+6 [c;int;int;mks(5);uu] [] [(5;f4g)] 4 (2) 7
+
+[c;uu;uu;mks(5);uu] 20 (2) 7
+7 [c;int;int;mks(5);uu] [c] [(5;f4g)] 5 (2) 8
+
+[c;uu;uu;mks(5);uu] 21 (2) 8
+8 [c;int;int;mks(5);uu] [c;c] [(5;f4g)] 6 (6) 11,9
+
+[c;uu;uu;mks(5);uu] 22 (6) 11,9
+9 [c;int;int;mks(5);uu] [] [(5;f4g)] 10 (2) 10
+
+[c;uu;uu;mks(5);uu] 23 (2) 10
+10 [c;int;int;mks(5);uu] [c] [(5;f4g)] 11 (3) 11
+
+[c;uu;uu;mks(5);uu] 24 (3) 11
+11 [c;int;int;mks(5);uu] [] [(5;f4g)] 7 (8) 12
+
+[c;uu;int;mks(5);uu] [(5;f2;4g)] 12 (8) 12
+[c;uu;uu;mks(5);uu] 25 (8) 12
+12 [c;int;int;mks(5);uu] [mks(12)] [(5;f4g); (12;fg)] 8 (3) 13
+
+[c;uu;int;mks(5);uu] [(5;f2;4g); (12;fg)] 13 (3) 13
+[c;uu;uu;mks(5);uu] 26 (3) 13
+13 [c;int;int;mks(5);mks(12)][] [(5;f4g); (12;f5g)] 9 (9)
+
+[c;uu;int;mks(5);mks(12)] [(5;f2;4g); (12;f5g)] 14 (9)
+
+15 (10) 1
+[c;uu;uu;mks(5);mks(12)] 27 (9)
+
+28 (10) 4
+29 (10) 1
+
+Figure 9: Computing the method type in Figure 1
+
+The computation has 30 application steps. Step 1 applies rule (1) and
+computes local variable types [c;int;int;uu;uu] and a stack type [] at 0. Step
+2 applies rule (8), checks the local variable types [c;int;int;uu;uu] and the
+stack type [] at 0 and computes local variable types [c;int;int;uu;uu] and a
+stack type [mks(5)] at 5, and so on.
+
+19
+
+After step 9, which applies rule (9), an application of rule (10) could
+be considered at 13. But we choose first to continue at 9 to consider the
+"else"-branch of if.acmeq.
+
+After step 14, which applies rule (9), we choose to consider an application
+of rule (10) at 13 as step 15. Now we have the modification history mod =
+[(5;f2; 4g); (12;f5g)], thus mlvsin(mod ; 5) = f2; 4; 5g, sbsin(mod; 5) = f5; 12g
+and modbef (mod ; 5) = []. Step 15 computes a program point type at 1. Local
+variables 4 and 5 at 1 have the type uu, since they have the subroutines
+types mks(5) and mks(12) at 13, where 4; 5 2 mlvsin(mod ; 5) and 5; 12 2
+sbsin(mod ; 5) hold. Local variable 2 at 1 has the type uu, covering that at
+13, since 2 2 mlvsin(mod ; 5) holds. Local variables 1 and 3 at 1 have its types
+c and int at 0, respectively, since 1; 3 62 mlvsin(mod; 5).
+
+Step 28 is an application of rule (10) at 13 with respect to the jsr at 3,
+computing a new program point type at 4. For the same reason as before,
+local variables 4 and 5 at 4 have the type uu, local variable 2 at 4 has the
+type uu, covering that at 13, local variable 1 and in particular local variable
+3 at 4 take their types c and c at 3, since 1; 3 62 mlvsin(mod ; 5). Note that
+local variable 3 at 13 has the type uu: it does not directly affect its type at
+4.
+
+8 Properties of the algorithm analyzer
+In this section we state the properties of the algorithm analyzer and focus on
+the proof of the completeness. Other proofs can be found in the full version of
+the paper (available under http://www.kestrel.edu/~qian/abs-jvmdflow).
+
+We use lvt and skt to range over all elements in the sort lst, where lvt
+stands for types of local variables and skt for types of stack entries.
+
+We say that a typing rule is pre-satisfiable at a program point pp and/or
+with respect to a method type mty if and only if the typing rule is pre-satisfied
+under a variable assignment oe with oe(P ) = pp and oe(\Phi ) = mty.
+
+For a method type mty, we define that reachmty(pp; pp0) holds if and only
+if there are a typing rule and a variable assignment oe such that the rule
+is applicable under oe, oe(\Phi ) = mty, oe(P ) = pp and oe(P p) = pp0 for some
+\Phi (P p) w Pty 2 SC.
+
+We write reach\Lambda mty(pp; pp0) to denote that reachmty(ppi; ppi+1) hold for
+i = 1; \Delta  \Delta  \Delta  ; n with n * 0 with pp = pp1 and ppn+1 = pp0. Note that if n = 0
+then pp = pp0.
+
+Intuitively, the relation reach\Lambda mty(pp; pp0) means that there may exist an
+execution path from pp to pp0 with respect to mty. The mty is necessary in
+determining the path, since a ret needs a memory type of the given local
+variable to determine the successor program point.
+
+The procedure find a subst is said to be monotone with respect to a
+typing rule if it satisfies that for any variable assignments oe1 and oe2, if the
+tying rule is applicable under oei for i = 1; 2, find a subst yields oe0i for the
+typing rule and oei for i = 1; 2 and oe1 w oe2, then oe01 w oe02 holds.
+
+20
+
+The procedure apply a rule is said to be monotone with respect to a typing
+rule if it satisfies the similar condition as above, where the resulting variable
+assignments oe1 and oe2 of find a subst are replaced by the resulting method
+types mty01 and mty02 of apply a rule.
+
+A method type mty is called a fixed point restricted to a typing rule and
+a variable assignment oe if and only if whenever the typing rule is applicable
+under oe and oe(\Phi ) = mty holds, there is a variable assignment oe0 such that
+the typing rule is satisfied under oe0 and oe0jFV(AC)[f\Phi g = oe holds. A method
+type mty is called a fixed point if and only if, it is a fixed point restricted to
+each typing rule and each variable assignment.
+
+Intuitively, if analyzer terminates with a method type, then the method
+type should be a fixed point.
+
+8.1 Basic properties
+Lemma 1. Assume that mks(pp) is a subroutine type and cn an arbitrary
+class. Let ty, ty0 and ty00 be three types.
+
+1. If ty u ty0 2 fint; mks(pp)g for some pp, then either ty = ty u ty0 or
+
+ty0 = ty u ty0.
+2. If ty t ty0 2 fint; mks(pp)g for some pp, then either ty = ty t ty0 or
+
+ty0 = ty t ty0.
+3. If ty w ty0, ty0 6= ? and ty 2 fint; mks(pp)g for some pp, then ty = ty0.
+4. If ty w ty0, ty0 6= ? and ty0 6= int (or ty0 6= mks(pp) for some pp), then
+
+ty 6= int (or ty 6= mks(pp), respectively).
+5. If ty w ty0 and ty w ty00 with ty0; ty00 2 fint; mks(pp); cng for some pp
+
+and cn and ty0 6= ty00, then ty = uu.
+6. If ty0 w ty and ty00 w ty with ty0; ty00 2 fint; mks(pp); cng for some pp
+
+and cn and ty0 6= ty00, then ty = ?.
+
+Proof. Follows directly from the definition. \Lambda 
+
+Lemma 2. If a typing rule is satisfied under oe, then the typing rule is presatisfied under oe. If a typing rule is pre-satisfied under oe, then the typing
+rule is applicable under oejFV(AC)[f\Phi g.
+
+Proof. Follows directly from the definitions. \Lambda 
+
+Each typing rule has the property that if it is applicable or pre-satisfied
+under a variable assignment oe, then the entire variable assignment oe can be
+uniquely determined by the variable assignment restricted to FV(AC) [ f\Phi g.
+Furthermore, each typing rule has the property that the relation w on those
+variable assignments oe, under which the rule is applicable or pre-satisfied, is
+determined by the relation w on oe(\Phi ).
+
+21
+
+Lemma 3. For each typing rule, if oe1 and oe2 are two variable assignments,
+under which the typing rule is applicable or pre-satisfied, then the following
+hold:
+
+1. If oe1(X) = oe2(X) for all X 2 FV(AC) [ f\Phi g, then oe1 = oe2 holds.
+2. oe1 w oe2 holds if and only if oe1(\Phi ) w oe2(\Phi ) holds.
+3. oe1 A oe2 holds if and only if oe1(\Phi ) A oe2(\Phi ) holds.
+
+Proof.
+
+1. It is straightforward to check that if the typing rule is not (10), then
+
+oe1(P ) = oe2(P ) and oe1(\Phi ) = oe2(\Phi ) imply that oe1 = oe2, and that if
+the typing rule is rule (10), then oe1(P ) = oe2(P ), oe1(\Phi ) = oe2(\Phi ) and
+oe1(P 0) = oe2(P 0) imply that oe1 = oe2.
+2. Follows by an easy examination of each typing rule.
+3. Follows by an easy examination of each typing rule.
+
+\Lambda 
+
+It is useful to have the property that if a typing rule is applicable at
+a program point pp with respect to a method type mty, then it remains
+applicable at pp with respect to every method type mty0 with mty0 w mty
+and mty0 6= ?. In reality we have the property for all typing rules except
+rule (10).
+
+Lemma 4. Assume that a typing rule is applicable under a variable assignment oe. Let mty0 be an arbitrary method type with mty0 w oe(\Phi ) and
+mty0 6= ?. Then the following assertions always hold:
+
+1. If the typing rule is not rule (10), then there is always a variable assignment oe0 with oe0(\Phi ) = mty0 and oe0 w oe such that the typing rule is
+applicable under oe0.
+2. If the typing rule is rule (10), then either there is a variable assignment
+
+oe0 with oe0(\Phi ) = mty0 and oe0 w oe such that rule (10) is applicable under
+oe0 or rule (9) is applicable but not pre-satisfiable at oe0(P ) with respect to
+mty0
+
+Proof. The proof of assertion 1 follows by an easy examination of each typing
+rule. To prove assertion 2, we note that the AC part of rule (10) requires the
+existence of a ret that uses a local variable with a corresponding subroutine
+type. Actually the fact that this condition holds for oe(\Phi ) does not imply that
+this condition holds for mty0. However, if this condition does not hold for
+mty0, rule (9) is not pre-satisfiable at the program point of the ret. \Lambda 
+
+If rule (9) is applicable but not pre-satisfiable at a program point with
+respect to a method type in an ascending chain of method types, then it is
+applicable but not pre-satisfiable at the same program point with respect to
+each method type after the method type.
+
+22
+
+Lemma 5. If rule (9) is applicable but not pre-satisfiable at a program point
+with respect to a method type mty1, then rule (9) is applicable but not presatisfied at the same program point with respect to each mty2 with mty2 w
+mty1 and mty2 6= ?.
+
+Proof. Assume that rule (9) is applicable but not pre-satisfiable at pp with
+respect to mty1. Then mty1(pp) 6= ?, and for each a variable assignment
+oe1 such that oe1(P ) = pp and oe1(\Phi ) = mty1, we have that oe1(I ) = ix and
+Mth(pp) = ret ix for some ix , lvt1(ix ) 6= ? for the lvt1 in mty1(pp), and at
+least one of the following is true:
+
+1. lvt1(ix ) is not of the form mks(\Delta  \Delta  \Delta ).
+2. lvt1(ix ) = lvt01(ix 0) for some pp0 and ix 0 with Mth(pp0) = ret ix 0, pp 6= pp0
+
+and mty1(pp0) 6= ?, where lvt01 is in mty1(pp0).
+
+By Lemma 4, there is a variable assignment oe2 such that oe2 w oe1 holds and
+rule (9) is applicable under oe2. This means that oe2(P ) = pp, oe2(\Phi ) = mty2,
+mty2(pp) 6= ?, oe2(I ) = ix and lvt2 w lvt1 for the lvt2 in mty2(pp).
+
+In the case 1 above, by lvt1(ix ) 6= ? and Lemma 1(4), lvt2(ix ) is not of
+the form mks(\Delta  \Delta  \Delta ). Thus rule (9) is applicable but not pre-satisfiable at pp
+with respect to mty2.
+
+Assume that the case 1 is not true, i.e. that lvt1(ix ) is of the form mks(\Delta  \Delta  \Delta ).
+Then the case 2 must be true, i.e. lvt1(ix ) = lvt01(ix 0) holds for some pp0, ix 0
+and lvt01 as required in the case 2.
+
+We assume that lvt2(ix ) is of the form mks(\Delta  \Delta  \Delta ); otherwise we know that
+rule (9) is not pre-satisfiable at pp with respect to mty2 and we are done.
+
+Now consider whether lvt2(ix ) = lvt02(ix 0) holds for the pp0 and ix 0 in the
+case 2 and lvt02 in mty2(pp0). If it holds, then rule (9) is applicable but not
+pre-satisfiable at pp with respect to mty2, and thus we are done. If it does
+not hold, then since lvt2(ix ) is of the form mks(\Delta  \Delta  \Delta ), lvt02(ix 0) is not. Since
+Mth(pp0) = ret ix 0, rule (9) is applicable but not pre-satisfiable at pp0 with
+respect to mty2. Hence, the assertion of the lemma holds. \Lambda 
+
+Let us now state a property of the operation u.
+Lemma 6. For every typing rule, if the typing rule is applicable under a variable assignment oe and pre-satisfied under two variable assignments oei with
+oeijFV(AC)[f\Phi g w oe for i = 1; 2, then oe1 u oe2 denotes a variable assignment,
+and the typing rule is pre-satisfied under oe1 u oe2.
+
+Proof. The proof follows by examining each typing rule. Let oe0 = oe1 u oe2.
+By the assumption given in the assertion of the lemma and the definition of
+oe1 u oe2, we have that oe0jFV(AC)[f\Phi g w oe and oei w oe0, in particular, oei(P ) =
+
+oe0(P ) = oe(P ) and oei(\Phi ) w oe0(\Phi ) w oe(\Phi ) for i = 1; 2.
+
+Now it is straightforward to prove the assertion of the lemma for each typing rule except rule (9). We consider only rule (9) here. The rule is obviously
+
+23
+
+applicable under oe0jFV(AC)[f\Phi g. Assume that rule (9) is not pre-satisfied under
+oe0. Then one of the following two cases is true, where oe0(\Phi )(oe0(P )) contains
+lvt0:
+
+1. lvt0(oe0(I )) is not of the form mks(\Delta  \Delta  \Delta ) .
+2. lvt0(oe0(I )) = lvt01(ix 01) for some pp01, ix 01 and lvt01, where Mth(pp01) =
+
+ret ix 01, oe0(P ) 6= pp01, oe0(\Phi )(pp01) 6= ?, and oe0(\Phi )(pp01) contains lvt01.
+
+Each of these two cases implies that rule (9) is not pre-satisfiable at oe0(P )
+with respect to oe0(\Phi ). By Lemma 5, rule (9) is not pre-satisfiable under oei
+for i = 1; 2. Thus we have that rule (9) is pre-satisfied under oe0. \Lambda 
+
+The reachability defined at the beginning of this section has the property
+that it is preserved under the increase of the indexed method type unless
+rule (9) is applicable but not pre-satisfiable.
+
+Lemma 7. If reachmty(pp; pp0) holds for two program points pp and pp0 and
+a method type mty, then reachmty0 (pp; pp0) holds for every method type mty0
+with mty0 w mty, unless rule (9) is applicable but not pre-satisfiable at a
+program point with respect to mty 0.
+
+Proof. Follows from the definition of reachmty and reachmty0, and Lemma 4.
+
+\Lambda 
+
+The procedure find a subst always yields a variable assignment that is
+the least one in some sense, or a yields failure.
+
+Lemma 8. Let find a subst take as arguments a typing rule and a variable
+assignment oe such that the rule is applicable under oe. If there is a variable
+assignment oe0 such that oe0jFV(AC)[f\Phi g w oe holds and the typing rule is presatisfied under oe0, then the procedure yields the least one among all these
+variable assignments; otherwise, i.e. if there are no variable assignments like
+oe0 in the above, then the procedure yields a failure.
+
+Proof. Follows directly from the description in Figure 8 and Lemma 6. \Lambda 
+
+It is not difficult to prove that the sequence of intermediate method types
+is an ascending chain of intermediate method types.
+
+Lemma 9. If analyzer does not yield a failure, then it produces a finite ascending chain of intermediate method types mty0 @ mty1 @ \Delta  \Delta  \Delta  @ mtyn.
+
+Proof. Assume that mtyk is the last obtained intermediate method type in
+the execution of analyzer . Choose a typing rule and a variable assignment oe
+as required in analyzer . By Lemma 8, if it does not fail, then find a subst in
+apply a rule yields a variable assignment oe0 with oe0(\Phi ) w oe(\Phi ). Furthermore,
+if it does not fail, apply a rule yields the method type
+
+mtyk+1 = oe0(\Phi )[oe0(P p) 7! oe0(\Phi (P p)) t oe0(Pty) j \Phi (P p) w Pty 2 SC]
+
+24
+
+Since oe0(\Phi (P p)) t oe0(Pty) w oe0(\Phi (P p)) always holds, mtyk+1 w oe0(\Phi ) and
+thus mtyk+1 w oe(\Phi ) = mtyk. Thus if mtyk+1 6= mtyk, then mtyk+1 A mtyk.
+
+The chain mty0 @ mty1 @ \Delta  \Delta  \Delta  is always finite, since there are only finitely
+many method types. \Lambda 
+
+8.2 Correctness of the algorithm analyzer
+Now we can prove that analyzer yields a fixed point.
+Lemma 10. If analyzer does not fail and terminates with a method type
+mty, then mty is a fixed point.
+
+Proof. We need to prove that whenever a typing rule is applicable under a
+variable assignment oe and oe(\Phi ) = mty holds, there is a variable assignment
+oe0 such that the typing rule is satisfied under oe0 and oe0jFV(AC)[f\Phi g = oe holds.
+
+Assume that there is a typing rule and a variable assignment oe as required.
+Thus analyzer must have called apply a rule and find a subst, find a subst
+must have computed a variable assignment oe0, and apply a rule must have
+yielded
+
+oe0(\Phi )[oe0(P p) 7! oe0(\Phi (P p)) t oe0(Pty) j \Phi (P p) w Pty 2 SC]
+which is equal to mty. By Lemma 8, oe0jFV(AC)[f\Phi g w oe and the typing
+rule is pre-satisfied under oe0. By the standard property of t, we have that
+oe0(\Phi (P p)) w oe0(Pty) and thus oe0(\Phi ) = mty = oe(\Phi ). The fact that oe0(\Phi (P p)) w
+oe0(Pty) hold for all \Phi (P p) w Pty 2 SC implies that the typing rule is
+satisfied under oe0. By Lemma 3, the fact that oe0(\Phi ) = oe(\Phi ) implies that
+oe0jFV(AC)[f\Phi g = oe. Thus the assertion of the lemma holds. \Lambda 
+
+The correctness of analyzer is formulated in the following theorem.
+Theorem 11. (Correctness) If the algorithm analyzer yields a method type
+mty, then the method Mth has the method type mty.
+
+Proof. Let us use the notations in the definition of method types of Mth (in
+Section 6). Consider an arbitrary typing rule and a variable assignment oe
+with Dom(oe) = Q [ f\Phi g and oe(\Phi ) = mty such that AC is satisfied under
+oe. Thus the typing rule is applicable under oe. By Lemma 10, mty is a fixed
+point. By the definition of fixed points, there is a variable assignment oe0
+such that the typing rule is satisfied under oe0 and oe0jFV(AC)[f\Phi g = oe holds.
+
+Therefore, Dom(oe0) = Q [ Q0 [ f\Phi g holds and CC [ SC is satisfied under oe0.
+Since the typing rule and oe have been arbitrarily chosen, the assertion of the
+theorem holds. \Lambda 
+
+25
+
+8.3 Termination of the algorithm analyzer
+The termination of the algorithm analyzer is easy to prove.
+
+First of all, the termination of find a subst and apply a rule can be easily
+established.
+
+Lemma 12. If all defined functions used in typing rules are terminating,
+then find a subst is terminating.
+
+Proof. Follows from the facts that there are only finitely many variable assignments and that the check of constraints is terminating. \Lambda 
+
+Lemma 13. If all defined functions used in typing rules are terminating,
+then apply a rule is terminating.
+
+Proof. Follows from the fact that the check of constraints is terminating and
+from Lemma 12. \Lambda 
+
+Theorem 14. (Termination) If all defined functions used in typing rules are
+terminating, then the algorithm analyzer is terminating.
+
+Proof. Follows easily from Lemmas 13 and 9. \Lambda 
+
+8.4 Monotonicity properties
+Lemma 9 states that if the algorithm analyzer does not yield a failure, then
+it produces a finite ascending chain of intermediate method types. Now in
+order to prove that such a chain will be approaching to a method type of the
+method Mth but not jump over it, we prove that all intermediate method
+types produced by analyzer are smaller than or equal to a method type of
+the method Mth.
+
+Lemma 15. If it does not fail, then the procedure find a subst is monotone
+with respect to each typing rule.
+
+Proof. Consider an arbitrary typing rule, and two arbitrary variable assignments oei for i = 1; 2 such that the typing rule is applicable under oei and
+oe1 w oe2 holds.
+
+The procedure find a subst takes the typing rule and oei for i = 1 or 2,
+and if it does not fail, then by Lemma 8, it yields the least one oe0i among all
+variable assignments oe00i such that the typing rule is pre-satisfied under oe001 ,
+and
+
+oe00i jFV(AC)[f\Phi g w oei:
+
+Since the set of all oe001 for the case i = 1 is a subset of all oe002 for the case
+i = 2, oe01 w oe02 holds. \Lambda 
+
+26
+
+Lemma 16. If it does not fail, then the procedure apply a rule is monotone
+with respect to each typing rule that is not rule (10).
+
+Proof. Consider an arbitrary typing rule that is not rule (10), and two arbitrary variable assignments oei for i = 1; 2 such that the typing rule is applicable under oei and oe1 w oe2 holds.
+
+First, apply a rule calls find a subst. if it does not fail, then find a subst
+takes the typing rule and oei and yields oe0i. The procedure apply a rule returns
+
+mty0i = oe0i(\Phi )[oe0i(P p) 7! oe0i(\Phi (P p)) t oe0i(Pty) j \Phi (P p) w Pty 2 SC]
+for i = 1; 2.
+
+By Lemma 15, oe01 w oe02 holds.
+By examining each possible typing rule, it is easy to check that if \Phi (P p) w
+Pty 2 SC, then FV(P p) does not contain variables of a sort with a w relation.
+By the definition of oe01 w oe02, we know that oe01(X) = oe02(X) for all X 2
+FV(P p). Thus oe1(P p) = oe2(P p).
+
+Again by examining each possible typing rule, since oe01 w oe02, it is straightforward to check that oe01(Pty) w oe02(Pty) for each \Phi (P p) w Pty 2 SC. Thus
+we have that mty01 w mty02. Hence the assertion of the lemma is true. \Lambda 
+
+In general, the monotonicity of apply a rule with respect to rule (10)
+does not hold. Fortunately, we can prove a more restricted result, which is
+still enough for our purpose. First we give two lemmas.
+
+Lemma 17. Assume that the algorithm analyzer produces a sequence of intermediate method types mty0, mty1, \Delta  \Delta  \Delta , mtyk. Let pp be a program point,
+mtyk(pp) of the form (\Delta  \Delta  \Delta  ; mod) and sb a subroutine.
+
+1. If mod is of the form [(sbf ; f\Delta  \Delta  \Delta g); (sb; f\Delta  \Delta  \Delta g); \Delta  \Delta  \Delta ], then there are program points pp1; \Delta  \Delta  \Delta  ; ppn+1 with n * 0, sb = pp1 and ppn+1 = pp such
+that reachmtyk (ppi; ppi+1) for i = 1; \Delta  \Delta  \Delta ; n, unless rule (9) is applicable but not pre-satisfiable at a program point with respect to mty k, and
+that mtyk(ppi) is of the form (\Delta  \Delta  \Delta  ; modi), where mod1 is of the form
+[(sbf ; f\Delta  \Delta  \Delta g); (sb; f\Delta  \Delta  \Delta g)] and mod i for i = 2; \Delta  \Delta  \Delta  ; n + 1 are of the form
+[(sbf ; f\Delta  \Delta  \Delta g); (sb; f\Delta  \Delta  \Delta g); \Delta  \Delta  \Delta ].
+2. If j 62 mlvsin(mod ; sb) for a local variable j, then the above program points
+
+pp1; \Delta  \Delta  \Delta  ; ppn+1 can be so chosen that in addition to the above conditions,
+Mth(ppi) 6= astore j and Mth(ppi) 6= istore j hold for i = 1; \Delta  \Delta  \Delta ; n.
+
+Proof. By the algorithm analyzer , there must be method types mty hi for
+i = 1; \Delta  \Delta  \Delta  ; n among mty0; \Delta  \Delta  \Delta ; mtyk such that reachmtyh
+
+i (ppi; ppi+1) holds forall i = 1; \Delta  \Delta  \Delta  ; n and mty
+
+hi (ppi) is of the form (\Delta  \Delta  \Delta  ; modhi ) with modi being
+of the form [(sbf ; f\Delta  \Delta  \Delta g); (sb; f\Delta  \Delta  \Delta g); \Delta  \Delta  \Delta ]. By Lemma 9, mtyk w mtyhi for all
+i = 1; \Delta  \Delta  \Delta  ; n. By Lemma 7, assertion 1 is true.
+
+The proof of assertion 2 is straightforward. \Lambda 
+
+27
+
+Lemma 18. Let mty be a fixed point, and ppi for i = 1; \Delta  \Delta  \Delta  ; n + 1 with n * 0
+be program points, where mty(ppi) = (lvti; \Delta  \Delta  \Delta  ; modi). If reachmty(ppi; ppi+1),
+modi+1 contains mod1 as prefix, Mth(ppi) 6= astore j and Mth(ppi) 6=
+istore j for local variable j and all i = 1; \Delta  \Delta  \Delta ; n, then lvtn+1(j) w lvt1(j)
+
+Proof. We proceed by induction on n.
+
+If n = 0, then lvtn+1(ix ) w lvt1(ix ) trivially holds. Now we assume that
+lvti(ix ) w lvt1(ix ) holds for i ^ n and prove the assertion of the lemma.
+
+We consider all possible typing rules inducing reachmty(ppn; ppn+1), which
+are neither rule (3), nor (5) nor (10). Since mty is a fixed point, by an easy
+examination of all possible typing rules, we know that lvtn+1(ix ) w lvtn(ix )
+holds. Thus by induction assumption, lvtn+1(ix ) w lvt1(ix ) holds.
+
+If rule (10) induces reach mty(ppn; ppn+1), since modi+1 contains mod 1
+as prefix for all i = 1; \Delta  \Delta  \Delta  ; n, then modn must be of the form mod 1 +
+[\Delta  \Delta  \Delta ; (sb; \Delta  \Delta  \Delta ); \Delta  \Delta  \Delta ] such that Mth(ppn) = ret \Delta  \Delta  \Delta  and the instruction at ppn
+returns from the subroutine sb. Thus there is g with 1 ^ g ! n such that
+Mth(ppg) = jsr sb, ppg+1 = sb and ppn+1 = ppg + 1. Now consider the
+sequence ppi for i = 1; \Delta  \Delta  \Delta ; g, and the sequence ppi, for i = g; \Delta  \Delta  \Delta  ; n. By induction assumption, we have lvtg(ix ) w lvt1(ix ) and lvtn(ix ) w lvtg(ix ). By
+rule (10), we know that either lvtn+1(ix ) w lvtg(ix ) or lvtn+1(ix ) w lvtn(ix ).
+In both cases, the assertion of the lemma holds. \Lambda 
+
+Now we are ready to prove restricted monotonicity of apply a rule with
+respect to rule (10).
+
+Lemma 19. Assume that the algorithm analyzer produces a sequence of intermediate method types mty0, mty1, \Delta  \Delta  \Delta , mtyk. Let oei for i = 1; 2 be two
+variable assignments such that rule (10) is applicable under oei, oe1 w oe2
+holds. In addition, we assume that oe1(\Phi ) is a fixed point, oe2(\Phi ) = mtyk, and
+there are no program points where rule (9) is applicable but not pre-satisfiable
+with respect to mtyk. Assume that apply a rule takes rule (10) and oe2, and
+yields a method type mtyk+1, then oe1(\Phi ) w mtyk+1 holds.
+
+Proof. Assume that oei for i = 1; 2, and mtyi for i = 0; \Delta  \Delta  \Delta ; k+1, are given as in
+the assertion of the lemma. Since oe1(\Phi ) is a fixed point, applying apply a rule
+to rule (10) and oe1 does not fail.
+
+Let apply a rule take rule (10) and oei for i = 1; 2, respectively. Since it
+does not fail, apply a rule first invokes find a subst, which takes the typing
+rule and oei. By the special form of rule (10), find a subst yields the same oei
+as result. Then apply a rule returns mty 0i for i = 1; 2 with
+
+mty0i = oei(\Phi )[oei(P p) 7! oei(\Phi (P p)) t oei(Pty) j \Phi (P p) w Pty 2 SC]
+for i = 1; 2. Note that mty01 = oe1(\Phi ) and mty02 = mtyk+1.
+
+From the construction of mty01 and mty02, it is straightforward to see that
+if oe1(Pty) w oe2(Pty) is true for \Phi (P p) w Pty in the SC of rule (10), then
+mty01 w mty02, i.e. the assertion of the lemma is true.
+
+28
+
+Let us use the notations in rule (10) and define additional notations satisfying that for i = 1; 2,
+
+pp = oei(P )
+pp0 = oei(P 0)
+sb = oei(S )
+(lvti; skti; modi) = oei(\Phi (P ))
+
+where oei(VT ) = lvti oei(KT ) = skti oei(MD ) = mod i
+(lvt0i; skt0i; mod0i) = oei(\Phi (P 0))
+
+where oei(VT 0) = lvt0i oei(KT 0) = skt0i oei(MD0) = mod 0i
+
+Since oe1 w oe2, we have
+
+lvt1 w lvt2; skt1 w skt2; mod1 w mod 2;
+lvt01 w lvt02; skt01 w skt02; mod01 w mod 02:
+
+Let us define ti; si and mi for i = 1; 2 as follows:
+
+ti = lvt0i[j 7! chuu(lvti(j); sbsin(mod i; sb)) j j 2 mlvsin(modi; sb)]
+si = chuulis(skti; sbsin(mod i; sb))
+mi = addmlvs(mlvsin(modi; sb); modbef (mod i; sb))
+
+Then we have that oei(Pty) = (ti; si; mi) for i = 1; 2. Now we need to prove
+that t1 w t2, s1 w s2 and m1 w m2.
+
+Since mod 1 w mod 2, we have that mlvsin(mod 1; sb) ' mlvsin(mod2; sb),
+sbsin(mod 1; sb) = sbsin(mod2; sb) and modbef (mod 1; sb) w modbef (mod 2; sb).
+Thus m1 w m2 holds.
+
+In order to prove that t1 w t2, we prove that t1(j) w t2(j) for each j. We
+need only to distinguish between three cases for j:
+
+- If j 62 mlvsin(mod i; sb) for i = 1; 2, then ti(j) = lvt0i(j). By lvt01 w lvt02,
+
+t1(j) w t2(j).
+- If j 2 mlvsin(mod1; sb) but j 62 mlvsin(mod 2; sb), then
+
+t1(j) = chuu(lvt1(j); sbsin(mod 1; sb)) and
+t2(j) = lvt02(j):
+
+By lvt01 w lvt02, lvt01(j) w lvt02(j). Since j 62 mlvsin(mod 2; sb), by Lemma 17,
+there are program points pp1; \Delta  \Delta  \Delta  ; ppn+1 with n * 0, sb = pp1 and
+ppn+1 = pp such that
+
+ffl reachmtyk(ppi; ppi+1) for i = 1; \Delta  \Delta  \Delta  ; n,
+
+ffl mtyk(pp1) is of the form (\Delta  \Delta  \Delta  ; [sbf 7! f\Delta  \Delta  \Delta g; sb 7! f\Delta  \Delta  \Delta g]) and mtyk(ppi)
+
+for i = 2; \Delta  \Delta  \Delta  ; n+1 are of the forms (\Delta  \Delta  \Delta  ; [sbf 7! f\Delta  \Delta  \Delta g; sb 7! f\Delta  \Delta  \Delta g; \Delta  \Delta  \Delta ]),
+and
+ffl Mth(ppi) 6= astore j and Mth(ppi) 6= istore j for i = 1; \Delta  \Delta  \Delta ; n.
+Since oe1(\Phi ) w oe2(\Phi ) holds and oe1(\Phi ) is a fixed point, by Lemma 18, then
+
+lvt1(j) w lvt01(j). Since t1(j) w lvt1(j) always holds, we have that
+
+t1(j) w lvt1(j) w lvt01(j) w lvt02(j) = t2(j):
+
+29
+
+- If j 2 mlvsin(modi; sb) for i = 1; 2, then
+
+ti(j) = chuu(lvti(j); sbsin(modi; sb)):
+We distinguish between whether lvt1(j) is of the form mks(\Delta  \Delta  \Delta ).
+
+ffl Assume that it is the case. By lvt1(j) w lvt2(j) 6= ?, lvt1(j) = lvt2(j).
+
+Since sbsin(mod 1; sb) = sbsin(mod 2; sb), t1(j) = t2(j).
+ffl Assume that it is not the case. If lvt2(j) is of the form mks(\Delta  \Delta  \Delta ), then
+
+by lvt1(j) w lvt2(j), lvt1(j) = uu. Hence t1(j) w t2(j). If lvt2(j) is
+not of the form mks(\Delta  \Delta  \Delta ), then t1(j) = lvt1(j) w lvt2(j) = t2(j).
+
+The proof for s1 w s2 is similar to but simpler than that for t1 w t2. We
+omit the details. \Lambda 
+
+8.5 Completeness of the algorithm analyzer
+The first thing is to prove that each method type of Mth is a fixed point.
+Lemma 20. If the method Mth has a method type, then the method type is
+a fixed point.
+
+Proof. Let us use the notations in the definition of method types of Mth (in
+Section 6). Assume that Mth has a method type mty. Consider an arbitrary
+typing rule and an arbitrary oe with oe(\Phi ) = mty such that the typing rule
+is applicable under oe. Then Dom(oe) = Q [ f\Phi g holds and AC is satisfied
+under oe. Since the method Mth has the method type mty, there is a variable
+assignment oe0 such that Dom(oe0) = Q [ Q0 [ f\Phi g and oe0jQ[f\Phi g = oe hold and
+
+CC [ SC is satisfied under oe0. Thus the typing rule is satisfied under oe0. Since
+the typing rule and oe have been arbitrarily chosen, mty is a fixed point. \Lambda 
+
+Now we can prove that if there is a fixed point, then all intermediate
+method types produced by analyzer are smaller than or equal to it.
+
+Lemma 21. Assume that the algorithm analyzer produces a sequence of intermediate method types mty0; mty1; \Delta  \Delta  \Delta  ; mtyk such that there are no program
+points where rule (9) is applicable but not pre-satisfiable with respect to mty i
+for some 0 ^ i ^ k. Let mty be a fixed point. Then mty w mtyi hold for all
+i = 0; 1; \Delta  \Delta  \Delta ; k.
+
+Proof. Follows easily by an induction on k, using Lemmas 16 and 19. \Lambda 
+
+In order to show that if analyzer can yield a failure, then the method Mth
+has no method types, we need the following lemma:
+
+30
+
+Lemma 22. For any typing rule and any variable assignment oe1, if the typing rule is applicable under oe1 and apply a rule yields a failure for the typing
+rule and oe1, then for each method type mty 0 with mty0 w oe1(\Phi ), there is a
+variable assignment oe2 with oe2(\Phi ) = mty0 such that apply a rule yields a
+failure for the same typing rule or rule (9) and oe2.
+
+Proof. Assume that there are a typing rule, oe1 and mty0 as required. Since
+the typing rule is applicable under oe1 and mty0 w oe1(\Phi ) holds, by Lemma 4,
+either
+
+1. there is oe2 with oe2(\Phi ) = mty0 and oe2 w oe1 such that the typing rule is
+
+applicable under oe2, or
+2. rule (9) is applicable but not pre-satisfiable with respect to mty0.
+
+The case 2 directly implies the assertion of the lemma.
+Consider the case 1. In general, there are only two possibilities where
+apply a rule yields a failure for the typing rule and oe1. The first is when
+find a subst yields a failure for the typing rule and oe1, i.e. when there are
+no oe01 such that oe01jFV(AC)[f\Phi g w oe1 holds and the typing rule is pre-satisfied
+under oe01. Therefore, since oe2 w oe1, there are no oe02 such that oe02jFV(AC)[f\Phi g w
+oe2 holds and the typing rule is pre-satisfied under oe02. Hence find a subst
+yields a failure for the typing rule and oe2.
+
+The second possibility is that find a subst yields oe01 for the typing rule
+and oe1, but oe01(\Phi (P p)) t oe01(Pty) = ? for some \Phi (P p) w Pty 2 SC. In this
+case, we need to consider whether find a subst yields a variable assignment
+oe02 for the typing rule and oe2. If it does not, then we know directly that
+apply a rule yields a failure for the typing rule and oe2; if it does, then since
+oe02 w oe01, we have that oe02(\Phi (P p)) t oe02(Pty) = ?. Thus apply a rule yields a
+failure for the typing rule and oe2. \Lambda 
+
+We are ready to prove the completeness, i.e that if Mth is statically welltyped, then analyzer always yields a method type of Mth.
+
+Theorem 23. (Completeness) If Mth has a method type mty, then the algorithm analyzer will yield a method type mty0 of Mth with mty w mty0.
+
+Proof. Assume that Mth has a method type mty. By Lemma 20, mty is a fixed
+point. By Lemma 21, all intermediate method types mtyk for k = 0; 1; \Delta  \Delta  \Delta ,
+produced by analyzer satisfy that mty w mtyk. Since mty is a fixed point, by
+Lemma 22, analyzer does not yield a failure. By Theorems 14, the algorithm
+will yield a method type mtyn for some finite n. Note that mty w mty n. By
+Theorem 11, mtyn is a method type of Mth. \Lambda 
+
+In fact, the above theorem directly implies the following corollary:
+Corollary 24. (Least-type property) If Mth is statically well-typed, then analyzer
+will always terminate with the least method type of it.
+
+31
+
+9 Related work
+Stata and Abadi [10] proposed a type system for subroutines, provided lengthy
+proofs for the soundness of the system and clarified several key semantic
+issues about subroutines. Freund and Mitchell [2] made a significant extension of Stata and Abadi's type system by considering object initialization. Qian [8] presented a constraint-based typing system for objects, primitive values, methods and subroutines and proved the soundness. Hagiya and
+Tozawa [4] presented another type system for subroutines, where the soundness proof is extremely simple. Pusch [7] formalized a subset of JVM in the
+theorem prover Isabelle/HOL and reached a higher degree of reliability. Recently, O'Callahan [6] proposed yet another typing system based on type
+constraints, polymorphic recursion and continuations. All this work basically
+aimed at defining what types memory locations should have, did not consider how to develop a provably-correct implementation to compute types for
+memory locations.
+
+Hagiya and Tozawa [4] discussed issues on an implementation of their
+type system, but did not formally describe the implementation. In addition,
+since they did not consider objects, their implementation may not encounter
+the problems we have here.
+
+Goldberg [3] directly used dataflow analysis to formally specify bytecode
+verification focusing on type-correctness and global type consistency for dynamic class loading. He gave transfer functions that correspond to the use of
+typing rules in our algorithm. But he did not give a logical interpretation for
+the transfer functions. In addition, since he did not consider subroutines, he
+did not encounter the problems we discuss in this paper.
+
+Although all the approaches mentioned above look different and deal with
+different subsets of JVM instructions, they all, except [6], directly or indirectly handle flow analysis in some ways. Thus the correspondences are quite
+straightforward.
+
+A previous version of the current paper proposed an algorithm where the
+application of rule (10) needs to be restricted. The current paper shows that
+the restriction can be removed.
+
+In summary, to our knowledge, there has not been much work formally
+proving the existence of least types, formalizing algorithm that computes
+types to memory locations in Java bytecode and proving properties of the
+algorithm. Indeed, our proofs need to make use of the special properties of
+the jsr and ret instructions.
+
+10 Conclusion
+We have proposed a non-deterministic algorithm, which attempts to assign,
+to memory locations in bytecode, types satisfying a set of typing rules. We
+have formally proved that the algorithm is terminating, and yields the least
+
+32
+
+assigned types if there are any, or reports a failure if there are none. We
+have implicitly proved the existence of least types for memory locations in
+bytecode if there are any.
+
+Although it has been obtained in the context of a particular approach,
+we strongly conjecture that the result on the existence of least types can
+be carried over to other approaches that directly or indirectly handle flow
+analysis. (But we cannot make the conjecture for the approach in [6].)
+
+Our algorithm directly uses the formulation of typing rules in its computation. In other approaches, there may be a gap between the typing rules and
+an algorithm that computes least types. As an example, consider the type
+system by Stata and Abadi [10]. In that system, types of local variables are
+formalized as a partial map from indices to types such that only those local
+variables that are allowed to be touched at a program point are included in
+the map for that program point. The typing rule for jsr non-deterministically
+decides which local variables are included in the partial maps within the subroutine. Thus it is difficult to use their typing rules to compute least types,
+though the typing rules may serve as a specification.
+
+In practice, the existence of least types suggests that if bytecode verifiers
+are well designed and implemented, then a mobile code that can be accepted
+by one bytecode verifier can also be accepted by all bytecode verifiers. This
+implies that good bytecode verifiers will not reject services provided by legal
+bytecode.
+
+Acknowledgements
+We sincerely thank one anonymous referee for detailed and constructive comments on a previous version of this paper. The research is partially supported
+by DARPA contract F30602-96-C-0363.
+
+References
+
+1. P. Cousot and R. Cousot. Abstract interpretation: a unified lattice model for
+
+static analysis of programs bu construction of approximation of fixpoints. In
+Proc. 4th ACM Symp. Principles of Programming Languages, pages 238-258,
+1977.
+2. S. Freund and J. Mitchell. A type system for object initialization in the java
+
+bytecode language. In Proc. Conf. on Object-Oriented Programming, Systems,
+Languages, and Applications, pages 310-328. ACM Press, 1998.
+3. A. Goldberg. A specification of Java loading and bytecode verification. In Proc.
+
+5th ACM Conference on Computer and Communications Security, 1998.
+4. M. Hagiya and A. Tozawa. On a new method fot dataflow analysis of Java Virtual Machine subroutines. In Proc. 1998 Static Analysis Symposium. SpringerVerlag LNCS, 1998.
+5. T. Lindholm and F. Yellin. The JavaTM Virtual Machine Specification. AddisonWesley, 1996.
+
+33
+
+6. R. O'Callahan. A simple, comprehensive type system for Java bytecode subroutines. In Proc. 26th ACM Symp. Principles of Programming Languages, 1999.
+To appear.
+7. C. Pusch. Formalizing the Java Virtual Machine in Isabelle/HOL.
+
+Technical report, TUM I9816, Technische Unversit"at M"unchen, 1998.
+http://www4.informatik.tu-muenchen.de/~isabelle/bali/. A short version
+in OOPSLA'98 Workshop "Formal Underpinnings of Java".
+8. Z. Qian. A formal specification of Javatm virtual machine instructions for objects, methods and subroutines. In J. Alves-Foss, editor, Formal Syntax and
+Semantics of JavaTM. Springer Verlag LNCS 1523, 1998.
+9. G. Smolka, W. Nutt, J. Goguen, and J. Meseguer. Order-sorted equational
+
+computation. In H. A"it-Kaci and M. Nivat, editors, Resolution of Equations in
+Algebraic Structures, volume 2, pages 297-367. Academic Press, 1989.
+10. R. Stata and M. Abadi. A type system for Java bytecode subroutines. In Proc.
+
+25th ACM Symp. Principles of Programming Languages, 1998.
+11. R. Wilhelm and D. Maurer. Compiler Design. Addison-Wesley Publishing
+
+Company, 1995.
+
+34

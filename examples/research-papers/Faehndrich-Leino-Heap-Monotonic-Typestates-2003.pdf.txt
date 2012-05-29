@@ -1,0 +1,702 @@
+
+
+Heap Monotonic Typestates
+
+(Extended Abstract)
+
+Manuel F"ahndrich and K. Rustan M. Leino
+
+Microsoft Research{
+maf,rustan}@microsoft.com
+
+Abstract. The paper defines the class of heap monotonic typestates.
+The monotonicity of such typestates enables sound checking algorithms
+without the need for non-aliasing regimes of pointers. The basic idea is
+that data structures evolve over time in a manner that only makes their
+representation invariants grow stronger, never weaker. This assumption
+guarantees that existing object references with particular typestates remain valid in all program futures, while still allowing objects to attain
+new stronger typestates. The system is powerful enough to establish
+properties of circular data structures.
+
+1 Introduction
+Types are the main mechanism by which programmers specify properties aboutdata structures that are mechanically checked by today's compilers. Types, however, are a very limited specification tool, in particular in imperative program-ming languages, where objects evolve over time. As objects evolve, they acquire
+more properties, and stronger invariants get established. But such new propertiescannot be captured in the form of types, since types in mainstream languages
+capture only properties that hold uniformly from the birth to the demise of anobject.
+
+This paper presents a statically checkable typestate system. Typestates [9]specify extra properties of objects beyond the usual programming language
+types. As the name implies, typestates capture aspects of the state of an ob-ject. When an object evolves, its typestate may evolve as well. Typestates can
+be used to restrict valid parameters, return values, or field values, and in doingso provide extra guarantees on internal object invariants.
+
+The main contribution of this paper is that it identifies a class of heap mono-tonic typestates, along with a statically checkable condition on field updates.
+Under that condition, it can be proven that all object states evolve monoton-ically: statically observable object invariants only become stronger as objects
+evolve. At first, the idea may seem restrictive, but it results in a surprisinglyliberal programming methodology: our static typestate discipline captures gradual initialization of entire object graphs, and can even prove properties of cyclicstructures. A surprising result is that only typestate annotations are needed:
+there is no need for non-aliasing annotations or assumptions, nor is there a need
+
+to declare read or write effects of methods. These properties put our approach ata minimal distance from ordinary type checking and distinguish it from previous
+related work on proving stronger program invariants [4, 3, 8, 1]. We believe thissystem is practical, because it puts no restrictions on the shape of object graphs.
+As a result, we expect our approach easily to combine with existing approachesfor structuring the heap or managing resources, such as ownership types [2] or
+alias types [10]. Moreover, our typestate system is formulated in such a way thatit can take advantage of non-aliasing information, if present.
+
+The rest of the paper is organized as follows: Section 2 introduces heap mono-tonic typestates by means of an example. Section 3 formalizes typestates in the
+presence of inheritance and gives sufficient field update conditions to maintainmonotonicity. Section 4 discusses further ramifications of monotonic typestate
+and future extensions. The remaining sections discuss related work and conclude.
+
+2 Motivating example
+To illustrate evolving objects, the example in Fig. 1 contains code fragmentsof a typical compiler front-end. The main data structure is an abstract syntax tree (AST) consisting of AstNode objects. The parsing, name resolution,type checking, and back-end phases are represented. Parsing produces an abstact syntax tree. This tree is then modified by first doing name resolution(
+
+ast.ResolveNames(...)), followed by doing type checking (ast.TypeCheck(...)). Af-ter type checking, the AST is passed to the back-end (
+
+ast.Emit(...)) .
+An AST cannot be passed to the back-end without first performing typechecking. Similarly, type checking cannot be performed without name resolution.
+
+The state of the AST after parsing therefore differs from its states after nameresolution and after type checking. Mainstream programming languages do not
+allow programmers to express such state properties, let alone statically checkthem. Typestate annotations and typestate checking fill this gap.
+
+We distinguish three states of the AST: "Naked" after parsing, "Bound" af-ter name resolution, and
+
+"Typed" after type checking. Figure 1 lists typestateannotated signatures of the methods representing the various front-end phases.
+
+Annotation [return:Post("Naked")] states that method Parse returns an AST sat-isfying state
+
+"Naked". The methods performing name resolution, type checking,and code emission are instance methods of
+
+AstNode. They have Pre and/or Postannotations to express the typestate expected on entry, and the typestate guaranteed on exit. For instance, the annotation on method ResolveNames specifiesthat on entry, the receiver (
+
+this object) must satisfy state "Naked"; whereas onexit, it will satisfy state
+"Bound". The annotation on Emit simply requires thereceiver to satisfy state
+"Typed".
+So far, we have only seen typestates in their abstract form, that is, as adjec-tives modifying a type. In that form, typestate annotations may constrain when
+
+types are compatible. The other major purpose of typestates is to capture extradata invariants. Figure 2 shows class fragments of subclasses of
+
+AstNode withannotations expressing such invariants. In our example, the typestate
+
+"Typed"
+
+void Main (...) {
+
+AstNode ast= Parse(filename);
+
+ast .ResolveNames(emptyEnvironment);
+ast .TypeCheck(emptyTypeEnvironment);
+ast .Emit (...);}
+
+[return:Post("Naked")] AstNode Parse(string file );
+abstract class AstNode {
+
+[Pre("Naked"),Post("Bound")]
+abstract void ResolveNames(Env env);
+
+[Pre("Bound"),Post("Typed")]
+abstract void TypeCheck(TypeEnv typeEnv);
+
+[Pre("Typed")]
+abstract void Emit (...);
+
+...}
+
+Fig. 1. Front-end of a compiler
+captures the fact that the type field of Expression objects has been initialized to anon-null pointer to a
+
+Type object. This invariant is expressed by the annotation
+[NotNull(WhenEnclosingState="Typed")] on field type of class Expression. Simi-larly, the typestate
+
+"Bound" captures the fact that the binding field of Identifierobjects in the AST has been initialized to a non-null pointer to the binding node.
+
+These two annotations describe the relation between the typestate of anobject and the atomic properties of its fields (in this case non-nullity).
+Furthermore, we may relate the typestate of an object to the typestates ofobjects pointed to in its fields. For example, the
+
+UnaryExpr class needs to specifythe state of the operand sub-expression in the AST. This state is dependent
+
+on the state of the unary expression node itself. In our example, the relationis simple: if the unary expression object satisfies state
+
+"Naked" (resp. "Bound",
+"Typed"), then so does the sub-expression. The annotation [InState("Naked",
+WhenEnclosingState="Naked")] expresses the first of these three dependencies.The advantage of these data invariants should now be evident. Method
+
+TypeCheck can rely on the fact that the binding field of Identifier objects is non-null.Similarly, the back-end can rely on the fact that the
+
+type field of expressionobjects is non-null.
+
+2.1 The aliasing problem
+A technical reason that has kept typestate out of mainstream languages is theproblem of maintaining correct typestate information in the presence of aliasing.
+
+To appreciate this problem, consider a method StripTypes:
+
+// Set all type fields of expressions to null .
+void StripTypes(AstNode ast);
+
+class Expression : AstNode {
+
+[NotNull(WhenEnclosingState="Typed")]
+Type type;
+
+...}
+
+class Identifier : Expression {
+
+string name;
+
+[NotNull(WhenEnclosingState="Bound")]
+AstNode binding;
+
+...}
+
+class UnaryExpr : Expression {
+
+Operator oper;
+
+[NotNull(WhenEnclosingState="Naked,Bound,Typed")]
+[InState("Naked", WhenEnclosingState="Naked")]
+[InState("Bound", WhenEnclosingState="Bound")]
+[InState("Typed", WhenEnclosingState="Typed")]
+Expression operand;
+
+...}
+
+Fig. 2. Typestate invariants of some front-end classes
+This method sets all type fields of Expression objects back to null. The problemwith this method is that the typestate of abstract syntax trees is weaker on exit
+than it is on entry. Thus, other pointers to nodes of the same abstract syntax treemay need to have their typestate weakened. Suppose for example that after type
+checking we build control-flow graphs (CFGs) that internally keep references to
+AstNodes satisfying typestate "Typed".
+
+ast .TypeCheck(emptyTypeEnvironment);
+CFG cfg= BuildCFG(ast);
+
+StripTypes(ast );
+WorkOnCFG(cfg);
+
+The above code sequence is problematic, since the AstNode references in the cfgobject are annotated to satisfy typestate
+
+"Typed", but after the call to StripTypes,these references point to objects that do not satisfy the typestate
+
+"Typed". Inorder to correctly track such non-local and non-monotonic typestate changes,
+
+strict non-aliasing regimes must be followed. The earliest attempts at typestatechecking appear in a language called Nil that completely rules out aliasing in
+pointer structures [9]. Vault is a more recent programming language that permitstypestate checking and strong aliasing control [3]. However, once an object's
+aliases are no longer statically known in Vault, its typestate needs to be frozen,that is, it can no longer change, except temporarily [5].
+
+Although some typestate protocols will always require aliasing control (for ex-ample, open/close protocols), we identify in this paper a class of heap monotonic
+typestates that do not require aliasing control. The idea behind heap monotonictypestates is that, once a certain typestate is reached, no future changes to the
+
+object will ever invalidate that typestate. Monotonic typestate checking makes itpossible to capture object references in arbitrary typestates without the need to
+invalidate such references on future object updates. In our proposal, the method
+StripTypes cannot be typestate checked, since the update of the type field to nullviolates the monotonicity of our typestates.
+
+3 Typestate formalization
+We start with a number of definitions. Let \Sigma  be a set of identifiers used torepresent local variables and fields of objects. We use
+
+oe 2 \Sigma + to representaccess paths. Let
+V be the domain of values, including locations L used duringprogram execution. A heap
+
+H is a map L * \Sigma  ! V , mapping location-fieldpairs to values. The local variables are accessed via a distinguished location
+
+containing all locals `locals. For convenience, define H(oe) = H(`locals, oe) and
+H(`, x.oe0) = H(H(`, x), oe0).
+
+Definition 1 (Heap monotonic predicate). A predicate P on values andheaps is heap monotonic, if
+
+P (v, H) ) P (v, H0) for every value v and heaps Hand
+H0, where H0 is obtained from H by updates allowed by the static programsemantics.
+
+Examples of heap monotonic predicates in most programming languages are
+notnull(v), null(v), dynamictype(v) <= T , v >= 5, etc.1 Let A be a fixed set of heapmonotonic predicates.
+
+In a non-object-oriented setting, a typestate for an object o of type T issimply a named predicate over the fields of
+
+o. We write AT for such a typestatepredicate, where
+A is the name of the state. In this paper, we are interestedin heap monotonic typestates. A typestate is by definition heap monotonic if it
+
+only depends on heap monotonic predicates. If field updates are restricted topreserve monotonicity (Sect. 3.4), then each heap monotonic typestate is itself
+a heap monotonic predicate. Thus the typestate of an object can depend on thetypestates of objects stored in its fields.
+
+3.1 Heap monotonic typestate in the presence of inheritance
+In an object-oriented setting with single implementation inheritance, an objectcan be viewed as a list of frames, one per class in the inheritance path from the
+
+root class Object to its dynamic type.We specify typestates of objects by giving a typestate per class frame. Thus,
+an object with dynamic type AstNode has a typestate for the Object frame anda separate typestate for the
+
+AstNode frame. A typestate AT only describes fieldsdeclared in
+T , none in super or sub-classes of T .We further need a technical device to abstract the typestate of sub-classes of
+
+an object, since the dynamic type of an object is rarely known statically. We thus
+
+1 These examples are trivially heap-monotonic, since they are independent of the heap.
+
+introduce typestate predicates of the form A<=T . The meaning of this predicateis that
+
+AS holds for every subclass S of T . Formally, if supertype(Q) = T
+
+A<=T () AT ^ A<=Q
+Thus, the typestate annotations in our examples so far are interpreted as A<=Object.Let MP be the set of heap monotonic predicates consisting of A and all typestate predicates AT . The interpretation of a typestate AT is a map [[AT ]]: \Sigma  !2MP , mapping fields of
+
+T to the heap monotonic predicates that are true for thevalue contained in the field, when the enclosing object frame
+
+T satisfies state A.We interpret such sets of predicates as conjunctions.
+
+Note that our typestates are not mutually exclusive. It is perfectly fine tohave an
+
+Expression object in typestates BoundExpression ^ TypedExpression. In fact,there is nothing in our typestate definitions that explicitly orders typestates.
+
+Since states are monotonic, "transitioning" an object from AT "to" BT resultsin an object with
+
+AT ^ BT .
+
+3.2 Language
+We work with a small core object-oriented language consisting of classes, fields,and methods. Without loss of generality, we assume that each field uniquely identifies its declaring class. We describe statements modifying or accessing the heapand method calls, but omit other details. Typestate annotations are assumed to
+be given in the form of typestate predicates AT discussed above, but we do notprovide formal syntax and interpretation for such annotations here. The syntax used in the examples is one possible approach. We assume the language isstatically typed, similar to C# or Java, and focus only on typestates.
+
+method T.m(x1, . . . , xn) returns z {'}instruction sequence
+
+' ::= * | s; 'instruction
+s ::= x := y | x.f := y | y := x.f | y := null | y := new T ()
+
+z := y0.m(y1, . . . , yn) |
+z := y0.T.m(y1, . . . , yn) | * * *
+
+Instructions of interest consist of variable copy, field assignment, field read, nullassignment, object construction, and virtual and direct method call.
+
+3.3 Dynamic semantics
+The semantics of the language is a standard small-step semantics of the form(
+
+H, ') ! (H, '), relating machine states consisting of a heap H and instructionsequence
+
+'. We omit the details for space reasons.Let [[
+H]] : \Sigma + ! 2MP be the largest predicate assignment for heap H con-sistent with the rules in Fig. 3. We use the largest, rather than the inductively
+
+defined set in order to allow more properties of circular heap structures. Rule[H-atom] provides atomic heap-monotonic predicates. For example, for any location ` 6= null, notnull(`, H) holds. Rule [H-ts] relates predicates of fields oe.f with
+
+H ` oe : M
+
+H(oe) = ` ^ p(`, H) p 2 A
+
+H ` oe : {p} [H-atom] 8
+
+f 2 T.H ` oe.f : [[AT ]](f)
+
+H ` oe : {AT } [H-ts]
+
+H ` oe : M1 ^ H ` oe : M2
+
+H ` oe : M1 [ M2 [H-and]
+
+H(oe) = null
+H ` oe : {AT } [H-ts-null]
+
+Fig. 3. Rules for deriving heap properties
+
+the typestate of oe. Rule [H-ts-null] is a special case for null, which we considerto have every typestate.
+
+[[H]] maps each access path oe to the observable heap monotonic predicatesthat hold for the value accessed through
+
+oe. Note that [[H]] is total, mappingaccess paths not in
+H to the empty set.
+
+3.4 Static semantics
+In this section, we formalize parts of the static semantics. We give type rules forthe statements in our language. Of particular interest are the rules for interpreting and proving certain typestates, as well as the field update rule. We end byshowing how to typestate check a small example.
+
+Typestate checking cannot simply use a typestate environment (mappingidentifiers to typestates) akin to a type environment, because we want to prove
+new typestates for a particular pointer stored at path oe, once sufficiently strongproperties of its fields
+
+oe.f are known. For this purpose, it is necessary to keepassociations (akin to must-aliasing) that remember that a particular variable
+
+yholds the same value as
+x.f .The static semantics thus uses two auxiliary structures, a heap abstraction
+
+S: R * \Sigma  ! R and a predicate map E: R ! 2MP , where R is a finite set ofsymbolic pointers
+
+ae. The heap abstraction S maps a symbolic pointer and afield to the symbolic pointer contained in that field. The predicate map
+
+E mapseach symbolic pointer
+ae to a set of predicates known to hold for ae. Local variablesare looked up as fields of a distinguished pointer
+
+aelocals. We use the short-hands
+S(oe) = S(aelocals, oe) and S(ae, x.oe) = S(S(ae, x), oe).A symbolic pointer
+
+ae abstracts an actual heap pointer in the following way.Each symbolic pointer corresponds to exactly one heap pointer. Multiple distinct
+
+symbolic pointers may correspond to the same heap pointer. For locals, theinformation is conservative must-alias information, that is, if
+
+S(x) = S(y), thenat runtime,
+H(x) = H(y). The information for locals can be kept in synchwith the actual execution, because in our language, locals are only assigned
+
+directly. For fields, the abstraction is more subtle. It doesn't correspond to must-aliasing exactly because we allow the abstraction to be outdated. For example, if
+S(y) = S(x.f ), then either H(y) = H(x.f ) for the current heap H or there is apast heap where the object referred to by
+
+x contains the current value of y in field
+
+f , that is, a past H0 <= H, such that H0(H(x), f ) = H(y) This information iscrucial, since it states that at some point in the past (heap H'), the must-aliasing
+information was correct. This allows us to deduce that if H(x.f ) 6= H(y), thenthere was an assignment to field
+
+f between heap H0 and the current heap.
+We now proceed to the typestate rules for each statement kind and observehow this static information is maintained and used. The static well-typestate
+
+relation for statements has the form S, E ` ' : S0, E0, where S and E are thestatic structures prior to the execution of statements
+
+', and S0 and E0 are thestatic structures after execution of
+'.
+
+Variable copy
+
+S[(aelocals, x) 7! S(y)], E ` ' : S0, E0
+
+S, E ` x := y; ' : S0, E0
+
+The rule states that the remainder of the instructions ' are checked under theassumption
+
+S(x) = S(y).
+
+Field access
+
+S, E ` x.f : M
+ae fresh S(x) = aex
+S[(aelocals, y) 7! ae][(aex, f ) 7! ae], E[ae 7! M ] ` ' : S0, E0
+
+S, E ` y := x.f ; ' : S0, E0
+
+The result of reading field f is recorded under a fresh symbolic pointer ae cor-responding to the current pointer in
+
+x.f . We use a fresh pointer here, since thecurrent static knowledge
+S(x.f ) may be outdated. But after the statement, werecord the equality
+S(x.f ) = S(y), since it is definitely true at this point in theexecution. The predicates
+
+M known to hold for x.f prior to the statement arerecorded in
+E for the fresh pointer ae. The auxiliary judgment S, E ` oe : M isused to deduce predicates for particular access paths. The rules are shown in
+
+Fig. 4.
+
+For field accesses, the rules in Fig. 4 can prove properties in two ways: ei-ther by rule [TS-elim], applying knowledge of the typestate of
+
+x to the field
+x.f . Alternatively, by rule [Loc], where we use knowledge of the properties ofthe symbolic pointer
+
+ae = S(x.f ) directly. It is not immediately obvious whythis second way is sound, since we know that
+
+x.f could be pointing to a newobject, not corresponding to
+ae. Fortunately, our rule for field update (shownlater) enforces strong enough properties, that rule [Loc] can be proven sound. It
+
+is however necessary to restrict the knowledge of E(ae) to the set of predicatesS O
+
+x.f observable through path x.f . To see why, consider the following codesnippet:
+
+y := x. f ;
+y. EstablishStateA (); // establishes typestate A for y
+// does x. f have typestate A?
+
+S, E ` oe : M
+
+E(S(x)) ' M
+
+S, E ` x : M [Var]
+
+S(x.f) = ae
+E(ae) " S Ox.f ' M
+
+S, E ` x.f : M [Loc]
+
+S, E ` oe : M1 S, E ` oe : M2
+
+S, E ` oe : M1 [ M2 [Union] S, E ` oe : ; [Empty]
+
+S, E ` oe : {AT } [[AT ]](f) ' M
+
+S, E ` oe.f : M [TS-elim] 8
+
+f 2 T . S, E ` oe.f : [[AT ]](f)
+
+S, E ` oe : {AT } [TS-intro]
+
+Fig. 4. Rules for proving predicates of access paths
+
+Ooe O
+
+x = {MP}O
+oe.f = {[[AT ]](f) | AT 2 [ Ooe} f 2 T
+
+Fig. 5. Observable predicates for a given access path
+
+We have to consider that x.f , after the call to EstablishStateA, may differ from
+y. (We make no assumptions about what is or is not modified.) There are twocases to consider. If S O
+
+x.f 3 AT , then there is some typestate BU of class
+U declaring field f such that [[BU ]](f ) 3 AT and we can conclude that x.fsatisfies typestate
+
+A, since--as we will see below--any update to x.f duringthe call to
+EstablishStateA must have updated the field with an object satis-fying state
+
+AT . Otherwise (S Ox.f 63 AT ), we cannot conclude x.f has type-state
+A, since an update could have stored an object in x.f not satisfyingstate
+A. As an example, consider field UnaryExpr.operand where Ox.operand ={{
+notnull, Naked<=Object}, {notnull, Bound<=Object}, {notnull, Typed<=Object}}, therefore[
+
+Ox.operand = {notnull, Naked<=Object, Bound<=Object, Typed<=Object}
+Field update
+
+S, E ` y : M M ' Uf (x)
+S(x) = aex
+S0 = S[(aex, f ) 7! S(y)]
+S0, E ` ' : S00, E00
+
+S, E ` x.f := y; ' : S00, E00
+
+The field update rule is the most crucial piece in our approach. We must firstfind an upper bound U
+
+f (x) on the observable predicates of field x.f . This upperbound must account for all predicates of field
+
+f that any other access path to x.f
+
+may already know or may be establishing. We will return below to our actualdefinition of U
+
+f (x).The field update is safe, if the condition
+
+M ' Uf (x) is satisfied. This con-dition ensures that the update does not invalidate the typestate assumptions of
+
+any other access path. The static heap approximation is updated to reflect thatat this point,
+
+S0(x.f ) = S0(y).Let us now define U
+
+f (x) to be the set[
+
+{M | 9oe.oe 6= x ^ H(oe) = H(x) ^ (M 2 Ooe.f ) ^ ([[H(x.f )]] [ M consistent)}
+Note that we formulate Uf (x) in terms of knowledge of the dynamic heap H thatin general won't be statically known. In the absence of any aliasing information
+
+on x or knowledge about the value x.f , the bound goes up to S Oz.f . In thiscase, field updates require that the written value satisfy all predicates that could
+ever be observed of field f . This worst estimate allows each field to go only fromthe null-initialized state (as established on entry to the constructor), to the fully
+initialized state.Another extreme case is when we know that
+
+x is the only pointer to the objectwhose field is updated (depending on the programming language, for example
+
+during or right after construction). In that case, Uf (x) = ;, and any update isvalid (even a non-monotonic one).
+
+Another possible case is when we know something about the current valueof
+x.f . In general, we need to include in Uf only predicate sets M that areconsistent with the current properties of the field [[
+
+H(x.f )]]. For example, if x.fis
+null, we can compute Uf (x) to be the union of all observable predicates for fthat are consistent with
+
+null. Consider field operand of class UnaryExpr in Fig. 2.If we know that
+x.f is null at the moment of the update, we can conclude thatno pointer to the unary expression object can assume it in any of the typestates
+
+Naked,Bound,Typed, since they all include predicate notnull, which is inconsistentwith the current value of
+
+x.f .
+
+Methods A virtual method signature consists of pre and post predicates foreach method parameter and result, including the receiver
+
+this. We refer to thesepredicates by
+pre(m.x) and post(m.x), where m is the name of a declared method,and
+x is the parameter name, this, or return. Annotations [Pre(A)] on x translateto
+pre(m.x) = A<=Object. Annotations [Post(B)] on x translate into post(m.x) =
+B<=Object.A particular implementation of method
+
+m in a class T is referred to as T.m.The signature of
+T.m differs with respect to the virtual method signature onlyin the treatment of the receiver post condition. If the post condition for the
+
+receiver in a declared virtual method is A<=Object, then the post-condition for thereceiver in a particular implementation method
+
+T.m is weaker, namely
+
+post(T.m.this) = ^
+
+S>=T
+
+AS
+
+that is, the conjunction of all typestates AS for class frames S at or above T .The frames of strict subclasses of
+
+T obtain no stronger properties.
+
+It should intuitively be clear why this is so. A method implementation T.mcan only directly affect the state of the object at or above class frame
+
+T . Toproduce a deep post condition of the form
+A<=Object, a virtual dispatch is needed.
+We now give the conditions for typestate checking of a method body. Assume
+x0 = this.
+
+S = [(aelocals, xi) 7! aei] i = 0..n, aei fresh
+E = [aei 7! pre(T.m.xi)] i = 0..n
+S, E ` ' : S0, E0
+S0, E0 ` xi : post(T.m.xi) i = 0..n
+S0, E0 ` y : post(T.m.return)`
+
+T.m(x1, . . . , xn) returns y {'}
+
+The first two lines describe the initial environment S, E in which the methodbody is typed. We assume a distinct symbolic pointer
+
+aei for each parameter, andpopulate
+E with the respective preconditions. Note that we need not have anyknowledge about possible aliasing of the parameters. The third line checks the
+
+body ', resulting in the static structures S0 and E0 describing the typestates atexit of the method. Finally, the last two lines check the post-conditions of the
+parameters, this, and the result.
+
+We assume that each class T implements each virtual method of any parentclass. If no implementation is explicitly given, the implementation
+
+{ return this .base.m(x1,...,xn); }
+is assumed, where base is the immediate supertype of T . This requirement isnecessary to check the correctness of any specified typestate changes on the
+
+receiver this.
+Method calls We allow both virtual calls and non-virtual (direct) method calls.The two differ only in whether the virtual method signature or a particular
+implementation signature is used. We give the rule for virtual calls. Direct callslook identical, but every occurrence of
+
+m is replaced with T.m. Assume x0 = this.
+
+S, E ` yi : pre(m.xi) i = 0..n
+E0 = E[S(yi) 7! E(S(yi)) [ post(m.xi)] i = 0..n
+S0 = S[(aelocals, z) 7! ae] ae fresh
+E00 = E0[ae 7! post(m.return)]
+S0, E00 ` ' : S000, E000
+
+S, E ` z := y0.m(y1, . . . , yn); ' : S000, E000
+
+The first line ensures that the arguments in the calling context satisfy the pre-conditions of the virtual method parameters. The second line joins the post
+
+typestate of each parameter to the current knowledge in the predicate map. Thethird line adds a fresh symbolic pointer
+
+ae for z to the store abstraction. Thefourth line adds the result typestate for
+ae to the predicate map. The last lineensures that the static environment right after the method call is sufficient to
+
+prove typestate safety of the remaining instruction sequence '.
+
+3.5 Example revisited
+We now return to our motivating example and show the TypeCheck method forunary expressions.
+
+[Pre("Bound"),Post("Typed")]
+UnaryExpr.TypeCheck(){
+
+y := this .operand;
+y.TypeCheck();
+
+this .type := new Type (...);}
+
+The initial environment is as follows: S(this) = ae0, E(ae0) = {notnull, Bound<=Object}.After the assignment to
+
+y, we also have S(y) = ae1, S(ae0, operand) = ae1, E(ae1) =[[
+BoundUnaryExp]](operand) = {notnull, Bound<=Object}. Our static information satis-fies the precondition to invoke
+
+TypeCheck on y. On return from the call, the en-vironment is updated to
+E(ae1) = {notnull, Bound<=Object, Typed<=Object}. After theassignment to
+this.type, the environment is updated to S(ae0, type) = ae2, E(ae2) ={
+notnull}. Call this environment S0, E0. At this point, we can prove the post con-dition on the receiver:
+
+TypedObject ^ TypedAstNode ^ TypedExpression ^ TypedUnaryExpr.The first two predicates in the conjunct are trivial, since their typestate mapping is empty. So for each field f of Object and AstNode, we can prove S0, E0 `
+this.f : ;, and then conclude via rule [TS-intro] (twice) and [TS-union] that
+S0, E0 ` this : {TypedObject, TypedAstNode}. For TypedExpression, we need to prove
+S0, E0 ` this.type : {notnull}, which we do via rule [Loc]. Similarly, we prove
+S0, E0 ` this.operand : {notnull, Typed<=Object} via [Loc].
+
+3.6 Soundness
+The soundness of the system is subtle because it relies on the field update guar-antees and the use of out of date field information. We have proven soundness of
+
+the hard cases (field update and method call) via a standard subject reductionapproach [11].
+
+4 Discussion
+This section discusses some additional properties of heap monotonic typestatesand considers possible extensions.
+
+4.1 DAGs and circular structures
+Our typestate proposal works for arbitrary graph structures, not just trees orDAGs. Establishing arbitary typestate relations among DAG nodes is done by
+
+traversing the DAG as if it were a tree. To avoid the duplicate traversals, dynamictypestate tests (see next subsection) can be used.
+
+Surprisingly, the static proof technique described here can prove typestateproperties of circular structures as well. Consider a general graph, where each
+node satisfies typestate AN , if some internal field f is non-null, and all successornodes are in
+
+AN . The general way to establish that each node in an arbitrarygraph satisfies
+
+AN is to first build a corresponding DAG, where the missing backpointers point to a dummy object for which it is trivial to establish typestate
+
+AN . It is then possible to prove inductively that each node satisfies AN . Afterthat, do one more traversal, where all pointers going to the dummy node are
+updated to point to their intended node. Since their intended target is alreadyin typestate
+
+AN , the update is okay.Since the approach requires updating of back pointers, it can only be used
+
+to establish the ultimate typestate of each graph node. It seems not possible togradually transition the entire circular graph to better typestates as in our AST
+example.
+
+4.2 Dynamic typestate tests
+Our approach can prove properties of a DAG inductively, simply by traversingit as a tree. However, shared subtrees have to be traversed multiple times. It
+
+would be desirable to dynamically record knowledge of an established typestatein a field, and allow a dynamic test of such a field to infer the entire typestate
+of the object.Let's call such a field a typestate designator and mark these fields specially
+with an annotation [TypeState]. Further assume, that such fields must be of type
+string, and that we have the global invariant that for every object o, if o.f is atypestate designator, and
+
+o.f is equal to "A", then o satisfies A<=Object.Writing to a typestate designator requires a compile-time known string "
+
+A",and a proof that the enclosing object satisfies
+A<=Object. Furthermore, in the truebranch of a conditional test of the form
+if (o.f == "A"), the typestate of o canbe assumed to be
+A<=Object.Using this device, DAG traversals can establish typestate properties without
+
+visiting nodes more than once.
+
+4.3 Relational atomic predicates
+So far, all our heap monotonic atomic predicates are unary, that is, they involveexactly one value of a single field. An obvious generalization is to allow relational
+
+predicates, such as x<=y, where x and y are both fields of the same class frame.Updates to such fields are slightly more tricky, since to maintain the relational
+property, two updates may be required, and the property may not hold afterthe first update. As long as one can statically prove that both updates occur
+atomically, such extensions can be handled.The requirement that both fields are of the same class frame is to maintain
+modular soundness. Without this requirement, modifications to a field of class
+T , may invalidate the invariant of a subclass S of T , but the code in class T hasno knowledge of such an invariant.
+
+4.4 Concurrency
+Our typestate checking remains sound in the presence of concurrency. That staticrules indeed assume that after each instruction, every field could be updated by
+
+another thread (provided the update satisfies our field update rule).
+
+5 Related work
+The extended static checker (ESC) project uses theorem proving to enforcemethod-level specifications and object invariants [4]. The enforcement of object invariants however is sound only under strict non-aliasing conditions. Thework on Vault [3] and Roles [8] soundly enforce object invariants and allow state
+changes. However, both systems require non-aliasing assumptions. Earlier workon alias types also allows incrementally establishing data structure invariants,
+but only under non-aliasing assumptions [10].The present system has the advantage that it is useful even without any
+non-aliasing assumptions, but it can exploit non-aliasing assumptions to allownon-monotonic typestate changes.
+
+The work on type checking Java byte code for safety properties by Freundand Mitchell considers only whether the constructor of a newly allocated object
+is called before other methods [7]. It does not enforce field initializations or otherobject invariants.
+
+The motivation for the present work stems in part from our prior work onguaranteeing initialization of object fields to non-null pointers [6], and also from
+typestate-like code comments we found in a front-end written by Dave Hanson.
+
+6 Conclusion
+Initialization of objects often happens gradually over the lifetime of an object,rather than during execution of the constructor alone. We believe that monotonically evolving typestate provides a good match for capturing such evolving objectinvariants. It has the advantage over prior work that it requires no non-aliasing
+guarantees, but can exploit them if they are present. The resulting programmingmodel seems flexible.
+
+References
+
+1. Chandrasekhar Boyapati, Robert Lee, and Martin Rinard. Ownership types for safe
+
+programming: Preventing data races and deadlocks. In Object-Oriented Programming, Systems, Languages, and Applications (OOPSLA), pages 211-230, November
+2002.
+2. David G. Clarke, John M. Potter, and James Noble. Ownership types for flexible
+
+alias protection. In OOPSLA'98 Conference Proceedings, pages 48-64, October
+1998.
+
+3. Robert DeLine and Manuel F"ahndrich. Enforcing high-level protocols in low-level
+
+software. In Proceedings of the 2001 ACM SIGPLAN Conference on Programming
+Language Design and Implementation, pages 59-69, June 2001.
+4. David L. Detlefs, K. Rustan M. Leino, Greg Nelson, and James B. Saxe. Extended
+
+static checking. Research Report 159, Compaq Systems Research Center, 1998.
+5. Manuel F"ahndrich and Robert DeLine. Adoption and focus: Practical linear types
+
+for imperative programming. In Proceedings of the 2002 ACM SIGPLAN Conference on Programming Language Design and Implementation, pages 13-24, June
+2002.
+6. Manuel F"ahndrich and K. Rustan M. Leino. Non-null types in an object-oriented
+
+language, 2002. Presented at the 2002 Workshop on Formal Techniques for Javalike Languages.
+7. Stephen N. Freund and John C. Mitchell. The type system for object initialization
+
+in the Java bytecode language. ACM Transactions on Programming Languages
+and Systems, 21(6):1196-1250, 1999.
+8. Viktor Kuncak, Patrick Lam, and Martin Rinard. Role analysis. In Conference
+
+Record of the 29th Annual ACM Symposium on Principles of Programming Languages, 2002.
+9. Robert. E. Strom and Shaula Yemini. Typestate: A programming language concept
+
+for enhancing software reliability. IEEE TSE, 12(1):157-171, January 1986.
+10. David Walker and Greg Morrisett. Alias types for recursive data structures. In
+
+Proceedings of the 4th Workshop on Types in Compilation, September 2000.
+11. Andrew K. Wright and Matthias Felleisen. A syntactic approach to type soundness.
+
+Information and Computation, 115(1):38-94, November 1994.

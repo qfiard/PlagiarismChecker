@@ -1,0 +1,1459 @@
+
+
+A Verified Compiler for an Impure Functional Language
+
+Adam Chlipala
+Harvard University, Cambridge, MA, USA
+
+adamc@cs.harvard.edu
+
+Abstract
+We present a verified compiler to an idealized assembly languagefrom a small, untyped functional language with mutable references
+
+and exceptions. The compiler is programmed in the Coq proofassistant and has a proof of total correctness with respect to bigstep operational semantics for the source and target languages.Compilation is staged and includes standard phases like translation
+to continuation-passing style and closure conversion, as well as acommon subexpression elimination optimization. In this work, our
+focus has been on discovering and using techniques that make ourproofs easy to engineer and maintain. While most programming
+language work with proof assistants uses very manual proof styles,all of our proofs are implemented as adaptive programs in Coq's
+tactic language, making it possible to reuse proofs unchanged asnew language features are added.
+
+In this paper, we focus especially on phases of compilation thatrearrange the structure of syntax with nested variable binders. That
+aspect has been a key challenge area in past compiler verificationprojects, with much more effort expended in the statement and
+proof of binder-related lemmas than is found in standard pencil-and-paper proofs. We show how to exploit the representation technique of parametric higher-order abstract syntax to avoid the needto prove any of the usual lemmas about binder manipulation, often leading to proofs that are actually shorter than their pencil-and-paper analogues. Our strategy is based on a new approach to encoding operational semantics which delegates all concerns about sub-stitution to the meta language, without using features incompatible
+with general-purpose type theories like Coq's logic.
+Categories and Subject Descriptors F.3.1 [Logics and meaningsof programs]: Mechanical verification; D.2.4 [Software Engineering]: Correctness proofs, formal methods; D.3.4 [ProgrammingLanguages]: Compilers
+
+General Terms Languages, Verification
+Keywords compiler verification, interactive proof assistants
+
+1. Introduction
+Mechanized proof about programming languages is rather new asan engineering discipline. Only a handful of "real world" projects
+
+have been undertaken with users beyond computer science andmathematics researchers. Still, projected practical applications underlie most recent work. For example, compiler verification holds
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+POPL'10, January 17-23, 2010, Madrid, Spain.Copyright cfl 2010 ACM 978-1-60558-479-9/10/01.. . $10.00
+
+the promise of dramatically reducing the costs of quality assur-ance in the development, evolution, and maintenance of compilers. Unfortunately, this sort of verification seems today to requireepic investments of time and cleverness by experts in semantics and
+theorem-proving. The main message of this paper is that, as in morefamiliar software development, compiler verification admits design
+patterns that cut down dramatically on the required grunt work, tothe point where it seems plausible that the use of verification can
+actually reduce the overall effort required to build a correct com-piler, even when the baseline we compare against is almost-correct
+compilers where copious testing has found all but the most obscurebugs.
+
+There has been much important research on verifying compilersfor relatively low-level languages like C, including in the verified
+language stack project by Moore (1989) and the more recent Com-pCert project (Leroy 2006). In that domain, languages researchers
+generally start projects and discover that, when they pick the wrongabstractions and proof structuring principles, verification requires
+much more work than they expected. In contrast, when pickingthe wrong abstractions in mechanized proofs about languages with
+nested variable binders (such as most functional languages), thesame researchers often find themselves buried in details that they
+thought of as irrelevant. We have heard many stories of knowledge-able semanticists outright giving up on these kinds of proofs.
+
+Recently, there has been much progress in research on the repre-sentation techniques that minimize the chances of such defeats. The
+use of higher-order abstract syntax (HOAS) in Twelf (Pfenning andSch"urmann 1999) remains a popular choice, though it seems that a
+majority of languages researchers prefer interactive proof assistantsthat, unlike Twelf, can automate large parts of proofs. The de Bruijn
+index representation (de Bruijn 1972) is another old standard thatsees wide use today. Perhaps the most popular methodologies now
+center around the nominal logic package for Isabelle/HOL (Urbanand Tasson 2005) and the Penn approach to locally nameless binding in Coq (Aydemir et al. 2008). With these techniques, many factsabout variable freshness and term well-formedness remain present
+explicitly in proofs, but there are standard recipes for figuring outthe right lemmas to prove and when to apply them.
+
+These recipes make it likely that a user with enough persever-ance will manage to prove his theorem. This is a great improvement
+over the situation of just a few years ago, but, in this paper, we ar-gue that we should be striving for more. In software engineering,
+we focus on maximizing programmer productivity, and we believethat mechanized proof engineering could stand to see a similar focus.Most parts of most proofs about practical programming languages are exercises in stepping through many cases that are provedin unenlightening ways, with a handful of cases representing the
+core insights of a proof. Unfortunately, most mechanized proofsstill spend significant amounts of code on the uninteresting cases,
+with significant effort expended to write that code. When it comestime to change a theorem statement, say because a language has
+
+been extended with a new construct, the user needs to go backover all of his very manual proofs, editing and adding cases. This
+is especially tedious with traditional manual proofs in Coq, whereproofs are completely unstructured series of commands that modify
+proof states. Declarative proof languages like Isabelle's Isar (Wen-zel 1999) help alleviate much of this complication, but they do so
+arguably at the expense of greater verbosity of proofs and greaterexpenditure in building the first version of a formal development.
+Is there an even more effective means of structuring proof scripts,such that we can realize evolvability benefits similar to those that
+software engineers have come to expect?
+
+In the course of this paper, we hope to convince the reader thatthe answer is "yes." We will describe our experience building a
+
+verified compiler for an impure functional language in Coq. Threemain contributions underly the implementation.
+
+* We apply the parametric higher-order abstract syntax tech-nique (Chlipala 2008) on a larger, more realistic compiler verification case study than in previous work. This encoding lets usavoid any code dealing with name freshness or index rearrangement in our compiler pass implementations, and that simplicitymakes it easier to write correctness proofs.
+
+* To avoid the usual deluge of lemmas about substitution, we use
+
+a new approach to encoding operational semantics. Substitutiondoes not appear explicitly and is instead delegated to the meta
+
+language, as in the classical HOAS approach, but in a waycompatible with general-purpose type theories like Coq's.
+
+* Each of our Coq proof scripts is a program that is able to
+
+adapt to changes to language definitions and theorem state-ments. Such proof scripts express what are, in our opinion, the
+
+real essences of why theorems are true, the insights that couldstump someone coming at the proofs from scratch.
+
+Our approach is a synergistic combination of lightweight repre-sentations and aggressive theorem-specific automation. We implemented a first version of our compiler for a source language miss-ing several of the features from the final version:
+
+let expressions,constants, equality testing, and recursive functions. We were able
+
+to add these features after-the-fact with minimal alterations of andadditions to our proof scripts; the extended proofs do not even mention the new syntactic constructs or the operational semantics rulesthat govern them.
+
+Some of the ideas we present here can be mapped back intoalternative ways of doing things in pencil-and-paper semantics,
+but, at the level of detail that is traditional in venues like POPL,our techniques would probably only increase proof length and
+complexity. Instead, this paper is focused on how to engineer averified compiler for a functional language. The trickiest parts of
+doing this with a proof assistant turn out to have little relation tothe trickiest parts of doing it on paper. Representations matter a lot,
+and proof structuring techniques have a serious impact on how easyit is to evolve a verified compiler over time.
+
+Past projects have considered verifying compilers for pure func-tional languages. As far as we are aware, ours is the first to consider
+a functional source language with either of mutable references orexceptions. On paper, these features seem straightforward to add to
+a compiler proof. In a proof assistant, when using the most straight-forward proof techniques, impurity infects all of the main theorems
+and lemmas. It seems a shame to pass up the opportunity to auto-mate the flow of these details through our proofs, and we do our
+best to take advantage of the possibility.
+1.1 The Case Study
+Our compiler operates on programs in a kind of untyped Mini-ML, as shown in Figure 1. We have constants from some unspecConstants cVariables
+
+x, fExpressions
+
+e ::= c | e = e | x | e e | fix f(x). e|
+
+let x = e in e|
+() | he, ei | fst(e) | snd(e)|
+inl(e) | inr(e)|
+case e of inl(x) ) e | inr(x) ) e|
+ref(e) | !e | e := e|
+raise(e) | e handle x ) e
+
+Figure 1. Source language syntax
+
+Registers r ::= r0 | . . . | rN-1Constants
+
+n 2 NLvalues
+L ::= r | [r + n] | [n]Rvalues
+R ::= n | r | [r + n] | [n]
+
+Instructions I ::= L := R | r += n|
+
+L := R ?= R | jnz R, nControl-flow instructions
+J ::= halt R | fail R | jmp RBasic blocks
+B ::= (I*, J)Programs
+
+P ::= (B*, B)
+
+Figure 2. Target assembly language syntax
+
+ified base types, comparable with a primitive equality operation;recursive functions; let-binding; unit values; products; sums; mutable references; and exceptions. This language is meant to cap-ture the key features of core ML's dynamic semantics, omitting essential features only when they involve variable numbers of argu-ments or variable binding structure. In particular, we do not model
+variable-arity products and sums, mutually-recursive functions, orcompound pattern matching.
+
+Our target language is the idealized assembly language shownin Figure 2. It differs from a real assembly language in representing
+words with natural numbers and in supporting an infinite memorybank of words. There is still a finite supply of
+
+N registers. Ourparticular compiler works for any
+N >= 3, allocating some vari-ables to the additional registers when possible. An assembly program consists of a list of basic blocks with one distinguished basicblock where execution begins. A basic block is a sequence of instructions terminated by a control-flow instruction. The supportedvarieties of instruction are assignment using different addressing
+modes (where [*] operands denote memory accesses), increment ofa register by a constant, equality comparison, and conditional jump
+based on whether a value is nonzero. Control-flow instructions in-clude
+
+halt, for normal program termination; fail, for terminationon an uncaught exception; and
+
+jmp, the standard "computed goto."Each
+halt or fail instruction takes an additional program result codeas an argument. The destination operands to
+
+jnz and jmp are inter-preted as indices into the program's list of basic blocks.
+
+The compiler is idealized in another important way. Unlike inour past work on a compiler for basic lambda calculus (Chlipala
+2007), there is no interface with a garbage collector. The output as-sembly programs allocate new memory but never free any memory.
+As our present focus is on reasoning about nested binders, we leavethe low-level treatment of memory management to future work.
+
+We give the source language a standard big-step operationalsemantics. Figure 3 shows a sampling of the rules. We define a
+separate syntactic class of values (associated with the metavariable
+v) in the usual way, taking a restriction of the syntax of expressionsand adding a form
+
+ref(n), standing for an allocated reference cell
+
+(h, fix f(x). e) + (h, Ans(fix f(x). e))
+(h1, e1) + (h2, Ans(fix f(x). e)) (h2, e2) + (h3, Ans(e0))
+
+(h3, e[f 7! fix f(x). e][x 7! e0]) + (h4, r)
+
+(h1, e1 e2) + (h4, r)
+
+(h1, e1) + (h2, Ex(v))
+(h1, e1 e2) + (h2, Ex(v))
+
+(h1, e1) + (h2, Ans(fix f(x). e)) (h2, e2) + (h3, Ex(v))
+
+(h1, e1 e2) + (h3, Ex(v))
+
+(h1, e) + (h2, Ans(v))
+(h1, ref(e)) + (v :: h2, Ans(ref(|h2|)))
+
+(h1, e) + (h2, Ans(ref(n))) h2.n = v
+
+(h1, !e) + (h2, Ans(v))
+
+(h1, e) + (h2, Ans(v))
+(h1, raise(e)) + (h2, Ex(v))
+
+(h1, e1) + (h2, Ex(v)) (h2, e2[x 7! v]) + (h3, r)
+
+(h1, e1 handle x ) e2) + (h3, r)
+
+Figure 3. Sample rules from source language semantics
+
+at numerical address n. The basic judgment is (h1, e) + (h2, r),where
+
+h1 and h2 are reference cell heaps represented as lists ofvalues,
+
+e is the expression to evaluate, and r is the result, whichis either
+
+Ans(v) for normal termination with expression result v or
+Ex(v) when v was raised as an exception and not caught. Thereare 38 rules in total, covering all of the points in an expression's
+
+evaluation where an exception might be raised. We write |h| for thelength of a list
+
+h.Our assembly language also has a big-step operational semantics. There are many equivalent ways of formalizing such a seman-tics; the specifics that we chose will not matter in what follows.
+The overall judgment is of the simple form P + h, r, where h isthe final heap and
+
+r is either halt(n) or fail(n).
+
+Our final theorem says that compiled programs have the sameobservable behavior as their corresponding source programs. With
+
+our limited languages, a program can only exhibit one of threekinds of observable behavior: halting, failing, or diverging. The theorem we prove in this case study ignores non-termination. Our the-orem is enough to translate facts about terminating source programs
+into facts about assembly programs, which is the main kind of veri-fication of interest for a deterministic source language without I/O.
+We plan eventually to strengthen the final theorem by applying co-inductive big-step operational semantics (Leroy and Grall 2009) to
+prove that divergent source programs are also mapped to divergentassembly programs.
+
+We write bec for the compilation of expression e. Stating thefinal theorem requires formalizing the "contract" between the compiler and the programmer. The compiler writer agrees to follow cer-tain data layout conventions, but it is useful to leave some aspects
+of representation unspecified, to avoid unnecessary restrictions on
+
+h ` fix f(x). e ,= n h ` () ,= n h ` ref(n) ,= n0
+
+h ` c ,= bcc
+
+h ` v1 ,= h[n] h ` v2 ,= h[n + 1]
+
+h ` (v1, v2) ,= n
+h[n] = 0 h ` v ,= h[n + 1]
+
+h ` inl(v) ,= n
+
+h[n] = 1 h ` v ,= h[n + 1]
+
+h ` inr(v) ,= n
+
+Figure 4. The compiler's data layout contract
+
+optimization. We chose to give a full specification for all kinds ofdata besides functions and references. Other decisions are possible,
+with minimal impact on the proofs. A much more specific relationunderlies our main inductive proofs, and we arrive at the visible
+contract simply by forgetting some details of the "real" relation.The data layout contract is specified as a relation
+
+h ` v ,= n, pa-rameterized by the final assembly-level heap
+h and relating source-level value
+v to assembly-level word n. Figure 4 gives the details.We overload the notation b
+
+cc to denote the compilation of a source-level constant into a word. Our development is parameterized over
+
+an arbitrary injective function of this kind.We lift this relation in the natural way to apply to program
+results.
+
+h ` v ,= n
+h ` Ans(v) ,= halt(n)
+
+h ` v ,= n
+h ` Ex(v) ,= fail(n)
+
+Now our main theorem can be stated succinctly.
+
+THEOREM 1 (Semantic correctness of compilation). For any sourceprogram
+
+e, heap h, and result r, if (*, e) + (h, r), then there exist
+h0 and r0 such that bec + h0, r0 and h0 ` r ,= r0.
+
+1.2 Outline
+In the next section, we review the higher-order syntax represen-tation scheme that we introduced in prior work. In Section 3, we
+
+present a new substitution-free approach to encoding operationalsemantics. Section 4 describes, with discussion of their correctness proofs, the main phases of our compiler: conversion from first-order to higher-order syntax, CPS translation, closure conversion,
+translation to three-address code, and assembly code generation.Section 5 discusses our verified optimizations: common subexpression elimination, dead code elimination, and register allocation.Section 6 gives some statistics about our implementation, Section
+7 compares with related work, and we conclude in Section 8.The case study that we describe in this paper is included in the
+directory examples/Untyped of the latest release of our LambdaTamer library for compiler verification in Coq, available at
+
+http://ltamer.sourceforge.net/
+2. Parametric Higher-Order Abstract Syntax
+In this section, we summarize key elements of our past work onrepresenting programming language syntax. The following section
+
+presents new material that is crucial for scaling up to more realisticlanguages.
+
+To formalize reasoning about languages with nested variablebinders, one needs to settle on a binding representation. Such detail is often swept under the rug in pencil-and-paper proofs. Takingmany informal presentations literally, we arrive at concrete representations like the one embodied in this Coq datatype definition forthe abstract syntax of untyped lambda calculus.
+
+Inductive exp : Type :=
+
+| Var : string -> exp
+| App : exp -> exp -> exp
+| Abs : string -> exp -> exp.
+
+A type definition like this one does not implement usual conven-tions on its own. At a minimum, we need some well-formedness
+judgment characterizing when an expression is free of danglingvariable references. This means that each of our proofs must include extra premises characterizing which expressions are well-formed with respect to which variable environments. If our formalization requires a notion of capture-avoiding substitution, we needto define one manually. We must also prove a fair number of extra lemmas about well-formedness and substitution. These lemmasmust have different proofs for different object languages.
+
+There are other so-called first-order representation schemes thatalleviate this burden somewhat, including the de Bruijn index, nominal, and locally nameless styles that we mentioned earlier. Sig-nificant extra reasoning about freshness and/or well-formedness
+remains. An alternative is to use higher-order abstract syntax(HOAS) (Pfenning and Elliot 1988), which represents object language binders using meta language binders. This pseudo-Coq def-inition captures the way we revise concrete syntax to arrive at
+HOAS.
+
+Inductive exp : Type :=
+
+| App : exp -> exp -> exp
+| Abs : (exp -> exp) -> exp.
+
+For instance, we represent an application of the identity func-tion to itself with
+
+App (Abs (fun x => x)) (Abs (fun x =>
+x)). We encode the matching-up of binders with their uses by bor-rowing our meta language's facility for that kind of matching with
+
+anonymous functions.We called this definition "pseudo-Coq" because Coq will not
+accept it. An inductive type is not allowed to be defined with a con-structor that takes as input a function over the same type. Allowing this would be problematic because it would allow the codingof non-terminating programs, even without use of explicit recursive definitions, by taking advantage of the opportunity to write"exotic terms" that do not correspond to real lambda terms. Since
+Coq follows the Curry-Howard Isomorphism in identifying proofswith functional programs, non-termination corresponds to logical
+inconsistency, where any theorem can be "proved" spuriously withan infinite loop. Systems like Twelf avoid this problem by using
+weaker meta languages like LF (Harper et al. 1993) that cruciallyomit features like pattern-matching and recursion.
+
+Even in general-purpose functional programming languages,HOAS terms are difficult to deconstruct manually. It is not generally possible to "go under a binder," since languages like MLand Haskell provide no way to introspect into closures at runtime.
+Washburn and Weirich (2008) proposed a technique for fixing someof these deficiencies by taking advantage of parametric polymorphism. Guillemette and Monnier (2008) showed how the techniquecan be combined with generalized algebraic datatypes to do static
+verification of compiler type preservation in GHC Haskell.Washburn and Weirich's encoding still is not accepted literally
+by Coq, but a small variation achieves similar benefits. In pastwork (Chlipala 2008), we showed how to use parametric higherorder abstract syntax (henceforth abbreviated "PHOAS") to for-malize the syntax and semantics of programming languages. We
+were able to construct very simple, highly-automated proofs of thecorrectness of some transformations on functional programs.
+
+Here is the syntax of lambda calculus reformulated in PHOAS.
+
+Section var.
+
+Variable var : Type.
+
+Inductive exp : Type :=
+
+| Var : var -> exp
+| App : exp -> exp -> exp
+| Abs : (var -> exp) -> exp.
+End var.
+
+Definition Exp : Type := forall var : Type, exp var.
+
+We use Coq's section mechanism to scope a local variable overa definition. Outside of the section, the
+
+exp type becomes a typefamily parameterized by a choice of
+var type. This definition isaccepted by Coq, and the crucial difference from HOAS is that a
+
+binder is represented as a function over variables, rather than overexpressions. This satisfies Coq's positivity constraint for inductive
+definitions. Now the identity function can be written as Abs (fun
+x => Var x), with some choice of var fixed globally.Considering just the part of the above code inside the section,
+
+we are using the encoding known as weak HOAS (Honsell et al.2001). If we treat the type
+
+var as an unknown, Coq's type systemensures that every
+exp corresponds to a real lambda term, since it isnot possible for a function over variables to do anything interesting
+
+based on its input values, which in effect come from an abstracttype. The parametric part of PHOAS comes in treating
+
+var asmore than just a global unknown. We define our final expression
+
+representation type Exp such that an expression is a first-classpolymorphic function from a choice of
+
+var to an exp that usesthat choice. For instance, the final PHOAS form of the identity
+
+function is fun var => Abs var (fun x : var => Var var
+x). The parametricity of the meta language makes this schemeequivalent to treating
+
+var as a global constant, but we gain theability to instantiate
+Exps with particular var choices to help uswrite particular functions.
+
+For instance, we can implement capture-avoiding substitutionlike this:
+
+Section flatten.
+
+Variable var : Type.
+
+Fixpoint flatten (e : exp (exp var)) : exp var :=
+
+match e with
+
+| Var e' => e'
+| App e1 e2 => App (flatten e1) (flatten e2)
+| Abs e1 => Abs (fun x => flatten (e1 (Var x)))
+end.
+End flatten.
+
+Definition Exp1 := forall var : Type, var -> exp var.
+Definition Subst (E : Exp1) (E' : Exp) : Exp :=
+
+fun var => flatten (E (exp var) (E' var)).
+
+First, we write a function flatten that "flattens" an expressionwhere variables are themselves represented as expressions. Every
+
+variable is replaced by the expression that it holds. We recurseinside an
+
+Abs constructor by building a new argument for Abs thatitself calls
+
+flatten. The recursive call is on the original functionbody applied to a particular locally-bound variable.
+
+We can use flatten to implement substitution easily. We de-fine
+
+Exp1, the PHOAS type of an expression with one free vari-able. Substitution of
+
+E' in E is implemented with an anonymouspolymorphic function over a
+
+var choice. For a particular var, weinstantiate the one-hole expression
+
+E to represent variables as ex-pressions and the substitutand
+E' to represent variables with var.Applying the former to the latter, we arrive at an expression whose
+
+flattening is the proper result of substitution.
+
+In past work (Chlipala 2008), we showed how to use PHOAS togive denotational semantics to statically-typed, strongly-normalizing
+functional languages. The basic trick is to parameterize variablesby types and define a type denotation function that can be used as a
+variable representation in implementing the expression denotationfunction. Using this encoding, we implemented and proved totally
+correct a number of common functional language compiler passes.These proofs usually rely on the fact that values of types like
+
+Expare "really parametric." We formalized this property in terms of a
+
+judgment that axiomatizes equivalence between expressions thatuse different variable representations. This judgment for untyped
+lambda calculus is \Gamma  ` e1 , e2 as defined below. Where ei rep-resents variables in
+
+vari, \Gamma  is a context of pairs in var1 * var2.We write
+#x for the Var constructor applied to x and *f for Absapplied to
+
+f.
+
+(x1, x2) 2 \Gamma 
+\Gamma  ` #x1 , #x2
+
+\Gamma  ` e1 , e01 \Gamma  ` e2 , e02
+
+\Gamma  ` e1 e2 , e01 e02
+
+8x1, x2. \Gamma , (x1, x2) ` f1(x1) , f2(x2)
+
+\Gamma  ` *f1 , *f2
+A parametric expression E is well-formed if, for any var1 and
+var2, we have * ` E(var1) , E(var2). We conjecture that thisstatement holds true for any
+
+E of the proper type, and we assertedthat fact as an axiom in our past work. In the case study of this
+
+paper, we instead prove that expressions are well-formed as needed.Future theoretical work that proved the consistency of this family
+of axioms would remove the need for specialized well-formednessproofs.
+
+In proving the correctness of a program transformation, it isgenerally the case that we use one variable choice in evaluating
+a source program and a different variable choice in translating theprogram. We use the well-formedness of the expression to derive
+that the two instantiated expressions are equivalent. Proofs thentend to proceed by induction or inversion on these concrete wellformedness derivations.At this point, the reader may want to accuse us of misleading advertising, since earlier we complained that first-order repre-sentations require too much bookkeeping about well-formedness.
+The key difference with PHOAS is that (we conjecture) everyexpression is well-formed by construction. We materialize wellformedness proofs only as needed, and we never need to provePHOAS analogues of common lemma schemas like substitution,
+weakening, and permutation. In this case study, we proved well-formedness manually where needed as a kind of due diligence,
+but we anticipate that the theory will eventually be in place to resteasily assuming axioms of universal well-formedness. In any case,
+PHOAS avoids the need to generate fresh names or rearrange ex-isting names in implementing a wide variety of transformations.
+These administrative operations are the bane of programming andproving with first-order representations.
+
+3. Substitution-Free Operational Semantics
+Our past work gives programs semantics by interpretation intoCoq's strongly-normalizing logic CIC; thus, that work cannot be
+
+applied directly to Turing-complete programming languages likeour source and target languages here. The main representational innovation of our new work is an effective way of writing operationalsemantics over PHOAS terms. Operational semantics has proved
+its worth in the formalization of a wide variety of languages, so ournew encoding expands the effective range of PHOAS dramatically.
+
+It is tempting to write operational semantics directly over para-metric terms (e.g., in
+
+Exp from the last section). Doing so is actuallyfairly straightforward, with the trick for implementing substitution
+
+as the one surprise. Unfortunately, inductive proofs over paramet-ric terms tend to involve just as much administrative overhead as
+we find with first-order representations. Dealing with instantiatedterms (e.g., in
+
+exp) frees us to leave variables deep within syntaxtrees annotated with arbitrary meta language values. If we work
+
+with parametric terms, we must instead represent and apply con-texts explicitly in our induction hypotheses, since it is impossible
+to "go under a binder" without first fixing a var choice.Moreover, working with substitution explicitly brings back the
+same family of lemmas about the interaction of substitution andother functions. Generally we must prove at least one lemma
+about substitution for each program transformation function thatwe write. The details of such lemmas are almost always elided in
+pencil-and-paper proofs, but we must prove them in full detail tosatisfy a proof assistant.
+
+The alternative that we use here is to define an operational se-mantics over instantiated terms that avoids mentioning substitution
+explicitly. Our encoding has the flavor of a hybrid between a high-level semantics and an abstract machine, where we track closure
+allocation explicitly. We want to write semantics equivalent to ex-amples like the one in Figure 3. For basic lambda calculus, it is
+tempting to start out by defining a type val of values like the fol-lowing, such that we can instantiate
+
+var as val in our semantics.
+
+Inductive val : Type :=
+
+| VAbs : (val -> exp val) -> val.
+
+This definition suffers from the same problem as our earlierHOAS pseudo-definition: we try to define
+
+val in terms of functionsover itself. Coq rejects the definition as ill-formed, which is a good
+
+thing, because otherwise we would be able to implement a lambdacalculus interpreter in Coq, which gives us a trivial way of coding
+an infinite loop and thus breaking logical consistency.Our solution is to represent values as natural numbers that index
+into a heap of "closures," or meta language functions from valuesto expressions. The technique bears a resemblance to approaches
+to making allocation explicit in operational semantics, e.g., as inMorrisett et al. (1995). That line of work aims to capture how highlevel programs execute on real machines, while keeping at the rightlevel of abstraction. In contrast, our use of explicit allocation is
+aimed at removing the need to reason about explicit substitution.What we have here is really just an instance of a common pattern
+in semantics of moving to more explicitly syntactic techniques tocircumvent circularities in type definitions.
+
+Definition val : Type := nat.
+Definition closure : Type := val -> exp val.
+Definition closures : Type := list closure.
+
+Here is a big-step semantics in this style for basic lambdacalculus. Its Coq type signature could be
+
+closures -> exp val
+-> closures -> val -> Prop.
+
+(H, #v) + (H, v) (H, *f) + (f :: H, |H|)
+(H1, e1) + (H2, n) (H2, e2) + (H3, v) H3.n = f
+
+(H3, f(v)) + (H4, v0)
+
+(H1, e1 e2) + (H4, v0)
+As with HOAS and its relatives in general, we manage to del-egate the object-language-specific handling of substitution to the
+
+meta language. This delegation happens in the occurrence of f(v)in the application rule. The rule for variables is also more interesting than it may appear at first. By evaluating a variable node #vto its content
+
+v, we effectively push the operation of last section's
+flatten function into our semantics.The trickiness of usual substitution stems from the need to
+
+reason about nested binder scopes. We have replaced that kind of
+
+reasoning with global reasoning about a closure heap. We can provea relatively small set of lemmas about lists and reuse it to handle
+closure heaps in all developments that use our encoding. There is noneed to prove even a single lemma about substitution upon starting
+with a new object language or transformation.Our technique generalizes to the full source language from Figure 1. We revise our val definition like this, using the illustrativetype synonym
+
+label for nat from our library:
+
+Inductive val : Type :=
+
+| VFunc : label -> val
+| VUnit : val
+| VPair : val -> val -> val
+| VInl : val -> val
+| VInr : val -> val
+| VRef : label -> val.
+
+The main PHOAS semantics for the source language tracksinput and output versions of both a closure heap and a reference
+
+heap. We reuse our library of list lemmas to reason about both kindsof heaps.
+
+The definitions above are about expressions specialized to rep-resent variables as values, but it is now easy to define an evaluation
+relation for parametric terms.
+
+(*, E(val)) + (H0, v)
+
+E + v
+
+We have modified standard operational semantics by addinga level of indirection. In a traditional paper proof at the traditional level of detail, our change would only add bureaucratic has-sle. Counterintuitively, the change reduces hassle in mechanized
+proofs, since it helps us delegate to the meta language some detailsof processing the object language.
+
+The substitution-free encoding is more than just a trick to placePHOAS on a level playing field with first-order representations.
+PHOAS with our new semantic encoding compares very favorablywith other known combinations of syntactic and semantic encodings. As far as we are aware, every competing technique is eitherinvalid in a general-purpose proof system or leads to proof overhead significantly above that in our implementation. In verifyingall of our translations that represent syntax solely with PHOAS,
+there is not a single lemma establishing one of the standard object-language-specific syntactic properties. We only once use proof by
+induction over the structure of programs, and that occurs for anauxiliary lemma relevant to closure conversion, where explicit reasoning about variables is hard to avoid.Substitution-free operational semantics has much in common
+with environment semantics, where an evaluation judgment takesan additional input which assigns a value to each free variable of
+the expression to evaluate. Both approaches involve explicit first-order treatment of an aspect of evaluation that is implicit in the
+more common varieties of natural semantics. Where environmentsemantics treats every variable in a first-order way, substitutionfree semantics does the same with closures. We have found thelatter to have serious advantages for proof engineering. None of our
+translations includes more than one case that has any interestingeffect on closure allocation sequence. As a result, none of our
+proofs includes more than one case that must compensate for theeffect of such a change on semantics. In contrast, with environment
+semantics, almost every case of each of our translations would needsome accounting for a rearrangement of variable binding structure.
+
+Theorem-specific proof automation is one of the core tech-niques in our approach to compiler verification, and we will have
+more to say later on the details of that automation. While first-orderencodings of operational semantics usually mention substitution
+
+explicitly, the standard lemmas about substitution tend to admitsimple automated proof strategies. Nonetheless, we feel it is still
+a significant burden to have to state and apply all of these lemmasexplicitly. Perhaps an automation package could go further and apply substitution properties automatically as needed. In the projectdescribed in this paper, we have avoided any automatic application
+of induction, which rules out proofs of the usual syntactic lemmas.We view our more elementary automation style as a mark in favor
+of our proposal.More standard operational semantics with explicit substitution
+is easier to understand and believe, so we chose to state the finaltheorem independently of the new technique. The first part of the
+next section shows how we convert from first-order to higher-ordersyntax and semantics, along with how we justify the soundness of
+the conversion.
+
+4. Main Compiler Phases
+In this section, we walk through our compiler intermediate lan-guages and the phases that translate into them. We will overload
+
+notation by writing b*c for the compilation function being discussedin each subsection.
+
+For lack of space, we discuss our proof automation techniquesonly in the context of CPS translation, in Section 4.2.2. The design
+patterns introduced there apply equally well to the other transla-tions.
+
+4.1 PHOASification
+Our final theorem is stated entirely in terms of standard encodingsof syntax and semantics, with no mention of PHOAS. We achieve
+
+this by beginning our compiler with a de Bruijn index (de Bruijn1972) implementation of the syntax from Figure 1. The first compiler phase translates these programs into PHOAS equivalents,where the PHOAS syntax is a different encoding of Figure 1.
+
+It is not generally possible to "cheat" in implementing a trans-lation into PHOAS, in the sense that there is no default value to use
+for variables when it turns out that the input program is ill-formedsomehow. Therefore, we use dependent types to enforce that every
+source program is closed by construction. This is a standard tech-nique in the dependent types world, where a type
+
+exp is indexedby a natural number expressing how many free variables are available. Variables in ASTs are represented in types fin n, which areisomorphic to sets of natural numbers below
+
+n.Our implementation of PHOASification uses another standard
+
+dependent type family, which we call ilist in our library. For atype
+
+T and a natural number n, an ilist T n value is a length-nlist of values in
+
+T.The type of the main translation is
+
+forall (var : Type)
+(n : nat), Source.exp n -> ilist var n -> Core.exp
+var. Besides the expression to translate, b*c takes in a list repre-senting a mapping from de Bruijn indices to PHOAS variables.
+
+Here are some representative cases from the function's definition,where we write
+
+oe.f for the projection from the ilist oe of the
+value at the position indicated by fin value f. We write ^* for themeta language's function abstraction.
+
+b#xc oe = #(oe.x)b
+e1 e2c oe = be1c oe be2c oeb
+
+fix f(x). e1c oe = fix(^*f.^*x. be1c (x :: f :: oe))
+In the source language definition, we simplify the definitionof substitution by defining a type of values and including an
+
+expconstructor that allows the injection of any value into any type
+exp
+n. Thus, the closed nature of a value is apparent from its type, so weavoid needing to lift de Bruijn indices in the process of substituting
+
+a value in an open term.
+
+4.1.1 Correctness Proof
+We define two mutually-inductive relations, for characterizing thecompatibility of source and PHOAS expressions and values. Both
+
+relations are parameterized by PHOAS-level closure heaps, and theexpression relation is also parameterized by an
+
+ilist, like in thedefinition of the translation. Here are a few representative cases.
+
+We write $ for the constructor that injects source values into sourceexpressions, and we write
+
+H  H0 for the fact that H is a suffixof
+H0. We use the notation fix F for PHOAS-level application ofthe AST constructor for recursive functions.
+
+H ` oe.f ' v
+H, oe ` #f ' #v
+
+H, oe ` e1 ' e01 H, oe ` e2 ' e02
+
+H, oe ` e1 e2 ' e01 e02
+
+8f, x. H, x :: f :: oe ` e ' F (f)(x)
+
+H, oe ` fix f(x). e ' fix F
+
+H ` v ' v0
+H, oe ` $v ' #v0
+
+H.n = f8
+x1, x2, H0. H  H0 ) H0, x2 :: x1 :: * ` e ' f(x1)(x2)
+
+H ` Fix(e) ' Fix(n)
+H ` v1 ' v01 H ` v2 ' v02
+H ` Pair(v1, v2) ' Pair(v01, v02)
+We prove that both relations are monotone, with respect toreplacing a heap
+
+H with another heap H0 such that H  H0. Wealso lift the value relation to apply over results
+
+Ans(*) and Ex(*) inthe natural way.
+
+There are two main lemmas behind the correctness theorem forthis phase. First, we prove that the compilation function respects
+expression compatibility.
+
+LEMMA 1. For any e and oe with compatible type indices, if econtains no uses of
+
+$, then *, oe ` e ' bec oe.
+
+From this starting point, we track the parallel execution of e andits compilation. We use a notion of reference heap compatibility
+
+H ` h ' h0, which says that h and h0 have the same length andthat their values belong pairwise to
+
+H ` * ' *.
+
+LEMMA 2. If:
+
+* (h1, e) + (h2, r) at the source level,*
+
+And H, oe ` e ' e0,* And
+
+H ` h1 ' h01,
+
+Then there exist H0, h02, and r0 such that:
+
+* (H, h01, e0) + (H0, h02, r0),*
+
+And H0 ` r ' r0,* And
+
+H0 ` h2 ' h02.
+
+Lemma 2 appeals to an auxiliary lemma about substitution.We note that this is the only place in our development where a
+
+substitution theorem is proved explicitly.These lemmas together yield the final theorem directly.
+
+THEOREM 2. If (*, e) + (h, r) and e is closed and does not use
+$, then there exist H, h0, and r0 such that (*, *, bec *) + (H, h0, r0)and
+
+H ` r ' r0.
+
+4.2 Conversion to Continuation-Passing Style
+The first main compiler phase translates programs into continuation-passing style. Functions no longer return, explicit exception handling constructs are eliminated, and expression evaluation is brokenup with sequences of
+
+let bindings of the results of primitive oper-ations on variables. Figure 5 shows the syntax of the translation's
+
+target language.
+
+Primops p ::= c | x = x | fix f(x). e|
+
+() | hx, xi | fst(x) | snd(x)|
+inl(x) | inr(x) | ref(x) | !x | x := xExpressions
+e ::= halt(x) | fail(x) | x x | let x = p in e|
+
+case x of inl(x) ) e | inr(x) ) e
+
+Figure 5. CPS language syntax
+
+b#xc kSkE = kS(x)
+braise(e)c kSkE = x kE e; kE(x)
+blet x = e1 in e2c kSkE = x kE e1; be2c kSkE
+
+be1 e2c kSkE = f kE e1; x kE e2;
+
+let k0S = *r. kS(r) in
+let k0E = *r. kE(r) in
+let p0 = .k0S, k0E, in
+let p = .x, p0, in f p
+
+Figure 6. CPS translation
+We use a higher-order one-pass CPS translation, in the style ofDanvy and Filinski (1992). The type of the translation is
+
+forall
+var, Core.exp var -> (var -> CPS.exp var) -> (var ->
+CPS.exp var) -> CPS.exp var. Beyond the input expression,the extra arguments are the current success continuation and the
+
+current exception handler, represented as meta language functionsover result variables. Figure 6 shows some representative cases of
+the definition. We write *x. e as shorthand for fix f(x). e when
+f does not occur free in e. We write x kE e1; e2 as shorthand forb
+
+e1c (^*x. e2)(kE). The application case demonstrates how the ef-fective domain of each core function is expanded to 3-tuples of a
+
+main argument, a success continuation, and an exception handler.This compilation function takes as an argument a choice of
+var representation. In compiling a parametric expression E, wereturn an abstraction over
+
+var, within which we call the concretecompilation function with
+var and E(var) as arguments. We passalwayshalt and always-fail functions as the success continuationand exception handler, respectively.
+
+4.2.1 Correctness Proof
+As for the last phase, this correctness proof is based around a re-lation between core and CPS values. Since both languages use
+
+PHOAS, the relation is parameterized by a closure heap for each.Here are some representative rules. For a meta language function
+
+frepresenting a function abstraction body, we write b
+fc for the waythat the main compilation translates that body. The relation definition below depends on a version of the , relation from Section 2,extended to apply to the input language.
+
+H.n = f H0.n0 = bf0c
+(8x1, x01, x2, x02. \Gamma , (x1, x01), (x2, x02)`
+
+f(x1)(x2) , f0(x01)(x02))
+(8v, v0. (v, v0) 2 \Gamma  ) H, H0 ` v ' v0)
+
+H, H0 ` Fix(n) ' Fix(n0)
+
+H, H0 ` v1 ' v01 H, H0 ` v2 ' v02
+
+H, H0 ` Pair(v1, v2) ' Pair(v01, v02) H, H0 ` Ref(n) ' Ref(n)
+
+As in the last subsection, we lift this relation in the natural wayto pairs of reference heaps and pairs of results.
+Our main theorem is with respect to a substitution-free big-stepsemantics for CPS programs. The signature is the same as for Core
+but with final heaps no longer specified, since the final result is allthat we care about.
+
+THEOREM 3. If:
+
+* (H1, h1, e) + (H2, h2, r) at the source level,*
+
+And \Gamma  ` e , e0,* And
+
+H1, H01 ` h1 ' h01,* And
+, for every (v, v0) 2 \Gamma , H1, H01 ` v ' v0,
+
+Then for every pair of continuations kS and kE, there exist H02,
+h02, and r0 such that:
+
+* If r0 = Ans(v) and (H02, h02, kS(v)) + r00,
+
+then (H01, h01, be0c kSkE) + r00,* And
+
+, if r0 = Ex(v) and (H02, h02, kE(v)) + r00,then
+
+(H01, h01, be0c kSkE) + r00,* And
+H01  H02,* And
+H2, H02 ` r ' r0,* And
+H2, H02 ` h2 ' h02.
+
+This theorem about expressions specialized to values-as-variablesmakes it easy to derive the theorem about parametric expressions
+
+when we substitute the initial success and exception continuationsfor
+
+kS and kE.
+
+4.2.2 Automating the Proofs
+We begin by proving that each of our compatibility relations ismonotone with respect to extension of closure heaps, which follows
+
+by induction on derivations. We also give one-liner proofs for fivemore lemmas that massage "obvious" facts into forms that Coq's
+automated resolution prover will be able to use. At that point, weare ready to tackle the proof of Theorem 3, which proceeds by
+induction on core evaluation judgments.Figure 7 gives the complete proof script for this theorem, implementing in Coq's domain-specific tactic language Ltac (Delahaye2000). We will step through the different elements, remarking as
+appropriate on the design patterns they embody.The script begins with hints, which extend Coq's resolution
+prover, supporting higher-order logic programming in the traditionof Prolog. The first hint suggests that proof search should try each
+of the rules of the evaluation judgment for CPS-level primops. Inthis way, we avoid having to mention the rules explicitly, which
+makes it possible for the proof to keep working even after we addnew kinds of primops.
+
+Hint Constructors CPS.evalP.
+
+Next, we use the Hint Resolve command to suggest someother rules and lemmas to be applied automatically during resolution.
+Hint Resolve answer_Ans answer_Ex ....
+
+We use a Hint Extern command to specify a free-form proofsearch step. We give
+
+1 as an estimate of the cost of this rule, whicheffects the order in which rules are attempted. After that, we write a
+
+pattern to match against a goal. When the goal matches the pattern,we suggest running the proof script to the right of the arrow. In
+this case, our script suggests unfolding some definitions, so that weexpose the syntactic structure of an expression to evaluate, making
+it clear which operational semantics rules apply.
+Hint Extern 1 (CPS.eval _ _ (cpsFunc _ _) _) =>
+
+unfold cpsFunc, cpsFunc'.
+
+Now we are ready for the main body of the proof. We proceed byinduction on the first hypothesis
+
+(H1, h1, e) + (H2, h2, r), and wechain onto our use of induction a script to apply to every inductive
+
+case. The semicolon operator accomplishes this chaining, and wewrap the per-case script with
+
+abstract to prove every case as aseparate lemma, which saves memory by freeing some temporary
+
+data structures after each lemma.
+induction 1; abstract (...
+
+We begin every case with an inversion on the expression equiva-lence judgment
+
+\Gamma  ` e , e0, which is the first remaining hypothesis.
+
+inversion 1;
+
+Next, we call a generic simplification tactic from our LambdaTamer library. This tactic knows nothing about any particular object
+
+language. It relies on a number of built-in Coq automation tacticsand adds some new strategies, combining propositional simplification, partial evaluation, resolution proving, rewriting, and com-mon rules for simplifying sets of hypotheses dealing with standard
+datatypes like natural numbers, lists, and optional values.
+simpler;
+
+At this point, the top-level structure of the expressions appear-ing in a case is known, and we have gotten as far as we can
+
+with generic simplification. The next step is to begin a loop oversome theorem-specific simplification strategies. Like other tacticbased proof assistants, Coq supports a number of tacticals, a kindof higher-order combinators for assembling new proof strategies.
+We use the repeat tactical to structure our loop. The argument to
+repeat is a tactic to attempt repeatedly until it no longer applies.Our argument here uses a
+
+match tactic expression, which general-izes normal pattern matching in the tradition of ML and Haskell. A
+
+match tactic matches on the form of a proof goal, including bothhypotheses and conclusion.
+
+repeat (match goal with
+
+Our heuristics are pattern-matching rules, where each patternhas the form
+
+HYPS |- CONC. The HYPS section describes condi-tions on hypotheses and
+
+CONC gives a pattern to match against theconclusion to be proved. The former section is a comma-separated
+
+list of zero or more entries of the form H : p, asserting that theremust exist some hypothesis matching pattern
+
+p and to whose namethe local variable
+H should be bound.The first heuristic looks for a hypothesis asserting some fact
+
+H, H0 ` v1 ' v2. In our implementation, such a fact is written as H
+& H' |-- v1 ~~ v2, using an ASCII notation that we register asa Coq syntax extension or "macro." Thus, the first pattern matches
+
+any goal with a hypothesis over this judgment. For each suchhypothesis, we apply the tactic
+
+invert 1 2 from our library. Thistactic performs inversion if and only if it is possible to deduce
+
+from the form of the hypothesis that at most two distinct rules ofthe underlying judgment could apply. If more than two rules are
+possible, the tactic invocation fails, triggering backtracking to trya different choice of
+
+H or, if that fails, the next rule in our matchexpression. By using
+
+invert 1 2, we avoid having to specializethis heuristic to the details of our object language, for instance by
+
+writing one heuristic per case where we can deduce that a particularrule of *
+
+, * ` * ' * must have been used to conclude H.
+
+| [ H : _ & _ |-- _ ~~ _ |- _ ] => invert_1_2 H
+
+The next heuristic follows the logic of the previous one, but forthe judgment for result compatibility instead of value compatibility,
+
+which has a different notation.
+| [ H : _ & _ |--- _ ~~ _ |- _ ] => invert_1 H
+
+Hint Constructors CPS.evalP.
+Hint Resolve answer_Ans answer_Ex CPS.EvalCaseL CPS.EvalCaseR EquivRef'.
+Hint Extern 1 (CPS.eval _ _ (cpsFunc _ _) _) => unfold cpsFunc, cpsFunc'.
+
+induction 1; abstract (inversion 1; simpler;
+
+repeat (match goal with
+
+| [ H : _ & _ |-- _ ~~ _ |- _ ] => invert_1_2 H
+| [ H : _ & _ |--- _ ~~ _ |- _ ] => invert_1 H
+| [ H : forall G e2, Core.exp_equiv G ?E e2 -> _ |- _ ] =>
+
+match goal with
+
+| [ _ : Core.eval ?S _ E _ _ _,
+
+_ : Core.eval _ _ ?E' ?S _ _,
+_ : forall G e2, Core.exp_equiv G ?E' e2 -> _ |- _ ] => fail 1
+| _ => match goal with
+
+| [ k : val -> expV,
+
+ke : val -> exp val,
+_ : _ & ?s |-- _ ~~ _,
+_ : context[VCont] |- _ ] =>
+guessWith ((fun (_ : val) x => ke x) :: (fun (_ : val) x => k x) :: s) H
+| _ => guess H
+end
+end
+end; simpler);
+try (match goal with
+
+| [ H1 : _, H2 : _ |- _ ] => generalize (sall_grab H1 H2)
+end; simpler);
+splitter; eauto 9 with cps_eval; intros;
+
+try match goal with
+
+| [ H : _ & _ |--- _ ~~ ?r |- answer ?r _ _ ] => inverter H; simpler; eauto 9 with cps_eval
+end).
+
+Figure 7. Complete proof script for Theorem 3
+The next and final heuristic from our main loop chooses whenand how to apply induction hypotheses (IHes). The first step in that
+direction is to identify some hypothesis H that has the right syntacticstructure to be an IH. Our Coq development uses the predicate
+Core.exp equiv for the judgment we write as \Gamma  ` e , e0 in thestatement of Theorem 3, and the code
+
+?E denotes a pattern variable.
+
+| [ H : forall G e2,
+
+Core.exp_equiv G ?E e2 -> _ |- _ ] =>
+
+It would not be effective to apply the IHes in an arbitrary or-der. Because of the form of Theorem 3, each successful application
+yields an existentially-quantified conclusion, and eliminating thosequantifiers gives us new variables to work with. Those new variables might be needed to instantiate the universal quantifiers of adifferent IH. It turns out that a simple heuristic lets us choose the
+right IH order in every case: as each IH is associated with an expres-sion, follow the order in which those expressions were evaluated in
+the original program.We can track "evaluation order" by inspecting the closure heaps
+that are threaded through evaluation. One evaluation "comes after"another if the former's starting closure heap equals the latter's
+ending heap. By clearing each IH as we use it, we make it possibleto use the following pattern match to identify an IH that is "not
+ready yet." In particular, where the current H is for some expression
+E, there must exist another IH about some expression E', such thatevaluation of
+
+E begins where evaluation of E' leaves off, in termsof the flow of a closure heap
+
+S. Thus, since E comes after E', andsince we have not yet applied the IH for
+
+E', we are not yet ready toapply the IH for
+E. We use the fail tactic to backtrack to makinga different choice of
+
+H.
+
+match goal with
+
+| [ _ : Core.eval ?S _ E _ _ _,
+
+_ : Core.eval _ _ ?E' ?S _ _,
+_ : forall G e2, Core.exp_equiv G ?E' e2 -> _
+|- _ ] => fail 1
+
+If the last rule finds no matches, then we know that H is the ap-propriate IH to apply now. We perform a further pattern-match to
+
+determine whether we need to apply an instantiation strategy spe-cific to the case of function application, one of the few interesting
+cases of the translation. Since the general case is simpler, we willdiscuss it first. We simply apply the tactic
+
+guess, which comesfrom our Lambda Tamer library, to our IH. This generates a new
+
+unification variable for every universal quantifier in the statementof
+
+H. Additionally, we apply automatic resolution proving to dis-charge each hypothesis of
+
+H, in the process learning the values ofmost of the unification variables that we just introduced. For this
+
+theorem, unification variables remain for the continuation variables
+kS and kE, but the other unification variables are determined im-mediately from context. By relying on the versatile
+
+guess tactic,we avoid almost all object-language-specific application of IHes.
+
+This is one of the key techniques supporting proof reuse.
+
+| _ => guess H
+
+In most proofs, guess can handle the "uninteresting" cases thatwould not be written out in detail in a pencil-and-paper proof.
+
+Often a bit more help from the human prover is needed for thecases that lie at the heart of a transformation's purpose. For CPS
+translation, the only such case is function application, and we usepattern matching to identify that case and treat it specially. We
+use the pattern context[VCont] to require that some hypothesis
+
+mentions a continuation value, which turns out to be enough toisolate the case of interest. We also bind local names for the success
+continuation k and the exception handler ke. Finally, we pattern-match out the only closure heap
+
+s that is mentioned in a valuecompatibility hypothesis.
+
+From these variables, we can construct our piece of advice to
+guess. More specifically, we use the variant guessWith, whichlets us suggest a value to be used to instantiate any universal quantifier of proper type, such that the remaining quantifiers are still in-stantiated with fresh unification variables. We know that each function call allocates a new continuation each for the success continu-ation and exception handler. The argument we pass to
+
+guessWithreflects that knowledge, suggesting a closure heap that has the two
+
+new continuations pushed on.
+match goal with
+
+| [ k : val -> expV,
+
+ke : val -> exp val,
+_ : _ & ?s |-- _ ~~ _,
+_ : context[VCont] |- _ ] =>
+guessWith ((fun (_ : val) x => ke x)
+
+:: (fun (_ : val) x => k x) :: s) H
+
+Each iteration of the main loop ends with a call to simpler,which will take the existentially-quantified conjunctions produced
+
+by guess and replace them with individual hypotheses that usefresh top-level variables.
+
+After we finish this main loop of heuristics, most of the workin the proof is done. Simple resolution proving can handle most of
+the remaining goals. We use one additional pattern match to catcha case where it would be useful to add a new hypothesis justified
+by the library theorem sall grab about heap well-formedness.
+try (match goal with
+
+| [ H1 : _, H2 : _ |- _ ] =>
+
+generalize (sall_grab H1 H2)
+end; simpler);
+
+After that, we call the tactic splitter to turn a goal like9
+x1, . . . , xn. OE1 ^ . . . ^ OEm into separate goals OE1, . . ., OEm, witheach
+
+xi replaced by a fresh unification variable. We solve most ofthese goals with a call to the resolution prover
+
+eauto, specifyinga proof tree depth of 9 and an additional hint database
+
+cps eval,which includes a rule to apply as many CPS operational semantics
+
+rules as possible, counted as a single proof step.
+splitter; eauto 9 with cps_eval;
+
+Each remaining goal is solved by case analysis on whether anunknown evaluation result
+
+r is normal or represents an uncaughtexception. More specifically, we find a hypothesis stating a result
+
+compatibility fact, we perform inversion on that hypothesis, and wefinish off the resulting cases with standard tactics.
+
+try match goal with
+
+| [ H : _ & _ |--- _ ~~ ?r
+
+|- answer ?r _ _ ] =>
+inverter H; simpler; eauto 9 with cps_eval
+end).
+
+Our inductive proof has 38 cases to consider, with one for eachsemantic rule. Many of these cases need this kind of further split
+
+on results of sub-evaluations. By using automation to structure ourproof script, we shield the human proof architect from the need to
+consider these many cases individually.
+4.3 Closure Conversion
+The next compiler phase combines the traditional transformationsof closure conversion, which changes all functions to take their
+
+Primops p ...as in last language, minus fix...Expressions
+
+e ...as in last language...Programs
+P ::= e | let f = fix f(x). e in P
+
+Figure 8. Closed language syntax
+
+free variables as explicit arguments; and hoisting, which movesall function definitions to the top level of a program. Since we
+are using PHOAS, it is easiest to combine these phases into one,such that the closed nature of function definitions can be apparent
+syntactically from the fact that they only appear at the top level ofa program. Figure 8 shows the syntax of this translation's target
+language.As in our past work on closure conversion with PHOAS (Chlipala 2008), this phase is interesting because we implement itby converting higher-order syntax to first-order syntax, which is
+passed to a translation that again produces higher-order syntax.Given a parametric expression
+
+E, we instantiate it like E(nat),choosing to represent variables as natural numbers. We also follow
+
+a specific convention in how we use such a term, which has type
+CPS.exp nat. Our convention is isomorphic to the technique ofde Bruijn levels, where bound variables that are not inside nested
+
+scopes have level 0, the next binders inside these have level 1, andso on. Compared to the more common de Bruijn indices, this technique has the advantage that all occurrences of a given binder'svariable use the same level. Therefore, since PHOAS binders are
+represented as functions, we can descend into a binder simply bycalling its function with the appropriate number.
+
+We formalize this convention with a well-formedness judgmentover
+
+CPS.exp nat. Here are the key rules in a restriction to un-typed lambda calculus.
+
+f < n x < n
+
+n ` f x wf
+
+n + 1 ` f(n) wf
+
+n ` *f wf
+
+Our closure conversion is dependently-typed, such that it takesa well-formedness proof as input. We prove a theorem saying that,
+
+for any well-formed E, we have 0 ` E(nat) wf; and we passan invocation of this theorem in the initial call to the translation
+function.Here is the type of the main translation.
+
+forall (var : Type) (n : nat) (e : exp nat), wf n e
+
+-> (((env var (freeVars n e) -> Closed.exp var)
+
+-> Closed.prog var)
+-> Closed.prog var
+
+The function freeVars calculates the free variable set of an ex-pression. When called like
+
+freeVars n e, it returns a length-nlist of booleans, indicating which variables up to
+
+n appear free in e.The type family
+env is parameterized by such a list. An env var
+fvs is a tuple of one var variable for each entry of fvs that is
+true.The main complexity in the translation type comes from a
+
+continuation argument. In translating an expression, the form ofthat expression implies some top-level function definitions that we
+should add. It is critical that none of these definitions mentions anylocal variables, or else we would have an ill-formed program. Thus,
+in translating an expression, we bind its functions and then call acontinuation which may bind additional functions. That continuation then, inside its new definitions, calls a sub-continuation withan environment giving values to all free variables.
+
+We hope that a few representative examples, as shown in Figure9, make the protocol clear. We write
+
+wf arguments as OE. We rely
+
+bhalt(x)c nOEk = k(^*oe.halt(get x oe OE))b
+
+f xc nOEk = k(^*oe.let oe0 = fst(get f (\Pi 1(oe)) (ss1(OE))) in
+
+let f0 = snd(get f (\Pi 1(oe)) (ss1(OE))) in
+let p = .oe0, get x (\Pi 2(oe)) (ss2(OE)), in
+f0 p)b
+let p in fc nOEk = bpc n(ss1(OE))(^*kP .b
+
+f(n)c (n + 1)(ss2(OE))(^*kE.k(^*oe.
+kP (\Pi 1(oe)) (^*x.
+kE (x :: \Pi 2(oe))))))
+
+Figure 9. Representative cases of closure conversion
+
+on a similar primop translation function whose exact type anddefinition we will not discuss further here.
+
+There are a few unusual things going on in Figure 9. First, wemanipulate well-formedness proofs
+
+OE as data. When we know fromthe structure of
+e that a proof OE must be deduced from a rule withtwo premises, we write
+
+ssi(OE) for the extraction of the ith premise'sproof. For a function call
+
+f x, the two premises say that the twovariables
+f and x are both less than the current de Bruijn level n.Such less-than proofs may be passed to the
+
+get function to enableextracting variables from an environment
+oe.We must also do similar splitting of environments. Several cases
+
+of the definition of freeVars are implemented by joining sets offree variables. When an environment
+
+oe has a type based on theunion of two sets, then the projections
+
+\Pi 1 and \Pi 2 translate intoenvironments for those sets. This is always possible to do, since a
+
+union of two sets contains any binding required by either set alone.The case for
+
+fix f(x). e, omitted above, is where new functionbindings are created. It relies on two auxiliary functions for packing
+
+environments into tuples at closure formation sites and unpackingthose tuples in function prologues. Free variable information is
+used to choose which variables to pack.
+4.3.1 Correctness Proof
+Reasoning about layers of nested continuations is tricky, so weprove the correctness of our translation by defining an alternate
+
+translation that does not use continuations. The alternate transla-tion is specialized to the operational semantics of closed programs,
+where, as in the definition of val from Section 3, we representfunction values with natural numbers pointing into a closure heap.
+By specializing the translation to the semantics, we can refer di-rectly to closures and closure heaps, since function addresses are
+generated in a predictable way.Here is the type of the alternate translation:
+
+forall (n : nat) (e : CPS.exp nat), Closed.closures
+
+-> wf n e -> Closed.closures
+
+* (env Closed.val (freeVars n e)
+
+-> Closed.exp Closed.val)
+
+A call to this function takes a current closure heap as input,and return values are pairs of extended closure heaps and functions
+
+from local variable environments to expressions. We did not justuse this version as our initial translation because it works with a
+program representation where types alone do not guarantee well-formedness; any variable might include an "out-of-bounds" function reference.It is fairly straightforward to prove a correctness theorem for
+the alternate translation. We need to prove about two dozen lem-mas about operations on free variables, environments, and closure
+
+heaps. As for the last two phases, we define compatibility rela-tions over the values and reference heaps of the source and target languages. With these pieces in place, we can prove the overallcorrectness theorem with the usual induction on source evaluation
+derivations.A final lemma connects the two translations, proved by mutual
+structural induction over CPS expressions and primops.
+4.4 Flattening
+After closure conversion, programs are already almost in the formof three-address code, the family of traditional low-level compiler
+
+intermediate languages. Beyond the use of structured control flowwith
+
+case expressions, the only serious difference is that closedprograms use
+
+let-binding of immutable variables instead of manip-ulation of mutable temporaries, of which each procedure in threeaddress code has a fixed set.We make this connection precise by defining a flat language and
+a translation into it. Every let-bound variable in an input function isassigned a distinct temporary in the function's translation, and the
+we replace the recursive type of programs P with a simpler type ofpairs, where each pair consists of a list of flat functions and a flat
+main program expression. Every variable reference in the sourceprogram becomes either a temporary or a numeric index into the
+global list of functions.Flattening works like closure conversion in instantiating PHOAS
+terms for use with de Bruijn levels. As this translation returns us tofirst-order languages, its correctness proof requires more lemmas
+about lists and maps, though most are independent of the set of lan-guage constructs. The main inductive theorems are comparable in
+complexity and proof organization to those for closure conversion.
+4.5 Code Generation
+The final compiler pass translates flat programs into assembly lan-guage. At this stage, neither source nor target language is novel.
+
+We still prove every theorem with an adaptive tactic program, butthe basic organization of theorems is as one would expect from related projects. Our translation uses one register as the heap limitpointer, incrementing it as products, sums, and references are allocated. Another register doubles as the function argument registerand as a place to stash short-lived values during double memory
+indirections. Finally, we reserve a register to store a recursive func-tion's "self" pointer. The remaining
+
+N - 3 registers are used tostore the first
+N - 3 temporaries of each procedure. The remainingtemporaries are stored in a global area at the beginning of memory. Since we deal only with compiling whole programs, it is easyto choose a size for this region by finding the highest numbered
+temporary used in a program.The correctness proof is comparable in complexity to those of
+previous phases, but with significantly more supporting lemmas.
+
+5. Optimizations
+To better gauge how our approach scales to the algorithms usedby real compilers, we also implemented and verified two common
+
+optimization passes.
+5.1 Common Subexpression Elimination
+Between closure conversion and flattening, we perform intrapro-cedural common subexpression elimination (CSE) on closed programs. Since our languages have no intraprocedural iteration con-structs, there is no need to perform dataflow analysis. Instead, a
+single recursive traversal of a program suffices. The optimizationstill simplifies cases like application of a known function, where it
+is possible to avoid building a closure.
+
+As we descend into a program's structure, we maintain a map-ping from variables to symbolic values, as defined below.
+Symbolic values s ::= #n | c | () | hs, si | inl(s) | inr(s)
+
+Values not built from the basic constant, unit, product, and sumconstructors are represented with symbolic variables
+
+#n, wherea fresh
+n is generated for each new input-program variable thatcannot be determined to have more specific structure.
+
+The purpose of CSE is to remove some redundant bindingsand case analyses. This transformation may sound complicated
+enough to require conversion of input programs to first-order formto analyze them. However, it is possible to implement CSE in an
+elegant higher-order way. In translating a parametric program P ,we must produce a CSE'd version of it for each possible variable
+representation var. Our solution is to do so by instantiating P atvariable type
+
+var * sval, where sval is the type of symbolicvalues
+s.Thus, each variable is tagged with a symbolic representation,
+
+and this representation may be accessed directly at use sites. Themain translation maintains a mapping from symbolic values to variables. We use this mapping to simplify case expressions with dis-criminees that we see statically are either
+
+inl or inr. When proceed-ing under a
+let binder, the translation evaluates the bound expres-sion symbolically. If the result is in the map, we avoid creating a
+
+new binder in the translation. Instead, we apply the binder body,which is a function over variable/value pairs, to the variable that
+our map associates with the appropriate symbolic value, paired withthat value. If the value we are binding is not found in the map, we
+do create a new binder, and, in the recursive call inside the binder'sscope, we add the new variable to the symbolic map.
+
+The main correctness theorem for this translation is proved verysimilarly to the main theorem for CPS conversion. The proof can be
+a bit simpler because we need no value compatibility relation; CSEhas no effect on the values that appear during program evaluation.
+We prove the main theorem with about 20 lines of tactic code forperforming appropriate case analyses, applying IHes and a lemma
+about primops, and materializing known facts about variables men-tioned in expression equivalence derivations.
+
+5.2 Combined Register Allocation and Dead CodeElimination
+In a single pass performed between flattening and code generation,we combine register allocation and dead code elimination. Code
+generation automatically assigns the lowest-numbered temporariesto registers. Thus, the task of "register allocation" is simply to
+minimize the number of temporaries that each procedure uses, byfinding opportunities to combine several mutually non-interfering
+temporaries into one. We use liveness information to calculate in-terference graphs. As with CSE, the lack of intraprocedural iteration makes it possible to compute an interference graph in a singletraversal of procedure syntax. We use the same liveness information to eliminate useless assignments to temporaries.Our implementation makes use of the finite set and map support
+in Coq's standard library. We represent liveness information withsets of temporaries, interference graphs with sets of unordered pairs
+of temporaries, and temporary reassignments with maps from tem-poraries to temporaries. Coq's library contains functors that build
+such structures from modules describing keys, and each functoroutput contains a set of standard theorems about its data structure.
+On top of this, we also implement and use an abstract data struc-ture for temporary sets whose complements are finite, for use in
+choosing new names for temporaries.As with code generation and many other kinds of low-level reasoning, this correctness proof is built from many unsurprising lem-mas. By relying on the standard theorems about sets and maps, we
+
+Component Total ProofsSource language 228 0
+Core PHOAS language 266 2PHOASification 28 0
+
+Correctness 390 138Well-formedness 40 17
+CPS language 279 18CPS translation 94 0
+
+Correctness 221 60Well-formedness 39 12
+Closed language 311 21Closure conversion 303 13
+
+Correctness 652 238Well-formedness 261 119
+CSE 87 1Correctness 228 80
+
+Well-formedness 177 70Flat language 108 0
+Flattening 63 0Correctness 524 156
+Register allocation 201 49Correctness 642 310
+Assembly language 105 0Code generation 153 0
+
+Correctness 1156 491Overall compiler 13 0
+Correctness 89 12Total 6658 1807
+
+Figure 10. Lines of code in different components
+manage to avoid most proving that is not specific to our transfor-mation.
+
+6. Statistics
+Figure 10 breaks down our development by the number of linesof code in each component. We include how many lines of code
+
+in each component come from proofs, which counts literal proofscripts, resolution hints, and definitions of tactic functions. More or
+less all of the remaining lines come from definitions of syntax andsemantics, in the files corresponding to languages; from compiler
+phase implementations, in their files; or from theorem statementsand auxiliary definitions, in "Correctness" and "Well-formedness"
+files.Our development depends upon our Lambda Tamer Coq library,
+which contains about 1500 lines of object-language-agnostic theo-rems and tactics. We assert two axioms from the Coq standard library: functional extensionality, which says that two functions areequal if they map equal inputs to equal outputs; and proof irrelevance for equality proofs, which says that no equality proposi-tion has more than one distinct proof. This pair of axioms has been
+proved on paper to be consistent with CIC.The "Well-formedness" components in Figure 10 deal with
+proofs that transformations produce well-formed PHOAS termsfrom well-formed inputs. We conjecture that there are CIC-consistent
+axioms stating that all PHOAS terms are well-formed. If thiswere proved metatheoretically, then we could safely omit the wellformedness proofs.Our first finished compiler was for our final source language minus let expressions, constants, equality testing, and recursive func-tions. We also proved a simpler version of the final correctness
+theorem, stating only that a compiled program exhibits the same
+
+binary success-or-failure result as the original, ignoring details ofreturned values and thrown exceptions. As we added the enhancements needed to reach the final version, we measured how mucheffort was required.
+
+6.1 Strengthening the Main Theorem
+Since our source language is Turing-complete, the interesting as-pects of compiler verification must be tackled even if the final theorem only distinguishes between two distinct classes of programoutcome. Other distinctions may be modeled using tests within the
+object language. Thus, it was pragmatic for us to develop our initialproofs using this simplification. Later, we went back and adapted
+the proofs to allow us to prove Theorem 1 as we stated it earlier inthe paper.
+
+This required updating the different object languages so that
+halt and fail operations take parameters. We added or modifiedabout 100 lines of syntax and semantics. We also had to introduce
+
+the "compiler data layout contract" relation and its relatives forthe different translation phases, whose definitions added about 150
+lines of unsurprising code. Additionally, we added about 100 linesof theorem statements, one-liner automated proofs, and resolution
+hints for some new theorems about the contract relations.Beyond that, we modified or added about 80 lines of theorem
+statements and proof script, with most added to deal with new ex-istential quantifications over program result values. Many of these
+changes were improvements that occurred to us as we worked onthe upgrade, such that we would say that the changes belonged in
+the original compiler. Notably, the correctness proofs of the opti-mizations required no changes. We worked on this upgrade over
+the course of two days, with performance of the Coq proof assis-tant being the primary limiting factor. Automation of large proofs
+frequently leads Coq to run out of memory or run for excessivelylong, and we spent more time than we would like tuning our scripts
+to skirt these limitations on an old computer with modest resources.We believe that relatively straightforward improvements to Coq's
+proof engine would make this kind of upgrade quite reasonable tocomplete in well under a day of work. Even with the current state
+of the tools, the upgrade did not require us to add any proof codespecific to a particular case of any of our inductive proofs.
+
+6.2 Adding let Expressions
+Adding let expressions was relatively simple, since general letonly appears until CPS translation, and since
+
+let does not add anew category of runtime values. Thus, we extended the first two
+
+translations only and the syntax and semantics of the first twolanguages. We also added a
+
+let case to the expression compatibilityrelation in the PHOASification correctness proof. These changes
+
+amounted to about 30 new lines of code, with no old lines modified.All of our proofs continued working unchanged. We did not need
+to update a single theorem statement or proof script. The wholeprocess took under half an hour.
+
+6.3 Adding Constants and Equality Testing
+Next, we added constants and equality comparison of constants,which impacts much more of the compiler and its proof. We added
+
+or changed about 100 lines defining syntax, semantics, and transla-tions, and we added about 50 lines defining new rules for inductive
+relations used in the proofs. To adapt the old proofs, we had tochange some patterns to mention new constructors of datatypes, to
+placate Coq's limited support for inferring which datatype is beingpattern-matched on. We proved one lemma about the encoding of
+constants, giving it a one-line proof and adding it as a hint, andwe added one additional one-line hint that detects when constants
+are being compared for equality and then performs case analysison whether they are equal. These proof changes amount to about
+
+10 lines in total, and we also added 5 more lines to improve per-formance in a way not related to constants. We spent about half a
+day on this extension, again with most of that time spent waitingfor slow proof search to finish.
+
+6.4 Adding Recursive Functions
+Replacing non-recursive anonymous functions *x. e with recur-sive anonymous functions
+
+fix f(x). e turned out to be the mostintensive change. We added or modified about 50 lines to account
+
+for additions to syntax, semantics, and translations, and we modi-fied about 20 lines that define function abstraction rules for further
+inductive relations.We added or modified about 350 lines of theorem statements
+and proofs. In each of the earlier phases of the compiler, we mod-ified at most one line of proof in a way that is really specific to
+recursive functions. The remaining extra lines come from the factthat
+
+fix is our only construct that binds more than one variable atonce. We had already proved a host of lemmas specialized to the
+
+case of one variable at a time, and we needed to duplicate theselemmas, reusing their automated proofs without changes. Other alterations to theorem statements and tactics reflected only the needto handle a new binding pattern. The exception to this trend was
+code generation, where a change to the calling convention triggereda fair amount of churn in theorem statements. The full upgrade to
+fix support took us approximately one day.
+7. Related Work
+Compiler verification for first-order languages has a considerablehistory, but we will focus on reviewing related work in compiling functional languages. See the bibliography by Dave (2003)for pointers into the traditional literature on first-order compilers.
+There have been a variety of investigations into verifying compil-ers for pure functional languages, drawing on several very different
+representation and proof techniques.Flatau (1992) described a partial verification of a compiler from
+a subset of the Nqthm logic to the first-order imperative languagePiton, performed with the Nqthm prover. The proof was highly automated, in the usual style of Nqthm and ACL2. Since the com-piler worked in a single pass and targeted a first-order language, it
+avoided most of the issues inherent in reasoning about rearrangingvariable binders.
+
+Minamide and Okuma (2003) used Isabelle/HOL and Isar tobuild proofs of correctness for CPS translations for bare-bones
+untyped lambda calculus, using concrete encoding of binders withvariable names. The simplest translation that they verified (that of
+Plotkin) had a correctness proof of about 250 lines. Their prooffor Danvy and Nielsen's translation took about 400 lines, and this
+figure grew to about 600 when they added let binding to the objectlanguage.
+
+Tian (2006) used Twelf with HOAS to prove CPS translationcorrectness for an untyped, pure mini-ML language without recursion, which is subsumed within our case study source language.His comparable CPS translation theorem took about 50 lines, in the
+usual, fully manual Twelf style. Tian's development uses a targetlanguage more specialized to his particular translation, featuring
+hardcoded binding of a second-class continuation with any functiondefinition, rather than building this functionality on top of product
+types and first-class continuations. We expect that the cost of writ-ing such proofs in Twelf becomes more apparent when source and
+target languages are less tightly coupled, so that some inductiveproof cases must build proof trees of non-trivial depth.
+
+In past work (Chlipala 2007), we verified a compiler from basicsimply-typed lambda calculus to a target language similar to threeaddress code. We used the dependent de Bruijn representationthroughout the early stages of the compiler, and we relied on a
+
+metaprogramming component to prove some of the standard binderlemmas for us. By switching to PHOAS, we have avoided the
+need to state those lemmas explicitly. Our present compiler extendsour past PHOAS-based work (Chlipala 2008) by treating impurity,
+recursion, and the rest of the compilation pipeline beyond CPStranslation and closure conversion.
+
+Dargaye and Leroy (2007) used Coq to verify CPS translationsfor another mini-ML language encoded with de Bruijn indices. We
+believe that our CPS translation is comparable in functionality totheir optimized translation, with the exception that ours does not do
+tail call optimization. They give code size statistics for their CPStranslation, broken into "specifications" and "proofs." The "proofs"
+size for the dependencies of the optimized transform correctnessproof is 4287 lines, an order of magnitude more than the total
+size of our CPS correctness file. The complexities of the languagestreated by the two projects are not directly comparable; Dargaye
+and Leroy include variable-arity recursive functions and datatypeconstructors, but they omit impure features.
+
+Benton and Hur (2009) take a very different approach to com-piler verification in Coq, starting with a typed functional language
+(represented with de Bruijn indices) and using step-indexed logicalrelations over types to establish correctness. Their compiler works
+in one pass, so the theorems involved are very different from thosein the early phases of our compiler. Their development uses the
+usual Coq manual proof style and runs to about 4000 lines. Thoughtheir source language (basic lambda calculus with recursive functions) is less featureful than the source language of this paper, theirfinal correctness theorem is more general than in any related work,
+as it facilitates sound linking with code produced by different com-pilers or written by hand.
+
+8. Conclusion
+Mostly-manual interactive proving of theorems about program-ming languages and compilers can be a very engaging challenge,
+
+and it has been a crucial tool in our efforts to figure out the rightabstractions for the job. Nonetheless, we do not believe that this
+style scales to real-world implementations of high-level languages.We think it is not at all too early to be thinking about the techniques that may some day be applied in such a setting. Our casestudy in this paper is a verified compiler whose mechanized correctness proofs are tactic programs that can adapt automatically tospecification changes. We believe strongly that, if compiler verification ever goes mainstream, it will be done more like we proposehere than like the styles more commonly employed by languages
+researchers.To avoid getting bogged down in administrative lemmas about
+binding, we exploit the parametric higher-order abstract syntaxencoding, along with a new way of using it to encode substitutionfree operational semantics. As a result, some of our compiler phasecorrectness proofs are shorter even than what a diligent semanticist
+would write on paper. Despite our use of novel representations, ourfinal theorem is stated only in terms of established encodings and
+relies on no nonstandard axioms.We hope to expand our case study into a verified compiler for
+core Standard ML. This requires adding a few more features to thesource language and implementing a (hopefully straightforward)
+elaboration from the official abstract syntax of Standard ML. Wewould also like to define typing judgments for each language and
+prove a type preservation theorem for the final compiler, whichcould output Typed Assembly Language. We conjecture that this
+extension would require little change to the semantic preservationtheorems and proofs. It would also be interesting to try to complete
+the end-to-end compiler picture with a verified parser, type infer-ence engine, and assembler.
+
+Acknowledgments
+We would like to thank Greg Morrisett, Ryan Wisnesky, and theanonymous referees for helpful feedback on earlier versions of this
+
+paper. This work was supported by a gift from Microsoft Research.
+
+References
+Brian Aydemir, Arthur Chargu'eraud, Benjamin C. Pierce, Randy Pollack,and Stephanie Weirich. Engineering formal metatheory. In Proc. POPL,
+
+pages 3-15, 2008.
+Nick Benton and Chung-Kil Hur. Biorthogonality, step-indexing and com-piler correctness. In Proc. ICFP, pages 97-108, 2009.
+
+Adam Chlipala. A certified type-preserving compiler from lambda calculusto assembly language. In Proc. PLDI, pages 54-65, 2007.
+Adam Chlipala. Parametric higher-order abstract syntax for mechanizedsemantics. In Proc. ICFP, pages 143-156, 2008.
+Olivier Danvy and Andrzej Filinski. Representing control: A study of theCPS transformation. Mathematical Structures in Computer Science, 2
+
+(4):361-391, 1992.
+Zaynah Dargaye and Xavier Leroy. Mechanized verification of CPS trans-formations. In Proc. LPAR, pages 211-225, 2007.
+
+Maulik A. Dave. Compiler verification: a bibliography. SIGSOFT Softw.Eng. Notes, 28(6):2-2, 2003.
+Nicolas G. de Bruijn. Lambda-calculus notation with nameless dummies: atool for automatic formal manipulation with application to the ChurchRosser theorem. Indag. Math., 34(5):381-392, 1972.
+David Delahaye. A tactic language for the system Coq. In Proc. LPAR,pages 85-95, 2000.
+
+Arthur D. Flatau. A Verified Implementation of an Applicative Languagewith Dynamic Storage Allocation. PhD thesis, University of Texas at
+
+Austin, November 1992.
+Louis-Julien Guillemette and Stefan Monnier. A type-preserving compilerin Haskell. In Proc. ICFP, pages 75-86, 2008.
+
+Robert Harper, Furio Honsell, and Gordon Plotkin. A framework fordefining logics. J. of the ACM, 40(1):143-184, 1993.
+Furio Honsell, Marino Miculan, and Ivan Scagnetto. An axiomatic ap-proach to metareasoning on nominal algebras in HOAS. In Proc. ICALP,
+
+pages 963-978, 2001.
+Xavier Leroy. Formal certification of a compiler back-end or: programminga compiler with a proof assistant. In Proc. POPL, pages 42-54, 2006.
+
+Xavier Leroy and Herv'e Grall. Coinductive big-step operational semantics.Inf. Comput., 207(2):284-304, 2009.
+Yasuhiko Minamide and Koji Okuma. Verifying CPS transformations inIsabelle/HOL. In Proc. MERLIN, pages 1-8, 2003.
+J Strother Moore. A mechanically verified language implementation. J.Automated Reasoning, 5(4):461-492, 1989.
+G. Morrisett, M. Felleisen, and R. Harper. Abstract models of memorymanagement. In Proc. FPCA, pages 66-77, 1995.
+F. Pfenning and C. Elliot. Higher-order abstract syntax. In Proc. PLDI,pages 199-208, 1988.
+Frank Pfenning and Carsten Sch"urmann. System description: Twelf - ameta-logical framework for deductive systems. In Proc. CADE, pages
+
+202-206, 1999.
+Ye Henry Tian. Mechanically verifying correctness of CPS compilation. InProc. CATS, pages 41-51, 2006.
+
+C. Urban and C. Tasson. Nominal techniques in Isabelle/HOL. In Proc.CADE, pages 38-53, 2005.
+Geoffrey Washburn and Stephanie Weirich. Boxes go bananas: Encodinghigher-order abstract syntax with parametric polymorphism. J. Funct.
+
+Program., 18(1):87-140, 2008.
+Markus Wenzel. Isar - a generic interpretative approach to readable formalproof documents. In Proc. TPHOLs, pages 167-184, 1999.

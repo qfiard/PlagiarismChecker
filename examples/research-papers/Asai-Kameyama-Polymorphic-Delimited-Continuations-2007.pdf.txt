@@ -1,0 +1,788 @@
+
+
+Polymorphic Delimited Continuations
+
+Kenichi Asai1 and Yukiyoshi Kameyama2
+1 Department of Information Science, Ochanomizu University
+
+asai@is.ocha.ac.jp
+2 Department of Computer Science, University of Tsukuba
+
+kameyama@acm.org
+
+Abstract. This paper presents a polymorphic type system for a language with delimited control operators, shift and reset. Based on the
+monomorphic type system by Danvy and Filinski, the proposed type system allows pure expressions to be polymorphic. Thanks to the explicit
+presence of answer types, our type system satisfies various important
+properties, including strong type soundness, existence of principal types
+and an inference algorithm, and strong normalization. Relationship to
+CPS translation as well as extensions to impredicative polymorphism
+are also discussed. These technical results establish the foundation of
+polymorphic delimited continuations.
+Keywords: Type System, Delimited Continuation, Control Operator,
+CPS Translation, Predicative/Impredicative Polymorphism.
+
+1 Introduction
+Delimited continuation operators enable us to manipulate control of programsin a concise manner without transforming them into continuation-passing style
+(CPS). In particular, shift and reset, introduced by Danvy and Filinski [6], havestrong connection to CPS, and thus most of the control effects compatible with
+CPS can be expressed using shift and reset [8]. They have been used, for example,to program backtracking [6], A-normalization in direct style [1], let-insertion in
+partial evaluation [1], and type-safe "printf" in direct style [2].Despite the increasing interest in the use of delimited continuations in typed
+programming languages, there has been little work that investigates their basicproperties without sacrificing their expressive power. The original type system
+for shift and reset by Danvy and Filinski [5] is the only type system that allowsmodification of answer types but is restricted to monomorphic types. Polymorphism in the presence of call/cc has been discussed in the context of ML [11]but strong type soundness [21] does not hold for their type system. Gunter,
+R'emy, and Riecke [10] proposed typed cupto operator with strong type sound-ness theorem as well as various properties, but their type system is restricted to
+a fixed answer type for each prompt. As such, none of the above type systemscan type check, for instance, the "printf" program written with shift and reset.
+
+To establish the basic properties of shift and reset without sacrificing theirexpressive power, we present in this paper a polymorphic type system, an extension of the monomorphic type system by Danvy and Filinski, and show that
+
+it satisfies a number of basic properties needed to use them in ordinary pro-gramming languages. In particular, we show strong type soundness, existence of
+principal types and an efficient type inference algorithm, and strong normaliza-tion among others. The polymorphism does not break the semantic foundation
+of the original monomorphic type system: CPS translation is naturally definedfor our polymorphic calculus and preserves types and equivalence. Because of its
+natural connection to CPS, our framework can be extended to a calculus withimpredicative polymorphism [9].
+
+Unrestricted polymorphism in the presence of control operators leads to anunsound type system [11]. We introduce and employ a new criteria called "purity" restriction instead of more restrictive value restriction. An expression issaid to be pure if it has no control-effects [18]. By allowing pure expressions to
+be polymorphic, an interesting non-value term can be given a polymorphic type.Based on these results, we have implemented a prototypical type inference
+algorithm, and applied it to many interesting programs to obtain their principaltypes.
+
+The rest of this paper is organized as follows: Section 2 illustrates a fewprogramming examples to give intuition about the type structure for shift and
+reset. In Section 3, we formalize a predicatively polymorphic calculus for shiftand reset, and prove its properties such as type soundness. We then study a CPS
+translation for our calculus in Section 4. In Section 5, we extend our study tocover impredicative polymorphism under two evaluation strategies. In Section 6,
+we compare our work with related work and give conclusion. Proofs of theoremsin this paper can be found in the extended version of this paper [3].
+
+2 Programming Examples
+Polymorphism is inevitable in programming [17]. A simple example of polymor-phism is found in list manipulating functions: a reverse function works for a
+
+list of elements of any type. In this section, we introduce the control operators,
+shift and reset, and show examples of polymorphism that involves controloperators.
+
+2.1 List Append: Answer Type Modification
+Consider the following program [5] written in OCaml syntax:
+let rec append lst = match lst with
+
+[] -> shift (fun k -> k)
+| a :: rest -> a :: append rest
+
+This program is a curried version of list append, written with control operators.Here,
+
+shift captures its current continuation and passes it to its argument(typically a one-argument function
+
+fun k -> . . .) in the empty context. Unlike
+callcc, however, continuations are captured only up to its enclosing reset(hence called delimited continuations).
+
+When append is invoked in a delimited context as follows:
+
+let append123 = reset (fun () -> append [1; 2; 3])
+append recursively stores each element of its argument into the control stack.When all the elements are stacked, the control stack could be thought of as a
+
+term with a hole: 1 :: 2 :: 3 :: *, waiting for the value for the [] case. Then, shift
+(fun k -> k) captures it, turns it into an ordinary function y"x.1 :: 2 :: 3 :: x,and returns it. The returned continuation
+
+append123 is the partially appliedappend function: given a list, it appends 1, 2, and 3 to it in the reversed order.
+
+When shift is used in a program, it typically has an impact on the answertype of its enclosing context. Before
+
+shift (fun k -> k) is executed, the con-text 1 :: 2 :: 3 :: * was supposed to return a list (given a list for *). In other words,
+
+the answer type of this context was a list. After shift (fun k -> k) is exe-cuted, however, what is returned is the captured continuation
+
+y"x.1 :: 2 :: 3 :: xof type
+int list -> int list. In other words, execution of shift (fun k ->
+k) modifies the answer type from 'a list to 'a list -> 'a list, where 'ais the type of the elements of the list.
+
+To accommodate this behavior, Danvy and Filinski used a function typeof the form
+
+S / A -> T / B [5]. It is the type of a function from S to T, butmodifies the answer type from
+
+A to B when applied. Using this notation, appendhas the type
+'a list / 'a list -> 'a list / ('a list -> 'a list) forall
+'a: given a list of type 'a list, append returns a list of type 'a list to itsimmediate context; during this process, however, the answer type of the context
+
+is modified from 'a list to 'a list -> 'a list.Gunter, R'emy, and Riecke mention the type of context (prompt) in their type
+system [10]. However, they fix the answer type and do not take the answer typemodification into account, limiting the use of control operators. To characterize
+the full expressive power of shift and reset, it is necessary to cope with twoanswer types together with polymorphism.
+
+2.2 List Prefix: Answer Type Polymorphism
+Once answer types are included in a function type, polymorphism becomes moreimportant in programming. First of all, the conventional function type
+
+S -> T isregarded as polymorphic in the answer type [18]:
+S / 'a -> T / 'a for a newtype variable
+'a. This indicates that even a simple, apparently monomorphic,function like:
+
+let add1 x = x + 1
+has to be treated as polymorphic in the answer type. Otherwise, it cannot beused in different contexts as in:
+
+reset (fun () -> add1 2; ()); reset (fun () -> add1 3; true)
+The first occurrence of add1 is used at type int / unit -> int / unit whereasthe second one at type
+
+int / bool -> int / bool. To unify them, add1 hasto be given a polymorphic type:
+
+int / 'a -> int / 'a.Answer type polymorphism plays an important role in captured continuations, too. Consider the following program [4]:
+
+let rec visit lst = match lst with
+
+[] -> shift (fun h -> [])
+| a :: rest -> a :: shift (fun k ->
+
+(k []) :: reset (k (visit rest)))
+let rec prefix lst = reset (visit lst)
+
+When applied to a list, e.g., [1; 2 3], prefix returns a list of its prefixes: [[1];
+[1; 2]; [1; 2; 3]]. In this example, there are two occurrences of shift. In-tuitively, the continuation captured by the second
+
+shift represents consing ofelements read so far. It is applied twice: once to an empty list to construct a
+
+current prefix and once to construct a list of longer prefixes. Finally, the firstoccurrence of
+
+shift initiates the construction of prefixes by returning an emptylist of type
+'a list list, discarding the current continuation.It is important that the captured continuation
+
+k is polymorphic in its answertype. A closer look at the function reveals that
+k is used in two different contexts:the first occurrence of
+k has type 'a list / 'a list list -> 'a list / 'a
+list list whereas the second one has type 'a list / 'a list -> 'a list
+/ 'a list. This demonstrates that without answer type polymorphism in thecaptured continuations, the above program does not type check.
+
+2.3 Printf
+Finally, we present a type-safe printf program written in direct style with shiftand
+
+reset (detailed in [2]). Given a representation of types:
+
+let int x = string_of_int x
+let str (x : string) = x
+
+the following program achieves the behavior of printf in a type-safe manner:
+let % to_str = shift (fun k -> fun x -> k (to_str x))
+let sprintf p = reset p
+
+Namely, the following programs are all well-typed:
+sprintf (fun () -> "Hello world!")
+sprintf (fun () -> "Hello " ^ % str ^ "!") "world"
+sprintf (fun () -> "The value of " ^ % str ^ " is " ^ % int) "x" 3
+
+and give "Hello World!" for the first two and "The value of x is 3" forthe last. Depending on
+
+% appearing in the formatting text, sprintf returns adifferent type of values.
+
+The dependent behavior of sprintf is well understood by examining its type:
+(unit / string -> string / 'a) -> 'a. The formatting text is representedas a thunk that modifies the final answer type into
+
+'a according to the occurrenceof
+%. Then, the type of the return value of sprintf is polymorphic to this 'a.The dependent behavior of
+
+sprintf is only achievable through the support ofboth the answer type modification and polymorphism.
+
+v ::= c | x | y"x.e | fix f.x.e value
+
+e ::= v | e1e2 | Sk.e | hei | let x = e1 in e2|
+
+if e1 then e2 else e3 expression
+o"", r', r^, s' ::= t | b | (o""/r^ ! r'/s') monomorphic type
+
+A ::= o"" | 8t.A polymorphic type
+
+Fig. 1. Syntax of y"s/rlet .
+
+3 Predicative Polymorphism with Shift/Reset
+We now introduce polymorphic typed calculi for shift and reset, and study theirproperties such as type soundness. Following the literature, we distinguish two
+versions of polymorphism: predicative polymorphism (let-polymorphism) foundin ML and impredicative polymorphism which is based on the second order
+lambda calculus (Girard's System F [9]). In this section, we give the predicative
+version y"s/rlet . The impredicative version will be given in later sections.
+
+3.1 Syntax and Operational Semantics
+We assume that the sets of constants (denoted by c), variables (denoted by
+x, y, k, f), type variables (denoted by t), and basic types (denoted by b) aremutually disjoint, and that each constant is associated with a basic type. We
+
+assume bool is a basic type which has constants true and false.
+
+The syntax of y"s/rlet is given by BNF in Figure 1. A value is either a constant,a variable, a lambda abstraction, or a fixpoint expression
+
+fix f.x.e which repre-sents a recursive function defined by the equation
+f (x) = e. The variables f and
+x are bound in fix f.x.e. An expression is either a value, an application, a shiftexpression, a reset expression, a let expression, or a conditional. The expressions
+
+Sk.e and hei, resp., correspond to OCaml expressions shift (fun k -> e) and
+reset (fun () -> e), resp. Types are similar to those in ML except that thefunction type is now annotated with answer types as (
+
+o""/r^ ! r'/s'). Free andbound variables (type variables, resp.) in expressions (types, resp.) are defined
+
+as usual, and FTV(o"") denotes the set of free type variables in o"".
+
+We give call-by-value operational semantics for y"s/rlet . First we define evalua-tion contexts (abbreviated as e-contexts), pure e-contexts, and redexes as follows:
+
+E ::= [ ] | vE | Ee | hEi | let x = E in e | if E then e else e e-context
+
+F ::= [ ] | vF | F e | let x = F in e | if F then e else e pure e-context
+
+R ::= (y"x.e)v | hvi | hF [Sk.e]i | let x = v in e|
+
+if true then e1 else e2 | if false then e1 else e2|
+(fix f.x.e)v redex
+
+(y"x.e)v A~ e[v/x]
+(fix f.x.e)v A~ e[fix f.x.e/f][v/x]h
+
+vi A~ vh
+F [Sk.e]i A~ hlet k = y"x.hF [x]i in ei
+let x = v in e A~ e[v/x]
+if true then e1 else e2 A~ e1
+if false then e1 else e2 A~ e2
+
+Fig. 2. Reduction rules for y"s/rlet
+
+A pure e-context F is an evaluation context such that no reset encloses the hole.Therefore, in the redex h
+
+F [Sk.e]i, the outermost reset is guaranteed to be theone corresponding to this shift, i.e., no reset exists inbetween.
+
+A one-step evaluation in y"s/rlet is E[R] A~ E[e] where R A~ e is an instanceof reductions in Figure 2 where
+
+e[v/x] denotes the ordinary capture-avoidingsubstitution. For example,
+prefix [1; 2] is reduced as follows. (We use fiximplicitly through recursion, and assume that lists and other constructs are
+
+available in the language).
+
+prefix [1; 2]A~ h1 :: S
+
+k.(k[] :: hk (visit [2])i)iA~ h
+let k = y"x.h1 :: xi in k[] :: hk (visit [2])iiA~ h(
+
+y"x.h1 :: xi)[] :: h(y"x.h1 :: xi)(visit [2])iiA~
++ h[1] :: h(y"x.h1 :: xi)(2 :: Sk.(k[] :: hk (visit [])i))ii
+
+A~ h[1] :: hlet k = y"x.h(y"x.h1 :: xi)(2 :: x)i in k[] :: hk (visit [])iiiA~ h
+
+[1] :: h(y"x.h(y"x.h1 :: xi)(2 :: x)i)[] :: h(y"x.h(y"x.h1 :: xi)(2 :: x)i)(visit [])iiiA~
++ h[1] :: h[1; 2] :: h(y"x.h(y"x.h1 :: xi)(2 :: x)i)(Sh.[])iii
+
+A~ h[1] :: h[1; 2] :: let h = y"x.h(y"x.h(y"x.h1 :: xi)(2 :: x)i)xi in []iiA~ h
+
+[1] :: h[1; 2] :: []ii A~+ [[1]; [1; 2]]
+
+The notion of reduction A~ is defined as the compatible closure3 of those inFigure 2, and A~* (and A~
+
++, resp.) denotes the reflexive-transitive (transitive,
+
+resp.) closure of A~.
+
+3.2 Type System
+We begin with Danvy and Filinski's monomorphic type system for shift andreset [5]. Since the evaluation of an expression with shift and reset may modify
+answer types, a type judgment in their type system involves not only a type of
+
+3 A binary relation is compatible if it is closed under term-formation, for instance,
+
+whenever e1 and e2 are related by this relation, y"x.e1 and y"x.e2 are related.
+
+an expression being typed, but also answer types before and after evaluation.Symbolically, a judgment takes the form:
+
+\Gamma  ; o"" ` e : # ; r'
+which means that, under the type context \Gamma  , the expression e has type # andthe evaluation of
+
+e changes the answer type from o"" to r'. A rationale behind thisformulation is that, the CPS counterpart of
+
+e has type (# * ! o""*) ! r'* underthe type context
+\Gamma  * in the simply typed lambda calculus, where ( )* is the CPStranslation for types and type contexts defined in the next section.
+
+Introducing polymorphism into their type system is, however, not straightfor-ward since the subject reduction property fails for the system with unrestricted
+uses of let-polymorphism and side effects such as references and control effects.In the literature, there are many proposals to solve this problem by restricting
+the let-expression let x = e1 in e2 or by changing its operational semantics,some of which are:
+
+- Value restriction [20]: e1 must be a value.
+- Weak type variables [19]: the type variable in the type of e1 can be general-ized only when it is not related to side effects.
+
+- Polymorphism by name [15]: the evaluation of e1 is postponed until x isactually used in
+
+e2, thus enforcing the call-by-name evaluation to e1.
+
+We take an alternative approach: we restrict that e1 in let x = e1 in e2must be free from control effects, that is, pure. Intuitively, an expression is pure
+when it is polymorphic in answer types.4 In Danvy and Filinski's type system,we can define that
+
+e is pure if the judgment \Gamma  ; o"" ` e : # ; o"" is derivable forany type
+o"". Typical examples of pure expressions are values but the expressionh
+ei is also pure, since all control effects in e are delimited by reset. To representpurity of expressions, we introduce a new judgment form
+
+\Gamma  `p e : # .
+
+Now let us formally define the type system of y"s/rlet . A type context (denoted by
+\Gamma  ) is a finite list of the form x1 : A1, * * * , xn : An where the variables x1, * * * , xnare mutually distinct, and
+
+A1, * * * , An are (polymorphic) types. Judgments areeither one of the following forms:
+
+\Gamma  `p e : # judgment for pure expression
+\Gamma  ; o"" ` e : #; r' judgment for general expression
+
+Figure 3 lists the type inference rules of y"s/rlet where # <= A in the rule (var)means the instantiation of type variables by monomorphic types. Namely, if
+
+A t^8
+t1. * * * 8tn.! for some monomorphic type !, then # t^ ![?1, * * * , ?n/t1, * * * , tn]for some monomorphic types
+
+?1, * * * , ?n. The type Gen(?; \Gamma  ) in the rule (let) isdefined by 8
+t1. * * * 8tn.? where {t1, * * * , tn} = FTV(?) - FTV(\Gamma  ).
+
+4 Thielecke studied the relationship between answer type polymorphism and the absence of control in depth [18].
+
+(x : A 2 \Gamma  and # <= A)
+
+\Gamma  `p x : # var
+
+(c is a constant of basic type b)
+
+\Gamma  `p c : b const
+\Gamma , f : (?/o"" ! #/r'), x : ?; o"" ` e : #; r'
+
+\Gamma  `p fix f.x.e : (?/o"" ! #/r') fix
+
+\Gamma , x : ?; o"" ` e : #; r'
+\Gamma  `p y"x.e : (?/o"" ! #/r') fun
+\Gamma  ; r^ ` e1 : (?/o"" ! #/r'); s' \Gamma  ; r' ` e2 : ?; r^
+
+\Gamma  ; o"" ` e1e2 : #; s' app
+
+\Gamma  `p e : #
+\Gamma  ; o"" ` e : #; o"" exp
+\Gamma , k : 8t.(#/t ! o""/t); ? ` e : ?; r'
+
+\Gamma  ; o"" ` Sk.e : #; r' shift
+
+\Gamma  ; ? ` e : ?; #
+
+\Gamma  `p hei : # reset
+\Gamma  `p e1 : ? \Gamma , x : Gen(?; \Gamma  ); o"" ` e2 : #; r'
+
+\Gamma  ; o"" ` let x = e1 in e2 : #; r' let
+\Gamma  ; ? ` e1 : bool; r' \Gamma  ; o"" ` e2 : #; ? \Gamma  ; o"" ` e3 : #; ?
+
+\Gamma  ; o"" ` if e1 then e2 else e3 : #; r' if
+
+Fig. 3. Type Inference Rules of y"s/rlet .
+
+The type inference rules are a natural extension of the monomorphic typesystem by Danvy and Filinski [5]. Pure expressions are defined by one of the
+rules (fix), (fun), or (reset).5 They can be freely turned into general expressionsthrough the rule (exp). Pure expressions can be used polymorphically through
+the rule (let). It generalizes the standard let-polymorphism found in ML. Wecan allow a let expression
+
+let x = e1 in e2 even when e1 is not pure, in whichcase it is macro-expanded to (
+
+y"x.e2)e1 where e1 is treated monomorphically.Finally, the rule (shift) is extended to cope with the answer type polymorphism
+
+of captured continuations: k is given a polymorphic type 8t.(# /t ! o""/t).
+Examples. We show the principal types for the examples shown in Section 2.Using the type inference rules (augmented with rules for lists, etc.), we can
+deduce that append (rewritten with fix) has type 'a list / 'b -> 'a list /
+('a list -> 'b),6 where 'a list -> 'b is a shorthand for 'a list / 'c ->
+'b / 'c for a new type variable 'c. Given this type, the type of append123, i.e.,
+reset (fun () -> append [1; 2; 3]), becomes int list -> int list (or
+int list / 'c -> int list / 'c). Since it is pure, append123 can be givena polymorphic type in its answer type
+
+'c. Notice that append123 is not boundto a value but an effectful expression enclosed by reset. If we employed value
+
+restriction, append123 could not be polymorphic, and thus could only be usedin a context with a fixed answer type.
+
+5 We could have introduced a more general rule such as: if \Gamma  ; t ` e : #; t is derivable
+
+for t 62 FTV(\Gamma , #), then \Gamma  `p e : #. It would then allow expressions that are not
+syntactically values nor reset expressions but in fact pure, such as Sk.k3. We did
+not take this approach, because we can always insert reset around pure expressions
+to make them syntactically pure.
+6 This is the principal type for append. In the typical case where the call to append is
+
+immediately enclosed by reset as is the case for append123, 'b is instantiated to 'a
+list.
+
+Next, the principal type for visit is 'a list / 'b -> 'a list / 'b list.7To deduce this type, we need to use the rule (shift) to give
+
+k a polymorphic typein its answer type. Then, the type of
+prefix becomes 'a list -> 'a list
+list. In other words, it accepts a list of any type 'a. Since it is pure (that is,answer type polymorphic), it can be used in any context.
+
+Finally, the principal type for % is somewhat complicated:
+('a / 'p -> 's / 'q) / 't -> 's / ('a / 'p -> 't / 'q)
+In the typical case where to_str is pure ('p='q) and has type 'a -> string,and the output
+
+'t is string, the above type becomes:
+
+('a -> string) / string -> string / ('a -> string)
+This type describes the behavior of %: given a representation of a type (of type 'a
+-> string), it changes the answer type from string to a function that receivesa value of the specified type
+
+'a. Then, sprintf returns a function of this finalanswer type, thus accepting an argument depending on the occurrence of
+
+%.
+
+3.3 Properties
+We have introduced the polymorphic calculus y"s/rlet with shift and reset. Weclaim that our calculus provides a good foundation for studying the interaction
+
+between polymorphism and delimited continuations. To support this claim, weprove the following properties:
+
+- Subject reduction (type preservation).- Progress and unique decomposition.
+- Principal types and existence of a type inference algorithm.- Preservation of types and equality through CPS translation.
+- Confluence.- Strong normalization for the subcalculus without
+
+fix.
+
+We first show type soundness, i.e., subject reduction and progress.
+Theorem 1 (Subject Reduction). If \Gamma  ; o"" ` e1 : # ; r' is derivable and e1 A~*
+e2, then \Gamma  ; o"" ` e2 : # ; r' is derivable. Similarly, if \Gamma  `p e1 : # is derivable and
+e1 A~* e2, then \Gamma  `p e2 : # is derivable.
+
+The above theorem not only assures that a well-typed program does not go wrong(so-called weak type soundness [21]) but also guarantees that the evaluated term
+
+has the same type as the original term (strong type soundness [21]). This is theconsequence of having answer types explicitly in our type system. We need three
+lemmas to prove this theorem.
+Lemma 1 (Weakening of Type Context). Suppose \Gamma 1 ! \Gamma 2 and \Gamma 2 is avalid type context. If
+
+\Gamma 1; o"" ` e : ?; r' is derivable, then \Gamma 2; o"" ` e : ?; r' isderivable. Similarly for
+
+\Gamma 1 `p e : ?.
+7 Again, 'b is typically instantiated to 'a list.
+
+Lemma 2 (Substitution for Monomorphic Variables). Suppose \Gamma 1 ! \Gamma 2,
+\Gamma 2 is a valid type context, and \Gamma 1 `p v : ? is derivable.If
+
+\Gamma 2, x : ?; o"" ` e : #; r' is derivable, then \Gamma 2; o"" ` e[v/x] : #; r' is derivable.Similarly, if
+
+\Gamma 2, x : ? `p e : # is derivable, then \Gamma 2 `p e[v/x] : # is derivable.
+
+Lemma 3 (Substitution for Polymorphic Variables). Suppose \Gamma 1 ! \Gamma 2,
+\Gamma 2 is a valid type context, and \Gamma 1 `p v : ? is derivable.If
+
+\Gamma 2, x : Gen(?; \Gamma 1); o"" ` e : #; r' is derivable, then \Gamma 2; o"" ` e[v/x] : #; r' isderivable. Similarly for
+
+\Gamma 2, x : Gen(?; \Gamma 1) `p e : # .
+
+We next prove the progress property, which states that evaluation of a pro-gram does not get stuck. Although a program is usually defined as an expression
+
+with no free variables, we need to refine it, since, for instance, Sk.k3 cannotbe reduced further due to the absence of an enclosing reset. Here, we define a
+program to be an expression with a toplevel reset of the form hei which has nofree variables.
+
+Theorem 2 (Progress and Unique Decomposition). If `p hei : # is deriv-able, then either
+
+e is a value, or hei can be uniquely decomposed into the form
+E[R] where E is an evaluation context and R is a redex.
+
+By Theorems 1 and 2, we can conclude that our type system is sound (TypeSoundness).
+
+Although our type system may look rather complex, we can smoothly extend
+Hindley-Milner type inference algorithm W to accommodate y"s/rlet . The extendedalgorithm
+
+W 0 takes two arguments as its inputs: \Gamma  (for a valid context) and e(for a raw expression) such that all free variables in
+
+e are contained in \Gamma  . Then,
+W 0 either fails or returns a tuple (t,; o"", #, r') where t, is a substitution for typevariables, and
+
+o"", # , and r' are types.
+
+Theorem 3 (Principal Type and Type Inference). We can construct a
+type inference algorithm W 0 for y"s/rlet such that:1.
+
+W 0 always terminates.2. if
+
+W 0 returns (t,; o"", #, r'), then \Gamma  t,; o"" ` e : # ; r' is derivable. Moreover, forany (
+t,0; o""0, # 0, r'0) such that \Gamma  t,0; o""0 ` e : # 0; r'0 is derivable, (\Gamma  t,0, o""0, # 0, r'0) t^(
+\Gamma  t,, o"", #, r')A' for some substitution A'.3. if
+
+W 0 fails, then \Gamma  t,; o"" ` e : # ; r' is not derivable for any (t,; o"", #, r').
+
+We have implemented a prototypical type inference algorithm system for ourlanguage based on this theorem. The principal types shown in Section 3.2 are
+
+all inferred by it.
+
+Finally, we can show confluence for y"s/rlet , and strong normalization for thesubcalculus without
+
+fix. This is in contrast to cupto operator, where strongnormalization does not hold.
+
+8
+
+Theorem 4 (Confluence and Strong Normalization).
+
+1. The reduction A~ in y"s/rlet is confluent.
+2. The reduction A~ in y"s/rlet without fix is strongly normalizing.
+8 See http://okmij.org/ftp/Computation/Continuations.html#cupto-nontermination.
+
+b* = b for a basic type b
+
+t* = t for a type variable t
+((o""/r^ ! r'/s'))* = o""* ! (r'* ! r^*) ! s'*
+
+(8t.A)* = 8t.A*
+(\Gamma , x : A)* = \Gamma  *, x : A*
+
+Fig. 4. CPS translation for types and type contexts.
+
+c* = c
+v* = v
+(y"x.e)* = y"x.[[e]]
+(fix f.x.e)* = fix f.x.[[e]]
+
+[[v]] = y"u*.u*v*
+[[e1e2]] = y"u*.[[e1]](y"m.[[e2]](y"n.mnu*))
+[[Sk.e]] = y"u*.let k = y"nu*0.u*0(u*n) in [[e]](y"m.m)
+
+[[hei]] = y"u*.u*([[e]](y"m.m))
+[[let x = e1 in e2]] = y"u*.let x = [[e1]](y"m.m) in [[e2]]u*
+[[if e1 then e2 else e3]] = y"u*.[[e1]](y"m.if m then [[e2]]u* else [[e3]]u*)
+
+Fig. 5. CPS translation for values and expressions.
+
+4 CPS translation of y"s/rlet
+The semantics of control operators have often been given through a CPS trans-lation. In their first proposal, Danvy and Filinski gave the precise semantics of
+shift and reset in terms of a CPS translation [6, 7]. In this section, we show thatit can be naturally extended to polymorphic setting.
+
+Harper and Lillibridge [12] were the first to systematically study CPS trans-lations in polymorphic language with control operators. They introduced CPS
+translations from F !+call/cc to F !, and proved that, under a condition sim-ilar to the value restriction, a call-by-value CPS translation preserves types
+and semantics (equality). We follow Harper and Lillibridge to give a type-and-equality preserving CPS translation for polymorphic calculi with shift and reset.
+
+The CPS translation for y"s/rlet is a Plotkin-style, call-by-value translation,and is defined in Figures 4 and 5, where the variables
+
+u*, m and n are fresh.The target calculus (the image) of the translation is
+y"let, the minimum lambdacalculus with let-polymorphism and conditional expressions.
+
+9
+
+9 y"let may be obtained from y"s/r
+
+let by eliminating shift, reset, and answer types o"" andr' in \Gamma  ; o"" ` e : #; r' and (?/o"" ! #/r'). Since all expressions are pure in y"
+
+let, we do
+not distinguish two kinds of judgments.
+
+The type (o""/r^ ! r'/s') is translated to the type of a function which, givena parameter of type
+
+o""* and a continuation of type r'* ! r^* returns a value oftype
+s'*. For instance, the type of the visit function (in the prefix example)
+'a list / 'b -> 'a list / 'b list is CPS translated to 'a list -> ('a
+list -> 'b) -> 'b list.The translation of reset is the same as that in Danvy and Filinski's. For
+
+shift, we use a let-expression rather than substitution, so that the capturedcontinuation
+
+y"nu*0.u*0(u*n) may be used polymorphically in the body [[e]](y"m.m).This is essential to retain enough polymorphism for delimited continuations.
+
+The translation of the let expression let x = e1 in e2 needs care to takepolymorphism into account. We use a let-expression to express the polymorphism
+in the source term, and supply the identity continuation y"m.m to the CPStransform [[
+
+e1]]. This is typable in the target calculus, since a pure expression istranslated to an expression of type 8
+
+t.((# ! t) ! t).We can prove that the CPS translation preserves types and equality:
+
+Theorem 5 (Preservation of Types). If \Gamma  ; o"" ` e : # ; r' is derivable in y"s/rlet ,then
+
+\Gamma  * ` [[e]] : (# * ! o""*) ! r'* is derivable in y"let.
+
+If \Gamma  `p e : # is derivable in y"s/rlet , then, \Gamma  * ` [[e]] : (# * ! r^) ! r^ is derivablefor an arbitrary type
+
+r^ in y"let.
+
+Theorem 6 (Preservation of Equality). If \Gamma  ; o"" ` e1 : # ; r' is derivable
+and e1 A~* e2 in y"s/rlet , then [[e1]] = [[e2]] in y"let where = is the least congruencerelation which contains A~ in
+
+y"let.10
+
+5 Impredicative Polymorphism with Shift and Reset
+The second order lambda calculus (Girard's System F) is a solid foundation foradvanced concepts in programming languages, since its impredicative polymorphism is strictly more expressive than the predicative one. In this section, westudy an extension of (call-by-value version of) System F with shift and reset.
+It is an explicitly typed calculus rather than an implicitly typed calculus like
+y"s/rlet . Hence, we add two constructs to the expressions: \Lambda t.e for type-abstractionand
+
+e{o""} for type-application. Following Harper and Lillibridge [12], we considertwo calculi with impredicative polymorphism that differ in evaluation strategies.
+
+The first calculus, y"s/r,Std2 , adopts the "standard" strategy: \Lambda t.e is treated as a
+value, and hence we do not evaluate under \Lambda . The second one, y"s/r,ML2 , adoptsthe "ML-like" strategy:
+
+\Lambda t.e is a value only when e is a value, and hence weevaluate under
+\Lambda .The syntax of
+
+y"s/r,Std2 and y"s/r,ML2 extends that of y"s/rlet with the new con-structs listed in Figure 6. We annotate bound variables with types, for instance,
+
+y"x : o"". e. We eliminate let expressions, since they can be macro-defined: for
+instance, the expression let f = y"x.x in (f f)0 in y"s/rlet is represented11 as
+10 The reduction A~ in y"let is the reduction A~ restricted to the expressions in y"let.
+11 We assume that 0 is a constant of type int.
+
+o"", r', r^, s' ::= * * * | 8t.o"" ::= * * * | 8t.o"" type
+
+v ::= * * * | \Lambda t.e ::= * * * | \Lambda t.v value
+
+e ::= * * * | e{o""} ::= * * * | \Lambda t.e | e{o""} expression
+
+y"s/r,Std2 (standard) y"s/r,ML2 (ML-like)
+
+Fig. 6. Syntax of y"s/r,Std2 and y"s/r,ML2 .
+\Gamma  `p e : #
+\Gamma  `p \Lambda t.e : 8t.# tabs, t 62 FTV(\Gamma  )
+
+\Gamma  ; o"" ` e : 8t.# ; r'
+\Gamma  ; o"" ` e{?} : #[?/t]; r' tapp
+
+Fig. 7. Type inference rules for new constructs.
+
+(y"f : 8t.(t ! t). f{int ! int}(f {int})0)(\Lambda t.y"x : t. x). Monomorphic andpolymorphic types are merged, since the type quantifier 8 may occur at any
+place in types. The definitions for values and expressions reflect the differencebetween the two calculi.
+
+The type inference rules for new constructs are common to y"s/r,Std2 and
+y"s/r,ML2 , and are given in Figure 7. As can be seen by the rule (tabs), the
+body e in \Lambda t.e is restricted to a pure expression. For y"s/r,ML2 , this restriction isnecessary
+
+12 to ensure the type soundness due to a similar reason as Harper and
+
+Lillibridge [12] who proposed to put a kind of value restriction when abstract-ing types. Unfortunately, their calculus under the value restriction is not very
+
+interesting, since the standard and ML-like strategies completely agree on therestricted calculus. We relax the restriction so that
+
+e in \Lambda t.e may be an arbitrarypure expression, which makes the two strategies differ on some expressions.
+
+Operational semantics is defined in Figure 8 with a new reduction rule:
+
+(\Lambda t.e){o""} A~ e[o""/t]
+where e[o""/t] denotes the capture-avoiding substitution for types. For y"s/r,ML2 ,the subexpression
+
+e in the reduction rule is restricted to a value.
+
+Polymorphism in y"s/r,Std2 is a generalization of Leroy's "polymorphism byname" [15]: consider the expression
+
+let f = hei in (f f)0 for an expression eof type
+t ! t and a constant 0 of type int. It is represented by (y"f : 8t.(t !
+
+t).(f{int ! int})(f{int})0)(\Lambda t.hei) in y"s/r,Std2 , and it is easy to see that theevaluation of
+
+e is postponed until a type is applied to \Lambda t.hei.
+
+Polymorphism in y"s/r,ML2 is a generalization of that for ML. Taking thesame example, the outermost
+
+r'-redex is computed only after hei is computedand returns a value. Then, the variable
+
+f is substituted for the value of \Lambda t.hei,and the body (
+f {int ! int})(f{int})0 is computed.
+
+12 For y"s/r,Std2 , the restriction is not necessary, and we could have defined a more liberal
+
+type system. In the present paper, however, we choose a uniform, simpler syntax.
+
+E ::= * * * | E{o""} ::= * * * | E{o""} | \Lambda t.E e-context
+
+F ::= * * * | F {o""} ::= * * * | F {o""} pure e-context
+
+R ::= * * * | (\Lambda t.e){o""} ::= * * * | (\Lambda t.v){o""} redex
+
+y"s/r,Std2 y"s/r,ML2
+
+Fig. 8. Evaluation Contexts and Redexes.
+
+(8t.# )* = 8t.8s.((#* ! s) ! s) for a fresh type variable s
+[[\Lambda t.e]]o"",8t.#,o"" = y"u* : ((8t.# )* ! o"").u*(\Lambda t.\Lambda s.[[e]]s,#,s)
+
+[[e{?}]]o"",#[?/t],r' = y"u* : ((#[?/t])* ! o""*).[[e]]o"",8t.#,r'(y"u : (8t.#)*.u{?*}{o""*}u*)
+
+Fig. 9. CPS translation for y"s/r,Std2 .
+(8t.# )* = 8t.# *
+[[\Lambda t.e]]o"",8t.#,o"" = y"u* : ((8t.# *) ! o"").u*(\Lambda t.[[e]]#,#,# (y"m : #*.m))
+
+[[e{?}]]o"",#[?/t],r' = y"u* : ((#[?/t])* ! o""*). [[e]]o"",8t.#,r'(y"u : 8t.# *.u*(u{?*}))
+
+Fig. 10. CPS translation for y"s/r,ML2 .
+
+We can show type soundness for y"s/r,Std2 and y"s/r,ML2 .
+Theorem 7 (Type Soundness). Subject reduction property and progress property hold for y"s/r,Std2 and y"s/r,ML2 .
+
+We define a CPS transformation for y"s/r,Std2 and y"s/r,ML2 in Figures 9 and10. The target calculus of the translation is System F augmented with basic
+types, constants, fix and conditionals. Equality of the target calculus is theleast congruence relation which includes call-by-value
+
+r't^-equality, r'-equalityfor types ((
+\Lambda t.e){o""} = e[o""/t]), and equality for fix and conditionals. Sincethe target calculus is explicitly typed, the CPS translation for expressions is
+
+annotated by types as [[e]]o"",#,r', which is well-defined when \Gamma  ; o"" ` e : # ; r' isderivable for some
+
+\Gamma  . It is interesting to see how the difference of evaluationstrategies affect the difference of CPS translations in Figures 9 and 10.
+
+Note that the CPS translation for y"s/r,ML2 is a natural extension of that for
+y"s/rlet : for instance, [[let f = hei in (f f)0]] in y"s/rlet is equal (up to the call-by-value
+r't^-equality) to [[(y"f : 8t.(t ! t).(f{int ! int})(f {int})0)(\Lambda t.hei)]] in y"s/r,Std2 .
+
+We can show that the CPS transformations for the two calculi preserve types
+and equality. Let T be y"s/r,Std2 or y"s/r,ML2 .
+
+Theorem 8 (Preservation of Types and Equality).
+
+1. If \Gamma  ; o"" ` e : # ; r' is derivable in T , then \Gamma  * ` [[e]]o"",#,r' : (# * ! o""*) ! r'* isderivable in the target calculus.
+
+2. If \Gamma  `p e : # is derivable in T , then \Gamma  * ` [[e]]s,#,s : (#* ! s) ! s is derivablefor any type variable
+
+s in the target calculus.3. If
+\Gamma  ; o"" ` e : # ; r' is derivable in T , and e A~* e0, then [[e]]o"",#,r' = [[e0]]o"",#,r'under the equality of the target calculus.
+
+6 Conclusion
+We have introduced predicative and impredicative polymorphic typed calculifor shift and reset, and investigated their properties such as type soundness
+and relationship to CPS translations. We have extended Danvy and Filinski'smonomorphic type system for shift and reset to polymorphic one, and have
+shown that a number of pleasant properties hold for the polymorphic calculi.We have shown that our calculi have a natural representation for the "purity"
+of expressions, and that the purity restriction suffices for the type systems to besound, thus generalizing value restriction used in Standard ML and OCaml.
+
+In the literature, a number of authors have tackled the unsoundness problemof polymorphism and effects [19, 15, 20, 12]. We have proposed a simple solution
+based on the notion of "purity", which is, in the presence of the reset opera-tor, less restrictive than the notion of "syntactic values" in ML. We have also
+investigated two evaluation strategies for impredicative calculi, each of whichgeneralizes ML's and Leroy's solutions for the unsoundness problem.
+
+Several authors have studied polymorphic calculi with control operators fordelimited continuations. Introducing polymorphism into a calculus with shift and
+reset has been implicit by Danvy who gave many programming examples (see,for instance, [4]). In fact, his interesting examples encouraged us to formulate the
+calculi in the present paper. Filinski [8] implemented shift and reset in SML/NJ,thus enabling one to write polymorphic functions with shift and reset. However,
+the expressivity of his system is limited since the answer type is fixed once andfor all. The same goes for the calculus with
+
+cupto by Gunter et al. [10]. Kiselyovet al. [14] have implemented shift and reset in OCaml, and their examples made
+
+use of let-polymorphism. However, their paper did not give formal accounts forpolymorphism. As far as we know, the present paper is the first to provide a
+systematic study on the interaction of polymorphism and control operators fordelimited continuations.
+
+Although we believe that our calculus serves as a good foundation for study-ing polymorphic delimited continuations calculi, this is only the first step; we
+need deeper understanding and better theories. The first author of the presentpaper has studied logical relations based on Danvy and Filinski's monomorphic
+type system [1], but it is not apparent if his result extends to the polymorphiccase. Hasegawa [13] studied parametricity principle for the second order, callby-name y"u-calculus (similar to System F + call/cc), and obtained the notionof "focal parametricity". Although he works in call-by-name, we hope to find
+
+some connection between our work and his results in the future. A recent workby Mogelberg and Simpson [16] treats a similar notion in call-by-value.
+
+Acknowledgments. We would like to thank Olivier Danvy and MasahitoHasegawa for helpful comments and suggestions. This work was partly supported
+by JSPS Grant-in-Aid for Scientific Research (C) 18500005 and 16500004.
+
+References
+
+1. K. Asai. Logical Relations for Call-by-value Delimited Continuations. In Trends
+
+in Functional Programming, volume 6, pages 63-78, 2007.
+2. K. Asai. On Typing Delimited Continuations: Three New Solutions to the Printf
+
+Problem. 2007. Submitted. See http://pllab.is.ocha.ac.jp/~asai/papers/.
+3. K. Asai and Y. Kameyama. Polymorphic Delimited Continuations. Technical
+
+Report CS-TR-07-10, Dept. of Computer Science, University of Tsukuba, Sep 2007.
+4. O. Danvy. An Analytical Approach to Program as Data Objects. DSc thesis, Department of Computer Science, University of Aarhus, Aarhus, Denmark, 2006.
+5. O. Danvy and A. Filinski. A Functional Abstraction of Typed Contexts. Technical
+
+Report 89/12, DIKU, University of Copenhagen, July 1989.
+6. O. Danvy and A. Filinski. Abstracting Control. In Proc. 1990 ACM Conference
+
+on Lisp and Functional Programming, pages 151-160, 1990.
+7. O. Danvy and A. Filinski. Representing Control: a Study of the CPS Transformation. Mathematical Structures in Computer Science, 2(4):361-391, 1992.
+8. A. Filinski. Representing Monads. In POPL, pages 446-457, 1994.
+9. J.-Y. Girard, Y. Lafont, and P. Taylor. Proofs and Types, volume 7 of Cambridge
+
+Tracts in Theoretical Computer Science. Cambridge University Press, 1989.
+10. C. A. Gunter, D. Remy, and J. G. Riecke. A Generalization of Exceptions and
+
+Control in ML-Like Languages. In FPCA, pages 12-23, 1995.
+11. R. Harper, B. F. Duba, and D. MacQueen. Typing First-Class Continuations in
+
+ML. J. Funct. Program., 3(4):465-484, 1993.
+12. R. Harper and M. Lillibridge. Explicit polymorphism and CPS conversion. In
+
+POPL, pages 206-219, 1993.
+13. M. Hasegawa. Relational parametricity and control. Logical Methods in Computer
+
+Science, 2(3), 2006.
+14. O. Kiselyov, C. c. Shan, and A. Sabry. Delimited dynamic binding. In ICFP, pages
+
+26-37, 2006.
+15. X. Leroy. Polymorphism by name for references and continuations. In POPL,
+
+pages 220-231, 1993.
+16. R.E. Mogelberg and A. Simpson. Relational parametricity for computational effects. In LICS, 2007.
+17. C. Strachey. Fundamental concepts in programming languages. International Summer School in Computer Programming, Copenhagen, Denmark, August 1967.
+18. H. Thielecke. From Control Effects to Typed Continuation Passing. In POPL,
+
+pages 139-149, New York, January 2003. ACM Press.
+19. M. Tofte. Type inference for polymorphic references. Inf. Comput., 89(1):1-34,
+
+1990.
+20. A. K. Wright. Simple imperative polymorphism. Lisp and Symbolic Computation,
+
+8(4):343-355, 1995.
+21. A. K. Wright and M. Felleisen. A syntactic approach to type soundness. Inf.
+
+Comput., 115(1):38-94, 1994.

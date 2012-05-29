@@ -1,0 +1,673 @@
+
+
+Verified, Executable Parsing
+
+Aditi Barthwal1 and Michael Norrish2
+
+1 Australian National University
+Aditi.Barthwal@anu.edu.au
+
+2 Canberra Research Lab., NICTA
+
+Michael.Norrish@nicta.com.au
+
+Abstract. We describe the mechanisation of SLR parsing, covering background
+properties of context-free languages and grammars, as well as the construction
+of an SLR automaton. Among the various properties proved about the parser we
+show, in particular, soundness: if the parser results in a parse tree on a given input,
+then the parse tree is valid with respect to the grammar, and the leaves of the parse
+tree match the input; completeness: if the input is in the language of the grammar
+then the parser constructs the correct parse tree for the input with respect to the
+grammar; and non-ambiguity: grammars successfully converted to SLR automata
+are unambiguous.
+We also develop versions of the algorithms that are executable by automatic translation from HOL to SML. These alternative versions of the algorithms require
+some interesting termination proofs.
+
+1 Introduction
+The (context-free) parsing problem is one of determining whether or not a string ofterminal symbols belongs to a language that has been specified by means of a contextfree grammar. In addition, we imagine that the input is to be processed by some laterform of analysis, e.g., a compiler. Therefore, we wish to generate the parse tree that
+demonstrates this membership when the string is in the language, rather than just ayes/no verdict.
+
+The parsing problem can be solved in a general way for large classes of grammarsthrough the construction of deterministic push-down automata. Given any grammar in
+the acceptable class, the application of one function produces an automaton embodyingthe grammar. This automaton then analyses its input, producing an appropriate verdict.
+The particular function we have chosen to formally characterise and verify produceswhat is known as an SLR automaton.
+
+Thus, at a high level, our task is to specify and verify two functions
+
+slrmac : grammar -> automaton option
+parse : automaton -> token list -> ptree option
+
+The slrmac function returns SOME m if the grammar is in the SLR class, and NONEotherwise. The
+
+parse function uses the machine m to consume the input and producea parse tree for the input string, returning
+
+NONE in case of a failure.
+
+In the rest of the paper, we will describe the types and functions that appear above.In Section 1.1, we describe grammars and their properties. In Section 1.2, we describe
+the type of SLR automata, and the type of their results. In Secton 1.3, we describethe construction of automata from input grammars. We are then in a position to verify
+important properties about these functions. Our theorems are described in Section 2.Finally, we also wish to be able to turn our verified HOL functions into functions that
+can be executed in SML. To do this, a number of definitions that have rather abstractor "semantic" characterisations need to be shown to have executable equivalents. The
+derivation of executable forms is described in Section 3.
+Literature and Technology Being one of our field's earliest examples of theory leadingto successful practice, parsing and language theory has a large literature. On the other
+hand, we are not aware of any existing work on a mechanised theory of parsing. Ourmechanisation has been performed in the HOL4 system [2, 5], and has been inspired
+principally by Hopcroft and Ullman's standard text [3].
+Parsers as External Proof Oracles If an external, potentially untrusted, tool were togenerate the parse tree for a given string, it would be easy to verify that this parse tree
+was indeed valid for the given grammar. The parse tree would be serving as a proof thatthe input string was indeed in the grammar's language, and the trusted infrastructure
+need only check that proof. It is natural then to ask what additional value a verifiedparser-generator might provide. Apart from the intellectual appeal in mechanising interesting mathematics, we believe there is at least one pragmatic benefit: if the (verified)construction of an SLR automaton succeeds, one has a proof that the grammar in question is unambiguous. When a parse is produced by the automaton, one knows that noother parse is possible.
+
+1.1 Context-Free Grammars
+A context-free grammar (CFG) is represented in HOL using the following type defini-tions:
+
+symbol = TS of string | NTS of string
+rule = rule of string => symbol list
+grammar = G of rule list => string
+(The => arrow indicates curried arguments to an algebraic type's constructor. Thus, the
+rule constructor is a term of type string -> symbol list -> rule. We uselists rather than sets for the grammar's rules for ease of later translation to SML, and to
+
+avoid frequent finite-ness side conditions.)A rule is a mapping from a string to a symbol list, where the string is interpreted
+as a non-terminal. Similarly, a grammar consists of a list of rules and a string givingthe start symbol. Traditional presentations of grammars often include separate sets corresponding to the grammar's terminals and non-terminals. We extract these sets withfunctions
+
+terminals and nonTerminals respectively.
+
+Definition 1. A list of symbols (or sentential form) s derives t in a single step if s is of
+the form ffAfl, t is of the form fffifl, and if A ! fi is one of the rules in the grammar.
+In HOL:
+
+derives g sf1 sf2 =
+
+9s1 s2 rhs N.
+
+(sf1 = s1 ++ [NTS N] ++ s2) ^
+(sf2 = s1 ++ rhs ++ s2) ^
+MEM (rule N rhs) (rules g)
+
+(The infix ++ denotes list concatenation. The MEM relation denotes list membership.)
+
+We can form the reflexive and transitive closure of a binary relation like derives gwith the
+
+^* operator, written as a suffix. Thus, (derives g)^* sf1 sf2 indicatesthat
+sf2 is derived from sf1 in zero or more steps, also denoted as sf1 )
+
+* sf2 w.r.t
+
+a grammar.Later we will also use the rightmost derivation relation,
+
+rderives, and its closure.
+
+Definition 2. The language of a grammar consists of all the words that can be derived
+from the start symbol.
+
+language g =
+
+{ tsl | (derives g)^* [NTS (startSym g)] tsl ^
+
+EVERY isTmnlSym tsl }
+
+(Predicate isTmnlSym is true of a symbol if it is of the form TS s for some string s.EVERY
+
+checks that every element of a list satisfies the given predicate.)
+
+We also define the concept of nullability and relations for finding first sets andfollow sets for a symbol as stated below. These notions are central when the actions for
+
+the SLR automaton are calculated (see Section 1.2).
+Definition 3. A list of symbols ff is nullable iff ff )
+
+* ffl:
+
+nullable g sl = (derives g)^* sl []
+Definition 4. The first set of a symbol is the set of terminals that can appear first in the
+sentential forms derivable from it:
+
+firstSet g sym =
+
+{ (TS fst) | 9rst.(derives g)^* [sym] (TS fst::rst) }
+
+(:: represents the list `cons' operator.)
+Definition 5. The follow set of a symbol N is the set of terminals that can occur after
+N in a sentential form derivable from any of the right-hand sides belonging to a rule in
+the grammar.
+
+followSet g N =
+
+{ TS ts | 9M rhs p s.
+
+MEM (rule M rhs) (rules g) ^
+(derives g)^* rhs (p ++ [N;TS ts] ++ s) }
+
+(This definition might be simplified by only considering derivations from the start symbol of the grammar. However, we choose to present it in the above way so it is compatible with our executable definition, which ignores reachability of non-terminals.)
+
+Executable versions of these functions (which do not need to scan all possiblederivations) are described in Section 3.1.
+
+1.2 SLR Automata
+An SLR machine is a push-down automaton where each state in the automaton corre-sponds to a list of items. An item
+
+N ! ff * fi, is a grammar rule that has been splitin two by the dot (
+
+*) marking the progress that has been made in recognising the givenright-hand side (
+fffi). In HOL:
+
+item = item of string => symbol list # symbol list
+state = item list
+
+In the mechanisation, an automaton state is a list of items, and the empty list representsan error state. The state of an execution is the current input, coupled with a stack of
+
+pairs of automaton states and parse trees. The root of each parse tree corresponds to aterminal symbol that has been shifted from the input, or to a non-terminal that has been
+produced through a reduction step.
+
+Based on the next symbol in the input (we are implementing SLR with one symbollookahead), and the state the parser is in, the parser will perform one of the following
+
+actions:
+
+- REDUCE: the parser recognizes a valid handle on the stack and reduces it the left-hand side of the rule
+
+- GOTO: the parser shifts an input symbol on to the stack and goes to the indicatesstate
+- NA: the parser throws an error
+In our framework, the automaton is presented by two functions, goto and reduce.The
+
+goto function takes a symbol and a state as arguments and returns a new
+state. We have thus merged two tables in the traditional presentation: the shift tableencoding information for terminals, and the goto table for non-terminals.
+
+The reduce function takes a symbol and a state and returns a list of possiblerules that can be reduced in the given state. When the machine has been constructed
+from an SLR grammar the list will always be empty or just one element long. If areduction is to be performed for rule
+
+N ! ff, the symbols ff are popped off the stack,revealing a state
+s0. The non-terminal N is pushed onto the stack, and the machineshifts to the state given by
+
+goto applied to N and s0.
+Given a state and input symbol, the next action is a shift if the goto function returnsa non-error state. The next action is a reduction if the
+
+reduce function returns a listcontaining one rule. The SLR construction ensures that both conditions can't be true
+
+simultaneously. If neither is true, the machine throws an error.These functions are combined using a while combinator of type
+
+('a -> bool) -> ('a -> 'a option) -> 'a ->
+'a option option
+
+The type 'a is the type of the execution state. The first argument is a boolean condi-tion on states specifying when the loop should continue. The second argument encodes
+
+the loop body, allowing for the possibility that the loop execution terminates abnor-mally (
+
+e.g. the parser detects a string not in the grammar's language). The third argu-ment is the initial state. The result encodes normal termination, abnormal termination
+
+(SOME NONE) and failure to terminate (NONE).
+
+1.3 Constructing the Parser
+The architecture of the parser-construction process is shown in Figure 1. The first step increating the SLR machine is to augment the grammar. The augmentation adds an extra
+
+rule that introduces a new start symbol and a marker (a terminal symbol) that appearsat the end of all the words in the language of the grammar. The parser uses this rule
+for reduction exactly when it has accepted the input word. This ensures that the parseralways `spots' the end of input. The augmentor
+
+auggr is a function of type
+
+grammar -> string -> string -> grammar option
+We use SOME g' to return the augmented grammar g' when the symbols being in-troduced are `fresh' (not part of the old grammar). Otherwise failure is indicated by
+
+returning NONE.
+
+Fig. 1. Architecture of the Parser Construction Process
+The slrmac function creates the goto and reduce functions which represent thethree transition tables of the traditional presentation of an LR automaton. It checks that
+the functions don't produce any shift-reduce or reduce-reduce conflicts. If the functionspass this test, they can be passed onto the
+
+parser function which implements themachine (as described above in Section 1.2).
+
+Building the Parsing Tables The construction of the goto function is conceptuallysimple: let the result of applying
+
+goto to a state oe and the symbol s (terminal or non-terminal) be the list of items
+N ! ffs * fi, where N ! ff * sfi is an element of oe. Thisbehaviour is captured in the HOL function
+
+moveDot. Unfortunately, it is not sufficient.
+When an item's dot is before a non-terminal, say A ! ff * Bfi, this indicates thatthe parser expects to parse the non-terminal (
+
+B) next. To ensure the item set containsall possible rules the parser may be in the midst of parsing, it must additionally include
+
+all items describing how B itself will be parsed. If there are rules for B that themselveshave non-terminals as the first element of a RHS, then those non-terminals' items must
+also be included. Thus we must take a closure: repeatedly including all referenced non-terminals until we reach a fix-point.
+
+The final goto function is calculated by nextState (which gets access to theinput grammar). The new state is computed by moving the dot over all the items in the
+current state that have the input symbol after the dot, and then taking the closure.
+
+nextState g itl sym = closure g (moveDot itl sym)
+The other table we must compute is reduce. This really is simple: for every com-plete item (of the form
+
+N ! ff*) in a state, return the rule N ! ff if the input symbolis in the follow set of
+N . Because we use the entire follow set of N , we are computingan SLR machine. If we didn't use a follow set at all, and always reduced on complete
+
+items, we would be implementing an LR(0) parser. If we computed follow sets for statesthat depended on where a non-terminal had been used, we would be implementing an
+LALR parser.
+
+Checking for Conflicts When slrmac has constructed the functions goto and reduce,it then checks them for possible shift-reduce or reduce-reduce conflicts. Checking for
+such an error in a given state on a given symbol is done by the noError function:
+
+noError (go,rd) sym st =
+
+case rd st sym of
+
+[] -> T
+|| [r] -> (go st sym = [])
+|| otherwise -> F
+
+The slrmac function then tests noError on all reachable states in the automaton,and for all possible terminal symbols. This is easy to express logically:
+
+okSlr g initState =
+
+8syms state tok.
+
+trans g (initState, syms) = SOME state =)
+noError (goto g, reduce g) tok state
+
+where trans g iterates goto g over a sequence of symbols to find the resulting state(if any). Hopcroft and Ullman call this function
+
+ffi.
+Expressing this check executably is discussed in Section 3.
+
+Putting it all Together The parser function is as given in Figure 1.
+
+parser (initState, eof, oldS) m sl =
+
+let out = mwhile (~ ffi exitCond eof oldS)
+
+(*s.parse m s) (init initState sl)
+in
+
+case out of
+
+NONE -> NONE
+|| SOME (SOME (sl',[(state,ptree)],csl')) ->
+
+SOME (SOME ptree)
+|| SOME NONE -> SOME NONE
+|| SOME _ -> SOME NONE
+
+The parse function implements a single step of the SLR machine (Section 1.2). initprovides the initial execution state to get this process started. The
+
+exitCond functionis true of an execution state if the stack consists of just the non-augmented grammar's
+
+start symbol, and if the input consists of just the eof token. The while combinator
+mwhile (Section 1.2) repeatedly performs the parse step until exitCond is true.
+
+2 Proofs
+We now have a parser generator formally specified in HOL. To verify that our speci-fication is indeed correct, we would like to demonstrate that the language accepted by
+the automaton is the same as the language defined by the grammar. This goal is natu-rally split into two inclusion results: that everything accepted by the machine is in the
+language ("soundness"), and that everything in the language is accepted by the machine("completeness").
+
+Before we delve into the proofs, we describe what it means to be a valid parse treewith respect to a grammar:
+
+(validptree g (Node n ptl) =
+
+MEM (rule n (getSymbols ptl)) (rules g) ^
+(8e. MEM e ptl ^ isNode e =) validptree g e)) ^
+(validptree g (Leaf tm) = F)
+
+Here, getSymbols gives the list of symbols at the roots of a list of trees. Thus, a treeis valid with respect to a grammar if there is a rule in the grammar that corresponds to
+
+the root node deriving the roots of its sub-trees, and if (recursively) all the sub-trees arealso valid.
+
+The proofs to come also depend on a number of simple invariants on the state of aparse execution:
+
+- parser inv states implementation-specific properties about the stack. These prop-erties ensure the items in each of the state on the stack correspond to some grammar
+
+rule (validStates) and that the initial start state is never popped off from thestack.
+
+parser inv g csl = validStates g csl ^ ~NULL csl
+
+- The SLR automaton works by computing valid items for each viable prefix. Predi-cate validItem inv asserts that each of the states contains only those items that
+
+are valid for the viable prefix fl, which is the string of symbols that has been pushedon to the stack to reach that state.
+
+validItem_inv g initState revStk =
+
+8stk'.
+
+IS_PREFIX revStk stk' ^ ~NULL stk'
+=)
+
+trans g (initState, stackSyms stk') =
+
+SOME (topState stk')
+
+2.1 Validity of the Parse Tree Generated
+If the parser results in a parse tree, the tree is valid with respect to the grammar for whichthe parser was generated. Alternatively, the parse tree was built using rules present in
+
+the given grammar.Below we abbreviate
+
+validptree inv for conditions which state that for all thenon-terminals on the stack, the associated parse trees are valid with respect to the given
+
+grammar. We prove that this property is preserved by the parse function, which takesa single step of the execution. By induction over the while-loop, if the parser is able to
+reduce the stack symbols to the start symbol, then the corresponding parse tree must bevalid as well.
+
+Theorem 1.
+
+8g sl stl.
+
+auggr g s eof = SOME ag ^ slrmac ag = SOME m ^
+parser_inv ag csl ^ validptree_inv g stl ^
+parser (initState, eof, oldS) (SOME m) sl =
+
+SOME (SOME tree)
+=)
+
+validptree ag tree
+
+2.2 Equivalence of the Output Parse Tree And the Input String Parsed
+The main predicate of interest here is the leaves eq inv. Below it abbreviates con-ditions which assert that at each state the leaves of the tree are equal to the parsed string.
+
+This ensures that the grammar rules being applied to form the parse tree, correspond tothe input string being parsed and the leaves of the resulting parse tree are equal to the
+original input string.
+Theorem 2.
+
+8m g s eof sl csl.
+
+auggr g s eof = SOME ag ^ slrmac ag = SOME m ^
+parser inv ag csl ^ leaves eq inv sl sl [] ^
+parser (initState, eof, startSym g) (SOME m) sl =
+
+SOME (SOME tree))
+=)
+
+(sl=leaves tree)
+
+2.3 Soundness of the Parser
+To prove soundness, we have to show that the input string for which a valid parse treecan be constructed, is in the language of the grammar.
+
+Theorem 3.
+
+8m g s eof sl csl.
+
+auggr g s eof = SOME ag ^ slrmac ag = SOME m ^
+parser inv ag (stl, csl) ^
+validptree inv ag (stl, csl) ^
+leaves eq inv sl sl [] ^
+parser (initState, eof, startSym g) (SOME m) sl =
+
+SOME (SOME tree))
+=)
+
+sl 2 language ag
+
+In turn, this result depends on a simple result stating the equivalence of being able toderive a sentential form and having a valid parse tree with that form as its leaves.
+
+2.4 Completeness of the Parser
+To show completeness, we have to prove that if a string is in the language of a grammarthen the parser will terminate with a parse tree. Soundness (Theorem 3) already ensures
+the validity of the output tree. We assume that the grammar does not have useless non-terminals, i.e. all the non-terminal symbols generate some terminal string (`generates
+a word', gaw). We earlier proved that removing useless symbols does not affect thelanguage of a grammar, so we might extend
+
+slrmac to do this for us, or just have itreport an error if given a grammar containing useless non-terminals.
+
+Theorem 4.
+
+auggr g st eof = SOME ag ^ sl 2 language ag ^
+slrmac ag = SOME m ^
+(8nt. nt 2 nonTerminals ag =) gaw ag nt)
+=)
+
+9tree.
+parser (initState, eof, startSym g) (SOME m) sl =
+
+SOME (SOME tree)
+
+This result has by far the most complicated proof in the mechanisation, and tooka considerable proportion of the total time spent. Much of the time was spent casting about for a detailed version of the argument for LR(0) grammars in Hopcroft andUllman [3,
+
+$10.7]. That argument specifies the construction of the automaton and con-tinues:
+
+We claim that when M starts with w in L(G) on its input and only s0 onthe stack, it will construct a rightmost derivation for
+
+w in reverse order. Theonly point still requiring proof. . .
+
+Our eventual proof recasts this somewhat. We already have an (arbitrary) rightmostderivation for
+
+w by virtue of the fact that it is in L(G). (We proved the lemma stating thatany derivation of a word has a rightmost equivalent.) We then argue that the machine
+
+will take a sequence of steps that mirror this derivation.We make the actual derivation concrete (it is a list of sentential forms), and write
+R ` d \Delta  sf 0 ! sf 1 if d is a derivation of sf 1, starting at sf 0, and respecting derivationrelation
+
+R (i.e., R holds between each successive pair of elements in the list d).Each sentential form is derived from its predecessor by the expansion of a nonterminal. When moving backwards through the derivation, this corresponds to a reduc-tion step.
+
+The crucial lemma supporting our proof states that if we have rderives g `
+d \Delta  sf 0 ! w, then there is a sequence of n parse-steps bringing the SLR automatonto a state where it is just about to perform the first reduction of the derivation
+
+d. This isby induction on
+d. This result in turn relies on knowing that when the current handle,or RHS of the next reduction, is still partly or completely in the input, the machine will
+
+perform a sequence of shift moves in order to bring the handle onto the stack.All of these results depend on the invariants already described, and the fact that the
+automaton is SLR. For example, in the last lemma: if we know that a shift is possible,then we also know that a reduction is not.
+
+2.5 SLR grammars are unambiguous
+A grammar is unambiguous if for each string w2 L(G), w has a unique rightmost deriva-tion.
+
+Definition 6. A word w in the language of grammar g is represented by a derivation
+list starting from the start symbol of g and ending in w. A derivation for w is unique iff
+all possible derivation lists are identical.
+
+isUnambiguous g =
+
+8sl dl dl'.
+
+sl 2 language g ^
+rderives g ` dl \Delta  [NTS (startSym g)] ! sl ^
+rderives g ` dl' \Delta  [NTS (startSym g)] ! sl ^
+=)
+
+dl=dl'
+
+Theorem 5.
+
+auggr g st eof = SOME ag ^ slr ag = SOME m
+
+=)
+isUnambiguous ag
+
+A corollary of completeness and the fact that the SLR machine is deterministic.
+
+3 An Executable Parser
+For the most part, the HOL definitions turn out to be executable. However, for the sakeof simplicity and clarity, many of our definitions were written in a style that favoured
+
+mathematical ease of expression. The use of existential quantifiers, and the reflexiveand transitive closure in such definitions make them unexecutable. Here we describe
+how the defined functions can be re-expressed in a way that makes them acceptable toHOL4's
+
+emitML technology. Our general approach was to take an existing function
+f , and define a new f ML constant. After proving termination for the typically compli-cated recursion equations defining
+
+f ML, we then had to show that f ML's behaviour wasequivalent to
+f 's.
+Would it save work to just use executable functions from the outset? Sadly no;the important thing about these executable functions is that they should compute some
+
+mathematical property. Proving that this is the case is the same problem as showing theequivalences we describe here.
+
+In this section we describe our executable implementations of the non-executable, or"mathematical" HOL definitions. Even though the HOL versions were more tractable
+for proving properties such as our language inclusion results, there have been placeswhere it was decided to value executability over succinctness of presentation.
+
+3.1 Executable Calculation of Nullable Non-terminals
+The executable counterpart of the nullable function is given below.
+
+nullableML g sn [] = T ^
+nullableML g sn (TS ts::rest) = F ^
+nullableML g sn (NTS A::rest) =
+
+if (MEM (NTS A) sn) then F
+else
+
+EXISTS (nullableML g (NTS A::sn))
+
+(getRhs A (rules g)) ^
+nullableML g sn rest
+
+The nullableML function determines whether or not a list of symbols (a senten-tial form) can derive the empty string. When the string includes a terminal symbol, the
+
+result is false. When a non-terminal is encountered, we recursively determine if any ofthat non-terminal's RHSes might derive the empty string.
+
+In order to ensure that this recursion terminates, we introduce a "seen" list andupdate this with the non-terminal that is being visited when we expand it. To then convince HOL that this function terminates, we must find a wellfounded relation on thearguments of
+
+nullableML. Because a singleton list containing a non-terminal mayexpand into a list of symbols of arbitrary length, we cannot simply use the length of the
+
+sentential form as a measure. Instead we use the lexicographic combination:
+
+measure (*(g,sn). |nonTerminals g n set sn|)
+
+LEX
+measure LENGTH
+
+We assert that either the number of symbols except the ones in the seen list de-creases, or that the length of the sentential form decreases. The former corresponds to
+
+the first conjunct in the third clause in the definition while the latter takes care of thesecond conjunct.
+
+The next step is to show the equivalence between the new HOL constants and theoriginals. Proving the equivalence requires showing the following two implications.
+
+8g sn sf. nullableML g sn sf =) nullable g sf
+8g sf. nullable g sf =) nullableML g sn sf
+
+As previously outlined, for a sentential form to be nullable, it cannot have a terminalsymbol. We look at the non-trivial case,
+
+i.e.when the sentential form itself is not empty.A sentential form
+N1N2:::Nn is nullable iff the individual derivations for the N s itselfare nullable.
+
+N1 )
+
+* ffl
+
+N2 )
+
+* ffl
+
+.
+.
+.
+Nn )
+
+* ffl
+
+nullable asserts the existence of some derivation from sf to ffl. On the other hand,
+nullableML looks at a concrete derivation with a specific property, i.e.in each indi-vidual derivation, the symbols cannot be repeated. This property gives us termination
+
+but it also makes the equivalence proof harder.
+
+The first implication turns out to be easy to prove since we are showing the existenceof a particular form of derivation from a more generic one.
+
+To prove the latter implication, we need to show that each derivation without anyconstraints on its form, can be recast into a derivation where the individual derivations
+of ffl do not have repeated symbols. We do this by a complete induction on the length ofthe derivation and show that any derivation of the form
+
+N )
+
+* ffl can be recasted into a
+
+new derivation (possibly smaller), that gets accepted by nullableM L.This `obvious' property of nullable derivations is usually `assumed' textbook proofs,
+
+but plays a centre role when proving the equivalence between a mathematical definitionand an executable one.
+
+With this equivalence we know now that execution of SML code will provide abehaviour corresponding to that of the formal HOL entity.
+The executable firstSet and followSet definitions were defined in a similarway (by introducing a "seen" list in the compuation). The termination and equivalence
+proof follow similar lines of reasoning.
+An Executable slrmac Another interesting termination case is encountered when wetry to make
+
+slrmac definition executable. slrmac checks whether the resulting tablefor the grammar has any conflict or not. It is not strictly a necessary component of the
+
+parser generator but does asssist in stating some of the proofs. For example, with thisfunction we can assert that if we can build a parse table for a grammar and the input
+belongs in the language of the grammar, then the parser will output a parse tree.
+
+Building the parse table involves traversing the state space to find the next statefor each of the symbols in the grammar, starting from the initial state.
+
+neighbourstakes a state and returns a state list. The state list contains states that can be reached
+
+by following each of the symbols in the input (i.e., transitions one-level deep). It uses
+symNeighbour to shift the dot past the current symbol and get the state correspond-ing to it. The resulting state contains no duplicates (
+
+rmDupes). The condition DISTINCTensures that we don't loop forever by considering states where the same items might be
+
+repeated. Another check, validItl makes sure that the items in the state do corre-spond to some rule in the grammar.
+
+symNeighbour g itl sym =
+
+rmDupes (closure g (moveDot itl sym))
+
+neighbours g itl [] = [] ^
+neighbours g itl (x::xs) =
+
+symNeighbour g itl x::neighbours g itl xs
+
+visit g sn itl =
+
+if ~(DISTINCT itl) . ~(validItl g itl) then []
+else let s = neighbours g itl set (allSyms g) in
+
+let rem = diff s sn in
+
+rem++(FLAT (MAP (visit g (sn++rem)) rem))
+
+The parse table builder here is the visit function. Starting in the initial state it followsthe transitions for each of the symbols in the grammar until it can reach no more new
+
+states. The important thing here is to make sure states are not repeated otherwise weend up following the same path over and over again. Here, the number of states seen
+increases at each recursive call. We also know that the number of possible states (eventhough it might be large) is finite (
+
+allGrammarItls). This is because we have afinite number of symbols in our grammar and a finite number of rules as well. From this
+
+we can deduce that the number of states not been encountered decreases at each call.This forms our termination argument.
+
+measure (*(g,sn,itl). |allGrammarItls g n set sn|)
+With this on hand, we can implement an executable slrmac that checks the entiretable for shift-reduce and reduce-reduce conflicts.
+
+slrML4Sym g [] sym = SOME (goto g, reduce g) ^
+slrML4Sym g (i::itl) sym =
+
+let s = goto g i sym in
+
+let r = reduce g i (sym2Str sym) in
+
+case (s,r) of ([],[]) -> slrML4Sym g itl sym
+|| ([],[v12]) -> slrML4Sym g itl sym
+|| ([],h::h'::t) -> NONE
+|| (h::t,[]) -> slrML4Sym g itl sym
+|| (h::t,h'::t') -> NONE
+
+slrML g itl [] = SOME (goto g, reduce g) ^
+slrML g itl (sym::rst) =
+
+if (slrML4Sym g itl sym = NONE) then NONE
+else slrML g itl rst
+
+4 Future work
+One piece of future work we would like to pursue is to demonstrate that SLR parsersterminate on all inputs, not just on strings in the langauge. This would then demonstrate the decidability of language membership. (Our mechanisation currently admitsthe possibility that
+
+parser goes into an infinite loop.)We would also like to improve the efficiency of the parser. Currently, the DFA states
+
+are computed on the fly. This gives us simpler proof goals, assisting in reasoning aboutthe program's properties. Changing this to be computed statically would enhance the
+performance of the parser when emitted as executable SML code.For the sake of simplicity, we have dealt with SLR parsers. In practice however,
+compiler-compilers such as yacc and GNU bison generate LALR parsers. Instead offollow sets, LALR parsers uses lookahead sets, which are more specific as they take
+more of the parsing context into account, allowing finer distinctions. It will be interest-ing to see to what extent the existing work on SLR will assist us in verifying an LALR
+parser generator.
+
+5 Related Work
+To realise the ambition of fully verified translation from source to machine code, allphases in the compilation process should either be verified or subject to verification
+after the fact. These two strategies are implemented in what have been termed verifiedor verifying compilers respectively. As we have already commented, one might imagine
+that the appropriate strategy for parsing would be to verify the output of an external tool.This then would be what one might call
+
+verifying parsing. For example, a verifyingparser would mesh with Blazy, Dargaye and Leroy's work on the formal verification of
+
+a compiler front-end for a subset of the C language [1], which otherwise ignores parsingas an issue.
+
+In the field of language theory, Nipkow [4] provided a verified and executable lexicalanalyzer generator. This is the closest in nature to the verification we have done. As with
+our work, Nipkow faced issues in making his definitions executable, principally becauseof the inductively defined transitive closure.
+
+6 Conclusions
+We have presented work towards the formal verification of an SLR parser generator.Most of the functions are directly executable. For those that we thought were better expressed more "mathematically", we have presented executable definitions of be-haviourally equivalent alternatives. This conversion also illustrated the gap between
+
+simple textbook definitions and a verifiable executable implementation in a theoremprover. Issues like termination which can be ignored when dealing with semantic definitions, become necessary when executability comes into play. This also highlights howeminently suitable HOL is for developments of this kind, especially with its facility of
+emitting verified HOL definitions as SML code.HOL sources for the work are available at http://users.rsise.anu.edu.au/~aditi/. The
+definitions and proofs are 21000 LOC. It took 7 months to complete the work whichincludes over 700 lemmas/theorems. This includes the definitions, major proofs related
+to SLR grammars and also lemmas about existing HOL types (e.g., sets,lists) that werenot already present in the system.
+
+References
+1. Sandrine Blazy, Zaynah Dargaye, and Xavier Leroy. Formal verification of a C compiler frontend. In FM 2006: Int. Symp. on Formal Methods, volume 4085 of Lecture Notes in Computer
+Science, pages 460-475. Springer, 2006.
+2. M. J. C. Gordon and T. Melham, editors. Introduction to HOL: a theorem proving environment
+
+for higher order logic. Cambridge University Press, 1993.
+3. John E. Hopcroft and Jeffrey D. Ullman. Introduction to Automata Theory, Languages and
+
+Computation. Addison-Wesley, Reading, Ma., USA, 1979.
+4. Tobias Nipkow. Verified lexical analysis. In J. Grundy and M. Newey, editors, Proceedings of
+
+the 11th International Conference on Theorem Proving in Higher Order Logics (TPHOLs'98),
+pages 1-15, Canberra, Australia, 1998. Springer-Verlag LNCS 1479.
+5. Konrad Slind and Michael Norrish. A brief overview of HOL4. In Otmane Ait Mohamed,
+
+C'esar Mu~noz, and Sofi`ene Tahar, editors, Theorem Proving in Higher Order Logics, 21st
+International Conference, TPHOLs 2008, volume 5170 of Lecture Notes in Computer Science,
+pages 28-32. Springer, 2008. See also the HOL website at http://hol.sourceforge.net.

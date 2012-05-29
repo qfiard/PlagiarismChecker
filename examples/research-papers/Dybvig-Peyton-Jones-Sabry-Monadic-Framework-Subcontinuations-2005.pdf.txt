@@ -1,0 +1,2047 @@
+
+
+A Monadic Framework for Subcontinuations
+Friday 29th April, 2005
+
+R. Kent Dybvig
+Indiana University
+
+Simon Peyton Jones
+Microsoft Research
+
+Amr Sabry*
+Indiana University
+
+Abstract. Functional and delimited continuations are more expressive than traditional abortive continuations and they apparently seem to require a framework
+beyond traditional continuation or monadic semantics. We show that this is not the
+case: standard continuation semantics is sufficient to explain directly the common
+control operators for delimited continuations. This implies a monadic framework for
+typed and encapsulated functional and delimited continuations which we design and
+implement as a Haskell library.
+
+Keywords: callcc, composable continuation, control delimiter, delimited continuation, encapsulation, Haskell, monad, prompt, reset, shift
+
+1. Introduction
+Continuation-passing style (CPS) and its generalization to monadicstyle are the standard mathematical frameworks for understanding
+(and sometimes implementing) control operators. In the late eighties anew family of control operators were introduced that apparently went
+"beyond continuations" (Felleisen, 1988; Felleisen et al., 1988; Johnsonand Duggan, 1988) and "beyond monads" (Wadler, 1994). These control operators permit the manipulation of delimited continuations thatrepresent only part of the remainder of a computation, and they also
+support the composition of continuations, even though such operationsare not directly supported by standard continuation models (Strachey
+and Wadsworth, 1974). Delimited continuations are also referred to assubcontinuations (Hieb et al., 1994), since they represent the remainder
+of a subcomputation rather than of a computation as a whole.Without the unifying frameworks of continuation semantics or monads, it is difficult to understand, compare, implement, and reason about
+
+* Supported by National Science Foundation grant number CCR-0196063, by
+a Visiting Researcher position at Microsoft Research, Cambridge, U.K., and by a
+Visiting Professor position at the University of Genova, Italy.
+
+cfl 2005 R. Kent Dybvig, Amr Sabry, and Simon Peyton Jones
+
+revised.tex; 29/04/2005; 9:16; p.1
+
+2 Dybvig, Peyton Jones, Sabry
+the various control operators for subcontinuations, their typing prop-erties, and logical foundations. In this paper we design such a unifying
+
+framework based on continuation semantics, then generalize it to atyped monadic semantics. We illustrate this framework with a basic
+set of control operators that can be used to model the most commoncontrol operators from the literature (Section 2).
+
+We first give an abstract and expressive continuation semantics fordelimited continuations (Section 3), using a technique first used by
+Moreau and Queinnec. We simplify this semantics in two ways toproduce a novel continuation semantics that demonstrates that any
+program employing delimited continuations can be evaluated via asingle, completely standard CPS translation, when provided with appropriate meta-arguments and run-time versions of our operators thatmanipulate these arguments.
+
+We then factor the continuation semantics into two parts: a transla-tion into a monadic language that specifies the order of evaluation, and
+a library that implements the control operators themselves (Section 4).This allows us to give a typed account of the subcontinuation operators that makes explicit where control effects can occur, and wherethey cannot (Section 5). In particular, our design is the first to offer
+statically-checked guarantees of encapsulation of control effects. Weintroduce an operator
+
+runCC which encapsulates a computation thatuses control effects internally, but is purely functional when viewed
+
+externally.Once the monadic effects have been made apparent by the first translation, the control operators can be implemented as an ordinary, typedlibrary. This offers the opportunity to prototype design variations--of
+both implementation approach and library interface--in a lightweightway. We make this concrete, using Haskell as an implementation of
+the monadic language, by providing three different prototype imple-mentations of the control operators (Section 6). The first of these
+implementations is suitable for low-level manipulations of the stack, thesecond suitable for a CPS compilation strategy, and the third suitable
+for a language that provides access to the entire abortive continua-tion using an operator like callcc. The library implementation is itself
+strongly typed, which helps enormously when writing its rather trickycode.
+
+We also present a properly tail recursive Scheme implementation ofour operators in Appendix C.
+
+revised.tex; 29/04/2005; 9:16; p.2
+
+A Monadic Framework for Subcontinuations 3
+(Variables) x, . . .
+(Expressions) e ::= x | *x.e | e e|
+
+newPrompt | pushPrompt e e|
+withSubCont e e | pushSubCont e e
+
+Figure 1. Call-by-value *-calculus with control
+
+2. Control Operators
+The literature describes several families of control operators for sub-continuations. In this section, we introduce the family of four operators
+that we study in detail and relate them to other operators in theliterature.
+
+2.1. Our Operators
+The operators in our family are newPrompt, pushPrompt, withSubCont, and pushSubCont. Figure 1 shows the syntax of our opera-tors, extending a conventional, call-by-value
+
+*-calculus. We give theirsemantics formally in Section 3, but intuitively they behave as follows:
+
+- The newPrompt operator creates a new prompt, distinct from allexisting prompts.
+- The pushPrompt operator evaluates its first subexpression anduses the resulting value, which must be a prompt, to delimit the
+
+current continuation during the evaluation of its second subexpres-sion.
+
+- The withSubCont operator evaluates both of its subexpressions,yielding a prompt
+
+p and a function f . It captures a portion of thecurrent continuation back to but not including the activation of
+
+pushPrompt with prompt p, aborts the current continuation backto and including the activation of
+
+pushPrompt, and invokes f ona representation of the captured subcontinuation. If more than
+
+one activation of pushPrompt with prompt p is still active, themost recent activation, i.e., the one that delimits the smallest
+subcontinuation, is selected.
+- The pushSubCont operator evaluates its first subexpression toyield a subcontinuation
+
+k, then evaluates its second subexpressionin a continuation that composes
+
+k with the current continuation.
+
+While newPrompt and withSubCont can be treated as functions, pushPrompt and pushSubCont must be treated as syntactic constructs sincethey exhibit a non-standard evaluation order.
+
+revised.tex; 29/04/2005; 9:16; p.3
+
+4 Dybvig, Peyton Jones, Sabry
+
+These operators are essentially identical to ones proposed by Gunteret al. (1995). The only difference aside from minor syntactic details
+
+is that our operators do not require captured subcontinuations to berepresented as functions.
+
+2.2. Relationship with Existing Operators
+While our operators can be used directly, the primary intent is thatthey be used as building blocks to form higher level control operators,
+
+including existing operators from the literature. To provide some in-tuition about our operators, we compare them with existing operators
+and show how they can be used to express those operators.Traditional continuations represent the entire rest of the computation from a given execution point, and, when reinstated, they abort thecontext of their use. To model traditional continuations, we assume
+the existence of a top-level prompt available as the constant p0 anddefine a
+
+withCont operator to manipulate the entire continuation viathis prompt.
+
+withCont e = withSubCont p0 (*k.pushPrompt p0 (e k))
+With withCont we can model Scheme's call-with-current-continuation(here abbreviated callcc), which captures the current continuation and
+
+passes a function encapsulation of the continuation to its argument:
+
+callcc = *f.withCont (*k.pushSubCont k (f (reifyA k)))
+where: reifyA k = *v.abort (pushSubCont k v)
+
+abort e = withCont (* .e)
+When applied to a function f , callcc captures the entire continuation kusing
+
+withCont, uses pushSubCont to reinstate a copy of k, and applies
+f to a functional representation of k, namely (reifyA k). When appliedto a value
+
+v, this functional representation aborts its context, reinstates
+k, and returns v to k.Felleisen's C (Felleisen et al., 1987a) is a variant of callcc that aborts
+
+the current continuation when it captures the continuation. It can bemodeled similarly:
+
+C = *f.withCont (*k.f (reifyA k))
+Like continuations reified by callcc, a continuation reified by C abortsthe current continuation when it is invoked. In contrast, the operator F (Felleisen et al., 1987a) also captures and aborts the entirecontinuation, but the reified continuation is functional, or composable,
+
+revised.tex; 29/04/2005; 9:16; p.4
+
+A Monadic Framework for Subcontinuations 5
+as with our subcontinuations. It can be modeled with a non-abortingreify operator:
+
+F = *f.withCont (*k.e (reify k))
+where:
+
+reify k = *v.pushSubCont k v
+
+When prompts appear other than at top level, they serve as controldelimiters (Felleisen et al., 1987b; Felleisen, 1988; Danvy and Filinski,
+
+1990) and allow programs to capture and abort a subcontinuation, i.e.,a continuation representing part of the remainder of the computation
+rather than all of it. The first control delimiter to be introduced wasFelleisen's # (prompt), which delimits, i.e., marks the base of, the
+continuation captured and aborted by F (Felleisen et al., 1987a). Inthe presence of prompts, the operator F captures and aborts the continuation up to but not including the closest enclosing prompt. Thismeans that the prompt remains in place after a call to F , and the
+captured subcontinuation does not include the prompt. Variants of Fhave been introduced since, that do not leave behind the prompt when
+a subcontinuation is captured, or do include the prompt in the capturedsubcontinuation is invoked. For example, reset and shift (Danvy and
+Filinski, 1990) are similar to # and F , but shift both leaves behind theprompt when a subcontinuation is captured and includes the prompt
+in the captured subcontinuation.To illustrate these differences, we introduce a classification of control
+operators in terms of four variants of F that differ according to whetherthe continuation-capture operator (a) leaves behind the prompt on the
+stack after capturing the continuation and (b) includes the prompt atthe base of the captured subcontinuation.
+
+-F - does not leave the prompt behind or include it in the subcontinuation; this is like cupto (Gunter et al., 1995) and withSubCont.
+
+-F + does not leave the prompt behind, but does include it in the subcontinuation; this is like a spawn controller (Hieb and Dybvig,1990).
+
++F - leaves the prompt behind, but does not include it in the subcontinuation; this is the delimited F operator (Felleisen et al.,1987b).
+
++F + leaves the prompt behind and includes it in the subcontinuation;
+
+this is the shift operator (Danvy and Filinski, 1990).
+
+revised.tex; 29/04/2005; 9:16; p.5
+
+6 Dybvig, Peyton Jones, Sabry
+In all cases, the traditional interface is that the captured subcontinua-tion is reified as a function. Using our primitives and a single constant
+
+prompt #, these operators can be defined as follows:
+
+-F - = *f.withSubCont # (*k.f (reify k))-F
+
++ = *f.withSubCont # (*k.f (reifyP # k))
++F - = *f.withSubCont # (*k.pushPrompt # (f (reify k)))
++F + = *f.withSubCont # (*k.pushPrompt # (f (reifyP # k)))
+
+where
+
+reify k = *v.pushSubCont k vreifyP
+
+p k = *v.pushPrompt p (pushSubCont k v)
+
+A natural extension of the framework with a single fixed prompt is toallow multiple prompts. Some proposals generalize the single prompt
+
+by allowing hierarchies of prompts and control operators, like resetnand shift
+
+n (Danvy and Filinski, 1990; Sitaram and Felleisen, 1990).Other proposals instead allow new prompts to be generated dynamically, like spawn (Hieb and Dybvig, 1990; Hieb et al., 1994). Insuch systems, the base of each subcontinuation is rooted at a different
+prompt, and each generated prompt is associated with a function thatcan be used for accessing the continuation up to that prompt. This is
+more expressive than either single prompts or hierarchies of promptsand allows arbitrary nesting and composition of subcontinuation-based
+abstractions. In our framework, spawn is defined as follows:
+
+spawn = *f.(*p.pushPrompt p (f (-F + p))) newPrompt-F
+
++ = *p.*f.withSubCont p (*k.f (reifyP p k))
+
+where we have generalized the definition of -F + to take a promptargument
+
+p instead of referring to the fixed prompt #. Thus, spawngenerates a new prompt, pushes this prompt, creates a control operator
+
+that can access this prompt, and makes this specialized control operatoravailable to its argument
+
+f .Moreau and Queinnec (1994) proposed a pair of operators, marker
+
+and call/pc, that provide functionality similar to that of spawn. Themarker operator generates a new prompt and pushes it, and call/pc
+captures and aborts the subcontinuation rooted at a given prompt. Thekey difference is that the continuation reified by call/pc is stripped of
+all intervening prompts, even though they are necessarily unrelated tothe prompt at the base. We could model this behavior in our system
+with the addition of a strip operator as follows.
+
+marker e = (*p.pushPrompt p (e p)) newPromptcall/pc =
+
+*p.*f.withSubCont p (*k.f (reify (strip k)))
+
+revised.tex; 29/04/2005; 9:16; p.6
+
+A Monadic Framework for Subcontinuations 7
+Such an operator is easily added to our system given the implementa-tion approach we present later in this paper. We do not do so, however,
+
+because the stripping behavior of call/pc is unique in the world ofcontrol operators and, in our opinion, not useful, since it inhibits the
+nesting of control abstractions.The operators -F
+
++ and +F - share an intuitively appealing identity property, which is that capturing and immediately reinstating asubcontinuation is effectively a no-op. The operator -F
+
++ takes away
+
+the prompt, but its subcontinuation reinstates it, while +F - leaves theprompt, and its subcontinuation does not reinstate it. Thus:
+
++F - (*k.ke) = e if k 62 e-F
+
++ (*k.ke) = e if k 62 e
+
+The same operation with -F - results in the net elimination of oneprompt, while the same operation with
+
++F + results in the net introduction of one prompt. Although this would seem to make -F + or
++F - better choices, we have chosen -F - semantics for our primitive
+
+operator withSubCont because it is the one that most easily models theothers. While Shan (2004) has demonstrated that one can use even
+
++F +
+
+semantics (in the form of shift ) to implement the semantics of -F -,-F
+
++, and +F -, doing so requires a complex syntactic redefinition of
+
+the prompt operator, using a trampolining mechanism similar to oneused by Sitaram and Felleisen (1990) to implement hierarchies of #
+
+and F .We have supposed the possible existence of a top-level prompt
+
+p0,which we needed to implement callcc, C, and F without #. We do not
+
+insist that the top-level prompt be included in the model, however.It may be preferable not to include a top-level prompt, since this
+gives subprograms possibly undesirable control over the main program,which can easily provide the subprogram with a top-level prompt if
+desired.
+
+3. Continuation Semantics
+In this section, we develop a continuation semantics for the call-by-value
+*-calculus embedding of our operators. We proceed in the traditionalway, by giving a translation from the source language of Figure 1 to
+
+a pure, call-by-name lambda calculus target language (introduced inSection 3.1). We review the traditional CPS semantics for simple control operators like callcc (Section 3.2) and explain why it is insufficientfor delimited continuations. We then discuss why neither of the two
+standard approaches to extending the CPS translation for delimited
+
+revised.tex; 29/04/2005; 9:16; p.7
+
+8 Dybvig, Peyton Jones, Sabry
+
+(Variables) x, ^, . . .
+(Numerals) n
+
+(Expressions) e ::= x | *x.e | e e|
+
+error|
+n | e + e | num? e|
+[] | e : e | hd e | tl e | null? e|
+true | false | if e then e else e
+
+Figure 2. Extended call-by-name *-calculus: Syntax
+
+continuations is entirely satisfactory (Section 3.3). Thus motivated,we develop an expressive and abstract CPS semantics in Sections 3.4
+and 3.5.
+3.1. A CPS Calculus
+In order to make the CPS semantics precise, we first introduce a purecalculus to serve as the target of the CPS translation. The calculus
+
+is a standard call-by-name one whose syntax is given in Figure 2.In addition to the core
+
+*-terms, it includes a constant denoting anerror, numbers, lists, and booleans with their associated operations.
+
+The semantics of the CPS calculus is standard, and is given by theequivalences in Figure 3.
+
+In the sequel, we take the liberty to use pattern-matching syntax,recursive definitions, and other convenient syntactic sugar which is
+easily translated to the core calculus.
+3.2. Standard CPS Semantics
+For the pure call-by-value *-calculus, the CPS semantics is defined asfollows. The map P[[
+
+.]] takes an expression in the call-by-value calculusof Figure 1 (without the control operations for now) and returns an
+
+expression in the extended call-by-name calculus of Figure 2. The resultof the translation is always a
+
+*-expression that expects a continuationand returns an answer of some arbitrary but fixed type:
+
+P[[x]] = *^.^ xP[[
+*x.e]] = *^.^ (*x.*^0.P[[e]] ^0)P[[
+
+e1e2]] = *^.P[[e1]] (*f.P[[e2]] (*a.f a ^))
+
+The translation of a complete program is given by P[[e]] ^0, where ^0is the initial continuation
+
+*v.v. The translation introduces variablesthat are assumed not to occur free in the input expression.
+
+Adding callcc to the pure fragment is straightforward:
+
+P[[callcc e]] = *^.P[[e]] (*f.f (*x.*^0.^ x) ^)
+
+revised.tex; 29/04/2005; 9:16; p.8
+
+A Monadic Framework for Subcontinuations 9
+
+(*x.e)e0 = e[e0/x]
+*x.(*y.e) x = *y.e if x 62 e
+
+n1 + n2 = n1 + n2
+
+num? n = true
+num? (*x.e) = false
+
+num? [] = false
+num? (e1 : e2) = false
+
+hd (e1 : e2) = e1
+
+tl (e1 : e2) = e2
+
+null? [] = true
+null? (e1 : e2) = false
+if true then e1 else e2 = e1
+if false then e1 else e2 = e2
+
+error e0 = error
+error + e = error
+n + error = error
+num? error = error
+
+hd error = error
+
+tl error = error
+null? error = error
+if error then e1 else e2 = error
+
+Figure 3. Extended call-by-name *-calculus: Semantics
+
+After evaluating its subexpression, callcc applies the resulting func-tion
+
+f to a function encapsulating the captured continuation in thesame continuation. If the function encapsulating the captured continuation is applied to a value, it aborts the current continuation andreinstates the captured continuation by passing the value to the captured continuation and dropping the current continuation. Handling Fin the absence of # is also straightforward:
+
+P[[F e]] = *^.P[[e]] (*f.f (*x.*^0.^0(^ x)) ^0)
+In this case, f is invoked in the initial continuation, effectively abortingthe current continuation, and the encapsulating function does not drop
+
+the current continuation but rather composes it with the capturedcontinuation.
+
+Handling even a single prompt # is not so straightforward. What weneed is a way to split a continuation
+
+^ into two pieces at the prompt.The continuation is represented as a function, however, so splitting
+
+it is not an option. What we need is a richer representation of the
+continuation that supports two operations: ^#" representing the portion
+
+of ^ above the prompt, and ^## representing the portion of ^ below theprompt.
+
+revised.tex; 29/04/2005; 9:16; p.9
+
+10 Dybvig, Peyton Jones, Sabry
+3.3. Traditional Solutions
+Two basic approaches have been proposed to deal with the fact thatthe representation of continuations as functions is not sufficiently expressive:
+
+1. Abstract continuation semantics (Felleisen et al., 1988). This ap-proach develops an algebra of contexts that is expressive enough
+
+to support the required operations on continuations. From the al-gebra, two representations for continuations are derived: one as a
+sequence of frames, and the other as objects with two methods
+for invoking and updating the continuation. The operations ^#"
+
+and ^## can be realized by traversing the sequence up to the firstprompt and returning the appropriate subsequence, and the composition of continuations can be implemented by appending theirtwo sequences.
+
+2. Metacontinuations (Danvy and Filinski, 1990). Since we must splitthe continuation above and below the prompt, why not maintain
+
+two separate parameters to the CPS semantics? The first parame-ter
+
+^ will correspond to the portion of the evaluation context abovethe first prompt, and the second parameter
+
+fl will correspond tothe portion of the evaluation context below the first prompt. The
+
+parameter ^ is treated as a partial continuation, i.e., a functionfrom values to partial answers that must be delivered to the second
+parameter fl to provide final answers. In other words, given the twocontinuation parameters
+
+^ and fl and a value v one would computethe final answer using
+fl(^v). If the nested application is itself ex-pressed in CPS as
+^vfl, it becomes apparent that fl is a continuationof the continuation, or in other words a metacontinuation.
+
+Unfortunately, neither approach is ideal. The metacontinuation ap-proach leads to control operators with the
+
++F + semantics, from which
+
+the other semantic variants may be obtained only with difficulty, asdiscussed in Section 2. The metacontinuation approach also requires
+
+that the program undergo two CPS conversion passes. The first isa nonstandard one that exposes the continuation but leaves behind
+nontail calls representing the metacontinuation, and the second is astandard one that exposes the metacontinuation. Additional complexity is involved in the presence of multiple prompts. Handling statichierarchical prompts requires additional CPS conversion passes (Danvy
+and Filinski, 1990), and while we conjecture that the trampolining resetoperators of Sitaram and Felleisen and of Shan can be extended to
+handle dynamically generated prompts, this would further complicatethat mechanism.
+
+revised.tex; 29/04/2005; 9:16; p.10
+
+A Monadic Framework for Subcontinuations 11
+On the other hand, the algebra of contexts is not sufficiently ab-stract for our purposes, due to its over-constrained representation of
+
+continuations. Although a common representation of continuations inan implementation is indeed as a stack of frames, exposing this fine
+granularity in the semantics suggests that an implementation mustloop through these frames individually (Gasbichler and Sperber, 2002),
+even though prompts may be many frames apart. We would prefer amodel that allows control operators to be built on top of any existing
+abstraction of continuations, for example, on top of a CPS interme-diate language representing continuations as functions, or on top of a
+language with an implementation of callcc that gives access to someunknown representation of the continuation.
+
+3.4. Representing Metacontinuations
+It turns out that we can strike a middle ground that provides all theexpressiveness of the sequence of frames approach while leaving the
+representation of continuations as abstract as possible. We do this byadopting features of both of the traditional approaches to modeling delimited continuations. We borrow from the metacontinuation approachthe notion of a split continuation. From the algebra of contexts, we
+borrow the representation of a continuation as a sequence. The key in-sight is that we need represent only the metacontinuation as a sequence
+while leaving the representation of partial continuations fully abstract.This technique was first applied by Moreau and Queinnec (1994) in a
+semantics for marker and call/pc.Before giving the full CPS translation, we first discuss the representation of partial continuations and metacontinuations. A partialcontinuation is represented in the standard way for CPS semantics, i.e.,
+as a function mapping values to answers. A metacontinuation is repre-sented as a list, where each element is either a numeral (representing a
+unique prompt name) or a partial continuation.When a metacontinuation (represented as a list) is applied to a
+value, the result should be a final observable answer. In our case, thisis slightly more complicated in order to deal properly with the generation of new prompts, without using global side-effects. To accomplishthis, we assume a global supply of names (represented as numerals)
+that is threaded through along with the metacontinuation. Applying ametacontinuation is defined by cases on the sequence representing the
+metacontinuation: K
+
+([], v) = *p.vK(
+p : fl, v) = K(fl, v)K(
+^ : fl, v) = ^ v fl
+
+revised.tex; 29/04/2005; 9:16; p.11
+
+12 Dybvig, Peyton Jones, Sabry
+
+P[[x]] = *^.*fl.*p.^ x fl pP
+[[*x.e]] = *^.*fl.*p.^ (*x.*^0.*fl0.*p0.P[[e]] ^0 fl0 p0) fl pP
+
+[[e1e2]] = *^.*fl.*p.P
+
+[[e1]] (*f.*fl0.*p0.P
+[[e2]] (*a.*fl00.*p00.f a ^ fl00 p00) fl0 p0) fl p
+
+P[[newPrompt]] = *^.*fl.*p.^ p fl (p + 1)P
+[[pushPrompt e1 e2]] = *^.*fl0.*p0.P
+
+[[e1]] (*p.*fl.*p00.P[[e2]] ^0 (p : fl) p00) fl0 p0P
+[[withSubCont e1 e2]] = *^.*fl00.*p00.P
+
+[[e1]] (*p.*fl0.*p0.P
+[[e2]] (*f.*fl.*p000.
+
+f (^ : flp") ^0 flp# p000) fl0 p0) fl00 p00P
+[[pushSubCont e1 e2]] = *^.*fl00.*p.P
+
+[[e1]] (*fl0.*fl.*p0.P
+[[e2]] ^0 (fl0++(^ : fl)) p0) fl00 p
+
+Figure 4. CPS translation of call-by-value calculus with control
+
+If the sequence is empty, then we are done: we simply ignore the promptsupply and return the value
+
+v as the final answer. If the sequence startswith a prompt
+p, then the value is returned through the prompt, whichis popped, and the next segment of the metacontinuation is inspected.
+
+Finally, if the sequence starts with a partial continuation ^, then ^ isgiven the value
+
+v and the rest of the sequence as its metacontinuation.With the list representation, a metacontinuation can easily be split
+
+at an arbitrary prompt, and two metacontinuations can easily be com-posed. Composition is achieved via the function
+
+++, which appends twolists. The operations that split the metacontinuation are defined below:
+
+[]p" = error
+(p : fl)p" = []
+(p0 : fl)p" = p0 : flp"
+
+(^ : fl)p" = ^ : flp"
+
+[]p# = error
+(p : fl)p# = fl
+(p0 : fl)p# = flp# where p 6= p0
+
+(^ : fl)p# = flp#
+
+3.5. An Expressive but Abstract CPS Semantics
+A CPS translation for the call-by-value *-calculus embedding of ouroperators is given in Figure 4. The translation of an expression
+
+e fromFigure 1 is P[[
+e]]^0 [] 0 where ^0 is the initial partial continuation,[] is the initial empty metacontinuation, and 0 is the first generated
+
+prompt name. The initial partial continuation ^0 takes a value anda metacontinuation and applies the metacontinuation to the value:
+*v.*fl.K(fl, v).
+
+revised.tex; 29/04/2005; 9:16; p.12
+
+A Monadic Framework for Subcontinuations 13
+
+P[[x]] = *^.^ xP
+[[*x.e]] = *^.^ (*x.*^0.P[[e]] ^0)P
+
+[[e1e2]] = *^.P[[e1]] (*f.P[[e2]] (*a.f a ^))
+
+P[[newPrompt]] = *^.*fl.*p.^ p fl (p + 1)P
+[[pushPrompt e1 e2]] = *^.P[[e1]] (*p.*fl.P[[e2]] ^0 (p : ^ : fl))P
+[[withSubCont e1 e2]] = *^.P[[e1]] (*p.P[[e2]] (*f.*fl.f (^ : flp" ) ^0 flp# ))P
+[[pushSubCont e1 e2]] = *^.P[[e1]] (*fl0.*fl.P[[e2]] ^0 (fl0++(^ : fl)))
+
+Figure 5. CPS translation of call-by-value calculus with control (j-reduced)
+
+P[[x]] = *^.^ xP
+[[*x.e]] = *^.^ (*x.*^0.P[[e]] ^0)P
+
+[[e1e2]] = *^.P[[e1]] (*f.P[[e2]] (*a.f a ^))
+
+P[[newPrompt]] = newPromptcP
+[[pushPrompt e1 e2]] = *^.P[[e1]] (pushPromptc ^ P[[e2]])P
+[[withSubCont e1 e2]] = withSubContcP
+[[pushSubCont e1 e2]] = *^.P[[e1]] (pushSubContc ^ P[[e2]])
+
+where, in the target language:
+
+newPromptc = *^.*fl.*p.^ p fl (p + 1)
+pushPromptc = *^.*t.*p.*fl.t ^0 (p : ^ : fl))
+withSubContc = *p.*f.*^.*fl.f (^ : flp" ) ^0 flp# ))
+pushSubContc = *^.*t.*fl0.*fl.t ^0 (fl0++(^ : fl))
+
+Figure 6. Factoring the control operations
+
+So far, this yields for our operators a semantics that is similar innature to the one that Moreau and Queinnec gave for marker and
+call/pc. We now push on it a bit harder.Figure 5 simplifies the CPS translation by
+
+j-reducing the equationsin Figure 4 to eliminate arguments that are simply passed along. Pure
+
+*-calculus terms have no need to access the metacontinuation or nextprompt, and their Figure 5 translations reflect this fact. While the
+metacontinuation and next prompt are available at all times, theyare ignored by the core terms and manipulated only by the control
+operators. The metacontinuation and next prompt are accessed in amonad-like way, separate from the everyday handling of control.
+
+Figure 6 takes the simplification one step further. The handling ofcore terms is as in Figure 5, but the portions of the control operator
+code that deal directly with the metacontinuation and next prompthave been split out into separate run-time combinators. These combinators are defined simply as target-language constants. The CPStranslation itself thereby becomes completely independent of the metarevised.tex; 29/04/2005; 9:16; p.13
+
+14 Dybvig, Peyton Jones, Sabry
+continuation and next prompt and deals with the control operatorsonly superficially. A practical consequence of this observation is that
+
+any program that makes use of delimited continuations can be evalu-ated simply by rewriting the program (just once!) using a completely
+standard CPS-conversion algorithm and by supplying additional "hid-den" arguments--the metacontinuation and next prompt--and suitable
+implementations of our operators that manipulate those arguments.Indeed, if we introduced thunks into the interfaces of
+
+pushPrompt and
+pushSubCont, the CPS-conversion algorithm would not need to dealwith the control operators in any way, even superficially.
+
+4. Monadic Semantics
+The CPS semantics plays two complementary roles: it specifies the or-der of evaluation among subexpressions, and it specifies the semantics
+of the control operators.The order of evaluation is important, because it directly affects the
+semantics of control effects. For example, adding pushPrompt as anordinary function to a call-by-value language like Scheme or ML gives
+the wrong semantics, because the default parameter-passing mechanismwould evaluate
+
+e2 before invoking the pushPrompt operation. Since thewhole point of
+pushPrompt is to introduce a prompt to which controloperations in
+e2 can refer, evaluating those control operations beforepushing the prompt defeats the purpose of the operation. One solution
+
+is to treat the control operators as syntactic constructs, as we havedone so far. Another is to use thunks to manually delay and force the
+evaluation of e2 at the appropriate times (see for example the embed-ding of
+
+reset in ML by Filinski (1994)). As shown in Appendix C,in Scheme the use of thunks would typically be abstracted using the
+
+macro language, which is effectively equivalent to adding pushPromptas a syntactic construct. In both cases, however, such encoding tricks
+distract from and complicate the semantic analysis.An alternative, and now well-established, technique is to express the
+order of evaluation by a translation T [[e]] into a monadic meta-language,after which the behavior of the control operators can be expressed by
+defining them as constants, just as we did in Section 3.5. This separationallows us to study the issues related to the order of evaluation separately from the semantics of the control operators. More importantly itallows us in the next section to introduce a monadic typing discipline
+to track and encapsulate the control effects.By separating the issues related to the order of evaluation from
+the semantics of control operators, we gain better understanding of
+
+revised.tex; 29/04/2005; 9:16; p.14
+
+A Monadic Framework for Subcontinuations 15
+Variables x, . . .
+
+Terms e ::= x | *x.e | e1e2|
+
+return e | e1 >>= e2|
+newPrompt | pushPrompt e1 e2|
+withSubCont e1 e2 | pushSubCont e1 e2
+
+Figure 7. Monadic metalanguage: Syntax
+
+T [[x]] = return xT
+[[*x.e]] = return (*x.T [[e]])T
+
+[[e1e2]] = T [[e1]] >>= *f.T [[e2]] >>= *a.f a
+
+T [[newPrompt]] = newPromptT
+[[pushPrompt e1 e2]] = T [[e1]] >>= *p.pushPrompt p T [[e2]]T
+[[withSubCont e1 e2]] = T [[e1]] >>= *p.T
+
+[[e2]] >>= *f.
+withSubCont p fT
+[[pushSubCont e1 e2]] = T [[e1]] >>= *s.pushSubCont s T [[e2]]
+
+Figure 8. Monadic translation of call-by-value calculus with control
+
+both aspects. By using the monadic language, with its clear distinctionbetween terms with no effects and terms of computation type, function calls can no longer trigger computational effects which must betriggered explicitly using the special computation rules of the monad.
+(See the loop example in Section 5.3 for a concrete example of how atypical use of thunks to control the order of evaluation can be better
+achieved in the monadic metalanguage.) Finally, the separation allowsus to focus in the rest of the paper on the more important issues related
+to the semantics and implementation of the control operators withoutunnecessary distractions.
+
+4.1. A Monadic Metalanguage with Prompts and
+
+Continuations
+
+The monadic translation T [[e]] takes a source-language term to a termin a monadic metalanguage, whose syntax is given in Figure 7. The
+monadic metalanguage extends the *-calculus with a monadic type con-structor and associated operations. These operations include
+
+returnand
+>>=, which explain how to sequence the effects in question, togetherwith additional monad-specific operations. In our case, these operations
+
+are newPrompt, pushPrompt, withSubCont, and pushSubCont. Themonadic metalanguage is typed, but we defer the type issues until
+Section 5.
+
+revised.tex; 29/04/2005; 9:16; p.15
+
+16 Dybvig, Peyton Jones, Sabry
+
+M[[x]] = xM
+[[*x.e]] = *x.M[[e]]M
+
+[[e1e2]] = M[[e1]](M[[e2]])
+
+M[[return e]] = *^.^ (M[[e]])M
+
+[[e1 >>= e2]] = *^.M[[e1]] (*v.M[[e2]] v ^)
+
+M[[pushPrompt p e]] = *^.*fl.M[[e]] ^0 (p : ^ : fl)M
+
+[[withSubCont p f]] = *^.*fl.f (^ : flp") ^0 flp#M
+
+[[pushSubCont s e]] = *^.*fl.M[[e]] ^0 (s++(^ : fl))
+
+M[[newPrompt]] = *^.*fl.*p.^ p fl (p + 1)
+Figure 9. CPS translation of monadic metalanguage
+
+The monadic translation is in Figure 8. For function applicationsand
+
+withSubCont, the effects of the subexpressions are performed fromleft to right before the application. For
+
+pushPrompt and pushSubCont,only the effects of
+e1 are performed before the application, while theeffects of
+e2 are performed after the prompt or the subcontinuation arepushed. Notice that the translation says nothing about the semantics
+
+of the control operators that appear in the target of the translation; itsimply enforces the proper sequencing.
+
+4.2. Semantics of the Monadic Metalanguage
+The monadic metalanguage is now translated to the CPS calculus ofSection 3.1. The translation M is given in Figure 9. In the presentation of the translation, we have grouped the term constructors in fourgroups. The first group consists of the pure
+
+*-calculus constructorswhose semantics knows nothing about continuations or metacontinuations. The second group is the standard monadic constructors return and >>= which are given the standard definitions for the CPSmonad (Moggi, 1991), i.e., they manipulate a concrete representation
+
+of the continuation but know nothing about the metacontinuation. Thethird group consists of the control operators other than
+
+newPrompt.The semantics of these control operators manipulate the continuation
+
+(but not its representation) and manipulate a concrete representation ofthe metacontinuation. Finally the semantics of the last control operator
+newPrompt refers to the continuation, the metacontinuation, and thecounter used to generate unique names.
+
+4.3. Relating the CPS and Monadic Semantics
+The semantics are equivalent in the sense of the following proposition.
+
+revised.tex; 29/04/2005; 9:16; p.16
+
+A Monadic Framework for Subcontinuations 17
+PROPOSITION 4.1. For any expression e defined in Figure 1, we haveP[[
+
+e]] = M[[T [[e]]]] in the CPS calculus.Proof. By induction on the structure of
+
+e proceeding by cases:
+
+- e = x.The left-hand side is
+
+*^.^ x.The right-hand side is M[[T [[
+
+x]]]] = M[[return x]] = *^.^ x.
+
+- e = *x.e0The left-hand side is
+
+*^.^ (*x.*^0.P[[e0]] ^0).The right-hand side is:
+
+M[[return (*x.T [[e0]])]] = *^.^ (M[[*x.T [[e0]]]])=
+
+*^.^ (*x.M[[T [[e0]]]])=
+*^.^ (*x.*^0.P[[e0]] ^0)
+
+- e = e1e2The left-hand side is
+
+*^.P[[e1]] (*f.P[[e2]] (*a.f a ^)).The right-hand side is:
+
+M[[T [[e1]] >>= *f.T [[e2]] >>= *a.f a]]=
+*^.P[[e1]] (*f.M[[T [[e2]] >>= *a.f a]] ^)=
+*^.P[[e1]] (*f.M[[T [[e2]]]] (*a.M[[f a]] ^))=
+*^.P[[e1]] (*f.P[[e2]] (*a.f a ^))
+
+- e = newPromptThe left-hand side is
+
+*^.*fl.*p.^ p fl (p + 1).The right-hand side is M[[
+
+newPrompt]] = *^.*fl.*p.^ p fl (p + 1)
+
+- e = pushPrompt e1 e2The left-hand side is
+
+*^.P[[e1]] (*p.*fl.P[[e2]] ^0 (p : ^ : fl)).The right-hand side is:
+
+M[[T [[e1]] >>= *p.pushPrompt p T [[e2]]]]=
+*^.M[[T [[e1]]]] (*p.M[[pushPrompt p T [[e2]]]] ^)=
+*^.P[[e1]] (*p.*fl.M[[T [[e2]]]] ^0 (p : ^ : fl))=
+*^.P[[e1]] (*p.*fl.P[[e2]] ^0 (p : ^ : fl))
+
+- e = withSubCont e1 e2The left-hand side is
+
+*^.P[[e1]] (*p.P[[e2]] (*f.*fl.f (^ : flp" ) ^0 flp# )).The right-hand side is:
+
+M[[T [[e1]] >>= *p.T [[e2]] >>= *f.withSubCont p f ]]=
+*^.M[[T [[e1]]]] (*p.M[[T [[e2]] >>= *f.withSubCont p f ]] ^)=
+*^.P[[e1]] (*p.M[[T [[e2]]]] (*f.M[[withSubCont p f ]] ^))=
+*^.P[[e1]] (*p.P[[e2]] (*f.*fl.f (^ : flp" ) ^0 flp# ))
+
+revised.tex; 29/04/2005; 9:16; p.17
+
+18 Dybvig, Peyton Jones, Sabry
+
+- e = pushSubCont e1 e2The left-hand side is
+
+*^.P[[e1]] (*fl0.*fl.P[[e2]] ^0 (fl0++(^ : fl))).The right-hand side is:
+
+M[[T [[e1]] >>= *s.pushSubCont s T [[e2]]]]=
+*^.M[[T [[e1]]]] (*s.M[[pushSubCont s T [[e2]]]] ^)=
+*^.P[[e1]] (*s.*fl.M[[T [[e2]]]] ^0 (s++(^ : fl)))=
+*^.P[[e1]] (*s.*fl.P[[e2]] ^0 (s++(^ : fl)))
+
+In summary, the CPS semantics of Figure 5 has been teased intotwo parts that can be studied (and implemented as we see in Section 6)
+independently. The aspects relevant to the order of evaluation are fac-tored out in the translation to the monadic metalanguage. The pure
+functional terms remain pure, and the monadic constructs are awareof the continuation but not the metacontinuation or the generation
+of new names; the latter are manipulated exclusively by our controloperators, which themselves do not manipulate the representation of
+the continuation.
+
+5. Monadic Types in Haskell
+In order to study the monadic types in a concrete setting, we implementthe monadic metalanguage of the preceding section in Haskell. This
+implementation allows us not only to use advanced type features likeinterfaces, type classes, nested polymorphism, and existentials, but also
+to provide an executable specification of our control operators.From the semantic perspective, i.e., based on Figure 9, the monadic
+metalanguage can be easily mapped to Haskell. Since Haskell is anextended
+
+*-calculus, it directly embodies the pure *-calculus termsof the monadic metalanguage. Furthermore, Haskell provides direct
+
+syntactic support for monadic programming.So the plan is this. We will write programs directly in Haskell,
+in effect relying on the programmer to perform the monadic trans-lation T [[
+
+e]]. Then we need only to provide Haskell definitions for themonadic constructors
+
+return and >>=, and the control operators, whichcan be done in a Haskell library. The result is a typed, executable
+
+program that uses delimited continuations. It may not be an efficientimplementation of delimited continuations, but it serves as an excellent design laboratory, as we will see in Section 6. Furthermore, aswe explore in this section, the typed framework allows us to securely
+encapsulate algorithms that use control effects internally, but which areentirely pure when seen from the outside.
+
+revised.tex; 29/04/2005; 9:16; p.18
+
+A Monadic Framework for Subcontinuations 19
+5.1. Haskell as an Implementation of the Monadic
+
+Metalanguage
+
+Defining the monadic constructors in Haskell is directly achieved bydefining an instance of the
+
+Monad type class. Specifically, we mustintroduce a type constructor, say
+
+CC, that describes the notion of effectwe are interested in, and make
+CC an instance of the class Monad byproviding definitions of the two methods
+
+return and >>=. For example,if
+e1 and e2 are expressions whose evaluation may have control effects,we can write:
+
+e1 >>= (\Phi x1 ss e2 >>= (\Phi x2 ss return (x1+x2)))
+The evaluation of the expression first executes e1 and its control effects.The value returned by the execution of
+
+e1 is bound to x1 and thenthe same process is repeated with
+e2. Haskell provides the followingconvenient syntactic sugar for the above pattern:
+
+do x1  e1
+
+x2  e2
+return (x1+x2)
+
+Finally we must provide definitions for the control operators. Nat-urally these operators use the definition of the
+
+CC monad and in factthey are the only operations that need access to that definition.
+
+In other words, we can embed the monadic metalanguage in Haskellby simply defining a library which exports the monadic type constructor CC and the control operations. In the remainder of this section, wepresent the interfaces of two such libraries and evaluate them using
+examples.
+5.2. Monad with Fixed Observable Type
+We first introduce the simplest types for the monadic library.
+data CC a -- Abstract
+data Prompt a -- Abstract
+data SubCont a b -- Abstract
+type Obs = ... -- Arbitrary but fixed
+
+instance Monad CC
+runCC :: CC Obs ss Obs
+newPrompt :: CC (Prompt a)
+pushPrompt :: Prompt a ss CC a ss CC a
+
+revised.tex; 29/04/2005; 9:16; p.19
+
+20 Dybvig, Peyton Jones, Sabry
+withSubCont :: Prompt b ss (SubCont a b ss CC b) ss CC a
+pushSubCont :: SubCont a b ss CC a ss CC b
+
+The interface includes the type constructor CC (which must be aninstance of the class
+
+Monad) and two abstract type constructors forprompts
+Prompt and subcontinuations SubCont. Following conventionalcontinuation semantics, the type of observables is of an arbitrary but
+
+fixed type Obs. The type CC a is the type of computations returninga value of type
+
+a to their continuation. The type Prompt a is thetype of prompts to which a value of type
+
+a can be returned. The type
+SubCont a b is the type of subcontinuations to which a value of type acan be passed and which return a value of type
+
+b. To execute a completeprogram the function
+runCC takes a computation which returns a valueof the fixed type
+Obs and supplies it with the initial context (initialcontinuation, metacontinuation, and counter for prompt names) to get
+
+the final observable value.The types of the control operators are a monadic variant of the
+types given by Gunter et al. (1995) for the similar operators. Eachoccurrence of
+
+newPrompt generates a new prompt of an arbitrary butfixed type
+a. The type of pushPrompt shows that a prompt of type
+Prompt a can only be pushed on a computation of type CC a whichexpects a value of type
+
+a. If the type of withSubCont p f is CC athen the entire expression returns a value of type
+
+a to its continuation;the continuation is assumed to contain a prompt
+
+p of type Prompt b;the portion of the continuation spanning from
+a to b is captured as avalue of type
+SubCont a b which is passed to f. Since the remainingcontinuation expects a value of type
+
+b, the return type of f is CC b. Asimilar scenario explains the type of
+pushSubCont.Wadler (1994) studies several systems of monadic types for composable continuations. His first system is similar to the one we considerin this section. Written in our notation, the types he considers for the
+operators are:
+runCC :: CC Obs ss Obs
+pushPrompt :: CC Obs ss CC Obs
+withSubCont :: (SubCont a Obs ss CC Obs) ss CC a
+pushSubCont :: SubCont a Obs ss CC a ss CC Obs
+
+Indeed our interface reduces to the above, if we remove the ability togenerate new prompts and use one fixed and implicit prompt of the
+
+observable type instead.
+
+revised.tex; 29/04/2005; 9:16; p.20
+
+A Monadic Framework for Subcontinuations 21
+5.3. Examples
+The following short examples aim to give a little more intuition of themonadic interface. The examples use the following Haskell conventions:
+
+- A *-expression \x -> e extends as far to the right as possible.
+- A sequence of monadic computations is usually expressed using
+
+do-notation but we occasionally use the bind operator >>=.
+
+- Whitespace (instead of semi-colons) is often used as a separatorof monadic actions with indentation (instead of braces) indicating
+
+grouping.
+- We make heavy use of the right-associating, low-precedence infixapplication operator
+
+$, defined like this f $ x = f x. Its pur-pose is to avoid excessive parentheses; for example, instead of
+
+(f (g (h x))) we can write (f $ g $ h x).
+Thus given the above conventions the term:
+withSubCont p $ \Phi k ss
+pushSubCont k $
+do x  do y1  e1
+
+e2
+e
+
+parses as:
+withSubCont p (\Phi k ss
+
+pushSubCont k (do { x  (do { y1  e1; e2}); e}))
+
+We first revisit our examples with the top-level prompt p0 and
+callcc from Section 2.2. The top-level prompt has type Prompt Obsand the definitions of
+
+abort and callcc can be typed as follows:
+
+abort :: CC Obs ss CC a
+abort e = withCont (\Phi  _ ss e)
+
+callcc :: ((a ss CC b) ss CC a) ss CC a
+callcc f = withCont $ \Phi k ss
+
+pushSubCont k $
+f (\Phi v ss abort (pushSubCont k (return v)))
+
+As expected the type of abort refers to the top level type of observ-ables. The type of
+
+callcc makes it explicit that the argument to acontinuation must be a value, of type
+
+a, rather than a computation oftype
+CC a. This interface of callcc has a well-known stack-space leak,however. For example, consider:
+
+revised.tex; 29/04/2005; 9:16; p.21
+
+22 Dybvig, Peyton Jones, Sabry
+loop :: Int ss CC Int
+loop 0 = return 0
+loop n = callcc (\Phi k ss do { r  loop (n-1); k r })
+
+When the recursive call to loop (n-1) returns, the continuation k isinvoked, which abandons the entire current stack, using the call to
+abort inside the definition of callcc. So the recursive call to looptakes place on top of a stack that will never be used. If the recursive
+call increases the size of the stack before looping, as is the case here, theresult is that the stack grows proportional to the depth of recursion.
+
+The usual solution to this problem is to thunkify the argument to thecontinuation, passing a value of type
+
+(() -> a ) instead of a value oftype
+a. In our monadic framework, we can be more explicit by defining
+callcc as follows:
+
+callcc :: ((CC a ss CC b) ss CC a) ss CC a
+callcc f = withCont $ \Phi k ss
+
+pushSubCont k $
+f (\Phi c ss abort (pushSubCont k c))
+
+where it is explicit that the continuation is applied to a computationof type
+
+CC a. Using the new variant of callcc we can write our loopexample as follows:
+
+loop :: Int ss CC Int
+loop 0 = return 0
+loop n = callcc (\Phi k ss k (loop (n-1)))
+
+Now the context is aborted before the recursive call to loop is made,and the function becomes properly tail-recursive.
+
+5.4. Encapsulation
+The monadic interface we have considered so far has the advantage ofbeing simple, but it has a major limitation: the fact that the interface
+of runCC specifies a fixed type Obs. One really wants to be able to runmonadic computations that return values of arbitrary types. Na"ively
+replacing Obs by an arbitrary type is however unsound as it wouldallow interactions among control operations executing under different
+occurrences of runCC. For example, changing the type of runCC to:
+runCC :: CC a ss a
+would permit the following:
+
+revised.tex; 29/04/2005; 9:16; p.22
+
+A Monadic Framework for Subcontinuations 23
+abortP :: Prompt r b ss CC r b ss CC r a
+abortP p e = withSubCont p (\Phi  _ ss e)
+
+badc = let p1 :: Prompt Int = runCC newPrompt
+
+p2 :: Prompt Bool = runCC newPrompt
+in 1 + runCC (pushPrompt p1
+
+(abortP p2 (return True)))
+
+Because it has a pure type, the result of runCC e for any e mustbe a pure expression without any side-effects. In particular the two
+occurrences of runCC in the body of badc cannot interact via a globalsymbol table or anything similar to guarantee that they return distinct
+prompts p1 and p2. Therefore, nothing forces the two prompts p1 and
+p2 to have different internal representations. In the case when theydo have the same representation, i.e., they are intentionally equal, the
+
+jump to p2 reaches p1 instead which causes the evaluation to add 1 to
+True.The solution to this type soundness problem is to confine the control
+
+effects to certain regions. (This is also desirable from the perspective ofprogramming methodology. For a longer discussion of this point, we refer the reader to the arguments leading to the design of spawn (Hieb andDybvig, 1990).) As Thielecke (2003) recently showed, there is an intimate relation between regions and the type of observables. Indeed whatdefines a region of control is that the type of observables can be made
+local to the region. Fortunately this situation is rather similar to thewell-understood situation of encapsulating state in Haskell (Launchbury and Peyton Jones, 1995), and our solution is quite similar. Weadd a region parameter
+
+r to every type constructor and enforce non-interference and localization of control actions by using polymorphism.
+
+The refined interface becomes:
+
+data CC r a -- Abstract
+data Prompt r a -- Abstract
+data SubCont r a b -- Abstract
+
+instance Monad (CC r)
+runCC :: (^ r\Gamma  CC r a) ss a
+newPrompt :: CC r (Prompt r a)
+pushPrompt :: Prompt r a ss CC r a ss CC r a
+withSubCont :: Prompt r b ss (SubCont r a b ss CC r b) ss
+
+CC r a
+pushSubCont :: SubCont r a b ss CC r a ss CC r b
+
+revised.tex; 29/04/2005; 9:16; p.23
+
+24 Dybvig, Peyton Jones, Sabry
+
+In the new interface, the types CC, Prompt, and SubCont are eachgiven an additional type parameter
+
+r which represents their controlregion as far as the type system is concerned. The type of each operator
+
+insists that its arguments and results come from a common region. So,for example, one cannot push a prompt of type
+
+Prompt r1 a if thecurrent computation has type
+CC r2 a where r1 and r2 are differentregions. The type of
+runCC shows that it takes an effectful computa-tion, of type
+CC r a, runs it, and returns an ordinary, pure, value oftype
+a. This encapsulation is enforced by giving runCC a rank-2 type:its argument must be polymorphic in the region
+
+r.
+
+5.5. Examples
+Encapsulation using runCC provides a convenient way to isolate regionsof control from each other. If a computation labeled by
+
+r1 pushes aprompt, then a computation labeled by a different
+r2 cannot accessthat prompt and hence cannot abort or duplicate computations up
+
+to that prompt. Moreover the type system will enforce this restriction:there is no way for the prompt to somehow leak using a global reference
+or higher-order function.The following two expressions can be encapsulated either because
+they perform no effects at all (g0), or because their effects are com-pletely localized and hence invisible to the outside world (
+
+g1):
+
+g0 = 1 + runCC (do x  return 1; return (x+1))
+g1 = 1 + runCC (
+
+do p  newPrompt
+
+pushPrompt p $
+
+withSubCont p $ \Phi  sk ss
+pushSubCont sk (pushSubCont sk (return 2)))
+
+A more interesting example of encapsulation uses continuations in away similar to exceptions, to abort several recursive calls as an optimization. The control effect is completely localized and hence encap-sulated:
+
+productM :: [Int] ss Int
+productM xs = runCC (do p  newPrompt
+
+pushPrompt p (loop xs p))
+where loop [] p = return 1
+
+loop (0:_) p = abortP p (return 0)
+loop (x:xs) p = do r  loop xs p; return (x*r)
+
+In the example, we recursively traverse a list pushing multiplicationframes on the stack. Before starting the loop, we push a prompt on
+
+revised.tex; 29/04/2005; 9:16; p.24
+
+A Monadic Framework for Subcontinuations 25
+the stack to mark the point at which the recursion will eventuallyreturn. If we reach the end of the list, we return normally, performing
+
+the multiplications on the way back. If we encounter a 0, however, wesimply erase the pending multiplication frames and return the final
+result 0 to the caller of loop.The system with encapsulation is quite expressive. Wadler (1994)
+studies several generalizations of the type system with a fixed observ-able type, and only the most general system he considers (which is more
+general than a monad) is expressive enough to typecheck the followingprogram:
+
+let g = reset (if (shift (lambda (f) f)) then 2 else 3)
+in (g True) + (g False)
+
+This can be written in our framework without stepping outside theworld of monads. The following expression typechecks and evaluates
+to 5 as desired:
+data A r = Done Int | Sub (Bool ss CC r (A r))
+w = runCC (
+
+do p  newPrompt
+
+Sub g  pushPrompt p $
+
+do b  shift p (\Phi s ss return (Sub s))
+
+if b
+
+then return (Done 2)
+else return (Done 3)
+Done n1  g True
+Done n2  g False
+return (n1+n2))
+
+Expressions may violate encapsulation for a variety of reasons:
+b0 = runCC (do p  newPrompt; return p)
+b1 = do p  newPrompt
+
+pushPrompt p $
+
+withSubCont p $ \Phi  sk ss
+return (runCC (pushSubCont sk (return 1)))
+
+Example b0 attempts to export a local prompt. Example b1 attemptsto use a subcontinuation captured from outside its region which is also
+invalid, and is rejected by the type checker.
+
+revised.tex; 29/04/2005; 9:16; p.25
+
+26 Dybvig, Peyton Jones, Sabry
+
+6. Executable Specifications in Haskell
+
+Having implemented the monadic metalanguage in Haskell, we canturn the semantics of Figure 9 into an executable (as well as typed)
+specification. We focus on the more interesting version of the monadictypes with regions (implementing the other basic interface is simpler).
+We also provide three versions of the specification that differ in thedetails of how the continuation is represented. Providing these three
+typed specifications has several advantages:
+
+- It clarifies some of the informal arguments we made about theseparation of concerns between the continuation, the metacontinuation, and the generation of prompts. Indeed we will show thatit is possible to focus on each aspect in a separate module;
+
+- The semantics in Figures 5 and 9 is quite complex and the typesare non-trivial. We found the executable Haskell specification to
+
+be invaluable in debugging the semantic definitions;
+- The executable specification naturally provides an extension ofHaskell with our control operators, but it also provides a blueprint
+
+for embedding our control operators in other languages like Schemeor ML either by modifying the runtime system, or extending a CPS
+compiler, or as a source level library which builds on top of callcc.
+The implementation uses Haskell's built-in error mechanism to avoidcluttering the code with yet-another-monad to propagate errors. The
+
+implementation also uses several constructs that are not part of Haskell98, although they have become quite standard extensions to the basic
+language. In particular, we use existential types to express the typingof a sequence of function (continuation) compositions; and we use universal types for encapsulation of control effects, and for capturing aninvariant related to continuations and metacontinuations.
+
+6.1. Generating Prompts
+The module Prompt implements the dynamic generation of prompts.It is isolated here because the issue of name generation is independent
+
+of continuations, and because it allows us to isolate the only unsafe (inthe sense that the type system cannot prove it safe) coercion in our
+code to this small module:
+module Prompt where
+
+data P r a -- Abstract
+data Prompt r a -- Abstract
+
+revised.tex; 29/04/2005; 9:16; p.26
+
+A Monadic Framework for Subcontinuations 27
+instance Monad (P r)
+runP :: (^ r\Gamma  P r a) ss a
+newPrompt :: P r (Prompt r a)
+eqPrompt :: Prompt r a ss Prompt r b ss
+
+Maybe (a ss b, b ss a)
+
+The module provides the abstract type of prompts and a monad (P r)which sequences the prompt supply. This guarantees that generated
+prompts are globally unique within all computations tagged by thetype parameter of the region
+
+r. The implementation of the module isin Appendix A.
+
+The operation runP plays the role of encapsulating a computationthat uses prompts, guaranteeing that no information about the prompts
+is either imported by its argument or exported by it. The operation
+eqPrompt compares two prompts of possibly different types by lookingat their internal representation. If the two prompts have a different
+
+internal representation we just return the value Nothing. But if thetwo prompts have the same internal representation, then they must
+have the same type (if our implementation is correct and if the promptvalues are unforgeable). In this case we return two coercions to witness
+the type equality. The coercions are implemented as identity functions,but since the Haskell type system cannot be used to reason about this
+type equality, the coercion functions are generated using an unsafeimplementation-dependent primitive.
+
+The module Prompt is imported in each of the following imple-mentations of the
+
+CC interface. The import is qualified so that usesof component
+X of the Prompt module will appear as Prompt.X.
+
+6.2. Sequences
+All our implementations manipulate sequences of prompts and controlsegments. The control segments are frames in the first case, functions
+
+in the second case, and abstract continuations with an unknown rep-resentation in the third case. We provide here a general sequence type
+that can be instantiated for each case. The two operations we requireon sequences (
+
+split and append) need to be defined only once.The basic structure of the
+
+Seq type is that of a list, which can beempty (
+EmptyS) or has three "cons" variants each with another Seq inthe tail:
+
+data Seq s r a b = EmptyS (a ss b)
+
+| PushP (Prompt.Prompt r a) (Seq s r a b)
+
+revised.tex; 29/04/2005; 9:16; p.27
+
+28 Dybvig, Peyton Jones, Sabry
+
+| ^ c\Gamma  PushSeg (s r a c) (Seq s r c b)
+| ^ c\Gamma  PushCO (a ss c) (Seq s r c b)
+
+We first give the intuitive meaning of each type parameters and thenexplain the various constructors in turn. The type parameters
+
+a and brepresent the type of values received and produced by the aggregate
+
+sequence of prompts and segments. The type parameter r is used toidentify the region of control to which the prompts and control segments
+belong. The type parameter s is the abstract constructor of controlsegments that will be varied to produce the various implementations.
+We now consider the constructors:
+
+- We would really like to declare the empty sequence EmptyS as:
+
+data Seq s r a b = EmptyS | ...
+but then EmptyS would have the type Seq s r a b which is toopolymorphic. An empty sequence should have type
+
+Seq s r a a.Haskell does not allow data types to be restricted in this way
+
+(but see Xi et al. (2003) and Cheney and Hinze (2002) for possibleextensions and encodings), so we instead give
+
+EmptyS an argumentthat provides evidence that
+a = b, in the form of a function from
+a to b. Now we can define:
+
+emptyS :: Seq s r a a
+emptyS = EmptyS id
+
+- The PushP constructor is simple: it simply pushes a (suitably-typed) prompt onto the sequence.
+
+- The PushSeg constructor pushes a control segment which repre-sents either an individual frame or a continuation. When searching
+
+for prompts in sequences, we never need to inspect control seg-ments so the precise details of what constitutes a segment is not
+relevant at this point. The "8c" in the declaration is a widely-usedHaskell extension that allows an existentially-quantified type variable c to be used in a data type declaration (L"aufer and Odersky,1992). It is used here to express the fact that if the control segment
+takes a value of type a to one of type c, and the rest of the sequencetakes a value of type
+
+c to a value of type b, then the compositionof the two takes a value of type
+
+a to a value of type b.
+
+- The PushCO constructor pushes a coercion function (again alwaysthe identity in our code) onto a sequence. The coercions are the
+
+ones obtained from the Prompt module that witness the type equal-ity of two prompts.
+
+revised.tex; 29/04/2005; 9:16; p.28
+
+A Monadic Framework for Subcontinuations 29
+The implementation of the control operators described later maypush "empty" control segments which correspond to the identity continuation, or worse, sequences of coercions if the control operators areused in certain recursive patterns. In both cases, it is possible to avoid
+such inefficiencies by using "smart constructor" functions, and this isabsolutely essential if we are to maintain proper tail recursion as required for example by the semantics of Scheme. For example, instead ofusing
+
+PushCO to construct the sequences, we use a function pushCO thatrecognizes the special inefficient situation in which we push one coercion
+
+on top of another and combines the two coercions. For control segments,the situation is a little more subtle since it could be that continuations
+are represented as functions, or even worse, continuations may have anunknown representation, and hence it is not clear how to identify the
+identity continuation. It may still be possible however even in thosesituations to avoid pushing a control segment corresponding to the
+identity continuation. For example, one can refine the representationof continuations represented as functions to be
+
+Id | NonId (A -> B)where the identity continuation is readily recognizable as such. It could
+
+also be possible depending on the host language to compare continu-ations of unknown representation for (pointer) equality, as is possible
+for example in Chez Scheme where:
+
+(call/cc (lambda (k1) (call/cc (lambda (k2) (eqv? k1 k2)))))
+evaluates to true. As shown in Appendix C, this property can be usedto achieve proper tail recursion, i.e., no growth of any values holding
+
+control information, including the implementation's stack.The operations to split and append sequences are defined below. To
+split the sequence at a given prompt, we traverse it, comparing theprompts along the way. If a prompt matches the desired prompt, we
+use the eqPrompt function to obtain a coercion that forces the typesto be equal. To append functional sequences, we recursively traverse
+the first until we reach its base case. The base case provides a coercionfunction which can be used to build a coercion frame to maintain the
+proper types.
+splitSeq :: Prompt.Prompt r b ss Seq s r a ans ss
+
+(Seq s r a b, Seq s r b ans)
+splitSeq p (EmptyS _) =
+
+error ("Prompt was not found on the stack")
+splitSeq p (PushP p' sk) =
+
+case Prompt.eqPrompt p' p of
+
+Nothing ss let (subk,sk') = splitSeq p sk
+
+in (PushP p' subk, sk')
+
+revised.tex; 29/04/2005; 9:16; p.29
+
+30 Dybvig, Peyton Jones, Sabry
+
+Just (a2b,b2a) ss (EmptyS a2b, PushCO b2a sk)
+splitSeq p (PushSeg seg sk) =
+
+let (subk,sk') = splitSeq p sk
+in (PushSeg seg subk, sk')
+splitSeq p (PushCO f sk) =
+
+let (subk,sk') = splitSeq p sk
+in (PushCO f subk, sk')
+
+appendSeq :: Seq s r a b ss Seq s r b ans ss Seq s r a ans
+appendSeq (EmptyS f) sk = PushCO f sk
+appendSeq (PushP p subk) sk = PushP p (appendSeq subk sk)
+appendSeq (PushSeg seg subk) sk =
+
+PushSeg seg (appendSeq subk sk)
+appendSeq (PushCO f subk) sk =
+
+PushCO f (appendSeq subk sk)
+
+6.3. Continuations as Sequences of Frames
+In this first implementation, the continuation and metacontinuation aremerged in one data-structure which consists of a sequence of frames and
+
+prompts. Although we worked hard to avoid making this representationthe only representation possible, it is a possible representation which
+is useful if one chooses to modify the runtime system to implementthe control operators (Gasbichler and Sperber, 2002). A frame of type
+Frame r a b is a function which given a value of type a returns a
+b-computation which performs the next computation step. The contin-uation is a sequence of these frames and prompts which consumes values
+
+of type a and returns an arbitrary (and hence universally quantified)type
+
+obs. The final result should be of type obs but is slightly morecomplicated since we are making the allocation of prompts explicit: the
+
+final result is instead a computation which delivers the value of type
+obs after possibly generating prompts. Thus the complete definitionsof the datatypes are:
+
+data Frame r a b = Frame (a ss CC r b)
+type Cont r a b = Seq Frame r a b
+
+data CC r a = CC (^ obs\Gamma  Cont r a obs ss Prompt.P r obs)
+type Prompt r a = Prompt.Prompt r a
+type SubCont r a b = Seq Frame r a b
+
+Given these data types, here is how we make CC an instance of the
+Monad class, by implementing return and (>>=):
+
+revised.tex; 29/04/2005; 9:16; p.30
+
+A Monadic Framework for Subcontinuations 31
+instance Monad (CC r) where
+
+return v = CC (\Phi  k ss appk k v)
+(CC e1) >>= e2 = CC (\Phi  k ss e1 (PushSeg (Frame e2) k))
+
+appk :: Cont r a obs ss a ss Prompt.P r obs
+appk (EmptyS f) v = return (f v)
+appk (PushP _ k) v = appk k v
+appk (PushSeg (Frame f) k) v = let CC e = f v in e k
+appk (PushCO f k) v = appk k (f v)
+
+runCC :: (^ r\Gamma  CC r a) ss a
+runCC ce = Prompt.runP (let CC e = ce in e (EmptyS id))
+
+The function appk serves as an interpreter, transforming a sequencedata structure, of type
+
+Cont r a obs, into a function. The implemen-tation of
+appk is straightforward but needs a coercion in the EmptyScase, without which the function would not be well-typed.
+
+newPrompt :: CC r (Prompt r a)
+newPrompt = CC (\Phi k ss do p  Prompt.newPrompt; appk k p)
+
+pushPrompt :: Prompt r a ss CC r a ss CC r a
+pushPrompt p (CC e) = CC (\Phi k ss e (PushP p k))
+
+withSubCont :: Prompt r b ss (SubCont r a b ss CC r b) ss
+
+CC r a
+withSubCont p f =
+
+CC (\Phi k ss case splitSeq p k of
+
+(subk,k') ss
+
+let CC e = f subk
+in e k')
+
+pushSubCont :: SubCont r a b ss CC r a ss CC r b
+pushSubCont subk (CC e) = CC (\Phi k ss e (appendSeq subk k))
+
+As already apparent in the continuation semantics, the only controloperator that is aware of the prompt supply is
+
+newPrompt.
+
+6.4. Continuations as Functions
+In this second implementation, the continuation is represented as afunction from values to metaCPS terms. MetaCPS terms are CPS terms
+
+that accept metacontinuations and deliver answers. Metacontinuationsare represented as sequences of continuations and prompts. The type
+definitions are:
+
+revised.tex; 29/04/2005; 9:16; p.31
+
+32 Dybvig, Peyton Jones, Sabry
+data Cont r a b = Cont (a ss MC r b)
+type MetaCont r a b = Seq Cont r a b
+
+data CC r a = CC (^ b\Gamma  Cont r a b ss MC r b)
+data MC r b = MC (^ ans\Gamma  MetaCont r b ans ss Prompt.P r ans)
+type Prompt r a = Prompt.Prompt r a
+type SubCont r a b = Seq Cont r a b
+
+The type ans is quantified as above. The type b used as an articulationpoint between the continuation and metacontinuation is completely
+
+arbitrary and hence universally quantified. This quantification capturesan invariant that the interface between a continuation and a metacontinuation is arbitrary as long as they agree on it. Had we not quantifiedthe type variables
+
+b and ans in the definitions, then we would have hadto either fix them to arbitrary types or we would have had to make them
+
+additional parameters to the type constructors.In more detail, if we remove the quantification from the definitions
+of the types CC and MC (and remove the tags to simplify the discussion),we might get:
+
+type CC r ans b a = (a ss MC r ans b) ss MC r ans b
+type MC r ans b = MetaCont r b ans ss Prompt.P r ans
+
+The type variable ans that used to be quantified is now a parameter tothe
+
+MC constructor, which means it has also to be a parameter to the CCconstructor. The
+
+CC constructor also needs to take as a parameter thetype
+b that used to be quantified. If we ignore the dynamic generationof prompts (and hence also the type parameter
+
+r) we get:
+
+type CC ans b a = (a ss MC ans b) ss MC ans b
+type MC ans b = MetaCont b ans ss ans
+
+which is identical to the "Murthy types" considered by Wadler (1994).These types are however not expressive enough to type the example in Section 5.2. Alternatively, the quantified type variables can beeliminated by fixing the type
+
+ans to be an arbitrary but fixed type Obs:
+
+type CC b a = (a ss MC b) ss MC b
+type MC b = MetaCont b Obs ss Obs
+
+which is identical to the restricted two-level types considered by Wadler(1994) and to our interface in Section 5.4.
+
+The CC type provides the monadic combinators return and >>=:
+instance Monad (CC r) where
+
+return e = CC (\Phi  (Cont k) ss k e)
+(CC e1) >>= e2 =
+
+CC (\Phi k ss e1 (Cont (\Phi v1 ss let CC c = e2 v1 in c k)))
+
+revised.tex; 29/04/2005; 9:16; p.32
+
+A Monadic Framework for Subcontinuations 33
+The code above shows that the CC monad is a completely standardcontinuation monad: in particular the monadic combinators (and hence
+
+the translation of pure functions and applications) knows nothing aboutthe metacontinuation.
+
+To run a complete computation, we must of course provide a con-tinuation that knows about the metacontinuation. The function
+
+runCCtakes a computation and supplies it with the initial continuation; this
+
+returns another computation which expects the initial metacontinua-tion:
+
+runC :: (Cont r a a ss MC r a) ss MC r a
+runC e = e (Cont (\Phi v ss MC (\Phi mk ss appmk mk v)))
+
+appmk :: MetaCont r a ans ss a ss Prompt.P r ans
+appmk (EmptyS f) e = return (f e)
+appmk (PushP _ sk) e = appmk sk e
+appmk (PushSeg (Cont k) sk) e = let MC mc = k e in mc sk
+appmk (PushCO f sk) e = appmk sk (f e)
+
+runCC :: (^ r\Gamma  CC r a) ss a
+runCC ce = Prompt.runP (let CC e = ce
+
+MC me = runC e
+in me (EmptyS id))
+
+The exported operators are now implemented as follows:
+newPrompt :: CC r (Prompt r a)
+newPrompt = CC (\Phi  (Cont k) ss
+
+MC (\Phi mk ss do p  Prompt.newPrompt
+
+let MC me = k p
+me mk))
+
+pushPrompt :: Prompt r a ss CC r a ss CC r a
+pushPrompt p (CC e) =
+
+CC (\Phi k ss MC (\Phi mk ss let MC me = runC e
+
+in me (PushP p (PushSeg k mk))))
+
+withSubCont :: Prompt r b ss (SubCont r a b ss CC r b) ss CC r a
+withSubCont p f =
+
+CC (\Phi k ss MC (\Phi mk ss
+
+let (subk,mk') = splitSeq p mk
+
+CC e = f (PushSeg k subk)
+
+revised.tex; 29/04/2005; 9:16; p.33
+
+34 Dybvig, Peyton Jones, Sabry
+
+MC me = runC e
+in me mk'))
+
+pushSubCont :: SubCont r a b ss CC r a ss CC r b
+pushSubCont subk (CC e) =
+
+CC (\Phi k ss MC (\Phi mk ss
+
+let MC me = runC e
+in me (appendSeq subk (PushSeg k mk))))
+
+6.5. Continuations Reified by a Control Operator
+This third implementation even more clearly formalizes the separa-tion of concerns between continuation and metacontinuation: it uses
+
+two CPS monads: an underlying monad CPS.M which manipulates aconcrete representation of the continuation
+
+CPS.K that is hidden fromthe main monad implementing the
+CC-interface. The main monad cancapture and invoke the continuation manipulated by the underlying
+
+monad but must treat the type CPS.K as an abstract type.First we assume we are given an underlying CPS monad with the
+following signature:
+module CPS where
+
+data K obs a -- Abstract
+data M obs a -- Abstract
+
+instance Monad (M obs)
+c :: (K obs a ss obs) ss M obs a
+throw :: K obs a ss M obs a ss M obs b
+
+runM :: M obs obs ss obs
+The control operator c gives access to the continuation which is anabstract type and aborts to the top level at the same time. The only
+
+thing we can do with this continuation is to invoke it using throw. Acomputation involving
+
+c and throw can be performed using runM toreturn its final answer. The implementation of this monad is standard
+
+and is included in Appendix B.Given this underlying CPS monad, we implement
+
+CC as follows:
+
+data Cont r a b = Cont (CPS.K (MC r b) a)
+type MetaCont r a b = Seq Cont r a b
+
+revised.tex; 29/04/2005; 9:16; p.34
+
+A Monadic Framework for Subcontinuations 35
+data CC r a = CC (^ b\Gamma  CPS.M (MC r b) a)
+data MC r b = MC (^ ans\Gamma  MetaCont r b ans ss Prompt.P r ans)
+type Prompt r a = Prompt.Prompt r a
+type SubCont r a b = Seq Cont r a b
+
+The type CC is simply a wrapper for CPS.M and its monadic op-erations are identical to the ones of
+
+CPS.M modulo some tagging anduntagging of the values:
+
+instance Monad (CC r) where
+
+return e = CC (return e)
+(CC e1) >>= e2 = CC (do v1  e1
+
+let CC c = e2 v1
+c)
+
+When run, an underlying CPS.M computation must inspect the meta-continuation and should return only when the sequence is empty. Hence
+
+every CPS.M evaluation starts with an underflow frame that inspectsthe stack. The definition of
+
+underflow is almost in one-to-one corre-spondence with the definition of the initial continuation in the previous
+
+section, and so are the functions runC and runCC:
+runC :: CPS.M (MC s a) a ss MC s a
+runC e = CPS.runM (e >>= underflow)
+
+underflow :: a ss CPS.M (MC s a) (MC s a)
+underflow v = return (MC (\Phi sk ss appmk sk v))
+
+appmk :: MetaCont r a ans ss a ss Prompt.P r ans
+appmk (EmptyS f) v = return (f v)
+appmk (PushP _ sk') v = appmk sk' v
+appmk (PushSeg (Cont k) sk') v = let MC f = resumeC k v
+
+in f sk'
+appmk (PushCO f sk') v = appmk sk' (f v)
+
+resumeC :: CPS.K (MC s b) a ss a ss MC s b
+resumeC k v = CPS.runM (CPS.throw k (return v))
+
+runCC :: (^ s\Gamma  CC s a) ss a
+runCC ce = Prompt.runP (let CC e = ce
+
+MC sf = runC e
+in sf (EmptyS id))
+
+The exported operations are now implemented as follows:
+
+revised.tex; 29/04/2005; 9:16; p.35
+
+36 Dybvig, Peyton Jones, Sabry
+newPrompt :: CC r (Prompt r a)
+newPrompt =
+
+CC (CPS.c (\Phi k ss MC (\Phi sk ss
+
+do p  Prompt.newPrompt
+
+let MC sf = resumeC k p
+sf sk)))
+
+pushPrompt :: Prompt r a ss CC r a ss CC r a
+pushPrompt p (CC e) =
+
+CC (CPS.c (\Phi k ss MC (\Phi sk ss
+
+let MC sf = runC e
+in sf (PushP p (PushSeg (Cont k) sk)))))
+
+withSubCont :: Prompt r b ss (SubCont r a b ss CC r b) ss
+
+CC r a
+withSubCont p f =
+
+CC (CPS.c (\Phi k ss MC (\Phi sk ss
+
+let (subk,sk') = splitSeq p sk
+
+CC e = f (PushSeg (Cont k) subk)
+MC sf = runC e
+in sf sk')))
+
+pushSubCont :: SubCont r a b ss CC r a ss CC r b
+pushSubCont subk (CC e) =
+
+CC (CPS.c (\Phi k ss MC (\Phi sk ss
+
+let sk' = appendSeq subk (PushSeg (Cont k) sk)
+
+MC sf = runC e
+in sf sk')))
+
+This implementation of our control operators generalizes previousdirect-style implementations of shift and reset (Filinski, 1994; Filinski,
+1996) and F and prompt (Sitaram and Felleisen, 1990).
+
+7. Conclusions
+We have presented a typed monadic framework in which one can defineand experiment with arbitrary control operators that manipulate subcontinuations. This framework offers several advantages over previouswork:
+
+- It provides a clear separation of several entangled issues that com-plicate the semantics of such control operators: non-standard order
+
+revised.tex; 29/04/2005; 9:16; p.36
+
+A Monadic Framework for Subcontinuations 37
+of evaluation, manipulation and representation of the continua-tion, manipulation and representation of the metacontinuation,
+
+and generation of new prompt names.
+- It is strongly typed and allows one to encapsulate control effectsto local regions of control.
+
+- It can be implemented on top of any traditional implementationof continuations, including a single, standard CPS translation.
+We have also described how a CPS or direct-style implementation offunctional control operators can be made properly tail recursive.
+
+Chung-chieh Shan (2004) has also recently shown that subcontinua-tion control operators can be expressed using standard CPS, by defining
+the various control operators in terms of shift and reset, which canthen in turn be implemented using CPS. Our method represents the
+metacontinuation as a sequence and directly implements the most basicof these operators, -F -, from which it is easy to implement any of the
+others. In contrast, Shan's method represents the metacontinuation asa function and implements the least basic of these operators,
+
++F +. To
+
+implement the more basic operators, he introduces wrappers similar toour underflow wrappers around each prompt to convert, in effect, the
+
+metacontinuation into a sort of procedural list representation.Our framework is implemented in an almost well-typed Haskell library which provides executable specifications of the control operatorsas well as specifications of other possible implementations in other
+languages and environments. This idea is illustrated by translating themost interesting specification to Scheme (Appendix C), thereby giving
+an implementation of our control operators on top of callcc.We hope to be able to use our framework to tackle the difficult
+question of tracking the lifetimes and extent (Moreau and Queinnec,1994) of prompts and continuations in the presence of control operators.
+This issue has two important practical applications.First, in order to include the control operators in a production
+language, it is necessary to understand how they interact with otherdynamic entities, such as exceptions. The situation is already complicated without prompts, and implementations like SML/NJ provide twovariants of
+
+callcc: one that closes over the current exception handlerand one that does not. The implementation does not otherwise promise
+
+to satisfy any invariants. In contrast, Scheme includes dynamic-wind,which guarantees that certain actions are executed before control enters
+a region and some other actions are executed before control exits aregion, even if the entering and exit are done using continuations. The
+
+revised.tex; 29/04/2005; 9:16; p.37
+
+38 Dybvig, Peyton Jones, Sabry
+interaction of such a primitive with arbitrary control operators is notwell-understood.
+
+The second point is closely related to the first point above. If thelifetime of prompts is well-understood, it should be possible to design
+static checks to enforce that control operations always refer to existingprompts. Recent work (Ariola et al., 2004; Nanevski, 2004) suggests
+that one must move to a type-and-effect system in order guaranteesuch properties, but such effects can in principle be expressed in the
+monadic framework (Wadler, 1998). In the case of shift and reset,Filinski (1999) does indeed propose a type-and-effect system for layered monadic effects that both keeps track of the interactions betweencontrol abstractions (making some programs that mix them inappropriately ill-typed), and guarantees statically that well-typed programswill not fail with "missing prompt" errors.
+
+Acknowledgements
+We thank the anonymous reviewers, Olivier Danvy, Matthias Felleisen,Andrzej Filinski, Dan Friedman, Shriram Krishnamurthi, Simon Marlow, and Philip Wadler for discussions and helpful comments. We wouldalso like to thank Eugenio Moggi for critical comments on an attempted
+type system for tracking dangling prompts. We also especially thankOscar Waddell for major contributions to the research ideas and early
+drafts of the paper.
+
+Appendix
+A. Implementation of the module Prompt
+module Prompt (
+
+P, Prompt, runP,
+newPrompt, eqPrompt
+) where
+
+data P r a = P (Int ss (Int,a))
+data Prompt r a = Prompt Int
+
+instance Monad (P r) where
+
+return e = P (\Phi s ss (s,e))
+(P e1) >>= e2 = P (\Phi s1 ss let (s2,v1) = e1 s1
+
+revised.tex; 29/04/2005; 9:16; p.38
+
+A Monadic Framework for Subcontinuations 39
+
+P f2 = e2 v1
+in f2 s2)
+
+runP :: (^ r\Gamma  P r a) ss a
+runP pe = let P e = pe in snd (e 0)
+
+newPrompt :: P r (Prompt r a)
+newPrompt = P (\Phi s ss (s+1, Prompt s))
+
+eqPrompt :: Prompt r a ss Prompt r b ss Maybe (a ss b, b ss a)
+eqPrompt (Prompt p1) (Prompt p2)
+
+| p1 OE p2 = Just (coerce id, coerce id)
+| otherwise = Nothing
+
+coerce :: a ss b
+coerce = ... -- implementation dependent
+
+B. Implementation of the module CPS
+module CPS (
+
+M, K,
+throw, c,
+runM
+) where
+
+data K ans a = K (a ss ans)
+data M ans a = M (K ans a ss ans)
+
+instance Monad (M ans) where
+
+return e = M (\Phi  (K k) ss k e)
+(M e1) >>= e2 =
+
+M (\Phi k ss e1 (K (\Phi  v1 ss let M c = e2 v1 in c k)))
+
+callcc :: (K ans a ss M ans a) ss M ans a
+callcc f = M (\Phi k ss let M c = f k in c k)
+
+abort :: ans ss M ans a
+abort a = M (\Phi _ ss a)
+
+throw :: K ans a ss M ans a ss M ans b
+
+revised.tex; 29/04/2005; 9:16; p.39
+
+40 Dybvig, Peyton Jones, Sabry
+throw k (M e) = M (\Phi _ ss e k)
+
+c :: (K ans a ss ans) ss M ans a
+c f = callcc (\Phi k ss abort (f k))
+
+runM :: M ans ans ss ans
+runM (M e) = e (K id)
+
+C. Implementation in Scheme
+This appendix contains three implementations of our control operatorsin Scheme. Section C.1 presents a transliteration of the Haskell code
+of Section 6.5 to Scheme, using call/cc to implement C. Section C.2simplifies the code by using call/cc directly and maintaining the metacontinuation as a global variable. Section C.3 modifies the latter tohandle tail recursion properly by taking advantage of
+
+Chez Scheme'sequality property for continuations.
+
+C.1. Transliterating the Haskell Code
+The code in this section is a literal translation to Scheme of the Haskellcode that appears in Section 6.5. We begin by defining the Seq datatype
+and associated routines1.
+
+1 define-datatype is a syntactic abstraction; its definition is not interesting here,
+so it is omitted to save space. An implementation is available from the authors.
+
+revised.tex; 29/04/2005; 9:16; p.40
+
+A Monadic Framework for Subcontinuations 41
+(define-datatype Seq(EmptyS)
+
+(PushP p Seq)(PushSeg k Seq))
+
+(define (appendSeq seq1 seq2)(Seq-case seq
+
+1[(EmptyS) seq
+
+2][(PushP p subk ) (PushP p (appendSeq subk seq
+
+2))][(PushSeg k subk ) (PushSeg k (appendSeq subk seq
+
+2))]))
+
+(define (splitSeq p seq )(Seq-case seq
+
+[(EmptyS) (error 'splitSeq "prompt ~s not found on stack" p)][(PushP p* sk )
+
+(if (not (eqv? p p*))(let-values ([(subk sk *) (splitSeq p sk )])
+
+(values (PushP p* subk ) sk *))(values (EmptyS) sk ))]
+[(PushSeg k sk )(let-values ([(subk sk *) (splitSeq p sk )])
+
+(values (PushSeg k subk ) sk *))]))
+The Haskell implementation expects C rather than callcc, so the Schemeversion of
+
+runM defines C in terms of call/cc. The operator C is definedonce at top-level where it is visible to the various control operators but
+
+assigned its value once per invocation of runM so that it aborts backto the continuation of the most recent call to runM. The computation
+to be performed by runM is represented as a thunk.
+
+(define C)(define (runM th )
+
+((call/cc(lambda (abort )
+
+(set! C(lambda (p)
+
+(call/cc(lambda (k )
+
+(abort (lambda () (p k )))))))(let ([v (th )])
+(C (lambda (k ) v )))))))
+
+revised.tex; 29/04/2005; 9:16; p.41
+
+42 Dybvig, Peyton Jones, Sabry
+The definitions of runC, runCC, underflow, and appmk mirror theirHaskell counterparts.
+
+(define (runC th ) (runM (lambda () (underflow (th )))))(define (runCC th ) ((runC th ) (EmptyS)))
+(define (underflow v ) (lambda (mk ) (appmk mk v )))
+(define (appmk mk v )(Seq-case mk
+
+[(EmptyS) v ][(PushP mk *) (appmk mk * v )]
+[(PushSeg k mk *) ((runM (lambda () (k v ))) mk *)]))
+Prompts are fresh strings. (Any mutable object would suffice.)
+
+(define newPrompt (lambda () (string #\p)))
+The pushPrompt and pushSubCont operators are syntactic ab-stractions that expand into calls to $pushPrompt and $pushSubCont.
+In each case, the body is represented as a thunk to delay its evaluation.
+
+(define-syntax pushPrompt(syntax-rules ()
+
+[( p e1 e2 . . . )($pushPrompt p (lambda () e1 e2
+
+. . . ))]))
+
+(define-syntax pushSubCont(syntax-rules ()
+
+[( subk e1 e2 . . . )($pushSubCont subk (lambda () e1 e2
+
+. . . ))]))
+
+The definitions of the control operators are equivalent to their Haskellcounterparts.
+
+revised.tex; 29/04/2005; 9:16; p.42
+
+A Monadic Framework for Subcontinuations 43
+(define ($pushPrompt p th )(C (lambda (k )
+
+(lambda (mk )((runC th ) (PushP p (PushSeg k mk )))))))
+
+(define ($pushSubCont subk th )(C (lambda (k )
+
+(lambda (mk )((runC th ) (appendSeq subk (PushSeg k mk )))))))
+
+(define (withSubCont p f )(C (lambda (k )
+
+(lambda (mk )(let-values ([(subk mk *) (splitSeq p mk )])
+
+((runC (lambda () (f (PushSeg k subk )))) mk *))))))
+
+C.2. Simplifying the Code
+We can simplify the code above a bit by working with the native call/ccdirectly and keeping the metacontinuation in a global variable instead
+of passing it around in store-passing style.Our new runCC sets up the initial metacontinuation mk and the
+runC procedure. (We have no need of a separate runM procedure, sincethe "virtual machine" is plain Scheme.)
+
+(define mk )(define runC)
+(define (runCC th )(set! mk (EmptyS))
+
+(underflow((call/cc
+
+(lambda (k )(set! runC k )
+
+(runC th ))))))
+runC accepts a thunk and thaws it in a base continuation that encap-sulates only the call to underflow.
+
+The definition of underflow does the job of the original appmk, wheremk is maintained in a global variable via assignments.
+
+revised.tex; 29/04/2005; 9:16; p.43
+
+44 Dybvig, Peyton Jones, Sabry
+
+(define (underflow v )(Seq-case mk
+
+[(EmptyS) v ][(PushP mk *) (set! mk mk *) (underflow v )]
+[(PushSeg k mk *) (set! mk mk *) (k v )]))
+The control operators also maintain mk as a global variable, plus usecall/cc rather than C. Passing a thunk to runC, which thaws it in the
+base continuation, effectively simulates the aborting effect of C.
+
+(define ($pushPrompt p th )(call/cc
+
+(lambda (k )(set! mk (PushP p (PushSeg k mk )))
+
+(runC th ))))
+(define ($pushSubCont subk th )(call/cc
+
+(lambda (k )(set! mk (appendSeq subk (PushSeg k mk )))
+
+(runC th ))))
+(define (withSubCont p f )(let-values ([(subk mk *) (splitSeq p mk )])
+
+(set! mk mk *)(call/cc
+
+(lambda (k )(runC (lambda () (f (PushSeg k subk ))))))))
+
+This implementation effectively generalizes Filinksi's implementation ofshift and reset using SML/NJ's callcc and a metacontinuation cell (Filinski, 1994) to our family of control operators, which can easily andefficiently support the other control operators described in Section 2.
+
+C.3. Proper Tail Recursion
+The procedure below repeatedly captures and pushes an empty sub-continuation.
+
+revised.tex; 29/04/2005; 9:16; p.44
+
+A Monadic Framework for Subcontinuations 45
+(define (tailtest)(let ([p (newPrompt)])
+
+(pushPrompt p(withSubCont p
+
+(lambda (s )(pushSubCont s (tailtest)))))))
+
+In a properly tail recursive implementation this test should run withoutany growth in a process's memory image.
+
+The implementations presented above do not treat tail recursionproperly, since each pushSubCont of s adds a new (empty) subcontinuation onto the metacontinuation and the metacontinuation growswithout bound. In order to recognize and avoid this situation, the code
+must have some way to detect empty subcontinuations, as describedin Section 6.2. In
+
+Chez Scheme, this is accomplished by comparing thecurrent continuation against a base continuation using eqv?.
+
+To do so, we modify runCC to reify the base continuation and storeit in the variable base-k.
+
+(define mk )(define base-k )
+(define runC)
+(define (runCC th )(set! mk (EmptyS))
+
+(underflow(call/cc
+
+(lambda (k 1)(set! base-k k
+
+1)((call/cc
+
+(lambda (k 2)(set! runC k
+
+2)(runC th ))))))))
+
+We then define a wrapper for the PushSeg constructor that pushes acontinuation onto the stack only if it is not the base continuation.
+
+(define (PushSeg/t k seq )(if (eqv? k base-k )
+
+seq(PushSeg k seq )))
+
+revised.tex; 29/04/2005; 9:16; p.45
+
+46 Dybvig, Peyton Jones, Sabry
+This wrapper is used in place of PushSeg in the implementations of ourcontrol operators.
+
+References
+Ariola, Z. M., H. Herbelin, and A. Sabry: 2004, `A Type-Theoretic Foundation of
+
+Continuations and Prompts'. In: ACM SIGPLAN International Conference on
+Functional Programming. ACM Press, New York.
+Cheney, J. and R. Hinze: 2002, `A lightweight implementation of generics and dynamics'. In: Proceedings of the ACM SIGPLAN workshop on Haskell. New York,
+pp. 90-104, ACM Press.
+Danvy, O. and A. Filinski: 1990, `Abstracting Control'. In: Proceedings of the 1990
+
+ACM Conference on LISP and Functional Programming. New York, pp. 151-160,
+ACM Press.
+Felleisen, M.: 1988, `The Theory and Practice of First-Class Prompts'. In: Conf.
+
+Record of 15th Ann. ACM Symp. on Principles of Programming Languages,
+POPL'88, San Diego, CA, USA, Jan. 1988. New York: ACM Press, pp. 180-190.
+Felleisen, M., D. P. Friedman, B. Duba, and J. Merrill: 1987a, `Beyond Continuations'. Technical Report 216, Indiana University Computer Science Department.
+Felleisen, M., D. P. Friedman, E. Kohlbecker, and B. Duba: 1987b, `A syntactic
+
+theory of sequential control'. Theoretical Computer Science 52(3), 205-237.
+Felleisen, M., M. Wand, D. P. Friedman, and B. F. Duba: 1988, `Abstract Continuations: A Mathematical Semantics for Handling Full Functional Jumps'. In:
+Proceedings of the 1988 ACM Conference on Lisp and Functional Programming.
+New York, pp. 52-62, ACM Press.
+Filinski, A.: 1994, `Representing Monads'. In: Conference Record of POPL '94:
+
+21ST ACM SIGPLAN-SIGACT Symposium on Principles of Programm ing
+Languages, Portland, Oregon. New York, pp. 446-457, ACM Press.
+Filinski, A.: 1996, `Controlling Effects'. Ph.D. thesis, School of Computer Science,
+
+Carnegie Mellon University. Technical Report CMU-CS-96-119.
+Filinski, A.: 1999, `Representing Layered Monads'. In: Conf. Record of 26th ACM
+
+SIGPLAN-SIGACT Symp. on Principles of Programming Languages, POPL'99,
+San Antonio, TX, USA, 20-22 Jan. 1999. New York: ACM Press, pp. 175-188.
+Gasbichler, M. and M. Sperber: 2002, `Final shift for call/cc:: direct implementation
+
+of shift and reset'. In: ICFP '02: Proceedings of the seventh ACM SIGPLAN
+international conference on Functional programming. pp. 271-282, ACM Press.
+Gunter, C. A., D. R'emy, and J. G. Riecke: 1995, `A Generalization of Exceptions
+
+and Control in ML-like Languages'. In: Functional Programming & Computer
+Architecture. New York, ACM Press.
+Hieb, R., K. Dybvig, and C. W. Anderson, III: 1994, `Subcontinuations'. Lisp and
+
+Symbolic Computation 7(1), 83-110.
+Hieb, R. and R. K. Dybvig: 1990, `Continuations and Concurrency'. In: PPoPP
+
+'90, Symposium on Principles and Practice of Parallel Programming, Vol. 25(3)
+of SIGPLAN NOTICES. Seattle, Washington, March 14-16, pp. 128-136, ACM
+Press.
+Johnson, G. F. and D. Duggan: 1988, `Stores and partial continuations as first-class
+
+objects in a language and its environment'. In: Proceedings of the 15th ACM
+SIGPLAN-SIGACT symposium on Principles of programming languages. New
+York, pp. 158-168, ACM Press.
+
+revised.tex; 29/04/2005; 9:16; p.46
+
+A Monadic Framework for Subcontinuations 47
+L"aufer, K. and M. Odersky: 1992, `An Extension of ML with First-Class Abstract
+
+Types'. In: Proc. ACM SIGPLAN Workshop on ML and its Applications. New
+York, ACM.
+Launchbury, J. and S. L. Peyton Jones: 1995, `State in Haskell'. Lisp and Symbolic
+
+Computation 8(4), 293-341.
+Moggi, E.: 1991, `Notions of Computation and Monads'. Information and Computation 93(1), 55-92.
+Moreau, L. and C. Queinnec: 1994, `Partial Continuations as the Difference of Continuations. A Duumvirate of Control Operators'. Lecture Notes in Computer
+Science 844.
+Nanevski, A.: 2004, `A Modal Calculus for Named Control Effects'. Unpublished
+
+manuscript.
+Shan, C.: 2004, `Shift to Control'. In: O. Shivers and O. Waddell (eds.): Proceedings of the 5th workshop on Scheme and Functional Programming. pp. 99-107.
+Technical report, Computer Science Department, Indiana University, 2004.
+Sitaram, D. and M. Felleisen: 1990, `Control delimiters and their hierarchies'. Lisp
+
+and Symbolic Computation 3(1), 67-99.
+Strachey, C. and C. P. Wadsworth: 1974, `Continuations A Mathematical Semantics
+
+for Handling Full Jumps'. Technical Monograph PRG-11, Oxford University
+Computing Laboratory Programming Research Group.
+Thielecke, H.: 2003, `From control effects to typed continuation passing'. In:
+
+Proceedings of the 30th ACM SIGPLAN-SIGACT symposium on Principles of
+programming languages (POPL-03), Vol. 38, 1 of ACM SIGPLAN Notices. New
+York, pp. 139-149, ACM Press.
+Wadler, P.: 1994, `Monads and composable continuations'. Lisp and Symbolic
+
+Computation 7(1), 39-56.
+Wadler, P.: 1998, `The marriage of effects and monads'. In: ICFP '98: Proceedings of
+
+the third ACM SIGPLAN international conference on Functional programming.
+pp. 63-74, ACM Press.
+Xi, H., C. Chen, and G. Chen: 2003, `Guarded recursive datatype constructors'. In:
+
+C. Norris and J. J. B. Fenwick (eds.): Proceedings of the 30th ACM SIGPLANSIGACT symposium on Principles of programming languages (POPL-03), Vol.
+38, 1 of ACM SIGPLAN Notices. New York, pp. 224-235, ACM Press.
+
+revised.tex; 29/04/2005; 9:16; p.47revised.tex; 29/04/2005; 9:16; p.48

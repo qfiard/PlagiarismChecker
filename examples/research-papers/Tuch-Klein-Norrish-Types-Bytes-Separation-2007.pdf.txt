@@ -1,0 +1,1425 @@
+
+
+Types, Bytes, and Separation Logic
+Harvey Tuch Gerwin Klein
+Sydney Research Lab., National ICT Australia *,Australia
+
+School of Computer Science and Engineering, UNSW,Sydney, Australia
+
+{harvey.tuch|gerwin.klein}@nicta.com.au
+
+Michael Norrish
+Canberra Research Lab., National ICT Australia,Australia
+
+michael.norrish@nicta.com.au
+
+Abstract
+We present a formal model of memory that both captures the low-level features of C's pointers and memory, and that forms the basis
+
+for an expressive implementation of separation logic. At the lowlevel, we do not commit common oversimplifications, but correctly
+deal with C's model of programming language values and the heap.At the level of separation logic, we are still able to reason abstractly
+and efficiently. We implement this framework in the theorem proverIsabelle/HOL and demonstrate it on two case studies. We show that
+the divide between detailed and abstract does not impose undueverification overhead, and that simple programs remain easy to
+verify. We also show that the framework is applicable to real,security- and safety-critical code by formally verifying the memory
+allocator of the L4 microkernel.
+Categories and Subject Descriptors F.3.1 [Logics and Mean-ings of Programs]: Specifying and Verifying and Reasoning about
+
+Programs--Mechanical verification
+General Terms Languages, Theory, Verification
+Keywords Separation Logic, C, Interactive Theorem Proving
+
+1. Introduction
+Nearly All Binary Searches and Mergesorts are Broken. This wasthe title of a short, widely read article by Joshua Bloch on Google's
+
+research blog [6]. Bloch had discovered a problem in his imple-mentation of binary search in an array in the standard Java library.
+The problem had remained unnoticed for nine years of widespreaddeployment in the Java platform, and Bloch argues that it is in fact
+about 50 years old as it can be found in most standard text-books.What is remarkable about this error is that many of the text-book
+and lecture implementations have been formally proven correct.The problem is that the usual text-book view of state and values
+in programming language semantics is an oversimplification. Thebug described by Bloch is a simple value overflow that occurs in
+
+* National ICT Australia is funded through the Australian Government's
+Backing Australia's Ability initiative, in part through the Australian Re-search Council.
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+POPL'07 January 17-19, 2007, Nice, France.Copyright cfl 2007 ACM 1-59593-575-4/07/0001.. . $5.00.
+
+the computation of the average of two values: int mid = (low
++ high) / 2. For sufficiently large values of low and high thisstatement is wrong. One version that works for all values is
+
+mid =
+low + ((high - low) / 2).Even in the light of industrially deployed programs failing because of this error, one is tempted to say that they are not reallywrong; that they work as long as
+
+int behaves like the integers ofmathematics, and that people should not be using values that are
+
+too large. If the specification of binary search did have this pre-condition explicitly stated, then this view would be defensible. Of
+course it does not, because we would rather not think about themessy world of finite values, finite memory, unsafe pointer operations, pointer alignment, and other low level constraints of realprogramming languages when we are focusing on the interesting
+parts of verifying a program. This view is not just wishful thinking:it was, and in part still is, also widely believed that dealing with all
+this detail in program verification is intractable, and that it obscuresthe algorithmic part where errors are most likely. Nonetheless, it is
+our thesis and contribution that we can indeed verify real programsin real programming languages with their real semantics, and provide the hard correctness guarantees of formal software verifica-tion, without sacrificing soundness and without drowning in detail.
+
+Our verification methodology for programs in languages like Cis to use Hoare logic together with an automated verification condition generator. Additionally, for pointer programs, we would liketo use separation logic [16, 25], which promises to be an efficient
+and scalable method. However, existing implementations of sepa-ration logic [31, 18] use simplifications that while convenient are
+not directly suitable for C. For instance, they model the heap as afunction from integers to integers, or treat values on the heap as
+atomic.In contrast, we model the values and heap of the C programming
+language in the theorem prover precisely. For overflow problemswe use the correct mathematical structure (e.g. finite integers). For
+pointers, correct models are more complex. C's view of memory isthat of an array of bytes coupled with various access restrictions.
+Further, pointers have to be aligned, dereferencing the null pointeris undefined, etc.
+
+Using such a model directly is intractable for verifying realprograms. Our contribution is to reconcile this model with convenient, abstract notation and reasoning. Our framework supportsboth, normal Hoare logic and a sound separation logic, by instantiating Schirmer's Hoare logic environment [27]. Schirmer providesa generic imperative language with operational semantics, Hoare
+logic, and generic state in Isabelle/HOL. We instantiate this to Con the one side, and provide optional separation logic notation for
+assertions on the other side. At the heart of our work stands theobservation that although languages like C are not type-safe, and
+although many programs do not always use pointers in a type-safe
+
+C translation HOL source embedding
+
+HOL proof obligations
+C semantics(incl. memory 
+
+model)
+
+Machine-checkable proof
+
+Verification condition 
+
+generation
+
++
+Annotated C source code
+
+Interactive proof
+Figure 1. The C verification process. User-supplied componentsindicated with shading.
+way, the majority of pointer operations in any given program arewell-behaved and can be treated in the abstract text-book way.
+
+In previous work [28], we showed that the low-level view ofthe heap as an array of bytes can be soundly unified with a view
+of multiple abstract heaps of abstract values. We provided an im-plementation of this unified memory model in Isabelle/HOL and
+applied it to the verification of page tables in the L4 microkernel.In this paper, we extend this work by making it more concrete and
+more firmly grounded in reality on the one side, and more abstractand better suited for high-level verification on the other side:
+
+* We harden our implementation so that it accurately reflects thereal semantics of a significant, strict subset of the C programming language. C programs as accepted by standard C com-pilers can be read directly into the theorem prover. We also
+show how to add a number of low-level semantic restrictionslike pointer alignment and automatic NULL-dereference guards
+without incurring undue verification overhead.*
+We extend and generalise the memory model to support separa-tion logic constructs, and we implement a shallow embedding
+
+of separation logic with the frame rule on top of this model inIsabelle/HOL. This constitutes the first sound implementation
+of separation logic for a mainstream programming language.*
+We show two case studies in this setting: a simple list reversal,and a full formal verification of the L4 kernel memory allocator.
+
+We use the list reversal example to demonstrate the modeland to show that easy programs remain easy to verify. The
+memory allocator study shows the applicability of the modeland verification of real, security critical programs. It also gives
+an example of a program that cannot be verified formally in thetraditional setting without losing soundness.
+
+* Finally, we use the two case studies to evaluate separation logicagainst traditional Hoare logic. To our knowledge this is the first
+
+such evaluation of separation logic in one unified setting.
+Fig. 1 shows the process of verifying a C program in our set-ting. The user (the program verifier) provides a normal C program that contains invariant and pre/post annotations in comments.Optionally, the user may also provide an Isabelle/HOL specification with definitions used in these annotations. Building on ourmodel of memory, separation logic, and the semantics of C, the program is then translated into an imperative program in Isabelle/HOL.Schirmer's VCG generates the proof obligations. Proving these is
+where most of the user-work happens and the process will usuallyresult in changes to the annotations and/or program until a proof is
+found. The soundness of this setup depends on translating C pro-grams correctly to their Isabelle counterparts, on the correctness
+of the memory model (both of which we present here), and on theVCG (which Schirmer has proved sound in Isabelle [27]).
+
+Our work is motivated by a project to formally verify the func-tional correctness of the L4 microkernel [17]. While we concentrate on operating-system-level code and Isabelle/HOL in our casestudies and implementation, we believe that this work is widely
+applicable. The basic technique generalises to other low-level lan-guages and is orthogonal to developing an operational semantics for
+the statements of the language. We concentrate on a precise modelof state, values, and memory. The implementation in the theorem
+prover uses features specific to Isabelle (e.g. type classes) to opti-mise proof productivity, but the model should be implementable in
+different provers like PVS using slightly different mechanisms.
+2. Notation
+Our meta-language Isabelle/HOL conforms largely to everydaymathematical notation. This section introduces further non-standard notation and in particular a few basic data types along withtheir primitive operations.
+
+The space of total functions is denoted by ). Type variables arewritten 0a, 0b, etc. The notation
+
+t :: o/ means that HOL term t hasHOL type
+o/. The option type
+
+datatype 0a option = None | Some 0a
+adjoins a new element None to a type 0a. We use 0a option to modelpartial functions, writing bac instead of
+
+Some a and 0a * 0b insteadof 0a ) 0b option. The
+Some constructor has an underspecifiedinverse called
+the, satisfying the bxc = x. Function update iswritten f
+(x := y) where f :: 0a ) 0b, x :: 0a and y :: 0b and f (x 7! y)stands for f
+
+(x := Some y). We use {7!} for updating whole sets.Domain restriction is f _
+
+A where f :: 0a * 0b and (f _A) x = (if x 2 Athen f x else None).
+
+Finite integers are represented by the type 0a word where 0adetermines the word length. For succinctness, we use abbreviations
+
+like word8 and word32. The functions unat and of-nat convertto and from natural numbers (with u for unsigned). The notation
+{w..+n} stands for the interval starting at the word w with n::natelements, possibly wrapping around to zero.
+
+Hoare triples are written {|P|} c {|Q|} where P and Q are asser-tions and c a program. In assertions, we use the syntax 'x to refer
+to the program variable x in the current state, while oex means x instate
+
+oe. Program states can be bound in assertions by {|oe. P|}.Isabelle supports axiomatic type classes [32] similar to, but
+
+more restrictive than Haskell's. The notation 0a::ring restricts thetype variable 0a to those types that support the axioms of class ring.
+Type classes can be reasoned about abstractly, with recourse justto the defining axioms. Further, a type
+
+o/ can be shown to belongto a type class given a proof that the class's axioms hold in
+
+o/. Allabstract consequences of the class's axioms then follow for
+o/.Isabelle theories can be augmented with L
+ATEX text which may
+
+contain references to Isabelle theorems (by name--see chapter 4 of[23]). We use this presentation mechanism to generate the text for
+
+most of the definitions and all of the theorems in this paper, takingthem directly from the Isabelle proofs.
+
+3. Translation of C
+In our domain, C programs are happy to exploit C's low-levelfeatures. We cannot pretend that we are verifying a pseudo-Pascal
+
+int i = 0, a[2] = {0,0};
+int f(void) { i++; return i; }
+
+/* will return either 0 or 1 */
+int main(void) { a[i] = f(); return a[0]; }
+
+Figure 2. A non-deterministic C program
+
+with integer values of infinite range. In this section, we brieflydescribe the C dialect that we require, and how our translation of
+this dialect handles many of C's low-level complications. A numberof memory specific details are further discussed in Sect. 4.
+
+Syntactically, our C dialect is a C subset. We must be able topass implemented C source code to standard compilers (on whose
+correctness we implicitly rely), but we do also impose some syn-tactic restrictions on developers. For example, we make some simplifications that have no deep semantic impact, such as requiringall
+
+struct declarations to occur at the top-level of a translationunit. Rather more significantly, we prohibit side effects in almost
+
+all expressions. Assignments become statement-forms, and func-tions that return values may be called only as the right-hand side of
+an assignment.Semantically, we make a number of assumptions about the nature of the environment in which our C code will be executing.These move the C we are verifying away from the standard's ideal
+of strict conformance. When writing applications, such assump-tions are often a sign of programmer laziness, and a harbinger
+of pain when code is ported. At the systems level, these assump-tions are unavoidable. We categorise them using the standard's
+terms for describing varying (and illegal) program behaviours:implementation-defined, unspecified, and undefined.
+
+Implementation-defined behaviours are the easiest to treat.These behaviours are those on which the standard places broad restrictions, but where it also requires that the implementation makea particular (and documented) choice of behaviour.
+
+For example, an implementation must choose the size of itscharacter type (typically 8 bits), the size of other integral types in
+terms of bytes (int values are now typically four bytes), the en-dianness of integral types, how negative numbers are represented
+(typically two's-complement), and how integer division behaveswith negative arguments. Most of the time, compilers choose to
+reflect the decisions made by the underlying hardware architecture.As we know the nature of the architecture for which we are developing our code, we add these decisions as extra assumptionsto the verification process. This does mean that the same sourcecode does need to be verified anew for each underlying architecturewhere it is to be deployed. Depending on the program this could
+amount to merely re-running the proof.Unspecified behaviours occur when the standard permits an implementation to vary its behaviour, but does not require any docu-mentation of this variation. Indeed, an implementation is not required to make a particular choice consistently. This allows optimi-sation to drive the choice of behaviour. The most significant place
+where behaviour is unspecified is in order of evaluation, of argu-ments to assignments, of arguments of binary operators such as
+
++and
+/, and of arguments to function calls.Most C expressions that appear to induce different behaviours
+
+because of this under-specification are actually examples of unde-fined or illegal behaviour. This is because of the strong restrictions
+on the way in which programs are allowed to read and write mem-ory. Nonetheless, it is possible to write legal, non-deterministic C
+programs. One such appears in Fig. 2.By making all expressions side-effect free, and making assignments and function calls statement forms, we eliminate a whole
+
+class of undefined behaviours. By further requiring that functionsmay only be called in contexts where their return value is ignored,
+or where it is assigned to a single variable (which restriction theprogram in Fig. 2 violates), we ensure that all code must have only
+one possible behaviour, unless we choose to work from deliber-ate underspecifications, as might happen with an implementation
+of malloc.1For other unspecified behaviours, such as the values of possible padding bits in integer representations, our knowledge of theunderlying architecture means we know how the machine will behave, and our verification can exploit this.Undefined behaviours occur when a program attempts to do
+something illegal, such as dereferencing a null pointer, or doing aninteger division by zero. It is part of the devil's pact that programmers make when they program in C that implementations are notrequired to trap such events. Instead, implementations are free to
+do anything at all, and again, there is no requirement that their un-defined behaviours be documented. This feature of C makes testing
+difficult, but when verification is performed we can explicitly makesure that undefined behaviours can not occur.
+
+One approach to this verification task is to use explicit guards.Guards are extra program annotations, similar to assertions users
+can provide with the standard assert function. In order to be ver-ified with respect to any specification, a program must have all of
+its guards shown to hold when they are encountered. For every pos-sible undefined behaviour, we generate guards that are sufficient to
+ensure that the undefined behaviour cannot occur. If done manu-ally, this process of annotating programs with guards might lead to
+guards being omitted, but by generating guards mechanically wecan ensure that all those we wish to treat are indeed generated.
+
+Guards that we include prevent division by zero, dereferencingthe null pointer, and dereferencing an improperly aligned pointer.
+One further guard is the test that all memory-writes are to allocatedmemory. We use this guard to show a form of memory safety in
+Sect. 5.3 as a proof convenience but it may be omitted from thesemantics when considering systems code at the verifier's discretion. A stricter semantics for application verification would requiresuch a guard always. This flexibility in choosing our code's environment is another reason in favour of the guards-based approach:it is straightforward to enable different sorts of guards depending
+on circumstances. For example, in some kernel verifications, deref-erencing the null pointer might be a valid way of accessing the first
+element of the machine's exception vector. If this was the case, thenull pointer guard would need to be disabled. In this way, we can
+give definition to a variety of behaviours that the standard leavesundefined. Our systems code will not be strictly conforming, but indeed this line was crossed when our code relied on implementation-defined aspects of the programming environment.
+
+Finally, generating guards is straightforward: as expressions aretranslated into the verification environment, forms that may cause
+difficulties are recorded. When the translation of the enclosingstatement has finished, it can be preceded by the appropriate checks
+on the given expressions. Because of our syntactic restrictionspreventing side effects, the repeated evaluation (as guard, and in
+the original expression) of these sub-expressions is sure to be safe.Our aim is to make verification part of the engineering process.
+Crucially, the engineering process does not produce source code inone phase and then stop, with verification taking over from implementation. Rather, implementation continues at the same time. In
+1 Our restriction on the use of function calls may appear draconian. It forbids not only f(x) + g(y), but also x + f(y). Two unexplored optionsare possible. We might annotate some function calls as side-effect free, and
+
+then allow these functions to be called within expressions. Alternatively,rather than have the programmer do so by hand, we might compile such expressions into a linearised form that forced a particular order of evaluation.
+
+order to tie verification effort to the source code that is verified, weannotate source code with Isabelle invariants and specifications.
+4. A Unified Memory Model for Pointers
+When verifying C programs that may break many of the com-monly employed abstractions described in the introduction we face
+
+a dilemma. Since convenient simplifications must be discarded werequire detailed and cumbersome low-level models. This may increase the difficulty of the verification task, in particular when us-ing an interactive theorem prover, where this detail is exposed to
+the program verifier. We take soundness to be non-negotiable, yetsome abstraction is also required for tractability.
+
+In this and the next section we focus on resolving this difficultyfor the C memory model. We describe both a low-level semantic
+model based on finite byte-addressable memory and connectionsto two high-level proof abstractions--multiple typed heaps and
+separation logic. The latter can safely be used when programsremain inside a type-safe fragment. Since most code remains in
+this fragment in practice, even in the systems domain, we gainsoundness while alleviating the additional burden on the program
+verifier in the common case.
+4.1 Semantic model
+It is common in language semantics to treat the heap or memory asa partial function int
+
+* lang-val, where int is the type of addressesand lang-val the type of all language values. While greatly simplifying the formalisation, this makes several assumptions that are notvalid in our setting:
+
+* Addresses range over an infinite integer type. In C addresses
+
+are constrained by a finite addressable memory, which affectsthe semantics of pointer arithmetic and memory allocation, e.g.
+
+*(x+1) = y may in fact be a null pointer dereference.*
+Values representations are atomic. C language types have rep-resentations spanning multiple locations, and it is possible to
+
+have value updates at one location affect values in other cells.This calls for a semantic model that both captures values' storage sizes, and reflects these update semantics accurately. E.g.
+*x = 0xdeadbeef affects not only the byte at location x, butalso the bytes at locations
+
+x + 1, x + 2, and x + 3. An ad-ditional complication is alignment: per-type restrictions on address validity. For example, 16-bit short values may be forcedto be stored at even addresses. Expressing alignment conditions
+in dereferencing and update semantics requires having a con-stant byte granularity for addressing.
+
+* Heap partiality. Heap partiality is often used in the heap dereferencing semantics in memory or type-safety checks. Muchweaker variants of these properties hold for C programs and
+
+it is not always necessary to introduce them in the dereferencesemantics. This is particularly important in making it possible
+to verify low-level code that manages details such as the lay-out of its own address space or implements the functionality of
+malloc.
+Earlier work [28] solved a similar problem, where the aim wasto reconcile the low-level C memory model and the abstraction
+of multiple typed heaps. We present that semantic model here, to-gether with a significant extension of the heap abstraction. In particular, we remove the well-formedness invariant previously required,add general support for guards that protect against undefined behaviours, and in Sect. 5 employ it as the basis of a separation logicembedding.
+
+In our model, heap memory state is described as a total functionfrom addresses, represented by a word
+
+n type corresponding to the
+
+machine address type, to bytes, also a wordn type. Arithmeticoperations on word
+
+n values are modulo 2n. For example, on amachine with 32-bit addresses and 8-bit bytes the heap memory
+
+state will be:
+
+addr = word32byte
+
+= word8heap-mem
+
+= addr ) byte
+
+Each language type is assigned a unique type in the theoremprover's logic. This allows for both an intuitive definition of language operators as functions in HOL, and the harnessing of thetheorem prover's type inferencing mechanism to avoid unnecessary
+type annotations in assertions and proofs. All such types belong toan axiomatic type class 0a
+
+::c-type in Isabelle, which introduces con-stants that connect the low-level byte representation and the HOL
+
+values:
+
+to-bytes :: 0a::c-type ) byte list
+from-bytes :: byte list * 0a::c-type
+typ-tag :: 0a::c-type itself ) typ-tag
+typ-info :: 0a::c-type itself ) typ-info
+
+The functions to-bytes and from-bytes convert between Isabellevalues and lists of bytes suitable for writing to or reading from the
+
+raw heap state. The function typ-tag associates a unique type tagwith each 0a
+
+::c-type, providing a means of treating language typesas first-class values in HOL. Finally,
+
+typ-info provides enoughstructure to allow size and alignment information for the type to
+
+be calculated. We can then use this to define functions size-of
+:: 0a::c-type itself ) nat and align-of :: 0a::c-type itself ) natrespectively.
+
+The following conditions, captured in the axiomatic type class0a
+::mem-type, must hold for any 0a::c-type we want to use in ourheap abstraction below:
+
+from-bytes (to-bytes v) = bvc|
+
+to-bytes (x::0a)| = size-of TYPE(0a)
+0 < size-of TYPE(0a)
+size-of TYPE(0a) < addr-card
+align-of TYPE(0a) dvd addr-card
+
+These conditions follow mostly from requirements in the C stan-dard, e.g. fixed size representations, with the exception of the final
+
+alignment constraint which we add to make pointer arithmetic bet-ter behaved, and which holds on all the C implementations we are
+aware of. The constant addr-card represents the size of the addressspace, e.g.
+
+232.Finally, we introduce a distinct Isabelle pointer type for each
+
+Isabelle type, used to model C pointer types:
+
+datatype 0a ptr = Ptr addr
+The additional 0a on the left-hand side can now be used to associatethe pointer type information with pointer values in Isabelle's type
+
+system. Since the type variable does not appear on the right-handside it is a phantom type. Nonetheless, the type information is
+used to constrain the action of various pointer operators by makinguse of the type information associated with 0a. The destructor
+ptr-val retrieves the address from a pointer value. The pointer types0a
+
+::c-type ptr can be shown to be to be instances of 0a::mem-type.An example of the use of the phantom type variable comes in the
+
+definition of pointer addition, adding a word n to a pointer p::0a ptr:
+p +p n = Ptr (ptr-val p + n * of-nat (size-of TYPE(0a)))
+
+Another example of the utility of such polymorphic definitionsis the pointer alignment guard from Sect. 3:
+
+ptr-aligned (p::0a ptr) j align-of TYPE(0a) dvd unat (ptr-val p)
+
+...heap_mem
+204
+136
+
+42
+98
+
+0
+1
+0
+0
+34
+65
+20
+
+...
+
+204
+136
+
+42
+98
+
+byte list
+
+1646954700intsize_of TYPE(int)
+heap_update_list
+
+heap_list
+
+to_bytes
+from_bytes
+
+Figure 3. int heap representation
+In this work we deal primarily with C's base and pointer typesbut it is possible to extend this to compound types. Array indexing,
+access, and update semantics can be expressed in terms of the cor-responding pointer semantics. C's
+
+struct types can be translatedto Isabelle record types, however the models in this paper require
+
+extending when fields have their address taken2 or padding is in-volved. Similarly,
+
+union types can be treated as datatypes when atag field can be identified, and otherwise translated to type-casts.
+
+Low-level heap access and update Heap dereferences in expres-sions, e.g. *p
+
++ 1 are given a semantics by first lifting the raw heapstate with the polymorphic
+
+lift function, e.g. lift s p + 1 where s isthe current state. The definition of
+
+lift is presented below, togetherwith that of
+heap-update, providing semantics for heap updates.For example, *p
+
+= *q + 5 is translated to the state transformer *s.
+heap-update p (lift s q + 5) s. Fig. 3 illustrates the value transfor-mations involved.
+
+heap-list :: heap-mem ) nat ) addr ) byte list
+heap-list h 0 p = []
+heap-list h (Suc n) p = h p*heap-list h n (p + 1)
+
+h-val :: heap-mem ) 0a::c-type ptr * 0a
+h-val h p j from-bytes (heap-list h (size-of TYPE(0a)) (ptr-val p))
+
+lift :: heap-mem ) 0a::c-type ptr ) 0a
+lift h j *p. the (h-val h p)
+
+heap-update-list p [] h = h
+heap-update-list p (x*xs) h = heap-update-list (p + 1) xs (h(p := x))
+
+heap-update p v h j heap-update-list (ptr-val p) (to-bytes v) h
+
+4.2 Typed heaps
+While it is possible to do proofs about programs directly with thissemantics, it is rather complicated to do so. Problems quickly arise
+
+when the potential for overlapping value representations on theheap and aliasing between lifted typed heaps complicate heap update post-conditions. This is an example of the aliasing [8] prob-lem inherent in pointer program proofs being further compounded
+by the low-level semantic model utilised. We call this represen-tation overlap problem inter-type aliasing for the purpose of this
+paper; see Fig. 4 for an example of this. In this section we presentan abstraction from our semantic model, together with appropriate
+
+2 We also have not required supporting the & operator for local variables
+yet. These could be modelled explicitly in the heap-mem.
+
+...heap_mem
+204
+136
+
+42
+98
+
+0
+1
+0
+0
+34
+65
+20
+
+...
+
+6433416
+
+...
+
+...
+
+...
+204
+136
+
+...
+
+addr! int
+
+addr! char
+
+1646954700
+
+Figure 4. Inter-type aliasing
+rewrite rules connecting the models, that avoids reasoning aboutthis kind of aliasing when programs remain in the type-safe fragment of C.In this type-safe fragment, a convenient model for a type-safe
+language would be based on explicit multiple typed heaps, onefor each language type, e.g. addr
+
+* char, addr * short. Whilethis avoids the problem of inter-type aliasing and greatly simplifies
+
+proofs, it does not allow us to escape the type-safe world. The liftfunction provides a view of multiple typed heaps, but values in a
+lifted 0a heap change when the heap is updated through a 0b ptr.However, inside the type-safe fragment, there is an implicit
+mapping between memory locations and types, and heap derefer-ences respect this mapping. We introduce this mapping as an additional state component, and refer to it as the heap type description.
+
+heap-typ-desc = addr * typ-tag option
+The heap type description is a history variable, and as such doesnot affect the semantics of our programs. Since in C this mapping
+
+cannot be extracted from the source code, the program verifieradds proof annotations that update the heap type description. The
+overhead of these annotations is very low relative to the proofeffort because the intended type for a region of memory changes
+infrequently--mainly for alloc and free.The heap type description is partial, since it only maps memory
+actually used by the program. Each value representation has the
+typ-tag corresponding to its type stored at the base address. Therest of the heap footprint of the value is also mapped, but with
+
+a None value padding instead of a tag, making heap validity, asdefined below, monotonic, a useful property in the development
+of the separation logic embedding. Without padding we would alsohave the additional requirement of a well-formedness invariant [28]
+on the heap type description.We write d
+
+,g |=t p to mean that the pointer p is valid in heaptype description d with guard g. The definition is straightforward:
+
+valid-footprint d x t n j d x = bbtcc ^
+
+(8 y. y 2 {x + 1..+n - 1} -! d y = bNonec)
+
+d,g |=t p j valid-footprint d (ptr-val p) (typ-tag TYPE(0a))
+
+(size-of TYPE(0a)) ^g p
+
+The guard g strengthens the assertion to restrict validity based onthe language's pointer dereferencing rules. For example, alignment
+
+...heap_mem
+204
+136
+
+42
+98
+
+7
+1
+0
+0
+34
+65
+20
+
+...
+
+size_of TYPE(int)
+
+...
+!int_tag"None
+
+None
+None
+
+!char_tag"
+
+!int_tag "
+
+None
+
+...
+
+heap_typ_desc
+
+None
+Nonesize_of TYPE(int)
+
+size_of TYPE(char)
+
+a
+c
+
+d
+
+align_of TYPE(int)
+align_of TYPE(int)
+align_of TYPE(int)
+
+align_of TYPE(char)
+align_of TYPE(char)
+align_of TYPE(char)
+align_of TYPE(char)
+align_of TYPE(char)
+align_of TYPE(char)
+align_of TYPE(char)
+align_of TYPE(char)
+align_of TYPE(char)
+align_of TYPE(char)
+align_of TYPE(char)
+align_of TYPE(char)
+
+b
+
+Figure 5. Example heap state
+can be captured with d,ptr-aligned |=t p. In the interests of conci-sion, we occasionally omit g hereafter.
+
+An example heap memory and type description state is given inFig. 5. Here htd
+
+,ptr-aligned |=t a and htd,ptr-aligned |=t c, but~ htd
+,ptr-aligned |=t b and ~ htd,ptr-aligned |=t d. The pointerb
+::char ptr is not valid because the correct heap footprint is missingfrom the heap type description, and d
+
+::int ptr is not valid because itis not aligned.
+
+The ptr-tag function updates a heap type description so that itencompasses a pointer, i.e. g p
+
+=) ptr-tag p d,g |=t p:
+
+ptr-clear p n d j d({ptr-val p + 1..+n - 1}{7!}None)
+ptr-set p t d j d(ptr-val p 7! btyp-tag tc)
+
+ptr-tag (p::0a::c-type ptr) j
+ptr-set p TYPE(0a::c-type) ffi ptr-clear p (size-of TYPE(0a::c-type))
+
+Heap type description update annotations are written in C com-ments. The syntax AUXUPD takes a guard and a heap type description state transformer as a parameter. E.g. to indicate that thelocation at p now is the value of a valid pointer of type addr ptr, we
+write /** AUXUPD: (g, ptr-tag ('p::addr ptr)) */.The following two-stage lifting process provides an abstract
+heap view for proofs:1. The first stage results in an intermediate heap-state:
+
+heap-state = addr * typ-tag option * byte
+The function lift-state filters out locations that are None in the heaptype description, removing values that should not affect the final
+
+lifted typed heaps. Equality between lifted heaps is then modulothe heap type description domain.
+
+lift-state j *(h, d) x. case d x of None ) None | btc ) b(t, h x)c
+Lifted validity and heap-list are expressed on heap-states withd
+
+,g |=s p and heap-list-s respectively in the obvious way.2. The second lifting stage results in typed lifted heaps again.
+
+The lift-typ-heap function restricts the heap domain so that theonly values affecting the resultant heap are inside the heap footprint
+of valid pointer values. Equality is now modulo pointer validity.
+lift-typ-heap g s j (from-bytes ffi heap-list-s s (size-of TYPE(0a)) ffi
+
+ptr-val)_{p | s,g |=s p}
+
+Note that it is not sufficient to just restrict the domain to addressespossessing the alignment of the lifted heap's type in order to avoid
+overlapping value representations, since the alignment of a type canbe smaller than its footprint size: in our semantics the relationship
+between alignment and size is given by align-of t dvd size-of t.
+
+...heap_mem
+204
+136
+
+42
+98
+
+7
+1
+0
+0
+34
+65
+20
+
+...
+
+...
+!int_tag"None
+
+None
+None
+
+!char_tag"
+
+!int_tag "
+
+None
+
+...
+
+heap_typ_desc
+
+None
+None
+
+...
+(!int_tag ",204)
+
+(None,136)
+
+(None,42)
+(None,98)
+
+-
+(!char_tag",1)
+
+(!int_tag ",0)
+
+(None,65)
+
+-
+...
+
+(None,34)
+
+(None,0)
+
+-
+-
+
+...
+
+...
+
+-
+-
+-
+
+addr# int
+
+addr# char
+
+1646954700
+
+-
+-
+-
+-
+
+-
+-
+1
+
+-
+
+...
+
+...
+lift_state lift_typ_heap
+
+heap_state
+
+Figure 6. Two-stage lifting
+The two stages, shown in Fig. 6, are combined with lifto/ :
+
+lifto/ g j lift-typ-heap g ffi lift-state
+Like lift, lifto/ is polymorphic and returns a heap abstraction of type0a typ-heap
+
+= 0a ptr * 0a. The program text itself can continue touse the functions
+
+lift and heap-update, while pre/post conditionsand invariants use the stronger
+
+lifto/ to make more precise state-ments. The following conditional rewrite connects the two levels:
+
+lifto/ g (h, d) p = bvc =) lift h p = v
+We have proved two further significant rewrite rules that supportreasoning about the effects of heap updates on
+
+lifto/ . The first rulestates how an 0a ptr update affects an 0a typ-heap, the second rule
+
+shows that an 0a ptr update does not affect a 0b typ-heap if 0a isdifferent from 0b:
+
+d,g |=t p =) lifto/ g (heap-update p v h, d) = lifto/ g (h, d)(p 7! v)
+[[d,g0 |=t p; typ-tag TYPE(0a) 6= typ-tag TYPE(0b)]]
+=) lifto/ g (heap-update p v h, d) = lifto/ g (h, d)
+
+These, added to the default simplification set with other heap-related lemmas, do not require manual application. The
+
+typ-tag
+TYPE(0a) 6= typ-tag TYPE(0b) condition can be resolved auto-matically, as long as the type tag definitions for language types are
+
+also in the simplification set.For any program that respects the heap type description, we can
+thus automatically simplify away the fact that the heap is sharedand pretend to work on multiple typed heaps. At the same time,
+we can still capture the semantics of type-unsafe operations. In theunsafe case, things are no longer automatic, and we require new
+rules to be proven in terms of the underlying lift and heap-update,as was previously required anyway.
+
+5. Separation Logic
+The previous section presents a proof technique that tames inter-type aliasing. However, the problem of intra-type aliasing remains,
+
+where two valid same-typed pointers may have identical values.Dealing with this often requires explicit anti-aliasing invariants
+on typed heaps, a problem that has been recognised in the litera-ture [8]. Separation logic [16, 25] provides an approach in which
+
+anti-aliasing information may be expressed implicitly in assertions,potentially simplifying specifications and proofs. In this section we
+present a development of separation logic based on the precedingmemory model.
+
+5.1 Shallow embedding
+Below we describe a shallow embedding for separation assertions,where the semantic constructs of assertions are translated to HOL,
+
+as opposed to a deep embedding where the syntax of assertionswould be considered a distinct type in the logic. There is a tradeoff
+involved in the choice of embedding approach--shallow embed-dings are often more pragmatic and expressive, while deep embeddings allow for language metatheory reasoning and proof optimi-sations [33]. We opt for the former since our focus here is on the
+verification task.We model separation assertions as predicates on heap-states,
+applied in assertions of the verification environment to the resultof the first lifting stage of Sect. 4.2. For example, a loop invariant with the separation assertion P and heap memory and typedescription state in the variables h and d respectively is written
+{| P (lift-state ('h,'d)) |}, which we abbreviate as {|Psep|}.As in the development of Reynolds we have an empty heap
+predicate:
+
+\Lambda  = (*s. s = empty)
+The definition of the singleton heap assertion is more involved inour embedding, and is provided below. p 7!
+
+g v asserts that the heapcontains exactly one mapping matching the guard g, at the location
+
+given by pointer p to value v.
+
+p 7!g v = *s. lift-typ-heap g s p = bvc ^
+
+dom s = {ptr-val p..+size-of TYPE(0a)}
+
+The guard is an addition to the usual p 7! v and serves the samepurpose as in Sect. 4.2, i.e. strengthening the assertion to aid in
+
+discharging guard proof obligations.There are two significant separation connectives, conjunction
+and implication:
+
+s0 ? s1 = dom s0 " dom s1 = ;s
+
+0 ++ s1 = *x. case s1 x of None ) s0 x | byc ) bycP ^* Q = *s. 9 s
+
+0 s1. s0 ? s1 ^ s = s1 ++ s0 ^ P s0 ^ Q s1P -!* Q = *s. 8 s0. s ? s0 ^ P s0 -! Q (s ++ s0)
+
+The definitions are standard, with the intuition behind separationconjunction that
+
+(P ^* Q) s asserts that s can be partitioned into twosubheaps such that P holds on one subheap and Q on the other. This
+
+allows for predicates on the heap to be written that convenientlyinclude anti-aliasing information.
+
+Some additional mapping assertions are useful:
+
+sep-true = *s. Truep 7!
+
+g - = *s. 9 v. (p 7!g v) sp ,!
+
+g v = p 7!g v ^* sep-truep ,!
+g - = *s. 9 x. (p ,!g x) s
+
+The standard commutative, associative, and distributive propertiesapply to the connectives, and we have formalised pure, intuitionistic, domain, and strictly exact assertions and their properties [25].We require a stronger definition of the singleton heap assertion for
+it to be strictly exact. Some of these properties are routinely used inproofs and have been grouped in simplification sets and/or added
+to the default simplification set.Since this is a shallow embedding, standard HOL connectives
+and quantifiers can be freely mixed with the separation connectives,e.g.
+
+*s. P s ^ (Q ^* R) s.A key feature of this embedding is that it avoids the problem
+
+of skewed sharing [25]. This is essentially the problem of inter-type aliasing in separation logic. An approach like ours, where a
+history variable is introduced, was suggested as a future direction
+
+for separation logic by Reynolds. We have developed this, have amachine-checked formalisation and have deployed it in real-world
+verification examples (see Sect. 6).Another notable gain from our development is the harnessing
+of Isabelle's type inference to avoid explicit type annotations inassertions. Since language types are assigned Isabelle types and
+pointer types are derived from these, asserting that p 7! v, where pis a program variable automatically constrains the type of v.
+
+5.2 Lifting proof obligations
+Our verification condition generator applies weakest preconditionrules to transform Hoare triples to HOL goals that can then be
+
+solved by applying theorem prover tactics. In Sect. 4.2, rewriteswere given that could automatically lift the raw heap component
+of these proof obligations, and in this section we provide rulesthat allow the low-level applications of
+
+lift and heap-update tobe expressed in terms of separation assertions. This is desirable
+
+as reasoning can then use the derived rules for these assertions atthe separation logic level, whereas the alternative of unfolding the
+definitions produces a massively more complex goal and proof.The approach taken here is quite different to the usual separation Hoare logic proof technique employed in the literature, wherea new Hoare logic is developed based on separation logic and individual rules are applied at the Hoare logic level. The advantage ofour approach is two-fold: we avoid having to manually apply Hoare
+rules, a task easily automated, and can take advantage of an existingverification framework and condition generator. On the other hand,
+applying the rules in this section requires the program verifier tounderstand the relationship between components of the HOL goals
+and the original program since this structure is lost during verifica-tion condition generation.
+
+The following rule connects lift and separation mapping asser-tions:
+
+(p ,!g v) (lift-state (h, d))
+
+lift h p = v
+
+An example of how this may be used is the Hoare triple{|
+
+(p ,! x ^* Q)sep|} a = *p + *p {|a = 2 * x|}.The resulting proof obligation
+
+(p ,! x ^* Q) (lift-state (h, d)) =) 2 * lift h p = 2 * xrequires the value of x in terms of
+
+lift h p or vice versa. By derivingfrom the assumption of the goal that
+
+(p ,! x) (lift-state (h, d))using normal rules of separation logic, the above rule can be applied
+
+to solve the goal.Heap update dereferences produce proof goals of the form
+P (lift-state (h, d)) =)
+
+Q (lift-state (heap-update p0 v0 (heap-update p1 v1
+
+(heap-update p*** v*** (heap-update pn vn h))),d))To reduce
+heap-updates to a separation assertion on the originalstate we first require a new separation predicate g `
+
+s p:
+
+g `s p j *s. s,g |=s p ^ dom s = {ptr-val p..+size-of TYPE(0a)}
+
+This is related to the idea of the singleton heap predicate p 7!g -,but the implication only works in one direction,
+
+(p 7!g v) s =) (g`
+s p) s, since it is possible to have both lifto/ g s p = None and avalid footprint at p.
+
+The following rules allow for the reduction of heap-updates:
+
+(g `s p ^* (p 7!g v -!* P)) (lift-state (h, d))
+
+P (lift-state (heap-update p v h, d))
+
+(g `s p ^* P) (lift-state (h, d))
+(p 7!g v ^* P) (lift-state (heap-update p v h, d))
+
+These rules are analogous to the backwards and global reasoningHoare logic mutation rules [25]. The first rule provides a weakest
+
+precondition style rule that will match any separation assertion,while the second rule may be used on goal assertions that can be
+manipulated into the matching form.When the heap type description is modified with
+
+ptr-tag theresulting goal needs to be reduced in a similar manner. We provide
+
+a rule for this that establishes separation validity from sep-cut,another additional separation predicate.
+
+sep-cut simply asserts thatthe locations in the heap-state domain are the supplied interval.
+
+sep-cut x y j *s. dom s = {x..+y}
+
+(sep-cut (ptr-val p) (size-of TYPE(0a)) ^* P) (lift-state (h, d))g p
+
+(g `s p ^* P) (lift-state (h, ptr-tag p d))
+The shallow embedding gives us the flexibility to add separationpredicates that express information about a region of memory at
+
+different levels of abstraction, from p 7!g v to sep-cut. Once theabove reduction rules are applied the reasoning can continue using
+the standard rules of separation logic without requiring additionalproof goals or side-conditions.
+
+In deriving these rules we have primarily been concerned withsoundness, which we are forced to show prior to Isabelle admitting
+the rules. Our focus on real-world verification examples has causedus to pay rather less attention to the completeness of our system,
+particularly as we know that we can always drop down to the lowermore concrete levels if required. However, completeness results
+have been explored elsewhere in the literature [16, 34].
+5.3 Frame rule
+The separation frame rule [34] is often seen as important to scal-ability. It allows for deriving a global specification from a local
+
+specification of a program's behaviour, with an arbitrary conjoinedseparation assertion on a part of the heap preserved by the program.
+In our embedding, this rule would have the form:
+
+{|Psep|} c {|Qsep|}{|
+(P ^* R)sep|} c {|(Q ^* R)sep|}
+
+Unfortunately, such a general rule cannot be expressed in a shallowembedding since (i) the state-space type is program dependent
+
+and (ii) c is an arbitrary program in the underlying verificationframework for which this rule may not be true. It is however
+possible to prove this rule for specific programs and state-spaces,and in our development of the frame rule we automate and make
+generic this process for our C subset.We make further use of type classes to define 0a
+
+::heap-state-typ,which provides access and update functions for the heap state and
+
+heap type description. A concrete program's state-space is instanti-ated as a member of this type class using automatic Isabelle/HOL
+tactics. The frame rule can then be expressed on programs c with astate-space in 0a
+
+::heap-state-typ as:
+
+{|Psep|} c {|Qsep|} mem-safe c{|
+
+(P ^* R)sep|} c {|(Q ^* R)sep|}
+
+The mem-safe c assumption is required as the second problemarises from the dependence of this rule on a form of memory
+
+safety. In order to prove soundness it is helpful that a programgenerates a guard failure if it either (i) modifies the heap state or
+heap type description outside of the initial domain of the heap typedescription or (ii) depends on the heap type description outside
+this domain in any expression. This is not the case for the normaloutput of the C translation stage, since guards are only generated to
+prevent undefined behaviour as our C semantics understands it.To show
+
+mem-safe c we insert additional guards for memorysafety, e.g. for a heap update dereference asserting that the lvalue's
+
+heap footprint is contained entirely in the heap type description's
+
+word_t reverse(word_t *i) {
+
+word_t j = 0;
+while (i) {
+
+word_t *k = (word_t*)*i;
+*i = j;
+j = (word_t)i;
+i = k;
+}
+return j;
+}
+
+Figure 7. In-place list reversal
+
+domain. It should be noted that we do not require type safety, nordo we require this form of memory safety for most expressions
+as only heap type description updates may depend on the heaptype description, i.e. the output of the C translation stage does not
+feature heap type description accesses except in such updates.With the generated guards in place, Isabelle discharges the
+mem-safe c proof obligation automatically. The additional mem-ory safety proof obligations obtained from the verification condition generator can be discharged with the aid of of a strengthenedprecondition asserting that the required locations are a subset of the
+heap type description's domain.The above presentation of the frame rule is somewhat simplified
+in that P, Q and R are not functions of the local variable state. Wehave also derived the more general rule where they are and R does
+not depend on variables modified by c.
+
+6. Case Studies
+This section presents two case studies that demonstrate the sup-port of abstract and low-level reasoning in our setting. Since we
+
+have formalised both classical Burstall/Bornat-style pointer rea-soning and separation logic in the same framework, we can give
+a meaningful comparison of their applicability. While our resultssupport the folklore view that separation logic is well suited for
+specification, but less convenient for verification, we find that thedifference becomes smaller for the larger, more realistic case study.
+Since proofs can be checked, but specifications need to be under-stood, this advocates the use of separation logic for more complex
+verification tasks.
+6.1 List reversal
+This subsection shows a small example program--in-place reversalof a list--with simple, abstract reasoning. The list is somewhat
+
+unusual in that it has no content but the pointer values themselves.Lists like these are used in OS code for instance, where they are
+loosely part of larger data structures. Mehta and Nipkow [19] usethe same example in their more abstract setting. We achieve the
+same style of reasoning and specification with almost the samedegree of automation.
+
+Fig. 7 shows the code (where word t is unsigned int). Eventhough the program is very simple, it already makes use of unsafe
+pointer operations.
+Classical setting
+The pre/post specification of this program in a classical setting(without separation logic) is:
+
+8 zs. {|list (lifto/ H) zs 'i|}'reverse-ret
+
+:== PROC reverse('i){|
+list (lifto/ H) (rev zs) (Ptr 'reverse-ret)|}
+
+The idiom 'reverse-ret :== PROC reverse('i) is the standardform for procedure specification in Schirmer's environment. The
+
+variable reverse-ret is automatically generated and makes the returnvalue of function reverse available to the postcondition. We write
+H = ('h, 'd) for the heap and type description in the current state.The predicate
+
+list relates the heap pointer structure to abstractlists. It takes a heap of word
+
+32 values, a list of word32 values, andthe start pointer of the list as arguments. Our definition is analogous
+
+to the one in Mehta and Nipkow [19] (we additionally deal withheap partiality):
+
+list h [] i = i = NULL
+list h (x*xs) i = 9 j. ptr-val i = x ^ x 6= 0 ^ h i = bjc ^ list h xs (Ptr j)
+
+The loop invariant again is almost the same as in Mehta andNipkow. We use
+
+distinct to say that the list zs does not containduplicate addresses and
+
+rev to reverse the abstract HOL list:{|9
+
+xs ys.
+list (lifto/ H) xs 'i ^
+list (lifto/ H) ys (Ptr 'j) ^ rev zs = rev xs @ ys ^ distinct (rev zs)|}
+
+As mentioned above, the proof of the 3 verification conditionsgenerated for this program is almost completely automatic (5 lines
+
+of proof script). However, this has to be viewed in the context ofa careful setup of automated simplification rules for the abstraction predicate list that again we share with Mehta and Nipkow. Itconsists of 13 lemmas, 12 of which are proven automatically. All
+low-level guards were discharged automatically as well; they didnot play any role in the verification of this example.
+
+Separation logic
+The specification of the same program in separation logic is sim-ilar on the pre/post level, but the abstraction predicate is defined
+
+differently.8
+
+zs. {|(list zs 'i)sep|}'reverse-ret
+
+:== PROC reverse('i){|
+(list (rev zs) (Ptr 'reverse-ret))sep|}
+
+list [] i = *s. i = NULL ^ \Lambda  s
+list (x*xs) i = *s. i = Ptr x ^ x 6= 0 ^ (9 j. (i 7! j ^* list xs (Ptr j)) s)
+
+The invariant is a bit shorter, because the separating conjunctiontakes care of distinctness:
+
+{|9 xs ys. (list xs 'i ^* list ys (Ptr 'j))sep ^ rev zs = rev xs @ ys|}
+
+The proof remains easy, but is not automatic any more and re-quires some manual application of rules for separating conjunction.
+
+This is not surprising, since separating conjunction is an existentialstatement which usually leads to manual intervention. The proof
+of the 3 verification conditions comes to a total of 32 lines, whichwe might be able to improve with specialised tactics for separation
+logic connectives. For example, one of the low-level guards was notsolved automatically, because the required precondition was under
+a separating conjunction and had to be extracted manually. Afterthis, the proof was automatic.
+
+In the separation logic case, there was no specific automationsetup for the list data structure apart from the lemma
+
+list xs NULL
+= (*s. xs = [] ^ \Lambda  s) which brings the total proof effort for thisexample to 62 lines, as opposed to 89 lines in the classical setting.
+
+Most of these 89 lines could be reused for programs on the samedata structure, though, which is not the case for the separation logic
+proof.
+
+6.2 The L4 kernel memory allocator
+The case study presented in this section concerns the verificationof the kernel memory allocator of the L4 microkernel with and
+
+without separation logic in Isabelle/HOL. At the OS kernel level,C library functions like
+
+malloc and free are not available yet,but have to be provided internally. Since this code is run in the
+
+kfree_list
+
+KMC
+
+NULL
+........................................ ........
+
+Figure 8. Management data structure of the L4 chunk allocator
+privileged mode of the hardware, it is directly security critical.It is also the component that makes most critical use of unsafe
+C operations (although other tricks like xor of pointers are usedelsewhere in L4). Three functions define the interface of this kernel
+memory allocator:
+
+void init(void *start, void *end)
+void free(void *address, word t size), and
+void *alloc(word t size).We have verified
+
+alloc and free, but only have space to show
+alloc; init consists of a call to free. The full proof document forthis case, including code and invariants is available online [29]. The
+
+functions are not very large, but the fact that the originals containmore than 50% tracing and debugging code indicates that they were
+not easy to get right. We did not find any clear bugs in the codeduring verification which is encouraging for a system with several
+years of deployment. We did find two preconditions to free thatare not immediately obvious: the address must be word-aligned
+(because it is used as a word pointer), and the sum of the addressand the size must not overflow. If
+
+free is only used with valuesproduced by
+alloc, and init is used with values as in L4, theseconditions will hold.
+
+Currently, L4 is distributed in C++, although no essential useof C++ features is made apart from using classes to structure the
+code. For a number of reasons (not only verification), we are port-ing L4 to C. The source code that is verified is taken from the
+L4Ka::Pistachio distribution, ported, configured for the x86 archi-tecture, and preprocessed. The manual porting is not soundness
+critical as it is the result of the translation that will eventually runtogether with the rest of the C port, neither is the configure nor preprocessing part. If they are merely deterministic, we verify exactlywhat the compiler sees as input.
+
+Fig. 8 shows the internal data structure that is used to managememory. It is a NULL terminated, singly linked list of chunks of
+memory of a fixed size KMC (1024 bytes in this case) starting withthe global variable
+
+word t *kfree list. The first 4 bytes of eachfree memory block are used to point to the next one. The blocks are
+
+often, but not always, adjacent in memory.The implementation of
+
+alloc first searches for a contiguousblock of memory of the right size that is correctly aligned. It then
+
+removes this block from the free list, zeroes out the memory region,and returns a pointer to it. If no such block is found, the kernel has
+run out of memory and alloc returns NULL. Fig. 9 shows theinput to the theorem prover with the invariant annotations removed
+and formatting adjusted for the presentation.
+Classical setting
+The data abstraction predicate is very similar to the simple list ofSect. 6.1:
+
+k-list h s e [] = s = e
+k-list h s e (p*ps) = s = Ptr p ^s 6= e ^ (9 s0. h s = bs0c ^ k-list h (Ptr s0) e ps)
+
+For the specification of alloc we first need to define what thisoperation does in the abstract. For this, we are not interested in the
+list structure itself, but just in the set of free memory chunks:
+
+void * alloc(word_t size) {
+
+word_t* prev, curr, tmp;
+word_t i;
+size = size >= 1024 ? size : 1024;
+for (prev = (word_t*) &kfree_list, curr = kfree_list;
+
+curr;
+prev = curr, curr = (word_t*) *curr) {
+if (!((word_t) curr & (size - 1))) {
+
+tmp = (word_t*) *curr;
+for (i = 1; tmp && (i < size / 1024); i++) {
+
+if ((word_t) tmp != ((word_t) curr + 1024*i)) {
+
+tmp = 0;
+break;
+};
+tmp = (word_t*) *tmp;
+}
+if (tmp) {
+
+*prev = (word_t) tmp;
+for (i = 0; i < (size / sizeof(word_t)); i++) {
+
+/** AUXUPD:
+
+(ptr-safe ('curr +p 'i) 'd, ptr-tag ('curr +p 'i) 'd) */
+
+curr[i] = 0;
+}
+return curr;
+}
+}
+}
+return 0;
+}
+
+Figure 9. alloc after configure and preprocessing.
+
+free-set hp s e F = 9 ps. k-list hp s e ps ^ distinct ps ^ F = set ps
+alloc p l F = F - chunks p (ptr-val p + (l - KMC))
+
+The function chunks p q in the definition above refers to a setof locations starting with pointer p, ending with address q, that
+
+consists of adjacent memory chunks only. With this, the pre/postspecification of
+
+alloc is:8
+
+F oe. {|oe. free-set (lifto/ H) (ptr-coerce kfree-list-addr) NULL F ^aligned F ^
+
+KMC |u 'size|}'alloc-ret
+:== PROC alloc('size){|
+('alloc-ret 6= NULL -!
+
+free-set (lifto/ H) (ptr-coerce kfree-list-addr) NULL
+
+(alloc 'alloc-ret (max oesize KMC) F)) ^
+('alloc-ret = NULL -! H = oeH)|}
+
+The precondition requires that kfree-list-addr describe some setof free memory chunks F and that all addresses in F as well as the
+
+requested size be aligned with KMC. The postfix -addr refers to thefact that the code takes the address of the global variable kfree-list;
+kfree-list itself can be accessed by a heap lookup at kfree-list-addr.That means, kfree-list-addr is of type word
+
+32 ptr ptr. Since k-listexpects a word
+32 ptr, we use the function ptr-coerce to castit (as does the C code). Alignment is expressed using the nonoverflowing version of divisibility on finite integers with x |u y
+= (unat x dvd unat y) and aligned F = (8 p2F. KMC |u p). Thepostcondition refers to the pre-state
+
+oe for size and the heap.The aligned predicate could be made part of
+
+k-list. We havenot done so here, because
+free does not require this condition(although
+free preserves it if the base address is aligned with
+KMC). It is interesting to note that the code, while it tests the sizealignment with an assertion (removed by the preprocessor here),
+
+does not check base address alignment.The postcondition has two cases: either some memory was
+returned ('alloc-ret 6= NULL) or the kernel ran out of memory('alloc-ret
+
+= NULL). In the latter case, we claim that nothingchanges in the heap, including the global variable kfree-list. In the
+
+former case, we say that the new set of free memory chunks is thesame that you would get by evaluating the abstract
+
+alloc.This specification is not completely satisfying. In the success
+
+case, we would ideally like to know that nothing else in the heap
+
+changes. This "nothing else" is hard to nail down formally. The setF as used in the specification above is too loose, it would miss the
+heap changes caused by zeroing out the freshly allocated memory.Separation logic will handle this more naturally below.
+
+The proof of the verification conditions for alloc takes about350 lines of proof script with 130 lines of specific supporting
+lemmas and a further 1400 lines of lemmas shared between and
+alloc and free in classical and separation logic settings.
+
+Separation logic
+The separation logic version of the abstraction predicate is thefollowing.
+
+k-lists s e [] = *h. s = e ^ \Lambda  h
+k-lists s e (p*ps) = *h. (s = Ptr p ^ s 6= e) ^(9 s0. (block s s0 ^* k-lists s0 e ps) h)
+
+block s s0 =
+
+*h. KMC |u ptr-val s ^
+
+(s ,! ptr-val s0) h ^
+sep-cut (ptr-val s) KMC h
+
+fsets s e F = *h. 9 ps. k-lists s e ps h ^ F = set ps
+free-sets s e F = *h. 9 x. (ptr-coerce s 7! ptr-val x ^* fsets x e F) h
+
+The separation logic specification of alloc is then:8
+
+F oe. {|oe. (free-sets kfree-list-addr NULL F)sep ^ KMC |u 'size|}'sep-alloc-ret
+
+:== PROC sep-alloc('size){|
+('sep-alloc-ret 6= NULL -!
+
+(free-sets kfree-list-addr NULL
+
+(alloc 'sep-alloc-ret (max oesize KMC) F) ^*
+zero 'sep-alloc-ret (max oesize KMC))sep) ^
+('sep-alloc-ret = NULL -!
+
+(free-sets kfree-list-addr NULL F)sep)|}
+
+The precondition here is simpler than in the classical setting.Since alignment is built into
+
+fsets using block, we only need dataabstraction and that the requested size is aligned to
+
+KMC.The postcondition has the same two cases that occur in the classical setting. If we have run out of memory ('alloc-ret = NULL),we now only say that F does not change (and, by frame rule, nothing else in the heap changes either).In the success case ('alloc-ret 6
+
+= NULL), we still state that thenew set of free memory chunks is the same that you would get
+
+by evaluating the abstract function alloc. Additionally, we nowexplicitly say that the memory returned is a separate, contiguous
+block of the right size, filled with zero.
+
+zero p n = zero-block (ptr-coerce p) (unat (n div 4))
+zero-block p 0 = \Lambda 
+zero-block p (Suc n) = (p +p of-nat n) 7! 0 ^* zero-block p n
+
+This zero-block is the sub-formula that can directly be used byclient code--it describes the freshly allocated memory. The postcondition is stronger than the one in the classical case.The proof of the verification conditions induced by this specification takes about 650 lines of proof script with 750 lines of sup-porting lemmas (plus the 1400 lines shared with the other parts of
+the verification). This corresponds to 136 lines of code in the orig-inal and 30 lines of code after configure and preprocessing. The
+effort for the separation logic case was higher than in the classi-cal setting, but not significantly so, and we have acquired a much
+stronger postcondition that was difficult to state before. In the sep-aration logic case, we see potential for improvement in automation.
+Much of the additional proof text was verbose, but not hard.It should be noted that we chose
+
+alloc because it constitutes theworst possible case for this framework: almost every pointer access
+
+is unsafe and needs to be reasoned about. In other frameworks thisis impossible or leads to unsoundness if applied na"ively, here it
+is merely more work than usual. Once done, client code does not
+
+need to go to the same level of detail to use the pre/post conditionsprovided. The complexity is hidden by the framework.
+7. Related Work
+The directly relevant work in the literature arises from efforts toverify properties of pointer programs. There are two directions that
+
+are taken--Hoare logic oriented verification in which partial/totalcorrectness and completeness is the primary goal, with decidability
+or the existence of an efficient algorithmic procedure consideredless important, and the opposite approach that strives for automation, at the expense of only being able to cope with limited languagefragments or properties, the domain of software model checking,
+shape analysis, and separation logic decision procedures.The idea to use separate heaps for separate pointer types and
+structure fields in Hoare logic goes back to Burstall [9]. On the ab-stract level, our multiple typed heaps formalisation is most closely
+related to Bornat [8] and Mehta and Nipkow's [19] work in Is-abelle, although we exploit Isabelle's type inference in a different
+way. We ground this abstract and efficient reasoning in a detailedC semantics that is directly applicable to concrete programs. Our
+use of HOL types is similar to that of Blume's [7] encoding ofthe C type system in ML that utilises phantom typing to express
+pointer types and operators for the purpose of a foreign-functioninterface. The Caduceus tool [12] supports Hoare logic verification of C programs, including the type-safe part of pointer arith-metic at this level. We increase the applicability of program verification drastically by supporting the unsafe part as well. Separationlogic [16, 25] has been mechanised in theorem proving systems
+previously [31, 18]. Again, we provide soundness for program ver-ification by grounding these abstract, idealised models in a concrete
+semantics. We are able to support abstract separation logic notationand unsafe, low-level pointer manipulations at the same time.
+
+On the concrete level, Norrish [24] presents a very thorough anddetailed memory model of C. Our formalisation has similarities to
+exploratory work on C++ in the VFiasco project [15]. The lattertwo provide a more precise machine model, while the abstractions
+of the previous paragraph allow for more convenient and efficientreasoning. Our model provides a unified view of both.
+
+The SLAM [2] and BLAST [14] software model checkers ap-ply predicate abstraction and counter-example driven refinement to
+check some safety properties of C programs automatically, such ascorrect API usage in device drivers. This is not as useful when verifying fundamental system abstractions, such as memory allocation,that do not rely on other interfaces that can be factored out or that
+feature inductively defined data structures with complex invariants.It may be possible to tackle some of the guard proof obligations
+we encounter such as the absence of null pointer dereferences [5]with this technique, and efforts exist that seek to integrate software
+model checking with proof-based verification [11]. Cook et al [10]extend the automatic theorem prover in software model checkers to
+support the pointer operations and bit-level arithmetic described inthis paper by translating C to propositional logic. Our translation is
+substantially different, taking advantage of HOL's expressivenessand type system, intended to better support interactive proof.
+
+Shape analysis [20, 26] and separation logic decision proce-dures [3] can show some structural invariants, such as the absence
+of loops in linked lists. At this point in time they tend to be spe-cialised for limited language fragments or data structures that either do not meet our needs or do not provide sufficient benefit tooffset the implementation effort, but there are promising developments that may improve this situation [1]. The Hob [35] frameworktakes the refinement view of verification and allows some of these
+analyses to be used on independent modules or at higher-levels ofabstraction, where when applied directly they may fail.
+
+Type-safe C variants like CCured [21] take a dual approach tomemory type-safety, by statically detecting safe pointer usage and
+adding runtime checks for those cases where this cannot be verified.These variants have not gained popularity in real-world systems
+implementations, due to a combination of runtime overheads andthe restrictions imposed.
+
+Our longer-term goal is a verified kernel and earlier work ontheorem proving based OS verification includes PSOS [22] and
+UCLA Secure Unix [30]. A lack of mature mechanised theoremproving technology meant that while designs could be formalised,
+full implementation proofs were not achieved. Later, KIT [4], partof the CLI stack, describes verification of process isolation properties down to object code level, but for an idealised kernel with farsimpler and less general abstractions than modern microkernels.
+The VeriSoft project [13] is attempting to verify a whole systemstack, including hardware, compiler, applications, and a simplified
+microkernel called VAMOS that is inspired by, but not very closeto, L4. Most closely related to our case study is the successful verification of the kernel memory allocator from the teaching-basedTopsy operating system by Marti et al [18] in Coq. The major difference is the heavy use of pointer arithmetic and casting in L4'smemory allocator that we are able to handle confidently and conveniently due to our more detailed semantic model and type encoding.Marti et al model C memory as nat ) int and translate the code
+manually into their tool. Although our model is more detailed, ourproofs are significantly shorter.
+
+8. Future Work and Conclusion
+Apart from supporting more language features which is underway,we see the main directions for future work as automation and integration. Combining automatic techniques such as decision proce-dures for separation logic and bit vector arithmetic with interactive
+proof, as exemplified by Hob [35], should lead to improved pro-ductivity and reusability without sacrificing the range of programs
+or properties we consider.We have presented a unified, formal framework for the verification of real C programs in an interactive proof assistant withoutoversimplifications or strong restrictions on the language. Our work
+is a novel combination of concepts that so far have only been wellunderstood in isolation: Hoare logic verification, separation logic,
+interactive theorem proving, detailed dynamic and memory modelsfor the C programming language, and low-level pointer operations.
+
+We have demonstrated with two case studies that reasoningon both the abstract and the detailed level is well supported. Our
+results indicate that while separation logic might not provide theamount of direct automation that we are used to, this difference
+becomes smaller for larger verification examples.By grounding separation logic in our memory model, we make
+verification of systems level code practical: proof obligations relat-ing to issues such as inter-type aliasing disappear when the code to
+be verified is working within type-safe bounds. When the sourcecode is not so well-behaved, the framework allows verifiers to drop
+to the lower level of multi-byte values and their encodings. Thiscontrasts with methodologies that would reject such low-level behaviour as ill-formed, making verification impossible.By importing C code directly into our verification environment,
+and by tying our logical annotations to the C source, we keep aclose connection between the verification and development activities. In particular, we aim to avoid the scenario where the devel-oping code loses its connection with the verification. There is no
+point in verifying code that is not going to be deployed. We hopeour still-nascent methodology, which has verifiers and developers
+touching the same source files, will make the timely production ofverified software possible.
+
+Acknowledgements We thank Kai Engelhardt, Carroll Morgan,Manuel Chakravarty, and Rob van Glabbeek for discussions and
+for reading drafts of this paper. We are also grateful to David Tsaiwho started our work on the memory allocator.
+
+References
+
+[1] Beyond reachability: Shape abstraction in the presence of pointerarithmetic. In 13th International Symposium on Static Analysis (SAS
+
+2006), volume 4134 of Lecture Notes in Computer Science, pages182-203. Springer, 2006.
+
+[2] T. Ball and S. K. Rajamani. Automatically validating temporal safetyproperties of interfaces. In SPIN'01, Workshop on Model Checking of
+
+Software, volume 2057 of Lecture Notes in Computer Science, pages103-122, 2001.
+
+[3] J. Berdine, C. Calcagno, and P. O'Hearn. A decidable fragmentof separation logic. In FSTTCS 2004: Foundations of Software
+
+Technology and Theoretical Computer Science, 24th InternationalConference, Chennai, India, December 16-18, 2004, 2004.
+
+[4] W. R. Bevier. Kit: A study in operating system verification. IEEETransactions on Software Engineering, 15(11):1382-1396, 1989.
+[5] D. Beyer, T. A. Henzinger, R. Jhala, and R. Majumdar. Checkingmemory safety with Blast. In Proceedings of the International
+
+Conference on Fundamental Approaches to Software Engineering(FASE), volume 3442 of Lecture Notes in Computer Science, pages
+2-18. Springer, 2005.
+[6] J. Bloch. Nearly all binary searches and mergesorts are bro-ken.
+
+http://googleresearch.blogspot.com/2006/06/
+extra-extra-read-all-about-it-nearly.html, June 2006.
+
+[7] M. Blume. No-longer-foreign: Teaching an ML compiler to speak C"natively". Electronic Notes in Theoretical Computer Science, 59(1),
+
+2001.
+[8] R. Bornat. Proving pointer programs in Hoare Logic. In R. Backhouseand J. Oliveira, editors, Mathematics of Program Construction (MPC
+
+2000), volume 1837 of LNCS, pages 102-126. Springer, 2000.
+[9] R. Burstall. Some techniques for proving correctness of programswhich alter data structures. In B. Meltzer and D. Michie, editors,
+
+Machine Intelligence 7, pages 23-50. Edinburgh University Press,1972.
+
+[10] B. Cook, D. Kroening, and N. Sharygina. Cogent: Accurate theoremproving for program verification. In K. Etessami and S. K. Rajamani,
+
+editors, Proceedings of CAV 2005, volume 3576 of Lecture Notes inComputer Science, pages 296-300. Springer Verlag, 2005.
+
+[11] M. Daum, S. Maus, N. Schirmer, and M. N. Seghir. Integrationof a software model checker into Isabelle. In G. Sutcliffe and
+
+A. Voronkov, editors, Logic for Programming, Artificial Intelligence,and Reasoning: 12th International Conference, LPAR 2005, volume
+3835 of Lecture Notes in Artificial Intelligence, pages 381-395,Montego Bay, Jamaica, October 2005. Springer.
+
+[12] J.-C. Filli^atre and C. March'e. Multi-prover verification of C programs.In Formal Methods and Software Engineering, 6th International
+
+Conference on Formal Engineering Methods, ICFEM 2004, Seattle,USA, volume 3308 of LNCS, pages 15-29. Springer, 2004.
+
+[13] M. Gargano, M. Hillebrand, D. Leinenbach, and W. Paul. On the cor-rectness of operating system kernels. In Proc. 18th International Conference on Theorem Proving in Higher Order Logics (TPHOLs'05),pages 1-16, Oxford, UK, 2005.
+
+[14] T. A. Henzinger, R. Jhala, R. Majumdar, and G. Sutre. Softwareverification with Blast. In SPIN'03, Workshop on Model Checking
+
+Software, 2003.
+[15] M. Hohmuth, H. Tews, and S. G. Stephens. Applying source-codeverification to a microkernel -- the VFiasco project. Technical Report
+
+TUD-FI02-03-M"arz, TU Dresden, 2002.
+[16] S. S. Ishtiaq and P. W. O'Hearn. BI as an assertion language formutable data structures. In POPL '01: Proceedings of the 28th
+
+ACM SIGPLAN-SIGACT symposium on Principles of programminglanguages, pages 14-26, New York, NY, USA, 2001. ACM Press.
+[17] L4Ka Team. L4 eXperimental Kernel Reference Manual Version X.2.University of Karlsruhe, Oct. 2001.
+
+http://l4ka.org/projects/
+version4/l4-x2.pdf.
+
+[18] N. Marti, R. Affeldt, and A. Yonezawa. Verification of theheap manager of an operating system using separation logic. In
+
+Third workshop on Semantics, Program Analysis, and ComputingEnvironments For Memory Management (SPACE 2006), pages 61-
+72, Jan. 2006.
+[19] F. Mehta and T. Nipkow. Proving pointer programs in higher-orderlogic. Information and Computation, 2005. To appear.
+
+[20] A. Mo/ller and M. I. Schwartzbach. The pointer assertion logic engine.In Proc. ACM SIGPLAN Conference on Programming Language
+
+Design and Implementation, PLDI '01, June 2001.
+[21] G. Necula, J. Condit, M. Harren, S. McPeak, and W. Weimer. CCured:type-safe retrofitting of legacy software. ACM Trans. Prog. Lang.
+
+Syst., 27(3):477-526, 2005.
+[22] P. G. Neumann, R. S. Boyer, R. J. Feiertag, K. N. Levitt, andL. Robinson. A provably secure operating system: The system,
+
+its applications, and proofs. Technical Report CSL-116, SRIInternational, 1980.
+
+[23] T. Nipkow, L. Paulson, and M. Wenzel. Isabelle/HOL -- A ProofAssistant for Higher-Order Logic, volume 2283 of LNCS. Springer,
+
+2002.
+[24] M. Norrish. C formalised in HOL. PhD thesis, Computer Laboratory,University of Cambridge, 1998.
+
+[25] J. C. Reynolds. Separation logic: A logic for shared mutable datastructures. In Proc. 17th IEEE Symposium on Logic in Computer
+
+Science, pages 55-74, 2002.
+[26] M. Sagiv, T. Reps, and R. Wilhelm. Parametric shape analysis via 3-valued logic. In POPL '99: Proceedings of the 26th ACM SIGPLANSIGACT symposium on Principles of programming languages, pages105-118. ACM Press, 1999.
+
+[27] N. Schirmer. Verification of Sequential Imperative Programs inIsabelle/HOL. PhD thesis, Technische Universit"at M"unchen, 2006.
+[28] H. Tuch and G. Klein. A unified memory model for pointers. InG. Sutcliffe and A. Voronkov, editors, 12th International Conference
+
+on Logic for Programming Artificial Intelligence and Reasoning(LPAR-12), volume 3835 of LNCS, pages 474-488, 2005.
+
+[29] H. Tuch, G. Klein, and M. Norrish. Verification of the L4 kernelmemory allocator. Formal proof document.
+
+http://www.ertos.
+nicta.com.au/research/l4.verified/kmalloc.pml, July2006.
+
+[30] B. Walker, R. Kemmerer, and G. Popek. Specification and verificationof the UCLA Unix security kernel. CACM, 23(2):118-131, 1980.
+[31] T. Weber. Towards mechanized program verification with separationlogic. In J. Marcinkowski and A. Tarlecki, editors, Computer Science
+
+Logic - 18th International Workshop, CSL 2004, volume 3210 ofLecture Notes in Computer Science, pages 250-264. Springer, 2004.
+
+[32] M. Wenzel. Type classes and overloading in higher-order logic. InE. L. Gunter and A. Felty, editors, Theorem Proving in Higher Order
+
+Logics'97, volume 1275 of LNCS, pages 307-322. Springer, 1997.
+[33] M. Wildmoser and T. Nipkow. Certifying machine code safety:Shallow versus deep embedding. In K. Slind, A. Bunker, and
+
+G. Gopalakrishnan, editors, Theorem Proving in Higher Order Logics2004, volume 3223 of LNCS, pages 305-320. Springer, 2004.
+
+[34] H. Yang and P. W. O'Hearn. A semantic basis for local reasoning. InFoundations of Software Science and Computation Structure, pages
+
+402-416, 2002.
+[35] K. Zee, P. Lam, V. Kuncak, and M. Rinard. Combining theoremproving with static analysis for data structure consistency. In Int.
+
+Workshop on Software Verification and Validation, 2004.

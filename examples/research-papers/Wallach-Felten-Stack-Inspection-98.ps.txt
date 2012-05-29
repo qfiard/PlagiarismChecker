@@ -1,0 +1,940 @@
+
+
+Understanding Java Stack Inspection
+
+\Lambda 
+
+Dan S. Wallach Edward W. Felten
+dwallach@cs.princeton.edu felten@cs.princeton.edu
+
+Secure Internet Programming LaboratoryDepartment of Computer Science
+
+Princeton University
+
+Abstract
+Current implementations of Java make security decisionsby searching the runtime call stack. These systems have
+attractive security properties, but they have been criticizedas being dependent on specific artifacts of the Java implementation.This paper models the stack inspection algorithm in
+terms of a well-understood logic for access control anddemonstrates how stack inspection is a useful tool for expressing and managing complex trust relationships. Weshow that an access control decision based on stack inspection corresponds to the construction of a proof in thelogic, and we present an efficient decision procedure for
+generating these proofs.By examining the decision procedure, we demonstrate
+that many statements in the logic are equivalent and canthus be expressed in a simpler form. We show that there
+are a finite number of such statements, allowing us to rep-resent the security state of the system as a pushdown automaton. We also show that this automaton may be em-bedded in Java by rewriting all Java classes to pass an additional argument when a procedure is invoked. We callthis
+
+security-passing style and describe its benefits overprevious stack inspection systems. Finally, we show how
+
+the logic allows us to describe a straightforward design forextending stack inspection across remote procedure calls.
+
+1 Introduction
+The Java language [7] and virtual machine [11] arenow being used in a wide variety of applications: Web
+
+\Lambda Copyright 1998 IEEE. Published in the Proceedings of S&P'98,
+3-6 May 1998 in Oakland, California. Personal use of this material ispermitted. However, permission to reprint/republish this material for advertising or promotional purposes or for creating new collective worksfor resale or redistribution to servers or lists, or to reuse any copyrighted
+component of this work in other works, must be obtained from the IEEE.Contact: Manager, Copyrights and Permissions / IEEE Service Center /
+445 Hoes Lane / P.O. Box 1331 / Piscataway, NJ 08855-1331, USA.Telephone: + Intl. 908-562-3966.
+
+browsers and servers, multi-user chat systems (MUDs),agent systems, commerce applications, smart cards, and
+more. Some systems use Java simply as a better pro-gramming language, using Java's type-safety to prevent
+a host of bugs endemic to C programming. In other sys-tems, Java is also being relied upon for access control.
+Java's promise, from its initial debut in the HotJava Webbrowser, has been to allow mutually untrusting code modules to co-exist in the same virtual machine in a secure andcontrollable manner. While there have been several security problems along the way [4, 13], the security of Javaimplementations is improving and Java has continued to
+grow in popularity.
+
+To implement a Java application that runs untrustedcode within itself (such as the HotJava Web browser), the
+
+Java system libraries need a way to distinguish betweencalls originating from untrusted code, which should be restricted, and calls originating from the application itself,which should be allowed to proceed (subject to any access
+controls applied by the underlying operating system). Tosolve this problem, the Java runtime system exports an
+interface to allow security-checking code to examine theruntime stack for frames executing untrusted code, and allows security decisions to be made at runtime based on thestate of the stack.
+
+While a number of other techniques may be used toachieve the same goals as stack inspection [21], stack inspection has proven to be quite attractive and has beenadopted by all the major Java vendors [15, 6, 14] to meet
+their need to provide more flexible security policies thanthe rigid "sandbox" policy, which restricted all non-local
+code to the same set of privileges. Stack inspection is alsoa useful technique to allow highly-trusted code to operate
+with less than its full privileges, which can help preventcommon program bugs from becoming security holes.
+
+Stack inspection has been criticized for itsimplementation-specific and seemingly ad-hoc definition, which restricts the flexibility of an optimizingcompiler and hinders its applicability to other languages.
+To address these concerns, we will present a model of
+
+1
+
+stack inspection using a belief logic designed by Abadi,Burrows, Lampson, and Plotkin [1] (hereafter, ABLP
+logic) to reason about access control. Using this logic,we will derive an alternate technique for implementing
+stack inspection which is applicable to Java and otherlanguages. Our procedure applies to remote procedure
+calls as well as local ones.This paper is organized as follows. Section 2 begins
+by reviewing Java's stack inspection model. Next, Sec-tion 3 explains the subset of ABLP logic we use. Section 4 shows the mapping from stack inspection to ABLPlogic and discusses their equivalence. Section 5 presents
+a high-performance and portable procedure to implementstack inspection. Finally, Section 6 considers remote procedure calls and shows how stack inspection helps to ad-dress remote procedure call security. The appendices list
+the axioms of ABLP logic used in this paper, and presentproofs of our theorems.
+
+2 Java Stack Inspection
+This section describes Java's current stack inspectionmechanism1. Variations on this approach are taken
+by Netscape's Communicator 4.0 [15], Microsoft's In-ternet Explorer 4.0 [14], and Sun's Java Development
+Kit 1.2 [6].Stack inspection has a number of useful security properties [21] but very little prior art. In some ways, it resem-bles dynamic variables (where free variables are resolved
+from the caller's environment rather than from the envi-ronment in which the function is defined), as used in early
+versions of LISP [12]. In other ways, it resembles the no-tion of effective user ID in Unix, where the current ID is
+either inherited from the calling process or set to the exe-cutable's owner through an explicit
+
+setuid bit.
+
+2.1 Type Safety and Encapsulation
+Java's security depends fundamentally on the type safetyof the Java language. Type safety guarantees that a program may not treat pointers as integers and vice versaand likewise may not exceed the allocated size of an array. This prevents arbitrary access to memory and makesit possible for a software module to encapsulate its state:
+to declare that some of its variables and procedures maynot be accessed by code outside itself. By allowing access only through a few carefully written entry points, amodule can apply access control checks to all attempts to
+access its state.For example, the Java virtual machine protects access
+to operating system calls in this way. Only the virtual
+
+1This approach is sometimes incorrectly referred to as "capabilitybased security" in vendor literature.
+
+machine may directly make a system call, and other codemust call into the virtual machine through explicit entry
+points which implement security checks.
+
+2.2 Simplified Stack Inspection
+To explain how stack inspection works, we will first con-sider a simplified model of stack inspection. In this model,
+
+the only principals are "system" and "untrusted". Like-wise, the only privilege available is "full." This model
+resembles the stack inspection system used internally inNetscape Navigator 3.0 [17].
+
+In this model, every stack frame is labeled with a princi-pal ("system" if the frame is executing code that is part of
+the virtual machine or its built-in libraries, and "untrusted"otherwise), and contains a privilege flag which may be set
+by a system class which chooses to "enable its privileges,"explicitly stating that it wants to do something dangerous.
+An untrusted class cannot set its privilege flag. When astack frame exits, its privilege flag (if any) automatically
+disappears.
+
+All procedures about to perform a dangerous operationsuch as accessing the file system or network first apply a
+
+stack inspection algorithm to decide whether access is al-lowed. The stack inspection algorithm searches the frames
+on the caller's stack in sequence, from newest to oldest.The search terminates, allowing access, upon finding a
+stack frame with a privilege flag. The search also termi-nates, forbidding access and throwing an exception, upon
+finding an untrusted stack frame (which could never havegotten a privilege flag).
+
+2.3 Stack Inspection
+The stack inspection algorithm used in current Java sys-tems can be thought of as a generalization of the simple
+
+stack inspection model described above. Rather than hav-ing only "system" and "untrusted" principals, many principals may exist. Likewise, rather than having only "full"privileges, a number of more specific privileges are defined, so different principals may have different degreesof access to the system.
+
+Four fundamental primitives are necessary to use stackinspection:2
+
+ffl enablePrivilege()
+ffl disablePrivilege()
+ffl checkPrivilege()
+ffl revertPrivilege()
+
+2Each Java vendor has different syntax for these primitives. This
+paper follows the Netscape syntax.
+
+2
+
+When a dangerous resource R (such as the file system)needs to be protected, the system must be sure to call
+checkPrivilege(R) before accessing R.
+
+When code wishes to use R, it must first call
+enablePrivilege(R). This consults the local pol-icy to see whether the principal of the caller is permitted to use R. If it is permitted, an enabledprivilege(R) annotation is made on the current stackframe. The code may then use
+
+R normally. Af-terward, the code may call
+revertPrivilege(R)or
+disablePrivilege(R) to discard the anno-tation or it may simply return, causing the annotation to be discarded along with the stack frame.
+disablePrivilege() creates a stack annotationthat can hide an earlier enabled privilege, whereas
+
+revertPrivilege() simply removes annotationsfrom the current frame.
+
+The generalized checkPrivilege() algorithm,used by all three implementations, is shown in figure 1.
+The algorithm searches the frames on the caller's stackin sequence, from newest to oldest. The search terminates, allowing access, upon finding a stack frame that hasan appropriate
+
+enabled-privilege annotation. The searchalso terminates, forbidding access (and throwing an exception), upon finding a stack frame that is either forbid-den by the local policy from accessing the target or that
+has explicitly disabled its privileges.
+
+We note that each vendor takes different actions whenthe search reaches the end of the stack uneventfully:
+
+Netscape denies permission, while both Sun and Mi-crosoft allow it.
+
+3 Access Control Logic
+We will model the behavior of Java stack inspection usingABLP logic [1, 9]. ABLP logic allows us to reason about
+what we believe to be true given the state of the systemand a set of axioms. It has been used to describe authentication and authorization in distributed systems such asTaos [22] and appears to be a good match for describing
+access control within Java. We use a subset of the fullABLP logic, which we will describe here. Readers who
+want a full description and a more formal development ofthe logic should see [1] or [9].
+
+The logic is based on a few simple concepts: principals,conjunctions of principals, targets, statements, quotation,
+and authority.
+
+ffl A principal is a person, organization or any other en-tity that may have the right to take actions or authorize actions. In addition, entities such as programsand cryptographic keys are often modeled as principals.
+
+checkPrivilege (target) f
+
+// loop, newest to oldest stack frameforeach
+
+stackFrame fif (local policy forbids access to
+
+targetby class executing in stackFrame)
+
+throw ForbiddenException;
+if (stackFrame has enabled privilege for target)return;
+
+// allow access
+
+if (stackFrame has disabled privilege for target)throw
+
+ForbiddenException;
+g
+
+// if we reached here, we fell off the end of the stackif (Netscape 4.0)
+
+throw ForbiddenException;if (Microsoft IE 4.0
+
+jj Sun JDK 1.2)return;
+// allow access
+g
+
+Figure 1: Java's stack inspection algorithm.
+ffl A target represents a resource that we wish to protect.Loosely speaking, a target is something to which
+
+we might like to attach an access control list. (Tar-gets are traditionally known as "objects" in the literature, but this can be confusing when talking aboutan object-oriented language.)
+
+ffl A statement is any kind of utterance a principal canemit. Some statements are made explicitly by a principal, and some are made implicitly as a side-effectof actions the principal takes. In other words, we interpret P says s as meaning that we can act as if theprincipal P supports the statement s. Note that saying something does not make it true; a speaker couldmake a false statement carelessly or maliciously. The
+logic supports the informal notion that we shouldplace faith in a statement only if we trust the speaker
+and it is the kind of statement that the speaker has theauthority to make.
+
+The most common type of statement we will uselooks like P says Ok(T) where P is a principal and T
+is a target; this statement means that P is authorizingaccess to the target
+
+T. By saying an action is "Ok"the speaker is saying the action should be allowed
+
+in the current context but is not specifically orderingthat the action take place.
+
+ffl The logic supports conjunctions of principals.Specifically, saying
+
+(A ^ B) says s is the same as
+
+3
+
+saying both A says s and B says s.
+ffl Quotation allows a principal to make a statementabout what another principal says. The notation
+
+A j B says s, which we pronounce "A quoting B sayss," is equivalent to
+
+A says (B says s). As with anystatement, we must consider whether A's utterance
+
+might be incorrect, and our degree of faith in s willdepend on our beliefs about A and B. When A quotes
+B, we have no guarantee that B ever actually said any-thing.
+
+ffl We grant authority to a principal by allowing thatprincipal to speak for another principal who has
+
+power to do something. The statement A)B, pro-nounced "A speaks for B," means that if A makes a
+statement, we can assume that B supports the samestatement. If
+
+A)B, then A has at least as much au-thority as B. Note that the
+
+)-operator can be usedto represent group membership: if
+
+P is a member ofthe group G, we can say P
+)G, meaning that P canexercise the rights granted to
+
+G.
+
+Appendix A gives a full list of the axioms of the logic.This is a subset of the ABLP logic: we omit some of the
+operators defined by ABLP since we do not need them.
+
+4 Mapping Java to ABLP
+We will now describe a mapping from the stack, the priv-ilege calls, and the stack inspection algorithm into ABLP
+logic.
+
+4.1 Principals
+In Java, code is digitally signed with a private key, thenshipped to the virtual machine where it will run. If
+
+KSigneris the public key of
+Signer, the public-key infrastructurecan generate a proof3 of the statement
+
+KSigner ) Signer. (1)
+Signer's digital signature on the code Code is interpretedas
+
+KSigner says Code ) KSigner. (2)
+Using equations 1 and 18, this implies that
+
+Code ) Signer: (3)
+3Throughout this paper we assume that sound cryptographic protocols are used, and we ignore the extremely unlikely possibility that anadversary will successfully guess a private key.
+
+When Code is invoked, it generates a stack frame Frame.The virtual machine assumes that the frame speaks for the
+code it is executing:
+
+Frame ) Code: (4)
+The transitivity of ) (which can be derived from equa-tion 17) then implies
+
+Frame ) Signer: (5)
+We define \Phi  to be the set of all such valid Frame ) Signerstatements. We call \Phi  the frame credentials.
+
+Note also that code can be signed by more than oneprincipal. In this case, the code and its stack frames speak
+for all of the signers. To simplify the discussion, all of ourexamples will use single signers, but the theory supports
+multiple signers without any extra difficulty.
+
+4.2 Targets
+Recall that the resources we wish to protect are called targets. For each target, we create a dummy principal whosename is identical to that of the target. These dummy principals do not make any statements themselves, but variousprincipals may speak for them.
+
+For each target T, the statement Ok(T) means that accessto T should be allowed in the present context. The axiom
+
+8T 2 Targets; (T says Ok(T)) oe Ok(T) (6)
+says that T can allow access to itself.
+
+Many targets are defined in relation to services offeredby the operating system underlying the Java Virtual Machine (JVM). From the operating system's point of view,the JVM is a single process and all system calls coming
+from the JVM are performed under the authority of theJVM's principal (often the user running the JVM). The
+JVM's responsibility, then, is to allow a system call onlywhen there is justification for issuing that system call under the JVM's authority. Our model will support this in-tuition by requiring the JVM to prove in ABLP logic that
+each system call has been authorized by a suitable princi-pal.
+
+4.3 Setting Policy
+We use a standard access matrix [10] to keep track ofwhich principals have permission to access which targets.
+
+If VM is a Java virtual machine, we define AVM to be a setof statements of the form P
+
+)T where P is a principal and
+T is a target. Informally, if (P )T) 2 AVM, this means thatthe local policy in
+
+VM allows P to access T. We call AVMthe access credentials for the virtual machine VM.
+
+4
+
+F1   enablePrivilege(T1)
+
+Ok(T1)
+
+F2   enablePrivilege(T2)
+
+F1 says Ok(T1)
+
+Ok(T2)
+
+F3   disablePrivilege(T1)
+
+F2 says Ok(T2)
+
+F4   enablePrivilege(T2)
+
+F3 | F2 says Ok(T2)
+
+Ok(T2)
+
+Figure 2: Example of interaction between stack frames. Each rectangle represents a stack frame. Eachstack frame is labeled with its name. In this example, each stack frame makes one
+
+enablePrivilege()or
+disablePrivilege() call, which is also written inside the rectangle. Below each frame is writtenits belief set after its call to
+
+enablePrivilege() or disablePrivilege().
+
+4.4 Stacks
+When a Java program is executing, we treat each stackframe as a principal. At any point in time, a stack frame F
+
+has a set of statements that it believes. We refer to this asthe
+
+belief set of F and write it BF. We now describe wherethe beliefs come from.
+
+4.4.1 Starting a Program
+When a program starts, we need to set the belief set of theinitial stack frame, B
+
+F0. In the Netscape model, BF0 = fg.In the Sun and Microsoft models, B
+
+F0 = fOk(T ) j T 2Targets
+g. These correspond to Netscape's initial unprivi-leged state and Sun and Microsoft's initial privileged state.
+
+4.4.2 Enabling Privileges
+If a stack frame F calls enablePrivilege(T) forsome target
+
+T , it is really saying it authorizes access tothe target. We can represent this simply by adding
+
+Ok(T )to B
+
+F.
+
+4.4.3 Calling a Procedure
+When a stack frame F makes a procedure call, this createsa new stack frame G. As a side-effect of the creation of G,
+
+F tells G all of F's beliefs. When F tells G a statement S,the statement
+
+F says S is added to BG.
+
+4.4.4 Disabling and Reverting Privileges
+A stack frame can also choose to disable some of its priv-ileges. The call
+
+disablePrivilege(T) asks to dis-able any privilege to access the target T . This is implemented by giving the frame a new belief set which con-sists of the old belief set with all statements in which
+anyone says Ok(T) removed. revertPrivilege()is handled in a similar manner, by giving the frame a
+new belief set that is equal to the belief set it originallyhad. While our treatment of
+
+disablePrivilege()and
+revertPrivilege() is a bit inelegant, it seemsto be the best we can do.
+
+4.4.5 Example
+Figure 2 shows an example of these rules in ac-tion. In the beginning, B
+
+F1 = fg. F1 then callsenablePrivilege(T
+1), which adds the statementOk
+(T1) to BF1.
+
+When F2 is created, F1 tells it Ok(T1), soB
+F2 is initially fF1 says Ok(T1)g. F2 then callsenablePrivilege(T
+
+2), which adds Ok(T2) to BF2.B
+F3 initially contains F2 j F1 says Ok(T1)and F
+
+2 says Ok(T2). When F3 callsdisablePrivilege(T
+
+2), the latter belief is deletedfrom B
+F3. BF4 initially contains F3 j F2 says Ok(T1).When F
+
+4 calls enablePrivilege(T2), this addsOk
+(T2) to BF4.
+
+4.5 Checking Privileges
+Before making a system call or otherwise invokinga dangerous operation, the Java virtual machine calls
+
+checkPrivilege() to make sure that the requestedoperation is authorized.
+
+checkPrivilege(T) re-turns true if the statement Ok(T) can be derived from \Phi ,
+
+AVM, and BF (the belief set of the frame which called
+checkPrivilege()).
+
+We define VM(F) to be the virtual machine in which agiven frame F is running. Next, we can define
+
+EF j (\Phi  [ AVM(F) [ BF): (7)
+We call EF the environment of the frame F.
+
+The goal of checkPrivilege(T) is to determine,for the frame F invoking it, whether E
+
+F oe Ok(T).While such questions are generally undecidable in ABLP
+
+logic, there is an efficient decision procedure thatgives the correct answer for our subset of the logic.
+checkPrivilege() implements that decision proce-dure.
+
+The decision procedure used by
+checkPrivilege() takes, as arguments, an en-vironment E
+
+F and a target T. The decision procedureexamines the statements in E
+
+F and divides them intothree classes.
+
+5
+
+ffl Class 1 statements have the form Ok(U), where U isa target.
+ffl Class 2 statements have the form P ) Q, where Pand Q are atomic principals.
+ffl Class 3 statements have the form
+
+F1 j F2 j \Delta  \Delta \Delta  j Fk says Ok(U);
+where Fi is an atomic principal for all i, k * 1, and Uis a target.
+
+The decision procedure next examines all Class 1 state-ments. If any of them is equal to
+
+Ok(T), the decision pro-cedure terminates and returns
+true.Next, the decision procedure uses all of the Class 2
+
+statements to construct a directed graph which we will callthe speaks-for graph of E
+
+F. This graph has an edge (A;B)if and only if there is a Class 2 statement A
+
+) B.Next, the decision procedure examines the Class 3
+
+statements one at a time. When examining the statement
+F1 j F2 j \Delta \Delta \Delta  j Fk says Ok(U), the decision procedure ter-minates and returns
+
+true if both
+
+ffl for all i 2 [1; k], there is a path from Fi to T in thespeaks-for graph, and
+
+ffl U = T.
+If the decision procedure examines all of the Class 3 state-ments without success, it terminates and returns
+
+false.
+
+Theorem 1 (Termination) The decision procedure always terminates.
+
+Theorem 2 (Soundness) If the decision procedure returns true when invoked in stack frame F, then there existsa proof in ABLP logic that E
+
+F oe Ok(T ).
+
+Proofs of these two theorems appear in Appendix B.
+Conjecture 1 (Completeness) If the decision procedure
+returns false when invoked in stack frame F, then there is
+no proof in ABLP logic of the statement EF oe Ok(T ).
+
+Although we believe this conjecture to be true, we do notpresently have a complete proof. If the conjecture is false,
+
+then some legitimate access may be denied. However, asa result of theorem 2, no access will improperly granted.
+
+If the conjecture is true, then Java stack inspection, ouraccess control decision procedure, and proving statements
+in our subset of ABLP logic are all mutually equivalent.
+Theorem 3 (Equivalence to Stack Inspection) The de-cision procedure described above is equivalent to the Java
+
+stack inspection algorithm of section 2.
+
+A proof of this theorem appears in Appendix B.
+
+4.6 Other Differences
+There are a number of cases in which Java implemen-tations differ from the model we have described. These
+
+are minor differences with no effect on the strength of themodel.
+
+4.6.1 Extension: Groups
+It is natural to extend the model by allowing the definitionof groups. In ABLP logic, a group is represented as a
+
+principal, and membership in the group is represented bysaying the member speaks for the group. Deployed Java
+systems use groups in several ways to simplify the processof defining policy.
+
+The Microsoft system defines "security zones" whichare groups of principals. A user or administrator can divide the principals into groups with names like "local","intranet", and "internet", and then define policies on a
+per-group basis.
+
+Netscape defines "macro targets" which are groups oftargets. A typical macro target might be called "typical
+
+game privileges." This macro target would speak for thoseprivileges that network games typically need.
+
+The Sun system has a general notion of targets in whichone target can imply another. In fact, each target is required to define an implies() procedure, which can beused to ask the target whether it implies a particular other
+target. This can be handled with a simple extension to themodel.
+
+4.6.2 Extension: Threads
+Java is a multi-threaded language, meaning there can bemultiple threads of control, and hence multiple stacks
+
+can exist concurrently. When a new thread is created inNetscape's system, the first frame on the new stack begins
+with an empty belief set. In Sun and Microsoft's systems,the first frame on the stack of the new thread is told the belief set of the stack frame that created the thread in exactlythe same way as what happens during a normal procedure
+call.
+
+4.6.3 Optimization: Enabling a Privilege
+The model of enablePrivilege() in section 4.4.2differs somewhat from the Netscape implementation of
+
+stack inspection, where a stack frame F cannot success-fully call
+
+enablePrivilege(T) unless the local ac-cess credentials include
+
+F)T. The restriction imposed byNetscape is related to their user interface and is not necessary in our formulation, since the statement F says Ok(T)is ineffectual unless
+
+F)T. Sun JDK 1.2's implementationis closer to our model.
+
+6
+
+4.6.4 Optimization: Frame Credentials
+Java implementations do not treat stack frames or theircode as separate principals. Instead, they only track the
+
+public key which signed the code and call this the frame'sprincipal. As we saw in section 4.1, for any stack frame,
+we can prove the stack frame speaks for the public keywhich signed the code. In practice, neither the stack frame
+nor the code speaks for any principal except the publickey. Likewise, access control policies are represented directly in terms of the public keys, so there is no need toseparately track the principal for which the public key
+speaks. As a result, the Java implementations say the prin-cipal of any given stack frame is exactly the public key
+which signed that frame's code. This means that Java im-plementations do not have an internal notion of the frame
+credentials used here.
+
+5 Improved Implementation
+In addition to improving our understanding of stack in-spection, our model and decision procedure can help us
+find more efficient implementations of stack inspection.We improve the performance in two ways. First, we show
+that the evolution of belief sets can be represented by afinite pushdown automaton; this opens up a variety of efficient implementation techniques. Second, we describesecurity-passing style, an efficient and convenient integration of the pushdown automaton with the state of the pro-gram.
+
+5.1 Belief Sets and Automata
+We can simplify the representation of belief sets by mak-ing two observations about our decision procedure.
+
+1. Interchanging the positions of two principals in anyquoting chain does not affect the outcome of the decision procedure.
+2. If P is an atomic principal, replacing P j P by P in anystatement does not affect the result of the decision
+
+procedure.
+Both observations are easily proven, since they follow di-rectly from the structure of the decision procedure.
+
+It follows that without affecting the result of the deci-sion procedure we can rewrite each belief into a canonical form in which each atomic principal appears at mostonce, and the atomic principals appear in some canonical
+order. After rewriting the beliefs into canonical form, wecan discard any duplicate beliefs from the belief set.
+
+Since the set of principals is finite, and the set of targetsis finite, and no principal or target may be mentioned more
+than once in a canonical-form belief, there is a finite set of
+
+possible canonical-form beliefs. It follows by a simple ar-gument that only a finite number of canonical-form belief
+sets may exist.
+
+We can therefore represent the evolution of a stackframe's belief set by a finite automaton. Since
+
+stack frames are created and destroyed in LIFO or-der, the execution of a thread can be represented
+by a finite pushdown automaton, where calling aprocedure corresponds to a
+
+push operation (and astate transition), returning from a procedure corresponds to a pop operation, and enablePrivilege(),
+disablePrivilege() and revertPrivilege()correspond to state transitions4.
+
+Representing the system as an automaton has severaladvantages. It allows us to use analysis tools such as
+model checkers to derive properties of particular policies.It also admits a variety of efficient implementation techniques such as lazy construction of the state set and theuse of advanced data structures.
+
+5.2 Security-Passing Style
+The implementation discussed thus far has the disadvan-tage that security state is tracked separately from the rest
+
+of the program's state. This means that there are twosubsystems (the security subsystem and the code execution subsystem) with separate semantics and separate im-plementations of pushdown stacks coexisting in the same
+Java Virtual Machine (JVM). We can improve this situa-tion by implementing the security mechanisms in terms of
+the existing JVM mechanisms.
+
+We do this by adding an extra, implicit argument toevery procedure. The extra argument encodes the security state (the finite-state representation of the belief set)of the procedure's stack frame. This eliminates the need
+to have a separate pushdown stack for security states.We dub this approach security-passing style, by analogy
+to continuation-passing style [18], a transformation tech-nique used by some compilers that also replaces an explicit pushdown stack with implicitly-passed procedurearguments.
+
+We note that security-passing style can be implementedby rewriting code as it is being loaded into the system,
+to add the extra parameter to all procedures and proce-dure calls, and to rewrite the privilege-manipulation operations into equivalent operations on the security state.This is straightforward to implement for Java bytecode,
+since the bytecode format contains enough information tomake rewriting possible.
+
+4One more nicety is required. To implement
+revertPrivilege(), we need to remember what the securitystate was when each stack frame was created. We can encode this
+
+information in the finite state, or we can store it on the stack by doinganother
+
+push operation on procedure call.
+
+7
+
+The main advantage of security-passing style is thatonce a program has been rewritten, it no longer needs any
+special security functionality from the JVM. The rewrittenprogram consists of ordinary Java bytecode, which can be
+executed by any JVM, even one that knows nothing aboutstack inspection. This has many advantages, including
+portability and efficiency. The main performance benefitis that the JVM can use standard compiler optimizations
+such as dead-code elimination and constant propagationto remove unused security tracking code, or inlining and
+tail-recursion elimination to reduce procedure call over-head.
+
+Another advantage of security-passing style is that itlets us express the stack inspection model within the existing semantics of the Java language, rather than requiringan additional and possibly incompatible definition for the
+semantics of the security mechanisms. Security-passingstyle also lets us more easily transplant the stack inspection idea into other language and systems.
+
+We are currently implementing security-passing styleby rewriting bytecode at load time using the JOIE [3] tool.
+
+The rewriter is a trusted module which we add to the JVM.A full description of security-passing style and its
+implications for programming language implementationswill appear in a future paper.
+
+6 Remote Procedure Calls
+Another advantage of security-passing style is that it sug-gests an implementation strategy for remote procedure
+call (RPC) security. Though a simple translation ofsecurity-passing style into the RPC case does not work,
+security-passing style with a few modifications works wellfor RPCs.
+
+RPC security has received a good deal of attention inthe literature. The two prevailing styles of security are capabilities and access control lists [19, 5, 8, 16, 20]. Mostof these systems support only simple principals. Even in
+systems that support more complex principals [22], themechanisms to express those principals are relatively unwieldy.This section discusses how to extend the Java stack inspection model across RPCs. One of the principal uses forABLP logic is in reasoning about access control in distributed systems, and we use the customary ABLP modelof network communication to derive a straightforward extension of our model to the case of RPC.
+
+6.1 Channels
+When two machines establish an encrypted channel be-tween them, each machine proves that it knows a specific
+
+private key which corresponds to a well-known public key.
+
+When one side sends a message through the encryptedchannel, we model this (following [1] and [22]) as a statement made by the sender's session key: we write K says s,where
+
+K is the sender's session key and s is the statement.As discussed in section 4.1, the public-key infrastructure
+
+and the session key establishment protocol together let usestablish that
+
+K speaks for the principal that sent the mes-sage.
+
+In order to extend Java stack inspection to RPCs, eachRPC call must transmit the belief set of the RPC caller to
+the RPC callee. Since each of the caller's beliefs is sentthrough a channel established by the caller's virtual machine, a belief B of the caller's frame arrives on the calleeside as
+
+KCVM says B, where KCVM is a cryptographickey that speaks for the caller's virtual machine. The stack
+
+frame that executes the RPC on the callee is given an ini-tial belief set consisting of all of these arriving statements.
+
+Note that this framework supports the intuition that aremote caller should not be allowed to access resources
+unless that caller's virtual machine is trustworthy. All ofthe beliefs transmitted across the network arrive as statements of the caller's virtual machine (or more properly, ofits key); the callee will disbelieve these statements unless
+it trusts the caller's virtual machine.This strategy fits together well with security-passing
+style. We can think of the transmitted belief set as a rep-resentation of the caller's security state: to pass a security state across the net we translate it into a belief set incanonical form; on arrival at the destination we translate
+it back into a security state.There is one more issue to deal with. The RPC caller's
+belief set is expressed in terms of the caller's stack frames;though these are the "correct" beliefs of the caller, they
+are not useful to the callee, since the callee does not knowabout caller-side stack frames. To address this issue, before the caller sends a belief across the network, the callerreplaces each stack-frame principal F
+
+i with an encryption-key principal K
+i such that Fi )Ki. Ki can be the key thatsigned F
+i's code. If Fi was running unsigned code, thenF
+i is powerless anyway so beliefs regarding its statementscan safely be discarded.
+
+Figure 3 presents an example of how this would work.The Java stack inspection algorithm executes on the
+callee's machine when an access control decision must bemade, exactly as in the local case.
+
+6.2 Dealing with Malicious Callers
+An interesting question is what an attacker can accomplishby sending false or misleading statements across a channel. If the caller's virtual machine is malicious, it maysend whatever "beliefs" it wants, provided that they have
+the correct format. Regardless of the beliefs sent, each be-lief arrives at the callee as a statement made by the caller's
+
+8
+
+F1   enablePrivilege(T1)
+
+Ok(T1)
+
+F2   enablePrivilege(T2)
+
+F1 says Ok(T1)
+
+Ok(T2)
+
+F3   disablePrivilege(T1)
+
+KVM1 | K2 says Ok(T2)
+
+VM2VM1
+
+KVM1
+F2 =  K2>
+
+Figure 3: Example of interaction between stack frames via remote procedure call. Each rectanglerepresents a stack frame. Each stack frame is labeled with its name and its belief set (after its call
+to enablePrivilege() or disablePrivilege()). The larger rounded rectangles represent separateJava virtual machines, and the dotted arrow represents the channel used for a remote procedure call.
+
+virtual machine. If the callee does not trust the caller, suchstatements will not convince the callee to allow access.
+
+Suppose a malicious caller's virtual machine MC wantsto cause an access to target
+
+T on some callee. Themost powerful belief MC can send to support this attempt is simply Ok(T)5; this will arrive at the callee as
+MC says Ok(T). Note that this is a statement that MC canmake without lying, since MC is entitled to add Ok(T) to
+
+its own belief set. Any lie that MC can tell is less power-ful than this true statement, so lying cannot help MC gain
+access to T. The most powerful thing MC can do is to ask,under its own authority, to access
+
+T.
+
+6.3 Dealing with Malicious Code on a Trust-worthy Caller
+
+Malicious code on a trustworthy caller also does not causeany new problems. The malicious code can add Ok(T) to
+its belief set, and that belief will be transmitted correctlyto the callee. The callee will then allow access to T only
+if it trusts the malicious code to access T. This is the sameresult that would have occurred had the malicious code
+been running directly on the callee. This matches the in-tuition that (with proper use of cryptography for authentication, confidentiality, and integrity of communication)we can ignore machine boundaries if the communicating
+processes trust each other and the platforms on which theyare running.
+
+7 Conclusion
+Commercial Java applications often need to execute un-trusted code, such as applets, within themselves. In order
+to allow sufficiently expressive security policies, grantingdifferent privileges to code signed by different principals,
+the latest Java implementations now support a runtime
+
+5Technically, MC could send the belief false, which is even
+stronger; but we assume the protocol for transmitting beliefs will notallow this.
+
+mechanism to search the call-stack for code with differentprivileges and decide whether a given call-stack configuration is authorized to access a protected resource.
+
+This paper has presented a formalization of Java's stackinspection using a logic developed by Abadi, Burrows,
+
+Lampson, and Plotkin [1]. Using this model, we havedemonstrated how Java's access control decisions correspond to proving statements in ABLP logic. We have re-duced the stack inspection model to a finite pushdown automaton, and described how to implement the automatonefficiently using security-passing style. We have also extended our model to apply to remote procedure calls andwe have used the ABLP expression of this model to suggest a novel implementation for a Java-based secure RPCsystem. While the implementation of such an RPC system
+is future work, our model gives us greater confidence thatthe system would be both useful and sound.
+
+8 Acknowledgments
+Thanks to Mart'in Abadi, Andrew Appel, Dirk Balfanz,Drew Dean and the anonymous referees for their comments and suggestions on this work and our presentationof it. Andrew Appel coined the term "security-passing
+style," convinced us of the importance of that technique,and suggested some of the state-machine implementation
+ideas.
+
+Our work is supported by donations from Intel, Mi-crosoft, Sun Microsystems, Bellcore, and Merrill Lynch.
+
+Edward Felten is supported in part by an NSF NationalYoung Investigator award and an Alfred P. Sloan Fellowship.
+
+References
+
+[1] ABADI, M., BURROWS, M., LAMPSON, B., ANDP
+
+LOTKIN, G. D. A calculus for access control indistributed systems. ACM Transactions on Program9
+
+ming Languages and Systems 15, 4 (Sept. 1993),706-734.
+[2] BIRRELL, A. D., NELSON, G., OWICKI, S., ANDW
+
+OBBER, E. P. Network objects. Software: Practice and Experience S4, 25 (Dec. 1995), 87-130.
+
+[3] COHEN, G., CHASE, J., AND KAMINSKY, D. Au-tomatic program transformation with JOIE. In
+
+Proc.1998 Usenix Technical Symposium (June 1998). To
+
+appear.
+[4] DEAN, D., FELTEN, E. W., AND WALLACH, D. S.Java security: From HotJava to Netscape and beyond. In Proceedings of the 1996 IEEE Symposium
+on Security and Privacy (Oakland, California, May1996), pp. 190-200.
+
+[5] GONG, L. A secure identity-based capability sys-tem. In Proceedings of the 1989 IEEE Symposium
+
+on Security and Privacy (Oakland, California, May1989), pp. 56-63.
+
+[6] GONG, L., AND SCHEMERS, R. Implementing pro-tection domains in the Java Development Kit 1.2.
+
+In The Internet Society Symposium on Network andDistributed System Security (San Diego, California,
+Mar. 1998), Internet Society.
+[7] GOSLING, J., JOY, B., AND STEELE, G. The Java
+
+Language Specification. Addison-Wesley, Reading,Massachusetts, 1996.
+
+[8] HU, W. DCE Security Programming. O'Reilly &Associates, Inc., Sebastopol, California, July 1995.
+[9] LAMPSON, B., ABADI, M., BURROWS, M., ANDW
+
+OBBER, E. Authentication in distributed systems:Theory and practice. ACM Transactions on Computer Systems 10, 4 (Nov. 1992), 265-310.
+[10] LAMPSON, B. W. Protection. In Proceedings
+
+of the Fifth Princeton Symposium on InformationSciences and Systems (Princeton University, Mar.
+
+1971), pp. 437-443. Reprinted in Operating Systems
+Review, 8 1 (Jan. 1974), pp. 18-24.
+
+[11] LINDHOLM, T., AND YELLIN, F. The Java VirtualMachine Specification. Addison-Wesley, Reading,
+
+Massachusetts, 1996.
+[12] MCCARTHY, J., ABRAHAMS, P. W., EDWARDS,D. J., H
+
+ART, T. P., AND LEVIN, M. I. LISP1.5 Programmer's Manual, 2nd ed. The Computation Center and Research Laboratory of Electronics,Massachusetts Institute of Technology, Cambridge,
+Massachusetts, 1962.
+
+[13] MCGRAW, G., AND FELTEN, E. W. Java Security:
+
+Hostile Applets, Holes, and Antidotes. John Wileyand Sons, New York, New York, 1997.
+
+[14] MICROSOFT CORPORATION. Trust-Based Security for Java. Redmond, Washington, Apr.1997.
+
+http://www.microsoft.com/java/
+security/jsecwp.htm.
+
+[15] NETSCAPE COMMUNICATIONS CORPORATION. Introduction to the CapabilitiesClasses. Mountain View, California, Aug. 1997.
+
+http://developer.netscape.com/
+library/documentation/signedobj/
+capabilities/index.html.
+
+[16] OBJECT MANAGEMENT GROUP. Common Secure
+
+Interoperability, July 1996. OMG Document Num-ber: orbos/96-06-20.
+
+[17] ROSKIND, J. Evolving the Security ModelFor Java From Navigator 2.x to Navigator
+
+3.x. Netscape Communications Corporation,Mountain View, California, Aug. 1996.
+
+http:
+//developer.netscape.com/library/
+technote/security/sectn1.html.
+
+[18] STEELE, G. L. Rabbit: a compiler for Scheme.Tech. Rep. AI-TR-474, MIT, Cambridge, MA, 1978.
+
+[19] TANENBAUM, A. S., MULLENDER, S. J., AND
+
+VAN RENESSE, R. Using sparse capabilities in a dis-tributed operating system. In
+
+6th International Con-ference on Distributed Computing Systems (Cambridge, Massachusetts, May 1986), pp. 558-563.
+[20] VAN DOORN, L., ABADI, M., BURROWS, M., ANDW
+
+OBBER, E. Secure network objects. In Proceed-ings of the 1996 IEEE Symposium on Security and
+
+Privacy (Oakland, California, May 1996).
+[21] WALLACH, D. S., BALFANZ, D., DEAN, D., ANDF
+
+ELTEN, E. W. Extensible security architectures forJava. In Proceedings of the Sixteenth ACM Symposium on Operating System Principles (Saint-Malo,France, Oct. 1997), pp. 116-128.
+
+[22] WOBBER, E., ABADI, M., BURROWS, M., ANDL
+
+AMPSON, B. Authentication in the Taos operatingsystem.
+
+ACM Transactions on Computer Systems 12,1 (Feb. 1994), 3-32.
+
+A ABLP Logic
+Here is a list of the subset of axioms in ABLP logic usedin this paper. We omit axioms for delegation, roles, and
+
+10
+
+exceptions because they are not necessary to discuss Javastack inspection.
+Axioms About Statements
+
+If s is an instance of a theorem of proposi-tional logic then
+
+s is true in ABLP. (8)
+
+If s and s oe s0 then s0: (9)
+(A says s ^ A says (s oe s0)) oe A says s0: (10)
+If s then A says s for every principal A: (11)
+
+Axioms About Principals
+
+(A ^ B) says s j (A says s) ^ (B says s) (12)
+(A j B) says s j A says B says s (13)
+A = B oe (A says s j B says s) (14)
+j is associative. (15)
+j distributes over ^ in both arguments. (16)
+(A ) B) j (A = A ^ B) (17)
+(A says (B ) A)) oe (B ) A) (18)
+
+B Proofs
+This section proves the theorems from section 4.5.
+Theorem 1 (Termination) The decision procedure al-ways terminates.
+
+Proof: The result follows directly from the fact that EFhas bounded cardinality. This implies that each loop in the
+algorithm has a bounded number of iterations; and clearlythe amount of work done in each iteration is bounded.
+
+Theorem 2 (Soundness) If the decision procedure re-turns true when invoked in stack frame F, then there exists
+a proof in ABLP logic that EF oe Ok(T ).
+Lemma 1 If there is a path from A to B in the speaks-forgraph of E
+
+F, then EF oe (A ) B).
+
+Proof: By assumption, there is a path
+
+(A; v1; v2; ::: ; vk; B)
+in the speaks-for graph of EF. In order for this path toexist, we know that the statements
+
+A ) v1;
+vi ) vi+1 for all i 2 [1;k \Gamma  1];
+and
+
+vk ) B
+
+are all members of EF. Since ) is transitive, this impliesthat
+
+EF oe A ) B:
+Proof of Theorem 2: There are two cases in which thedecision procedure can return
+
+true.
+
+1. The decision procedure returns true while it is iterat-ing over the Class 1 statements. This occurs when the
+
+decision procedure finds the statement Ok(T) 2 EF .In this case,
+
+Ok(T) follows trivially from EF.
+
+2. The decision procedure returns true while it is iterat-ing over the Class 2 statements. In this case we know
+
+that the decision procedure found a Class 2 statementof the form
+
+P1 j P2 j \Delta \Delta  \Delta  j Pk says Ok(T);
+where for all i 2 [1; k] there is path from Pi to T in thespeaks-for graph of E
+
+F. It follows from Lemma 1that for all i
+2 [1; k], Pi ) T. It follows that
+
+EF oe (T j T j \Delta \Delta  \Delta  j T says Ok(T)): (19)
+Applying equation 6 repeatedly, we can directly de-rive E
+
+F oe Ok(T).
+
+Theorem 3 (Equivalence to Stack Inspection) The decision procedure described in section 4.5 is equivalent to
+the Java stack inspection algorithm of section 2.
+
+Proof: The Java stack inspection algorithm (Figure 1)itself does not have a formal definition. However, we can
+treat the evolution of the system inductively and focus onthe
+
+enablePrivilege() and checkPrivilege()primitives.
+
+Our induction is over the number of steps taken,where a step is either a procedure call or an
+enablePrivilege() operation. For clarity, weignore the existence of
+
+disablePrivilege(),
+revertPrivilege(), and procedure return opera-tions; our proof can easily be extended to accommodate
+
+them.We also assume Netscape semantics. A simple adjustment to the base case can be used to prove equivalencebetween the decision procedure and the Sun/Microsoft semantics.
+
+Base case: In the base case, no steps have been taken.In this case, the stack inspection system has a single stack
+frame with no privilege annotation; in the ABLP model,the stack frame's belief set is empty. In this base case,
+checkPrivilege() will fail in both systems.
+
+11
+
+Inductive step: We assume that N steps have beentaken (
+
+N * 0) and we are in a situation where any
+checkPrivilege() call would yield the same resultin both models. Now there are two cases:
+
+enablePrivilege(T ) step: In the stack inspection sys-tem, this adds an
+
+enabled-privilege(T) annotation on thecurrent stack frame. In the ABLP model, it adds Ok(T) to
+
+the current belief set.If this is followed by a
+
+checkPrivilege(T) oper-ation, the operation will succeed in both systems, because
+
+of the new stack annotation or the new belief.If it is followed by
+
+checkPrivilege(U) with U 6=
+T , the new stack annotation or belief will be irrelevant, sowe fall back on the inductive hypothesis to show that both
+
+systems give the same result.
+
+Procedure call step: Let P be the principal of the pro-cedure that is called. In the stack inspection system, this
+adds to the stack an unannotated stack frame belonging to
+P. In the ABLP system, it prepends "P says" to the frontof every statement in the current belief set.
+
+If checkPrivilege(T) now occurs, there are twosub-cases. In the first sub-case,
+
+P is not trusted for T. Inthe stack inspection case,
+checkPrivilege(T) willfail because the current frame is not trusted to access T. In
+
+the ABLP case, the decision procedure will deny accessbecause every belief starts with "P says" and P does not
+speak for T.In the second sub-case,
+
+P is trusted for T. In the stackinspection case, the stack search will ignore the current
+
+frame and proceed to the next frame on the stack. In theABLP case, since
+
+P)T, the "P says" on the front of ev-ery belief has no effect. Thus both systems give the same
+
+answer they would have given before the last step. Bythe inductive hypothesis, both systems thus give the same
+result.
+
+12

@@ -1,0 +1,1426 @@
+
+
+Componential Set-Based Analysis
+Cormac Flanagan Matthias Felleisen
+cormac@cs.rice.edu matthias@cs.rice.edu
+
+Rice University\Lambda 
+
+Abstract
+Set-based analysis is a constraint-based whole program
+analysis that is applicable to functional and objectoriented programming languages. Unfortunately, the
+analysis is useless for large programs, since it generates descriptions of data flow relationships that grow
+quadratically in the size of the program.
+
+This paper presents componential set-based analysis,
+which is faster and handles larger programs without any
+loss of accuracy over set-based analysis. The design of
+the analysis exploits a number of theoretical results concerning constraint systems, including a completeness result and a decision algorithm concerning the observable
+equivalence of constraint systems. Experimental results
+validate the practicality of the analysis.
+
+1 The Effectiveness of Set-Based Analysis
+Rice's Scheme program development environment provides a static debugger, MrSpidey, which analyzes a
+program and, using the results of this analysis, checks
+the soundness of all computational primitives [9]. If a
+primitive operation may fault due to a violation of its
+invariant, MrSpidey highlights the program operation
+so that the programmer can investigate the potential
+fault site before running the program. Using the graphical explanation facilities of MrSpidey, the programmer
+can determine whether this fault will really happen or
+whether the corresponding correctness proof is beyond
+the analysis's capabilities.
+
+MrSpidey's program analysis is a constraint-based
+system similar to Heintze's set-based analysis [11]. The
+analysis consists of two co-mingled phases: a derivation phase, during which MrSpidey derives constraints
+describing the data flow relationships of the analyzed
+
+\Lambda This work was partially supported by NSF grants CCR-9633746
+and CCR-9619756, and a Lodieska Stockbridge Vaughan Fellowship.
+
+program, and a solution phase, during which MrSpidey
+solves the constraints. The solution conservatively approximates the set of values that may be returned by
+each program expression.
+
+In practice, MrSpidey has proven highly effective for
+pedagogic programming, which includes programs of
+several hundred to a couple of thousand lines of code.
+It becomes less useful, however, for debugging larger
+programs due to limitations in the underlying analysis, which has an O(n3) worst-case time bound. The
+constant on the cubic element is small, but it becomes
+dominant for programs of several thousand lines.
+
+The bottleneck is due to the excessive size of the constraint systems that describe a program's data flow relationships. If we could simplify these constraint systems
+without affecting the data flow relationships that they
+denote, then we could reduce the analysis times. That
+is, by first simplifying the constraint system for each
+program component (e.g. module or package), we could
+solve the combined system of constraints in less time.
+Furthermore, if we saved each simplified constraint system in a constraint file, then we could exploit those
+saved constraints in future runs of the analysis to avoid
+reprocessing components that have not changed.
+
+The simplification of constraint systems raises both
+interesting theoretical and practical questions. On the
+theoretical side, we need to ensure that simplification
+preserves the observable behavior of a constraint system. In this paper, we provide a complete characterization of observable behavior and, in the course of this
+development, establish a close connection between this
+observable equivalence of constraint systems and the
+equivalence of regular tree grammars (RTGs).1 Exploiting this connection, we develop a complete algorithm for
+deciding the equivalence of constraint systems. Unfortunately, the algorithm is PSPACE-hard.
+
+Fortunately, a minimized constraint system is only
+optimal but not necessary for practical purposes. The
+
+1A number of researchers, including Reynolds [18], Jones and
+Muchnick [14], Heintze [11], Aiken [2], and Cousot and Cousot [3]
+previously exploited the relationship between RTGs and the least solution of a constraint system. We present an additional result, namely
+a connection between RTGs and the observable behavior (i.e., the entire solution space) of constraint systems.
+
+practical question concerns finding approximate algorithms for simplifying constraint systems that would
+make MrSpidey more useful. To answer this question,
+we exploit the correspondence between the minimization problems for RTGs and constraint systems to adapt
+a variety of algorithms for simplifying RTGs to the
+problem of simplifying constraint systems. Based on
+these simplification algorithms, we develop a componential ,2 or component-wise, variant of set-based analysis.
+Experimental results verify the effectiveness of the simplification algorithms and the corresponding flavors of
+the analysis. The simplified constraint systems are typically at least an order of magnitude smaller than the
+original systems, and these reductions in size result in
+significant gains in the speed of the analysis.
+
+We expect that some of our theoretical and practical
+results as well as the techniques will carry over to other
+constraint-based systems, such as the conditional type
+system of Aiken et al. [2], Eifrig et al.'s object-oriented
+type system [5], or Pottier's or Smith et al.'s subtyping
+simplification algorithms [17, 21].
+
+The presentation proceeds as follows. Section 2 describes an idealized source language. Sections 3 and 4
+present the theoretical underpinnings of the new analysis. Section 5 introduces practical constraint simplification algorithms and Sections 6 and 7 discuss how these
+algorithms perform in a realistic program analysis system. Section 8 discusses related work, and Section 9
+describes directions for future research.
+
+2 The Source Language
+For simplicity, we derive our analysis for a *-calculuslike language with constants and labeled expressions. It
+is straightforward to extend the analysis to a realistic
+language including assignments, recursive data structures, objects and modules along the lines described in
+an earlier report [7].
+
+Expressions in the language are either variables, values, function applications, let-expressions, or labeled
+expressions: see figure 1. We use labels to identify those
+program expressions whose values we wish to predict.
+Values include basic constants and functions. Functions
+have identifying tags so that MrSpidey can reconstruct
+a call-graph from the results of the analysis. We use
+let-expressions to introduce polymorphic bindings, and
+hence restrict these bindings to syntactic values [23].
+We work with the usual conventions and terminology
+of the *v-calculus when discussing syntactic issues. In
+
+2componential a. of or pertaining to components; spec. (Ling.)
+designating the analysis of distinctive sound units or grammatical
+elements into phonetic or semantics components (New Shorter Oxford
+English Dictionary, Clarendon Press, 1993)
+
+Syntax:
+
+M 2 \Lambda  = x j V j (M M) j Ml (Expressions)
+
+j (let (x M) M)
+V 2 Value = b j (*tx:M) (Values)
+
+x 2 Vars = fx; y; z; : : :g (Variables)
+
+b 2 BConst (Basic constants)
+
+t 2 Tag (Function tags)
+
+l 2 Label (Expression labels)
+
+Evaluator:
+
+eval : \Lambda 0 \Gamma ! Value [ f?g
+
+eval(M) = V if M 7\Gamma !\Lambda  V
+
+Reduction Rules:
+
+E[ ((*tx:M) V ) ] \Gamma ! E[ M[x 7! V ] ] (fiv)
+E[ (let (x V ) M) ] \Gamma ! E[ M[x 7! V ] ] (filet )
+
+E[ V l ] \Gamma ! E[ V ] (unlabel)
+
+Evaluation Contexts:
+
+E = [ ] j (E M) j (V E) j (let (x E) M) j El
+
+Figure 1: The source language \Lambda : syntax and semantics
+
+particular, the substitution operation M [x  V ] replaces all free occurrences of x within M by V , and \Lambda 0
+denotes the set of closed terms, also called programs.
+
+We specify the meaning of programs via the reduction semantics based on the rules described in figure 1.
+The reduction rules fiv and filet are conventional, and
+the unlabel rule removes the label from an expression
+once its value is needed.
+
+3 Set-Based Analysis
+Conceptually, set-based analysis consists of two phases:
+a specification phase and a solution phase.3 During
+the specification phase, the analysis tool derives constraints on the sets of values that program expressions
+may assume. These constraints describe the data flow
+relationships of the analyzed program. During the solution phase, the analysis produces finite descriptions of
+the potentially infinite sets of values that satisfy these
+constraints. The result provides an approximate set of
+values for each labeled expression in the program.
+
+3.1 The Constraint Language
+To simplify the derivation of the constraint simplification algorithms, we formulate our constraint language
+in terms of type selectors, instead of the more usual
+
+3Cousot and Cousot showed that set-based analysis can alternatively be formulated as an abstract interpretation computed by
+chaotic iteration [3].
+
+type constructors:
+
+o/ 2 SetExp = ff j c j dom(o/ ) j rng(o/)
+ff; fi; fl 2 SetVar oe Label
+
+c 2 Const = BConst [ Tag
+
+A set expression o/ is either a set variable; a constant; or
+one of the "selector" expressions dom(o/ ) or rng(o/ ). By
+using selector expressions, we can specify each "quantum" of the program's data flow behavior independently;
+using constructors would combine several of these quanta
+into one constraint. The meta-variables ff; fi; fl range
+over set variables, and we include program labels in the
+collection of set variables. Constants include both basic constants and function tags. A constraint C is an
+inequality o/1 ^ o/2 relating two set expressions.
+
+Intuitively, each set expression denotes a set of runtime values, and a constraint [o/1 ^ o/2] indicates that
+the value set denoted by o/1 is contained in the value set
+denoted by o/2. A constraint system S is a collection of
+constraints. A simple constraint system is a collection
+of simple constraints, which have the form:
+
+c ^ fi j ff ^ fi j ff ^ dom(fi)
+j rng(ff) ^ fi j dom(ff) ^ fi j ff ^ rng(fi)
+
+In some cases, we are interested in constraints that only
+mention certain set variables. The restriction of a constraint system to a collection of set variables E is:
+
+S jE = fC 2 S j C only mentions set variables in Eg
+
+3.2 Semantics of Constraints
+A set expression denotes a collection of values, which is
+represented as a triple X = hC; D; Ri. The first component C 2 P(Const)4 is a set of basic constants and
+function tags, and represents a set of run-time values
+(relative to a given program) according to the relation
+V in C: b
+
+in C iff b 2 C
+
+(*tx:M ) in C iff t 2 C
+
+The second and third components of X denote the possible argument values (dom) and result values (rng) of
+functions in X, respectively. Since these two components also denote value sets, the appropriate model for
+set expressions is the solution of the equation:5
+
+D = P(Const) \Theta  D \Theta  D
+4P denotes the power-set constructor.
+5The set D is equivalent to the set of all infinite binary trees with
+
+each node labeled with an element of P(Const). This set can be
+formally defined as the set of total functions f : fdom; rngg
+
+\Lambda  \Gamma !
+
+P(Const), and the rest of the development can be adapted mutandis mutatis [16]. For clarity, we present our results using the more
+intuitive notation instead.
+
+We use the functions const : D \Gamma ! P(Const) and dom,
+rng : D \Gamma ! D to extract the respective components of
+an element of D.
+
+We order the elements of D according to a relation
+that is contravariant in the argument component, since
+the information about argument values at an application needs to flow backward along data-flow paths to the
+formal parameter of the corresponding function definitions. Thus hC1; D1; R1i v hC2; D2; R2i if and only if
+C1 ` C2, D2 v D1, and R1 v R2. The set D forms
+a complete lattice under this ordering, with top and
+bottom elements being the solutions to the equations
+? = hConst ; ?; ?i and ? = h;; ?; ?i, respectively.
+
+The semantics of set expressions is defined with respect to a set environment ae, which maps each set variable to an element of D. We extend the domain of set
+environments from set variables to set expressions in
+the natural manner:
+
+ae : SetExp \Gamma ! D
+
+ae(c) = hfcg; ?; ?i
+ae(dom(o/ )) = dom (ae(o/ ))
+ae(rng(o/ )) = rng (ae(o/))
+
+An environment ae satisfies a constraint C = [o/1 ^ o/2]
+(written ae j= C) if ae(o/1) v ae(o/2). Similarly, ae satisfies
+S, or ae is a solution of S (written ae j= S) if ae j= C for
+each C 2 S. The solution space of a constraint system
+S is Soln(S) = fae j ae j= Sg. A constraints set S1
+entails S2 (written S1 j= S2) iff Soln(S1) ` Soln(S2),
+and S1 is observably equivalent to S2 (written S1 ,= S2)
+iff S1 j= S2 and S2 j= S1.
+
+The restriction of a solution space to a collection of
+variables E is:
+
+Soln(S) jE = fae j 9ae0 2 Soln(S): 8ff 2 E: ae(ff) = ae0(ff)g
+We extend the notion of restriction to entailment and
+observable equivalence of constraint systems:
+
+ffl If Soln(S1) jE ` Soln(S2) jE, then S1 entails S2
+
+with respect to E (written S1 j=E S2).
+
+ffl If S1 j=E S2 and S2 j=E S1 then that S1 and S2
+
+are observably equivalent with respect to E (written
+S1 ,=E S2) .
+
+3.3 Deriving Constraints
+The specification phase of set-based analysis derives
+constraints on the sets of values that program expressions may assume. Following Aiken et al. and Palsberg
+and O'Keefe, we formulate this derivation as a subtype
+system [2, 16].
+
+The derivation proceeds in a syntax-directed manner
+according to the constraint derivation rules presented
+
+\Gamma  [ fx : ffg ` x : ff; ; (var)
+
+\Gamma  ` b : ff; fb ^ ffg (const)
+
+\Gamma  ` M : ff; S
+\Gamma  ` Ml : ff; S [ fff ^ lg (label)
+
+\Gamma  [ fx : ff1g ` M : ff2; S
+\Gamma  ` (*tx:M) : ff; S [ ft ^ ff; dom(ff) ^ ff1; ff2 ^ rng(ff)g (abs)
+
+\Gamma  ` Mi : fii; Si
+\Gamma  ` (M1 M2) : ff; S1 [ S2 [ ffi2 ^ dom(fi1); rng(fi1) ^ ffg (app)
+
+\Gamma  ` V : ff; SV
+A = Vars(SV ) n (F V [rng(\Gamma )] [ Label)
+
+\Gamma  [ fx : 8A: (ff; SV )g ` M : fi; S
+
+\Gamma  ` (let (x V ) M) : fi; S (let)
+
+ is a substitution of fresh vars for A
+\Gamma  [ fx : 8A: (ff; SV )g ` x : (ff); (SV ) (inst)
+
+Figure 2: Constraint derivation rules.
+
+in figure 2. Each rule infers a judgement of the form
+\Gamma  ` M : ff; S, where the set variable context \Gamma  maps the
+free variables of M either to set variables or constraint
+schemas (see below); ff names the value set of M ; and
+the constraint system S describes the data flow relationships of M , using ff.
+
+The rules (var ) and (const) are straightforward. The
+rule (label ) records the value set of a labeled expression
+in the appropriate label. The rule (abs) for functions
+records the function's tag, and also propagates values
+from the function's domain into its formal parameter
+and from the function's body into its range. The rule
+(app) for applications propagates values from the argument expression into the domain of the applied function
+and from the range of that function into the result of
+the application expression.
+
+The rule (let) produces a constraint schema oe =
+8A: (ff; S) for polymorphic, let-bound values [20, 2, 23].
+The set variable ff names the result of the expression,
+the constraint system S describes the data flow relationships of the expression, and the set A contains those
+internal set variables of the constraint system that must
+be duplicated at each reference to the let-bound variable via the rule (inst). We use F V [rng(\Gamma )] to denote
+the free set variables in the range of \Gamma : The free set variables of a schema oe = 8A: (ff; S) are those in S but not
+in A, and the free variables of a set variable is simply
+the set variable itself.
+
+3.4 Set Based Analysis
+Every constraint system admits the trivial solution ae?
+where ae?(ff) = ?s and ?s = hConst; ?s; ?si. Since ?s
+represents the set of all run-time values, this solution
+is highly approximate and utterly useless. Fortunately,
+constraint systems typically yield many additional solutions that more accurately characterize the value sets
+of program expressions.
+
+For example, consider the program P = (*tx:x),
+which yields the constraint system:
+
+ft ^ ffP ; dom(ffP ) ^ ffx; ffx ^ rng(ffP )g
+In addition to the trivial solution described above, this
+constraint system admits a number of other solutions,
+including:
+
+ae1 = fffP 7! hftg; ?; ?i; ffx 7! ?g
+ae2 = fffP 7! hftg; ?; ?i; ffx 7! ?g
+
+The solution ae1 more accurately describes the program's
+run-time value sets than ae2. Yet these two solutions
+are incomparable under the ordering v (pointwise extended to environments), since it models the flow of
+values through a program, but does not rank environments according to their accuracy.
+
+Therefore we introduce a second ordering vs on D
+that properly ranks environments according to their accuracy. This ordering is covariant in the domain position, i.e., hC1; D1; R1i vs hC2; D2; R2i if and only if
+C1 ` C2, D1 vs D2, and R1 vs R2.
+
+Under this ordering, a constraint system S has both
+a maximal solution (ae? above) and a minimal solution.
+The minimal solution exists because the greatest lower
+bound us with respect to vs of two solutions is also a
+solution [11]. We use LeastSoln(S) to denote this least
+solution, and define set-based analysis as the function
+that extracts the basic constants and function tags for
+each labeled expression from LeastSoln(S).
+
+Definition 3.1. (sba) If ; ` P : ff; S, then:
+
+sba(P )(l) = const(LeastSoln(S)(l))
+The solution sba(P ) conservatively approximates the
+value sets for each labeled expression.
+
+Theorem 3.2 (Correctness of sba) If P 7\Gamma !\Lambda  E[ V l ]
+then V in sba(P )(l).
+
+This result follows from a subject reduction proof
+along the lines of Wright and Felleisen [22] and Palsberg [15] and is contained in a related report [8].
+
+3.5 Computing the Least Solution
+To compute sba(P ), we close the constraint system for
+P under the rules \Theta  described in figure 3. Intuitively,
+
+c ^ fi fi ^ fl
+
+c ^ fl (s1)
+
+ff ^ rng(fi) fi ^ fl
+
+ff ^ rng(fl) (s2)
+
+dom(fi) ^ ff fi ^ fl
+
+dom(fl) ^ ff (s3)
+
+ff ^ rng(fi) rng(fi) ^ fl
+
+ff ^ fl (s4)
+
+ff ^ dom(fi) dom(fi) ^ fl
+
+ff ^ fl (s5)
+
+Figure 3: The inference rule system \Theta .
+
+these rules infer all the data flow paths in the program, and propagate values along those paths. Specifically, the rules (s1), (s2), and (s3) propagate information about constants, function domains and function ranges forward along the data flow paths of the
+program. These data flow paths are described by constraints of the form fi ^ fl. The rule (s4) constructs the
+data flow paths from actual to formal parameters for
+each function call, and the rule (s5) similarly constructs
+data flow paths from function bodies to corresponding
+call sites. We write S `\Theta  C if S proves C via the rules
+\Theta , and use \Theta (S) to denote the closure of S under \Theta ,
+i.e., the set fC j S `\Theta  Cg.
+
+MrSpidey uses a worklist algorithm to compute the
+closure of S under \Theta  efficiently. The worklist keeps
+track of all eligible inference rules whose antecedents
+are in S but whose consequent may not be in S. The
+algorithm repeatedly removes an inference rule from the
+worklist, adds its consequent to S, if necessary, and
+then adds to the worklist all inference rules that are
+made eligible by the addition of that consequent. The
+process iterates until the worklist is empty, at which
+point S is closed under \Theta . The complete algorithm can
+be found in an earlier technical report [7].
+
+This closure process propagates all information concerning the possible constants for labeled expressions
+into constraints of the form c ^ l. Hence, we can infer
+sba(P ) from \Theta (S) according to the following theorem.
+
+Theorem 3.3 If P 2 \Lambda 0 and ; ` P : ff; S then:
+
+sba(P )(l) = fc j [c ^ l] 2 \Theta (S)g
+
+4 Observable Equivalence of Constraints
+The traditional set-based analysis we have just described
+has proven highly effective for programs of up to a couple of thousand lines of code. Unfortunately, it is useless
+for larger programs due to its nature as a whole program
+analysis and due to the size of the constraint systems
+it produces, which are quadratic in the size of (large)
+programs. Storing these constraint systems in memory
+is beyond the capabilities of most machines.
+
+To overcome this problem, we develop algorithms for
+simplifying constraints systems. Applying these simplification algorithms to each program component significantly reduces both the time and space required by the
+overall analysis.
+
+The following subsection shows that constraint simplification does not affect the analysis results provided
+the simplified system is observably equivalent to the
+original system. Subsection 4.2 presents a complete
+proof-theoretic formulation of observable equivalence,
+and subsection 4.3 exploits this formulation to develop
+an algorithm for deciding the observable equivalence of
+constraint systems. The insights provided by this development lead to the practical constraint simplification
+algorithms of section 5.
+
+4.1 Conditions on Constraint Simplification
+Let us consider a program P containing a program component M . Suppose the constraint derivations for M
+concludes \Gamma  ` M : ff; S1, where S1 is the constraint
+system for M . Our goal is to replace S1 by a simpler
+constraint system without changing sba(P ).
+
+Since the constraint derivation process is compositional, the constraint derivation for the entire program
+concludes ; ` P : fi; SC [ S1, where SC is the constraint
+system for the context surrounding M . The combined
+constraint system SC [ S1 describes the space of solutions for the entire program, which is the intersection
+of the two respective solution spaces:
+
+Soln(SC [ S1) = Soln(SC) " Soln(S1)
+and hence Soln(S1) describes at least all the properties
+of S1 relevant to the analysis. However, Soln(S1) may
+describe solutions for set variables that are not relevant
+to the analysis of P . In particular,
+
+ffl sba(P ) only references the solutions for labels; and
+ffl the only interactions between SC and S1 are due
+
+to the set variables fffg [ F V [rng(\Gamma )].
+
+Thus the only properties of S1 relevant to the analysis
+is the solution space for its external set variables
+
+E = Label [ fffg [ F V [rng(\Gamma )]
+
+For our original problem, this means that we want a
+constraint system S2 whose solution space restricted to
+E is equivalent to that of S1 restricted to E:
+
+Soln(S1) jE = Soln(S2) jE;
+or, with the notation from section 3, S1 and S2 are
+observably equivalent on E:
+
+S1 ,=E S2
+We can translate this compaction idea into an additional rule for the constraint derivation system:
+
+\Gamma  `,= M : ff; S1
+S1 ,=E S2 where E = Label [ F V [rng(\Gamma )] [ fffg
+
+\Gamma  `,= M : ff; S2 (
+
+,=)
+
+This rule is admissible in that any derivation (denoted
+using `,=) in the extended constraint derivation system
+produces information that is equivalent to the information produced by the original analysis.
+
+Lemma 4.1 If ; `,= P : ff; S, then:
+
+sba(P )(l) = const(LeastSoln(S)(l))
+
+4.2 Proof-Theoretic Characterization
+Since the new derivation rule (,=) involves the semantic
+notion of observably equivalent constraint systems, it
+cannot be used directly. To make this rule useful, we
+must first reformulate the observable equivalence relation as a syntactic proof system.
+
+The key properties of the observational equivalence
+relation are reflections of the properties of the ordering
+relation (v) and the functions dom and rng, respectively. We can reify these properties into a syntactic
+proof system via the following inference rules:
+
+ff ^ ff (reflex ) o/1 ^ o/ o/ ^ o/2o/
+
+1 ^ o/2 (trans
+
+0)
+
+^1 ^ ^2
+rng(^1) ^ rng(^2)
+dom(^2) ^ dom(^1)
+
+(compat)
+
+where we restrict ^ to non-constant set expressions to
+avoid inferring useless tautologies:
+
+^ ::= ff j dom(^) j rng(^)
+Many of the inferred constraints lie outside of the original language of simple constraints. The extended language of compound constraints is:
+
+C ::= c ^ ^ j ^ ^ ^
+While this proof system obviously captures the properties of v, it does not lend itself to an efficient impleff ^ rng(fi) fi ^ ^
+
+ff ^ rng(^) (compose1)
+
+ff ^ dom(fi) fi * ^
+
+ff ^ dom(^) (compose2)
+
+ff * rng(fi) fi * ^
+
+ff * rng(^) (compose3)
+
+ff * dom(fi) fi ^ ^
+
+ff * dom(^) (compose4)
+
+ff ^ ff (reflex )
+
+o/1 ^ ff ff ^ o/2
+
+o/1 ^ o/2 (trans)
+
+^1 ^ ^2
+rng(^1) ^ rng(^2)
+dom(^2) ^ dom(^1)
+
+(compat )
+
+Figure 4: The inference rule system \Psi .
+mentation. Specifically, checking if two potential antecedents of (trans0) contain the same set expression
+o/ involves comparing two potentially large set expressions. Hence we use an alternative proof system that
+can easily be implemented, yet infers the same constraints as the above. The alternative system consists
+of the inference rules \Psi  described in Figure 4, together
+with the rules \Theta  from Figure 3. The rules (compose1:::4)
+replace a reference to a set variable by an upper or lower
+(non-constant) bound for that variable, as appropriate.
+The rule (trans) of \Psi  provides a weaker characterization of transitivity than the previous rule (trans0), but
+the additional rules compensate for this weakness.
+
+The proof system \Theta  [ \Psi  is sound and complete in
+that it infers all true compound constraints.
+
+Lemma 4.2 (Soundness and Completeness of \Theta \Psi )
+For a simple constraint system S and compound constraint C, S `\Psi \Theta  C if and only if S j= C.
+
+This lemma implies that \Psi \Theta (S), which denotes the
+closure of S with respect to \Theta [\Psi , contains exactly those
+(compound) constraints that hold in all environments
+in Soln(S). For a collection of external set variables
+E, \Psi \Theta (S) jE contains all (compound) constraints that
+hold in all environments in Soln(S) jE.
+
+Lemma 4.3 S ,=E \Psi \Theta (S) jE.
+
+We could use this result to define a proof-theoretic
+equivalent of restricted entailment as follows:
+
+S1 `E\Psi \Theta  S2 iff \Psi \Theta (S1) jE ' \Psi \Theta (S2) jE
+
+and then show that S1 `E\Psi \Theta  S2 if and only if S1 j=E
+S2. However, a variant of the above definition yields a
+relation that is easier to compute. Specifically, suppose
+\Psi \Theta (S1) jE contains the constraint [rng(o/1) ^ rng(o/2)]
+inferred by (compat). Then, since Vars(o/1)[Vars(o/2) `
+E, the corresponding antecedent [o/1 ^ o/2] is also in
+\Psi \Theta (S) jE, and therefore:
+
+\Psi \Theta (S) jE n frng(o/1) ^ rng(o/2)g ,=E \Psi \Theta (S) jE
+Put differently, because (compat ) does not eliminate
+any variables, any (compat)-consequent in \Psi \Theta (S) jE is
+subsumed by its antecedent. If we define:
+
+\Pi  = \Psi  n fcompatg
+then this argument implies that \Psi \Theta (S) jE ,=E \Pi \Theta (S) jE.
+Hence we get the following lemma.
+
+Lemma 4.4 S ,=E \Pi \Theta (S) jE.
+
+Together, lemmas 4.2 and 4.4 provide the basis to
+introduce proof-theoretic equivalents of restricted entailment and observable equivalence:
+
+ffl S1 `E\Psi \Theta  S2 iff \Psi \Theta (S1) jE ' \Pi \Theta (S2) jE,
+ffl S1 =E\Psi \Theta  S2 iff S1 `E\Psi \Theta  S2 and S2 `E\Psi \Theta  S1.
+
+The two relations completely characterize restricted entailment and observable equivalence.
+
+Theorem 4.5 (Soundness and Completeness)
+
+1. S1 `E\Psi \Theta  S2 if and only if S1 j=E S2.
+2. S1 =E\Psi \Theta  S2 if and only if S1 ,=E S2.
+
+4.3 Deciding Observable Equivalence
+The relation =E\Psi \Theta  completely characterizes the modeltheoretic observable equivalence relation ,=E, but for an
+implementation of the extended constraint derivation
+system we need a decision algorithm for =E\Psi \Theta .
+
+Given S1 and S2 closed under \Theta , this algorithm
+needs to verify that \Psi (S1) jE = \Psi (S2) jE. The naive
+approach to enumerate and to compare the two constraint systems does not work, since they are infinite.
+For example, if S = fff ^ rng(ff)g, then \Psi (S) is the
+infinite set fff ^ rng(ff); ff ^ rng(rng(ff)); : : :g.
+
+Fortunately, the infinite constraint systems inferred
+by \Psi  exhibit a regular structure, which we exploit to
+decide observable equivalence as follows. First, we generate regular grammars describing the upper and lower
+bounds for each set variable. Second, we extend these
+grammars to regular tree grammars (RTGs) describing all constraints in \Pi (S1) jE and \Pi (S2) jE, excluding
+those constraints inferred via compat , which we cannot
+
+describe in this manner. Third, we use these RTGs to
+decide entailment by checking if \Psi (S1) jE ' \Pi (S2) jE
+via an adaptation of an RTG containment algorithm.
+To decide observable equivalence, we simply check entailment in both directions. These steps are described
+in more detail below.
+
+Regular Grammars: Our first step is to describe
+the lower and upper non-constant bounds for each set
+variable. Technically, we want to describe the following
+two languages of types:
+
+f^ j [^ ^ ff] 2 \Psi (S) and Vars(^) ` Eg
+f^ j [ff ^ ^] 2 \Psi (S) and Vars(^) ` Eg
+
+for each set variable ff. Both languages are generated
+by a regular grammar Gr(S; E). The grammar contains the non-terminals ffU and ffL, for each ff in S,
+which generate the above lower and upper bounds of ff,
+respectively.
+
+The productions of the grammar are determined by
+S and \Psi . To illustrate this idea, suppose S contains
+[ff ^ rng(fi)]. Then, for each upper bound ^ of fi, the
+rule (compose1) infers the upper bound rng(^) of ff.
+Since, by induction, fi's upper bounds are generated by
+fiU , the production ffU 7! rng(fiU ) generates the corresponding upper bounds of ff. More generally, the collection of productions fffU 7! rng(fiU ) j [ff ^ rng(fi)] 2 Sg
+describes all bounds inferred via (compose1). Bounds
+inferred via the remaining (compose ) rules can be described in a similar manner.
+
+Bounds inferred via the rule (reflex ) imply the production rules ffU 7! ff; ffL 7! ff for ff 2 E. The
+rule (compat ) cannot generate constraints of the form
+[^ ^ ff] or [ff ^ ^]. Finally, consider the rule (trans),
+and suppose this rule infers an upper bound o/ on ff.
+This bound must be inferred from an upper bound o/
+on fi, based on the antecedent [ff ^ fi]. Hence the productions fffU 7! fiU j [ff ^ fi] 2 Sg generate all upper
+bounds inferred via (trans). In a similar fashion, the
+productions ffiL 7! ffL j [ff ^ fi] 2 Sg generate all
+lower bounds inferred via (trans).
+
+Definition 4.6. (Regular Grammar Gr(S; E)) Let
+S be a simple constraint system and E a collection of
+set variables. The regular grammar Gr(S; E) consists
+of the non-terminals fffL; ffU j ff 2 Vars(S)g and the
+following productions:
+
+ffU 7! ff; ffL 7! ff 8 ff 2 E
+ffU 7! fiU ; fiL 7! ffL 8 [ff ^ fi] 2 S
+ffU 7! dom(fiL) 8 [ff ^ dom(fi)] 2 S
+ffU 7! rng(fiU ) 8 [ff ^ rng(fi)] 2 S
+fiL 7! dom(ffU ) 8 [dom(ff) ^ fi] 2 S
+fiL 7! rng(ffL) 8 [rng(ff) ^ fi] 2 S
+
+The grammar Gr(S; E) describes two languages for
+each set variable: the upper and lower non-constant
+bounds. Specifically, if 7!\Lambda G denotes a derivation in the
+grammar G, and LG(x) denotes the language fo/ j x 7!\Lambda G
+o/ g generated by a non-terminal x, then the following
+lemma holds.
+
+Lemma 4.7 If G = Gr(S; E), then:
+
+LG(ffL) = f^ j [^ ^ ff] 2 \Psi (S) and Vars(^) ` Eg
+LG(ffU ) = f^ j [ff ^ ^] 2 \Psi (S) and Vars(^) ` Eg
+
+Proof: We prove each containment relation by induction on the appropriate derivation.
+
+Regular Tree Grammars: The grammar Gr(S; E)
+does not describe all constraints in \Pi (S) jE. In particular, it does not describe constraints of the form [c ^ o/ ]
+and constraints inferred by (trans) or (compat ). To
+represent the constraint system \Pi (S) jE, we extend the
+grammar Gr(S; E) to a regular tree grammar Gt(S; E).
+It combines upper and lower bounds for set variables in
+the same fashion as the (trans) rule, and also generates
+constraints of the form [c ^ o/ ] where appropriate.
+
+Definition 4.8. (Regular Tree Grammar Gt(S; E))
+The RTG Gt(S; E) extends the grammar Gr(S; E) with
+the root non-terminal R and the additional productions:
+
+R 7! [ffL ^ ffU ] 8 ff 2 Vars(S)
+R 7! [c ^ ffU ] 8 [c ^ ff] 2 S
+
+where [\Delta  ^ \Delta ] is viewed as a binary constructor.
+
+The grammar Gt(S; E) describes all constraints in
+\Pi (S) jE.
+
+Lemma 4.9 If G = Gt(S; E), then \Pi (S) jE = LG(R).
+
+Before we can exploit the grammar representation of
+\Pi (S) jE, we must still prove that the closure under \Theta  [
+\Pi  [ fcompatg can be performed in a sequential manner.
+The following lemma justifies this staging of the closure
+algorithm.
+
+Lemma 4.10 For any simple constraint system S:
+
+\Psi \Theta (S) = \Psi (\Theta (S)) = compat(\Pi (\Theta (S)))
+
+The Entailment Algorithm: We can check entailment based on lemmas 4.9 and 4.10 as follows. Given
+S1 and S2, we close them under \Theta  and then have:
+
+S2 `E\Psi \Theta  S1
+() \Psi \Theta (S2) jE ' \Pi \Theta (S1) jE by defn `E\Psi \Theta 
+() \Psi (\Theta (S2)) jE ' \Pi (\Theta (S1)) jE by lemma 4.10
+() \Psi (S2) jE ' \Pi (S1) jE as Si = \Theta (Si)
+() compat (\Pi (S2) jE) ' \Pi (S1) jE by lemma 4.10
+() compat(LG2(R)) ' LG1 (R) by lemma 4.9
+
+where Gi = Gt(Si; E)
+
+The Entailment Algorithm
+In the following, Pfin denotes the finite power-set constructor.
+Let: G1 = Gr(S1; E)
+
+G2 = Gt(S2; E)
+
+Li = fffL j ff 2 Vars(Si)g
+Ui = fffU j ff 2 Vars(Si)g
+
+Assume G1 and G2 are pre-processed to remove ffl-transitions. For
+C 2 Pfin(L2 \Theta  U2), define:
+
+L(C) = f[o/L ^ o/U] j hffL; fiU i 2 C; ffL 7!G2 o/L; fiU 7!G2 o/U g
+The relation RS1;S2[\Delta ; \Delta ; \Delta ; \Delta ] is defined as the largest relation on
+L1 \Theta  U1 \Theta  Pfin(L2 \Theta  U2) \Theta  Pfin(L2 \Theta  U2) such that if:
+
+RS1;S2 [ffL; fiU ; C; D] ffL 7!G1 X fiU 7!G1 Y
+then one of the following cases hold:
+
+1. L([X ^ Y ]) ` L(C [ D).
+2. X = rng(ff0L), Y = rng(fi0U ) and RS1;S2[ff0L; fi0U; C; D0],
+
+where:
+
+D0 = fhfl0L; ffi0U i j hflL; ffiU i 2 C [ D;
+
+flL 7!G2 rng(fl0L); ffiU 7!G2 rng(ffi0U )g
+
+3. X = dom(ff0U ), Y = dom(fi0L) and RS1;S2[fi0L; ff0U; C; D0],
+
+where:
+
+D0 = fhffi0L; fl0U i j hflL; ffiU i 2 C [ D;
+
+flL 7!G2 dom(fl0U ); ffiU 7!G2 dom(ffi0L)g
+
+The computable entailment relation S2 `Ealg S1 holds if and only
+if 8ff 2 Vars(S1):
+
+RS1;S2[ffL; ffU ; fhflL; flU i j fl 2 Vars(S2)g; ;]
+
+Figure 5: The computable entailment relation `Ealg
+
+The containment question LG2(R) ' LG1(R) can be
+decided via an RTG containment algorithm. To decide
+the more difficult question:
+
+compat(LG2 (R)) ' LG1(R)
+we adapt an RTG containment algorithm to allow for
+constraints inferred via (compat) on LG2(R).
+
+The extended algorithm is presented in Figure 5.
+It first computes the largest relation RS1;S2 such that
+RS1;S2[ffL; fiU ; C; D] holds if and only if:
+
+L([ffL ^ fiU ]) ` compat(L(C)) [ L(D)
+where ffL, fiU describe collections of types; C, D describe collections of constraints; and L([ffL ^ fiU ]) denotes the language f[o/L ^ o/U ] j ffL 7!\Lambda  o/L; fiU 7!\Lambda  o/U g.
+The first case in the definition of R uses an RTG containment algorithm to detect if L([ffL ^ fiU ]) ` L(C) [
+L(D). The two remaining cases handle constraints of
+the form [rng(ff0L) ^ rng(fi0U )] or [dom(ff0U ) ^ dom(fi0L)],
+
+and allow for inferences via (compat ). The relation R
+can be computed by starting with a maximal relation
+(true at every point), and then iteratively setting entries to false as required by figure 5, until the largest
+relation satisfying the definition is reached.
+
+Based on this relation, the algorithm then defines a
+computable entailment relation `Ealg on constraint systems. This relation is equivalent to `E\Psi .
+
+Theorem 4.11 S2 `E\Psi  S1 if and only if S2 `Ealg S1.
+
+The entailment algorithm takes exponential time,
+since the size of R is exponential in the number of
+set variables in S2. Although faster algorithms for the
+entailment may exist, these algorithms must all be in
+PSPACE, because the containment problem on NFA's,
+which is PSPACE-complete [1], can be polynomially reduced to the entailment problem on constraint systems.
+
+By using the entailment algorithm in both directions, we can now decide if two constraint systems are
+observable equivalent. Thus, given a constraint system,
+we can find a minimal, observably equivalent system
+by systematically generating all constraint systems in
+order of increasing size, until we find one observably
+equivalent to the original system. Of course, the process of computing the minimal equivalent system with
+this algorithm is far too expensive for use in practical
+program analysis systems.
+
+5 Practical Constraint Simplification
+Fortunately, to take advantage of the rule (,=) in a program analysis tool, we do not need a completely minimized constraint system. Any simplifications in a constraint system produces corresponding reductions in the
+overall analysis time.
+
+For this purpose, we exploit the connection between
+constraint systems and RTGs. By Lemmas 4.4 and 4.9,
+any transformation on constraint systems that preserves
+the language:
+
+LGt(\Theta (S);E)(R)
+
+also preserves the observable behavior of S with respect
+to E. Based on this observation, we transform a variety of existing algorithms for simplifying RTGs to algorithms for simplifying constraint systems. In the following subsections, we present the four most promising
+algorithms found so far. We use G to denote Gt(S; E),
+and we let X range over non-terminals and p over paths,
+which are sequences of the constructors dom and rng.
+Each algorithm assumes that the constraint system S
+is closed under \Theta . Computing this closure corresponds
+to propagating data flow information locally within a
+program component. This step is relatively cheap, since
+
+program components are typically small (less than a few
+thousand lines of code).
+
+5.1 Empty Constraint Simplification
+A non-terminal X is empty if LG(X) = ;. Similarly, a
+production is empty if it refers to empty non-terminals,
+and a constraint is empty if it only induces empty productions. Since empty productions have no effect on the
+language generated by G, an empty constraint in S can
+be deleted without changing S's observable behavior.
+
+To illustrate this idea, consider the program component P = (*gy:((*f x:1) y)), where f and g are function
+tags. Although this example is unrealistic, it illustrates
+the behavior of our simplification algorithms. Analyzing P according to the constraint derivation rules yields
+a system S containing ten constraints. Closing S under \Theta  yields an additional three constraints. Figure 6
+displays the resulting constraint system \Theta (S), together
+with the corresponding grammar Gt(\Theta (S); fffP g). An
+inspection of this grammar shows that the set of nonempty non-terminals is:
+
+fffP L; ffP U ; ffyL; ffaU ; ffrL; ff1U ; ffxL; Rg
+Five of the constraints in \Theta (S) are empty, and are removed by this simplification algorithm, yielding a simplified system of eight non-empty constraints.
+
+5.2 Unreachable Constraint Simplification
+A non-terminal X is unreachable if there is no production R 7! [Y ^ Z] or R 7! [Z ^ Y ] such that
+LG(Y ) 6= ; and Z !\Lambda G p(X). Similarly, a production
+is unreachable if it refers to unreachable non-terminals,
+and a constraint is unreachable if it only induces unreachable productions. Unreachable productions have
+no effect on the language LG(R), and hence unreachable constraints in S can be deleted without changing
+the observable behavior of S.
+
+In the above example, the reachable non-terminals
+are ff1U , ffaU and ffgU . Three of the constraints are unreachable, and are removed by this algorithm, yielding
+a simplified system with five reachable constraints.
+
+5.3 Removing ffl-Constraints
+A constraint of the form [ff ^ fi] 2 S is an ffl-constraint.
+Suppose ff 62 E and the only upper bound on ff in S
+is the ffl-constraint [ff ^ fi], i.e., there are no other constraints of the form ff ^ o/ , rng(ff) ^ fl, or fl ^ dom(ff)
+in S. Then, for any solution ae of S, the set environment
+
+Constraints Production Rules Non-empty Reachable
+
+f ^ fff R 7! [f ^ fffU ]
+dom(fff) ^ ffx ffxL 7! dom(fff U )
+
+1 ^ ff1 R 7! [1 ^ ff1U ] 1 ^ ff1 1 ^ ff1
+ff1 ^ rng(fff) ff1U 7! rng(fff U )
+rng(fff) ^ ffa ffaL 7! rng(fff L)
+
+ffy ^ ffr ffyU 7! ffrU ffrL 7! ffyL ffy ^ ffr
+
+ffr ^ dom(fff) ffrU 7! dom(fff L)
+
+g ^ ffP R 7! [g ^ ffP U ] g ^ ffP g ^ ffP
+dom(ffP ) ^ ffy ffyL 7! dom(ffP U ) dom(ffP ) ^ ffy
+
+ffa ^ rng(ffP ) ffaU 7! rng(ffP U ) ffa ^ rng(ffP ) ffa ^ rng(ffP )
+
+ffr ^ ffx ffrU 7! ffxU ffxL 7! ffrL ffr ^ ffx
+ff1 ^ ffa ff1U 7! ffaU ffaL 7! ff1L ff1 ^ ffa ff1 ^ ffa
+
+1 ^ ffa R 7! [1 ^ ffaU ] 1 ^ ffa 1 ^ ffa
+
+ffP L 7! ffP ffP U 7! ffP
+
+Figure 6: The original constraint system, grammar and simplified constraint systems for P = (*gy:((*f x:1) y))
+
+ae0 defined by:
+
+ae0(ffi) = ae ae(ffi) if ffi 6j ffae(fi) if ffi j ff
+is also a solution of S. Therefore we can replace all
+occurrences of ff in S by fi while still preserving the observable behavior Soln(S) jE. This substitution transforms the constraint [ff ^ fi] to the tautology [fi ^ fi],
+which can be deleted. Dually, if [ff ^ fi] 2 S with fi 62 E
+and fi having no other lower bounds, then we can replace fi by ff, again eliminating the constraint [ff ^ fi].
+
+To illustrate this idea, consider the remaining constraints for P . In this system, the only upper bound
+for the set variable ff1 is the ffl-constraint [ff1 ^ ffa].
+Hence this algorithm replaces all occurrences of ff1 by
+ffa, which further simplifies this constraint system into:
+
+f1 ^ ffa; ffa ^ rng(ffP ); g ^ ffP g
+This system is the smallest simple constraint system
+observably equivalent to the original system \Theta (S).
+
+5.4 Hopcroft's Algorithm
+The previous algorithm merges set variables under certain circumstances, and only when they are related by
+an ffl-constraint. We would like to identify more general
+circumstances under which set variables can be merged.
+To this end, we define a valid unifier for S to be an
+equivalence relation , on the set variables of S such
+that we can merge the set variables in each equivalence
+class of , without changing the observable behavior
+of S. Using a model-theoretic argument, we can show
+that an equivalence relation , is a valid unifier for S if
+
+1. Use a variant of Hopcroft's algorithm [12] to compute an
+
+equivalence relation , on the set variables of S that satisfies
+the following conditions:
+
+(a) Each set variable in E is in an equivalence class by
+
+itself.
+
+(b) If [ff ^ fi] 2 S then 8ff , ff0 9fi , fi0 such that
+
+[ff0 ^ fi0] 2 S.
+
+(c) If [ff ^ rng(fi)] 2 S then 8ff , ff0 9fi , fi0 such that
+
+[ff0 ^ rng(fi0)] 2 S.
+
+(d) If [rng(ff) ^ fi] 2 S then 8ff , ff0 9fi , fi0 such that
+
+[rng(ff0) ^ fi0] 2 S.
+
+(e) If [ff ^ dom(fi)] 2 S then 8ff , ff0 8fi , fi0 such that
+
+[ff0 ^ dom(fi0)] 2 S.
+
+2. Merge set variables according to their equivalence class.
+
+Figure 7: The Hopcroft algorithm
+
+for all solutions ae 2 Soln(S) there exists another solution ae0 2 Soln(S) such that ae0 agrees with ae on E and
+ae0(ff) = ae0(fi) for all ff , fi.
+
+A natural strategy for generating ae0 from ae is to map
+each set variable to the least upper bound of the set
+variables in its equivalence class:
+
+ae0(ff) = F
+
+ff
+
+0,ff ae(ff
+
+0)
+
+Figure 7 describes sufficient conditions to ensure that ae0
+is a solution of S, and hence that , is a valid unifier for
+S. To produce an equivalence relation satisfying these
+conditions, we use a variant of Hopcroft's O(n lg n) time
+
+algorithm [12] for computing an equivalence relation on
+states in a DFA and then merge set variables according
+to their equivalence class.6
+
+5.5 Simplification Benchmarks
+To test the effectiveness of the simplification algorithms,
+we extended MrSpidey with the four algorithms that
+we have just described: empty, unreachable, ffl-removal ,
+and Hopcroft. Each algorithm also implements the preceding simplification strategies. The first three algorithms are linear in the number of non-empty constraints
+in the system, and Hopcroft is log-linear.
+
+We tested the algorithms on the constraint systems
+for nine program components on a 167MHz Sparc Ultra 1 with 326M of memory, using the MzScheme byte
+code compiler [10]. The results are described in figure 8. The second column gives the number of lines in
+each program component, and the third column gives
+the number of constraints in the original (unsimplified)
+constraint system after closing it under the rules \Theta . The
+remaining columns describe the behavior of each simplification algorithm, presenting the factor by which the
+number of constraints was reduced, and the time (in
+milliseconds) required for this simplification.
+
+The results demonstrate the effectiveness and efficiency of our simplification algorithms. The resulting
+constraint systems are typically at least an order of
+magnitude smaller than the original system. The cost
+of these algorithms is reasonable, particularly considering that they were run on a byte code compiler. As
+expected, the more sophisticated algorithms are more
+effective, but are also more expensive.
+
+6 Componential Set-Based Analysis
+Equipped with the simplification algorithms, we return
+to our original problem of developing a componential
+set-based analysis. The new analysis tool processes programs in three steps.
+
+1. For each component in the program, the analysis derives and simplifies the constraint system for
+that component and saves the simplified system in
+a constraint file, for use in later runs of the analysis. The simplification is performed with respect to
+the external variables of the component, excluding
+expression labels, in order to minimize the size of
+the simplified system. Thus, the simplified system
+
+6A similar development based on the definition ae0(ff) =
+ufae(ff
+
+0) j ff , ff0g results in an alternative algorithm, which is less
+
+effective in practice.
+
+only needs to describe how the component interacts with the rest of the program, and the simplification algorithm can discard constraints that are
+only necessary to infer local value set invariants.
+These discarded constraints are reconstructed later
+as needed.
+
+This step can be skipped for each program component that has not changed since the last run of
+the analysis, since its constraint file can be used
+instead.
+
+2. The analysis combines the simplified constraint
+
+systems of the entire program and closes the combined collection of constraints under \Theta , thus propagating data flow information between the constraint systems for the various program components.
+
+3. Finally, to reconstruct the full analysis results for
+
+the program component that the programmer is
+focusing on, the analysis tool combines the constraint system from the second step with the unsimplified constraint system for that component.
+It closes the resulting system under \Theta , which yields
+appropriate value set invariants for each labeled
+expression in the component.
+
+The new analysis can easily process programs that
+consist of many components. For its first step, it eliminates all those constraints that have only local relevance, thus producing a small combined constraint system for the entire program. As a result, the analysis
+tool can solve the combined system more quickly and
+using less space than traditional set-based analysis [11].
+Finally, it recreates as much precision as traditional setbased analysis as needed on a per-component basis.
+
+The new analysis performs extremely in an interactive setting because it exploits the saved constraint
+files where possible and thus avoids re-processing many
+program components unnecessarily.
+
+We implemented four variants of this analysis. Each
+analysis uses a particular simplification algorithm to
+simplify the constraint systems for the program components.
+
+6.1 Benchmarks
+We tested the componential analyses with five benchmark programs, ranging from 1,200 to 17,000 lines. For
+comparison purposes, we also analyzed each benchmark
+with the standard set-based analysis that performs no
+simplification. The analyses handled library functions
+in a context-sensitive, polymorphic manner according to
+the constraint derivation rules (let) and (inst) to avoid
+merging information between unrelated calls to these
+
+empty unreachable ffl-removal Hopcroft
+Definition lines size factor time factor time factor time factor time
+map 5 221 3 !10 6 20 11 30 13 30
+reverse 6 287 4 !10 8 20 20 10 20 30
+substring 8 579 12 10 64 10 64 10 96 20
+qsort 41 1387 15 !10 15 30 58 50 66 40
+unify 89 2921 10 10 11 80 55 120 65 150
+hopcroft 201 8429 25 10 42 100 118 100 124 200
+check 237 21854 4 50 4 1150 26 370 168 510
+escher-fish 493 30509 187 10 678 40 678 40 678 80
+scanner 1209 59215 3 180 17 840 45 2450 57 2120
+
+Figure 8: Behavior of the constraint simplification algorithms.
+
+functions. The remaining functions were analyzed in a
+context-insensitive, monomorphic manner. The results
+are documented in figure 9.
+
+The third column in the figure shows the maximum
+size of the constraint system generated by each analysis,
+and also shows this size as a percentage of the constraint
+system generated by the standard analysis. The analyses based on the simplification algorithms produce significantly smaller constraint systems, and can also analyze more programs, such as sba and poly, for which
+the standard analysis exhausted heap space.
+
+The fourth column shows the time required to analyze each program from scratch, without using any existing constraint files.7 The analyses that exploit constraint simplification yield significant speed-ups over
+the standard analysis because they manipulate much
+smaller constraint systems. The results indicate that,
+for these benchmarks, the ffl-removal algorithm yields
+the best trade-off between efficiency and effectiveness
+of the simplification algorithms. The additional simplification performed by the more expensive Hopcroft
+algorithm is out-weighed by the overhead of running
+the algorithm. The tradeoff may change as we analyze
+larger programs.
+
+To test the responsiveness of the componential analyses in an interactive setting based on an analyze-debugedit cycle, we re-analyzed each benchmark after changing a randomly chosen component in that benchmark.
+The re-analysis times are shown in the fifth column of
+figure 9. These times show an order-of-magnitude improvement in analysis times over the original, standard
+analysis, since the saved constraint files are used to
+avoid reanalyzing all of the unchanged program components. For example, the analysis of zodiac, which
+used to take over two minutes, now completes in under four seconds. Since practical debugging sessions
+using MrSpidey typically involve repeatedly analyzing
+the project each time the source code of one module is
+
+7These times exclude scanning and parsing time.
+
+Number Analysis/ File
+Program of Re-analysis size
+(# lines) Analysis constraints time (s) (bytes)
+
+scanner standard 61K 14.1 7.7 572K
+
+(1253) empty 24K (39%) 12.0 3.1 189K
+
+unreachable 15K (25%) 9.7 2.0 39K
+
+ffl-removal 14K (23%) 9.5 1.7 28K
+
+Hopcroft 14K (23%) 10.4 1.7 25K
+zodiac standard 704K 133.4 110.6 1634K
+
+(3419) empty 62K (9%) 34.1 8.1 328K
+
+unreachable 21K (3%) 28.8 4.5 169K
+
+ffl-removal 13K (2%) 28.8 3.8 147K
+
+Hopcroft 11K (2%) 31.4 3.8 136K
+nucleic standard 333K 83.9 51.2 2882K
+
+(3432) empty 90K (27%) 52.8 17.8 592K
+
+unreachable 68K (20%) 48.4 14.6 386K
+
+ffl-removal 56K (17%) 48.3 13.1 330K
+
+Hopcroft 56K (17%) 60.9 13.2 328K
+sba standard ?5M * * * *
+(11560) empty 1908K (!38%) 181.5 65.5 1351K
+
+unreachable 105K (!2%) 149.5 43.3 920K
+
+ffl-removal 76K (!2%) 147.1 42.2 770K
+
+Hopcroft 65K (!1%) 156.8 41.1 716K
+poly standard ?5M * * * *
+(17661) empty ?5M * * * *
+
+unreachable 201K (!4%) 259.6 26.9 1517K
+
+ffl-removal 68K (!1%) 239.6 13.3 1038K
+
+Hopcroft 38K (!1%) 254.1 10.9 907K
+
+* indicates the analysis exhausted heap space
+
+Figure 9: Behavior of the componential analyses.
+
+modified, e.g., when a bug is identified and eliminated,
+using separate analysis substantially improves the usability of MrSpidey.
+
+The disk-space required to store the constraint files
+is shown in column six. Even though these files use
+a straight-forward, text-based representation, their size
+is typically within a factor of two or three of the corresponding source file.
+
+copy Relative time of smart polymorphic analyses Mono.
+Program lines analysis empty unreachable ffl-removal Hopcroft analysis
+lattice 215 4.2s 39% 36% 35% 38% 42%
+browse 233 2.5s 76% 76% 76% 81% 75%
+splay 265 7.9s 75% 73% 70% 72% 83%
+check 281 50.1s 21% 23% 14% 14% 23%
+graphs 621 2.8s 85% 85% 82% 87% 82%
+boyer 624 4.3s 46% 46% 49% 50% 40%
+matrix 744 7.5s 64% 57% 51% 52% 45%
+maze 857 6.2s 64% 59% 58% 61% 54%
+nbody 880 39.6s 57% 25% 25% 26% 28%
+nucleic 3335 * * 243s * 42s * 42s * 44s * 36s
+
+* indicates the copy analysis exhausted heap space,
+and the table contains absolute times for the other analyses
+
+Figure 10: Times for the smart polymorphic analyses, relative to the copy analysis.
+
+7 Efficient Polymorphic Analysis
+The constraint simplification algorithms also enables an
+efficient polymorphic, or context-sensitive, analysis. To
+avoid merging information between unrelated calls to
+functions that are used in a polymorphic fashion, a polymorphic analysis duplicates the function's constraints
+at each call site. We extended MrSpidey with five polymorphic analyses. The first analysis is copy, which
+duplicates the constraint system for each polymorphic
+reference via a straightforward implementation of the
+rules (let) and (inst).8 The remaining four analyses are
+smart analyses that simplify the constraint system for
+each polymorphic definition.
+
+We tested the analyses using a standard set of benchmarks [13]. The results of the test runs are documented
+in figure 10. The second column shows the number of
+lines in each benchmark; the third column presents the
+time for the copy analysis; and columns four to seven
+show the times for each smart polymorphic analysis, as
+a percentage of the copy analysis time. For comparison
+purposes, the last column shows the relative time of the
+original, but less accurate, monomorphic analysis.
+
+The results again demonstrate the effectiveness of
+our constraint simplification algorithms. The smart
+analyses that exploit constraint simplification are always significantly faster and can analyze more programs
+than the copy analysis. For example, while copy exhausts heap space on the nucleic benchmark, all smart
+analyses successfully analyzed this benchmark.
+
+Again, it appears that the ffl-removal analysis yields
+the best trade-off between efficiency and effectiveness
+of the simplification algorithms. This analysis provides
+the additional accuracy of polymorphism without much
+
+8We also implemented a polymorphic analysis that re-analyzes a
+definition at each reference, but found its performance to be comparable to, and sometimes worse than, the copy analysis.
+
+additional cost over the coarse, monomorphic analysis.
+With the exception of the benchmarks browse, splay
+and graphs, which do not re-use many functions in a
+polymorphic fashion, this analysis is a factor of 2 to
+4 times faster than the copy analysis, and it is also
+capable of analyzing larger programs.
+
+8 Competitive Work
+F"ahndrich and Aiken [6] examine constraint simplification for an analysis based on a more complex constraint language. They develop a number of heuristic
+algorithms for constraint simplification, which they test
+on programs of up to 6000 lines. Their fastest approach
+yields a factor of 3 saving in both time and space, but
+is slow in absolute times compared to other analyses.
+
+Pottier [17] studies an ML-style language with a subtype system based on constraints, and and presents an
+incomplete algorithm for deciding entailment on constraint systems. He proposes some ad hoc algorithms
+for simplifying constraints, but does not present results
+on the cost or effectiveness of these algorithms.
+
+Eifrig, Smith and Trifonov [5, 21] describe a subtyping relation between constrained types that are similar to our constraint systems, and they present an incomplete decision algorithm for subtyping. They describe three algorithms for simplifying constraint systems, two of which which are similar to the empty and
+ffl-removal algorithms, and the third is a special case of
+the Hopcroft algorithm. They do not present results on
+the cost or effectiveness of these algorithms.
+
+Duesterwald et al [4] describe algorithms for simplifying data flow equations. These algorithms are similar
+to the ffl-removal and Hopcroft algorithms. Their approach only preserves the greatest solution of the equation system and assumes that the control flow graph
+
+is already known. Hence it cannot be used to analyze
+programs in a componential manner or to analyze programs with advanced control-flow mechanisms such as
+first-class functions and virtual methods. The paper
+does not present results on the cost or effectiveness of
+these algorithms.
+
+9 Future Work
+All our constraint simplification algorithms preserve the
+observable behavior of constraint systems, and thus do
+not affect the accuracy of the analysis. If we were willing
+to tolerate a less accurate analysis, we could choose a
+compressed constraint system that does not preserve
+the observable behavior of the original, but only entails
+that behavior. This approach allows the use of much
+smaller constraint systems, and hence yields a faster
+analysis.
+
+A promising approach for deriving such approximate
+constraint systems is to rely on a programmer-provided
+signature describing the behavior of each program component, and to derive the new constraint system from
+that signature. After checking the entailment condition to verify that signature-based constraints correctly
+approximates the behavior of the module, we could use
+those constraints in the remainder of the analysis. Since
+the signature-based constraints are smaller than the
+derived ones, this approach could significantly reduce
+analysis times for large projects. We are investigating
+this approach for developing a typed module language
+on top of Scheme.
+
+References
+
+[1] Aho, A., J. Hopcroft and J. Ullman. The Design and
+
+Analysis of Computer Algorithms. Addison-Wesley, Reading, Mass., 1974.
+
+[2] Aiken, A., Wimmers, E. L., and Lakshman, T. K. Soft
+
+typing with conditional types. In Proceedings of the ACM
+Sigplan Conference on Principles of Programming Languages (1994), pp. 163-173.
+
+[3] Cousot, P., and Cousot, R. Formal language, grammar,
+
+and set-constraint-based program analysis by abstract interpretation. In Proceedings of the 1995 Conference on Functional Programming and Computer Architecture (1995),
+pp. 170-181.
+
+[4] Duesterwald, E., Gupta, R., and Soffa, M. L. Reducing
+
+the cost of data flow analysis by congruence partitioning. In
+International Conference on Compiler Construction (April
+1994).
+
+[5] Eifrig, J., Smith, S., and Trifonov, V. Sound polymorphic type inference for objects. In Conference on ObjectOriented Programming Systems, Languages, and Applications (1995).
+
+[6] F"ahndrich, M., and Aiken, A. Making set-constraint based
+
+program analyses scale. Technical Report UCB/CSD-96-917,
+University of California at Berkeley, 1996.
+
+[7] Flanagan, C., and Felleisen, M. Set-based analysis for
+
+full Scheme and its use in soft-typing. Technical Report
+TR95-254, Rice University, 1995.
+
+[8] Flanagan, C., and Felleisen, M. Modular and polymorphic set-based analysis: Theory and practice. Technical Report TR-96-266, Rice University, 1996.
+
+[9] Flanagan, C., Flatt, M., Krishnamurthi, S., Weirich,
+
+S., and Felleisen, M. Finding bugs in the web of program invariants. In Proceedings of the ACM Conference on
+Programming Language Design and Implementation (1996),
+pp. 23-32.
+
+[10] Flatt, M. MzScheme Reference Manual. Rice University.
+[11] Heintze, N. Set-based analysis of ML programs. In Proceedings of the ACM Conference on Lisp and Functional
+Programming (1994), pp. 306-317.
+
+[12] Hopcroft, J. E. An n log n algorithm for minimizing the
+
+states of a finite automaton. The Theory of Machines and
+Computations (1971), 189-196.
+
+[13] Jagannathan, S., and Wright, A. K. Effective flow analysis for avoiding run-time checks. In Proc. 2nd International
+Static Analysis Symposium, LNCS 983 (September 1995),
+Springer-Verlag, pp. 207-224.
+
+[14] Jones, N., and Muchnick, S. A flexible approach to interprocedural data flow analysis and programs with recursive
+data structures. In Conference Record of the Ninth Annual
+ACM Symposium on Principles of Programming Languages
+(January 1982), pp. 66-74.
+
+[15] Palsberg, J. Closure analysis in constraint form. Transactions on Programming Languages and Systems 17, 1 (1995),
+47-62.
+
+[16] Palsberg, J., and O'Keefe, P. A type system equivalent to flow analysis. In Proceedings of the ACM SIGPLAN
+'95 Conference on Principles of Programming Languages
+(1995), pp. 367-378.
+
+[17] Pottier, F. Simplifying subtyping constraints. In Proceedings of the 1996 ACM SIGPLAN International Conference
+on Functional Programming (1996), pp. 122-133.
+
+[18] Reynolds, J. Automatic computation of data set defintions.
+
+Information Processing'68 (1969), 456-461.
+
+[19] Shivers, O. Control-flow Analysis of Higher-Order Languages, or Taming Lambda. PhD thesis, Carnegie-Mellon
+University, 1991.
+
+[20] Tofte, M. Type inference for polymorphic references. Information and Computation 89, 1 (November 1990), 1-34.
+
+[21] Trifonov, V., and Smith, S. Subtyping constrained types.
+
+In Third International Static Analysis Symposium (LNCS
+1145) (1996), pp. 349-365.
+
+[22] Wright, A., and Felleisen, M. A syntactic approach
+
+to type soundness. Information and Computation 115, 1
+(1994), 38-94.
+
+[23] Wright, A. K. Simple imperative polymorphism. Lisp and
+
+Symbolic Computation 8, 4 (Dec. 1995), 343-356.

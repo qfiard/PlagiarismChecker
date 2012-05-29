@@ -1,0 +1,592 @@
+
+
+Making Set-Constraint Program Analyses Scale
+
+Manuel F"ahndrich
+
+\Lambda  Alexander Aiken\Lambda 
+
+EECS Department
+University of California, Berkeley
+
+Berkeley, CA 94720-1776
+fmanuel,aikeng@cs.berkeley.edu
+
+August 13, 1996
+
+1 Introduction
+Constraint-based program analyses are appealing because elaborate analyses can be described with a concise
+and simple set of constraint generation rules. Constraint resolution algorithms have been developed for
+many kinds of constraints, conceptually allowing an implementation of a constraint-based program analysis
+to reuse large pieces of existing code. In practice, however, new analyses often involve re-implementing
+new, complex constraint solving frameworks, tuned for the particular analysis in question. This approach
+wastes development time and interferes with the desire to experiment quickly with a number of different
+analyses.
+
+We believe that implementing an analysis should require writing only the code to generate the constraints, and that a well engineered-library can take care of constraint representation, resolution, and
+transformation. Writing such a library capable of handling small programs is not too difficult, but scaling
+to large programs is hard. Toward this goal, we are developing a scalable, expressive framework for solving
+a class of set constraints. Scalability is achieved through four techniques: polymorphism, simplification,
+separation, and sparse representation of constraints.
+
+Our ultimate goal is to demonstrate constraint-based analysis on programs of at least 100,000 lines
+of code. Currently, we evaluate our design on an application inferring types and exceptions for Standard
+ML [MTH90] with subtyping. Our implementation analyzes SML programs in the lambda intermediate
+representation produced by the SML/NJ compiler [App92]. The largest program analyzed thus far is
+the parser generator sml-yacc, containing 6017 non-comment lines of source, which translate into 66120
+abstract syntax tree nodes in the SML/NJ intermediate representation. To the best of our knowledge, this
+is currently the largest program analyzed by a set constraint implementation (including results reported in
+[AWL94, Hei94]). Full type and exception inference for sml-yacc currently takes less than 10 minutes on
+an HP9000/715 running at 64MHz equipped with 64MB of main memory. Even though the analysis time
+is still far from practical, we improve upon a similar analysis done previously by Yi [Yi94] by a factor of
+50. His abstract interpretation for estimating uncaught exceptions runs about 617 minutes for sml-yacc
+on an SGI Challenger.
+
+Our empirical results show that our system can almost certainly handle programs larger than sml-yacc;
+it just happens that sml-yacc is the largest example we currently have. Though our implementation scales
+nicely, it is currently much slower on medium-size programs than the system described in [Hei94].
+
+The remainder of the paper is organized as follows: Section 2 gives a short overview of the set expressions
+and constraints used in our framework. Section 3 presents the techniques we find useful in building a
+scalable system. Section 4 discusses our implementation and preliminary empirical results. Throughout
+
+\Lambda This material is based in part upon work supported by NSF Young Investigator Award No. CCR-9457812 and NSF
+Infrastructure Grant No. CDA-9401156. The content of the information does not necessarily reflect the position or the policy
+of the Government.
+
+1
+
+the paper we point out open theoretical issues where progress would, we believe, aid the engineering of
+implementations similar to ours.
+
+2 Types and Constraints
+In our framework, set expressions represent types, and we use the terms set expression and type expression
+interchangeably. We describe the type language and the meaning of types informally. A formal development
+of an ideal model for this type language can be found in [AW93].
+
+The full type language consists of type variables, a least type ?, a greatest type ?, constructed types
+c(o/1; : : : ; o/n) where c is a constructors of arity n drawn from an infinite set of constructors C, function
+types o/1 ! o/2, intersections, unions, and conditional types.
+
+o/ ::= ff j ? j ? j c(o/1; : : : ; o/n) j o/1 ! o/2
+
+j o/1 " o/2 j o/1 [ o/2 j o/1 ) o/2
+
+We use a meaning function I to give meaning to free variables and extend it in the obvious way to type
+expressions. There is a subtype relation ` on meanings which we omit for brevity. The relation o/1 ` o/2
+holds between expressions o/1 and o/2 if for all assignments I to variables, we have I(o/1) ` I(o/2).
+
+Unlike "standard" set expressions, our expression language includes sets of functions o/1 ! o/2. For a
+given assignment I, the meaning of this expression is
+
+ff j x 2 I(o/1) ) f (x) 2 I(o/2)g
+in an appropriate domain. From the point of view of constraint resolution, the key property of function
+types is that they are anti-monotonic in the domain; that is o/1 ` o/2 ) o/2 ! o/ ` o/1 ! o/ . We say that a
+subexpression o/ 0 of a type expression o/ appears monotonically (resp. anti-monotonically) if o/ 0 appears to
+the left of an even (resp. odd) number of !'s within o/ .
+
+The other non-standard expression is conditional types o/1 ) o/2 (formerly o/2?o/1 in [AWL94]). The
+meaning of a conditional type I(o/1 ) o/2) is I(o/2) if I(o/1) 6= ?, and ? otherwise. (We use ? to denote
+both the syntactic least type and the semantic bottom element.) Conditional types are useful for expressing
+computations involving case analysis. For example, the predicate null, which tests whether a list is empty
+or not, can be assigned a very accurate type using conditions. In the following type, parentheses are used
+to show association:
+
+null : ff ! (ff " nil ) true) [ (ff " cons(?; ?) ) false)
+To see that this type makes sense, note that the instance ff = nil simplifies to nil ! true (using the
+identity nil " cons(?; ?) = ?). An instance with ff = cons(fi; fl) yields cons(fi; fl) ! false.
+
+Solving constraints involving general intersection, union, and function types is still an open problem
+[AW93, Dam94]. Our system restricts the forms of constraints involving intersections on the left-hand side
+and unions on the right-hand side of constraints in order to solve them. For the purpose of this paper, it
+is sufficient to consider the core type language defined below, which avoids these irregularities. We still use
+the full type language in examples, however. The core type language distinguishes between "left" types o/ L
+and "right" types o/ R. Left types appear in monotonic positions and right types appear in anti-monotonic
+positions.
+
+o/ L ::= ff j ? j ? j c(o/ L1 ; : : : ; o/ Ln ) j o/ R1 ! o/ L2 j o/ L1 [ o/ L2
+o/ R ::= ff j ? j ? j c(o/ R1 ; : : : ; o/ Rn ) j o/ L1 ! o/ R2 j o/ R1 " o/ R2
+Constraints between types express containment of sets of values. We use ^ to denote a set of constraints:
+
+^ ::= fo/ L1 ` o/ R1 ; : : : ; o/ Ln ` o/ Rn g
+A solution to a set of constraints fo/ L1 ` o/ R1 ; : : : ; o/ Ln ` o/ Rn g is a meaning function I s.t.
+
+I(o/ Li ) ` I(o/ Ri ) for i = 1; : : : ; n
+
+2
+
+^ [ f? ` o/ Rg j ^ (1)
+
+^ [ fo/ L ` ?g j ^ (2)
+
+^ [ fff ` ffg j ^ (3)
+^ [ fc(o/ L1 ; : : : ; o/ Ln ) ` c(o/ R1 ; : : : ; o/ Rn )g j ^ [ fo/ Li ` o/ Ri j 1 ^ i ^ ng (4)
+
+^ [ fo/ R1 ! o/ L1 ` o/ L2 ! o/ R2 g j ^ [ fo/ L1 ` o/ R2 ; o/ L2 ` o/ R1 g (5)
+
+^ [ fo/ L1 [ o/ L2 ` o/ Rg j ^ [ fo/ L1 ` o/ R; o/ L2 ` o/ Rg (6)
+^ [ fo/ L ` o/ R1 " o/ R2 g j ^ [ fo/ L ` o/ R1 ; o/ L ` o/ R2 g (7)
+^ [ fo/ L ` ff; ff ` o/ Rg j ^ [ fo/ L ` ff; ff ` o/ R; o/ L ` o/ Rg (8)
+
+Figure 1: Constraint resolution for core types
+Figure 1 shows the constraint resolution rules for the core types. See [AWL94] for the resolution rules of
+the full type language. In Figure 1, the relation ^1 j ^2 means that the constraint systems ^1 and ^2
+have the same solutions. The resolution rule for constructors is sound and complete for a domain of lazy
+constructors (i.e. I(c(: : : ; ?; : : :)) 6= ?) and this rule is sound (but not complete) for a strict language like
+ML. The lazy interpretation has the advantage that the resolution time complexity is polynomial instead
+of exponential. We write ^ for the solved form of ^, which is the set of constraints obtained by applying
+the resolution rules until closure.
+
+Polymorphic constrained types (or simply polymorphic types) are written
+
+8(ff1; : : : ; ffn):o/ n ^
+The meaning of a polymorphic type depends on the meaning of any free variables and is only defined if
+the constraints ^ have a solution for at least one choice of values for the quantified variables (ff1; : : : ; ffn).
+
+I(8(ff1; : : : ; ffn):o/ n ^) = "
+
+I0
+
+I0(o/ )
+
+where I0 ranges over solutions of ^, and I0(ff) = I(ff) for all ff 62 fff1; : : : ; ffng.
+
+Using polymorphic constrained types we can refine the type of null introduced above so that the type
+is undefined for arguments other than nil and cons.
+
+null : 8(ff):ff ! (ff " nil ) true) [ (ff " cons(?; ?) ) false) n fff ` nil [ cons(?; ?)g
+
+3 Scalability
+Our goal is to analyze very large programs (?100,000 lines) using constraint resolution. Designing a system
+to scale is not necessarily the same as designing a system to run fast. The primary engineering concern
+for a scalable system is space consumption. For example, a scalable system cannot assume that the entire
+program is available at one time, because it may not fit in machine memory. Thus the program must be
+analyzed in small pieces. This single observation leads to a radically different overall design than whole
+program analyses systems that analyze only complete programs (e.g., see [Hei94]).
+
+To achieve a scalable system, we analyze parts of programs separately and combine the results later. We
+use four techniques to achieve this goal: polymorphism, simplification, separation, and sparse constraint
+representation.
+
+Computing a polymorphic type for an expression allows a certain degree of abstraction of the properties
+of that expression with respect to its context. This abstraction from context makes the separate analysis
+and combination that we seek possible. Furthermore, polymorphism helps yield precise results without the
+need for repeatedly analyzing the same expression in different contexts.
+
+Unfortunately, instances of polymorphic constrained types produce copies of the constraints associated
+with the type. Polymorphism by itself does not give us scalability, because the more polymorphism we use,
+
+3
+
+the more constraints we have to carry around. The key to this problem is type and constraint simplification.
+By type and constraint simplification we mean replacing a polymorphic constrained type by an equivalent
+polymorphic type containing fewer variables. The number of variables is the main contributor to the size
+of types and constraints and consequently to running time, thus our focus is to eliminate as many variables
+as possible.
+
+The need for simplification can be understood by drawing an analogy with implementations of the
+Hindley-Milner type system. Unification, which is used to solve equality constraints between types generated during Hindley-Milner type inference, automatically removes all redundant type variables and leaves
+no residual constraints. Constraint resolution systems based on inequalities do not have this property,
+which limits efficiency because of the accumulation of type variables generated during inference, unless
+steps are taken to eliminate redundant variables. Section 3.2 details the simplifications performed by our
+system.
+
+Our third technique, separation, deals with the problem of maintaining and merging separate systems
+of constraints. Consider the problem of analyzing a subtree of a large abstract syntax tree (AST). The
+analysis of each subtree of size n should consume roughly the same time and space, no matter where the
+subtree is located within the full AST. Each subtree must thus be analyzed independently of any other
+subtree. As a consequence, instead of accumulating constraints into a global system, constraints for each
+subtree are generated, solved, and simplified independently. The constraints of independent subtrees are
+merged only at common ancestors. Keeping constraint systems of independent subtrees completely separate
+also allows more aggressive variable simplification.
+
+One issue raised by inferring separate independent constraint systems for independent expressions is
+detection of inconsistent constraints. Consider an example with two subtrees A and B, both referring to a
+free variable fl in the environment. If A adds the constraint int ` fl, and B adds the constraint fl ` float,
+then the inconsistency is detected at the point where the systems of A and B are merged. If the constraint
+added by A were visible during the inference of B, the inconsistency could be detected earlier. The latter
+approach is what typically happens in Hindley-Milner type inference based on unification. Type errors are
+reported as soon as an inconsistent constraint is added to the global constraint system. Though perhaps
+more intuitive, this approach does not pinpoint type errors very accurately in general. There is no reason
+to favor tree B over tree A as the source of the inconsistency. Instead, both locations can be flagged.
+
+Our final technique concerns a sparse representation of constraints in solved form, which is discussed
+in Section 3.1.
+
+3.1 Sparse Constraint Representation
+Given a constraint set ^ of size n, the worst case storage requirement for the solved form ^ is O(n2)
+(for core expressions). We have observed this worst case requirement in practice. If constraints consume
+space quadratic in the size of the program analyzed, the size of the largest program that can be analyzed is
+unfortunately not very large. Furthermore, performance of constraint resolution and transformation suffers
+severely due to the need to traverse the large solved form.
+
+The square order space requirement stems mainly from the generation of transitive constraints. Consider
+the following constraints:
+
+cons(T1; nil) ` ff1 ff1 ` ff2 ff2 ` ff3 ff3 ` cons(T2; nil)
+Besides adding transitive constraints between variables such as ff1 ` ff3, the transitive closure of these
+constraints replicates the lower bound cons(T1; nil) and upper bound cons(T2; nil) on all variables.
+The representation used in our implementation avoids this replication. While computing the transitive
+constraints for the above system, we keep only the constraint cons(T1; nil) ` cons(T2; nil). The missing
+transitive constraints are recomputed as needed; this sparse representation trades time for space.
+
+Define a directed graph G as follows:
+
+ffl The nodes of G are the expressions and subexpressions of ^.
+ffl For each constraint o/1 ` o/2 in ^, there is an edge o/1 \Gamma ! o/2. (Note that the rules of Figure 1 only
+
+add constraints between subexpressions in the original system ^.)
+
+4
+
+Let G# be the transitive reduction of G. Our representation has at least the edges of G#, but no more than
+G. Our representation differs from G# only in that we do not eliminate transitive constraints introduced
+by rules other than rule (8) of Figure 1.
+
+3.2 Simplifications
+Simplifications reduce the number of variables in types and constraints. More precisely, simplifying a type
+means replacing it with an equivalent type containing fewer variables:
+
+Definition 3.1 Consider two polymorphic constrained types oea = 8ff:o/a n ^a and oeb = 8fi:o/b n ^b. Let Sa
+(resp. Sb) be the set of solutions of ^a (resp. ^b). Then oea ` oeb if for every Ib 2 Sb there exists Ia 2 Sa
+such that Ia(o/a) ` Ib(o/b). The types oea and oeb are equivalent oea j oeb if oea ` oeb and oeb ` oea.
+
+(It is an open problem whether the subtype relation on quantified constrained types is decidable; no
+complete algorithm is known.)
+
+Besides reducing the space requirement for types and constraints, eliminating variables is crucial for
+performance, since the computational complexity of many algorithms in a constraint framework grows
+super-linearly in the number of variables. Simplifications also make types easier for humans to read.
+
+To every simplification, there are two aspects: First, a pattern identifying candidate types to be simplified, and second, a set of conditions to verify that a particular simplification is sound. Currently, our
+simplification suite simply consists of a set of equivalences we have found necessary to achieve scalability,
+readability, and to a lesser extent performance. A general, uniform simplification framework would clearly
+be preferable, but we know of none. Recent work by Pottier [Pot96] proposes a more uniform framework
+based on an entailment relation. The uniform part of his framework is a soundness test for simplifying
+substitutions. He does not propose a uniform framework for finding candidates for simplification--this
+part of the system is still heuristic. In [TS96], the authors develop a decidable, incomplete subtyping
+relation based on entailment which is more powerful than Pottier's, but still incomplete. In [Smi94], Smith
+describes a set of type simplifications similar to ours, but for a simpler type language.
+
+Since our primary goal is to reduce the number of variables, the patterns we recognize for simplifications
+all involve variables. A common condition to all simplifications is that any variable occurring in the pattern
+must be a universally quantified variable. Thus variables free in the type are never part of a pattern and
+are never eliminated.
+
+We first motivate and illustrate the various simplifications by example before giving a more complete
+description of each simplification. Consider the type
+
+8(ff; fi):ff ! fi n fff ` int; float ` fig
+Because function types are anti-monotonic in the domain, it is easy to verify that this type is equivalent
+to 8():int ! float (or just int ! float) using Definition 3.1. Intuitively, because ff occurs only antimonotonically, it can be set to its upper bound; similarly, because fi occurs only monotonically, it can
+be set to its lower bound. We call this kind of simplification minimization/maximization of variables.
+Section 3.2.1 describes minimization/maximization in more detail. Next, consider the type
+
+8(fl):ff ! fi n fff ` fl; fl ` fig
+In all instances of this type, the variable fl lies between ff and fi. However, the type of the instance is not
+affected by the choice for fl, so long as the constraints are satisfied. An equivalent but simpler type is
+
+8():ff ! fi n fff ` fig
+Note that the transitive constraint through fl is made explicit. Section 3.2.2 contains more about this
+simplification. The constraints of the following type contain a cycle of dependent variables:
+
+8(ff; fi):ff ! fi n fff ` fi; fi ` ffg
+Here we have a cycle of length 2. Cycles can be collapsed to a single variable (Section 3.2.3). Clearly if
+ff ` fi and fi ` ff, then ff = fi, leading to the simpler type
+
+8(ff):ff ! ff
+
+5
+
+The next simplification is subtler. Consider the type
+
+8(ff; fi):(ff " fi) ! cons(ff; fi)
+Suppose function f has this type and we apply f to a value of type T ` ff " fi. Then cons(ff; fi) '
+cons(T; T ), with equality if ff = fi. This observation is true for every T , thus the distinct variables ff and
+fi can be merged into a single variable (Section 3.2.4). The equivalent type is
+
+8(ff):ff ! cons(ff; ff)
+
+3.2.1 Minimization/Maximization
+Whether or not a variable ff 2 (ff1; : : : ; ffn) can be minimized or maximized depends on the occurrences
+of ff within 8(ff1; : : : ; ffn):o/ n ^. Below is the definition of functions Pos and Neg that compute the set of
+monotonically, respectively anti-monotonically occurring variables within a type expression.
+
+Pos(ff) = fffg Neg(ff) = fg
+Pos(c(o/1; : : : ; o/n)) = Si=1;:::;n Pos(o/i) Neg(c(o/1; : : : ; o/n)) = Si=1;:::;n Neg(o/i)
+
+Pos(o/1 ! o/2) = Neg(o/1) [ Pos(o/2) Neg(o/1 ! o/2) = Pos(o/1) [ Neg(o/2)
+
+Pos(?) = fg Neg(?) = fg
+Pos(?) = fg Neg(?) = fg
+Pos(o/1 [ o/2) = Pos(o/1) [ Pos(o/2) Neg(o/1 " o/2) = Neg(o/1) [ Neg(o/2)
+Pos(o/1 " o/2) = Pos(o/1) [ Pos(o/2) Neg(o/1 [ o/2) = Neg(o/1) [ Neg(o/2)
+
+The function FV computes the set of variables free in a (constrained) polymorphic type. The set of variables
+occurring monotonically P and the set of variables occurring anti-monotonically N within a constrained
+type o/ n ^ are the least sets satisfying:
+
+FV (8(ff1; : : : ; ffn):o/ n ^) [ Pos(o/ ) ` P
+FV (8(ff1; : : : ; ffn):o/ n ^) [ Neg(o/ ) ` N
+if ff 2 P; o/ 0 ` ff 2 ^, then Pos(o/ 0) ` P; Neg(o/ 0) ` N
+if ff 2 N; ff ` o/ 0 2 ^, then Pos(o/ 0) ` N; Neg(o/ 0) ` P
+
+Any variable in (ff1; : : : ; ffn) n P can be maximized, and any variable in (ff1; : : : ; ffn) n N can be minimized. Minimizing ff means replacing ff in o/ n ^ by the union of ff's lower bounds SfT j (T ` ff) 2 ^g.
+Maximization is done analogously, but the intersection of the upper bounds of ff is used. Since constraints
+may be recursive, T can be substituted for ff only if ff 62 FV (T ) (i.e., recursively constrained variables
+cannot be eliminated). A proof of soundness for this simplification is in a forthcoming paper.
+
+3.2.2 Truly Intermediate Variables
+Consider the type 8(ff; fi):ff ! fi n fff ` fig. Minimization/maximization does not eliminate ff or fi ,
+because both appear monotonically and anti-monotonically. However, this type is equivalent to the type
+of the identity function ff ! ff, so we should be able to either minimize fi or maximize ff.
+
+We observe that ? ` ff ` fi ` ?, suggesting that either ff or fi is actually unconstrained. If we choose
+a particular type, say int for ff, then fi will be constrained from below, and the partial instance will be
+int ! fi n int ` fi. As we can see, in this partial instance, fi only occurs positively, and the type can be
+simplified to int ! int using minimization. A similar argument holds for fixing fi.
+
+The following refinement of minimization/maximization simplification computes two new sets, sP and
+sN , in function of P , and N and o/ n ^.
+
+FV (8(ff1; : : : ; ffn):o/ n ^) [ Pos(o/ ) ` sP
+FV (8(ff1; : : : ; ffn):o/ n ^) [ Neg(o/ ) ` sN
+if ff 2 P; o/ 0 ` ff 2 ^, and o/ 0 is not a variable, then Pos(o/ 0) ` sP; Neg(o/ 0) ` sN
+if ff 2 N; ff ` o/ 0 2 ^, and o/ 0 is not a variable, then Pos(o/ 0) ` sN ; Neg(o/ 0) ` sP
+
+Instead of using P and N , variables not occurring in sP can be maximized, and variables not occurring in
+sN can be minimized.
+
+6
+
+3.2.3 Collapsing Cycles
+A set of variables (fi1; : : : ; fin) are cyclicly dependent in ^, if ^ contains the constraints ffi1 ` fi2; fi2 `
+fi3; : : : ; fin ` fi1g. Clearly, any solution I for ^ satisfies I(ff1) = I(ff2) = : : : = I(ffn).
+
+Cyclic dependencies in ^ can be found using standard graph algorithms on a graph representation of
+the constraints. The simplification is carried out by replacing each occurrence of any of the variables
+(fi1; : : : ; fin) within o/ n ^ with a single new variable.
+
+3.2.4 Intersection/Union Merging
+Let ff and fi be two quantified variables appearing in a constrained type o/ n ^. Further assume that wherever
+ff appears monotonically, it is in a union ff [ fi. Similarly, assume that all monotonic uses of fi are in unions
+ff [ fi. Finally, assume that ff and fi have the same upper bound(s). Then ff and fi can be unified, i.e. we
+can set ff = fi = fl, where fl is a fresh variable.
+
+Let LB ff; LBfi (resp. UBff; UBfi) be the set of lower bounds (resp. upper bounds) of ff; fi in ^. Then
+LB fl = LB ff [ LB fi, and UB fl = UB ff = UBfi. This simplification is sound because
+
+ffl The type o/ is preserved: all monotonic occurrences of ff [ fi are constrained below by LB ff [ LB fi
+
+before and after the simplification. All anti-monotonic occurrence of either ff or fi were constrained
+above by UB ff = UBfi = UB fl before and after the simplification.
+
+ffl The constraint system has the same solutions as before. Since UB ff = UBfi = UBff;fi, we have
+
+LBff ` UBff;fi 2 ^, and LB fi ` UBff;fi 2 ^. After the simplification, we have LB ff [ LB fi = LBfl `
+UBfl = UBff;fi.
+
+The simplification for intersections in anti-monotonic positions is analogous.
+
+We conclude this section by noting that our simplifications are not normalizing, i.e. applying simplifications in different orders may yield different types with differing numbers of variables. How best to simplify
+constrained types remains an important open problem.
+
+4 Empirical Results
+We evaluate our framework with a type and effect inference analysis with subtypes for Standard ML. The
+analysis is performed on the lambda intermediate representation generated by SML/NJ.
+
+We focus here on the two largest programs in our suite of examples. In the table below, the source line
+count (LOC) does not include comment lines, but includes interface specifications.
+
+Program LOC AST nodes Type vars Analysis Time (best)
+LexGen 1151 17609 8558 97 sec
+SmlYacc 6017 66120 33286 552 sec
+
+To show that our simplifications are effective, we ran our type inference with a range of simplification
+frequencies. When simplifications are rare, the number of variables in the types and constraints is large. We
+measure this indirectly by observing the time to recompute the transitive bounds in our sparse constraint
+representation. The more variables, the longer this recomputation takes.
+
+The graphs in Figure 2 show three time components, total analysis time, time recomputing transitive
+bounds, and time spent doing simplification (not all time components included in the total analysis time
+are shown). The simplification interval I (x-axis) defines how often simplification is performed. In this
+experiment, simplifications were performed on AST nodes of depth k \Lambda  I; k = 1; 2; : : : and always in the very
+end. For I = 64, only the final type was simplified. We note that for frequent simplification, the analysis
+time is dominated by the simplification process itself. For high simplification frequencies, the simplification
+cost is higher than the gain from the reduction of variables, thus reducing the frequency reduces the overall
+analysis time. But as the frequency is further reduced, the recomputation of transitive bounds eventually
+dominates the analysis time due to the many variables that need to be traversed. For lexgen this increase
+is gradual, whereas for sml-yacc, the increase is dramatic between intervals 8 and 10. This jump is likely
+due to the particular choice of where to apply simplification in this experiment. Given two large types
+
+7
+
+0
+50
+100
+150
+200
+250
+300
+
+1 2 4 8 16 32
+Time in secs
+
+Simplifcation interval
+
+lexgen
+
+TotalTransitive
+Simplify
+
+0
+500
+1000
+1500
+2000
+2500
+3000
+
+1 2 4 8 16 32 64
+Time in secs
+
+Simplifcation interval
+
+sml-yacc
+
+TotalTransitive
+Simplify
+
+Figure 2: Analysis Time in function of simplification interval. The curve marked "Transitive" shows the
+time spent recomputing transitive bounds due to our sparse constraint representation. The curve marked
+"Simplify" shows the time spent doing simplification.
+
+0
+5000
+10000
+15000
+20000
+25000
+
+2 4 8 16 32 64
+KB
+
+Simplifcation interval
+
+sml-yacc Heap usage
+
+Figure 3: Maximum heap size used by the analysis in function of simplification interval.
+
+0
+20
+40
+60
+80
+100
+120
+
+0 2000 4000 6000 8000 1000012000140001600018000
+cumulative sec
+
+time in nodes processed
+
+lexgen
+
+0
+100
+200
+300
+400
+500
+600
+
+0 10000 20000 30000 40000 50000 60000 70000
+cumulative sec
+
+time in nodes processed
+
+sml-yacc
+
+Figure 4: Cumulative time spent per AST node
+
+8
+
+and constraint systems it maybe much cheaper to simplify the systems separately before the merge, than
+to merge the large systems and to simplify afterwards. The time profile in Figure 4 shows cumulative
+time spent per node for lexgen and sml-yacc. Separation works well (every node takes roughly the same
+amount of time with a few exceptions) suggesting that we can scale to larger programs.
+
+Figure 3 shows a conservative upper bound on the heap size used to store the types and constraints,
+again as a function of the simplification frequency. Simplifications reduce the amount of storage required
+for the constraint graph and the types dramatically. When simplifications are done at every node in the
+AST, at most 3MB of storage are required. If no simplifications are done, the required storage increases
+by a factor of more than 8 to 25MB.
+
+Though our implementation seems to scale well, the absolute analysis times are still too long to be
+practical. We hope to further improve our performance through techniques similar to hash-consing and
+maybe selective caching of transitive bounds. Furthermore, heavy use of conditional types can blow up
+space and time requirements beyond reasonable bounds. We have not engineered this aspect of the system
+yet.
+
+5 Conclusion
+We have described the techniques used in our implementation of a expressive set constraint framework for
+program analysis. Our system scales linearly on an example analysis medium sized program of 6000 lines
+of non-comment code. Space requirements were one of the main obstacles to obtaining an analysis system
+that scales to large programs. The large space requirements come from two sources: 1) the number of
+variables, which has a direct impact on the number of constraints, 2) the representation of the constraints
+in solved form.
+
+Simplifications help scaling by reducing the space and time requirements to store and traverse the
+constraint graph. However, simplifications are relatively expensive to compute and there is a point of
+diminishing returns. Frequent simplification keeps the constraint graph to a small size, thus the transitive
+bound computations are relatively fast. Fewer simplifications save time, but the space usage for the
+constraints is larger, and the traversal of the constraints takes more time.
+
+Absolute analysis times are still high, in particular compared to the performance of the system implemented by Heintze [Hei94], which is based on different techniques. We hope to gain some insights into the
+speed discrepancy by studying his implementation.
+
+6 Acknowledgments
+We are grateful to Kwangkeun Yi for sharing his experience and his implementation with us, and to John
+Boyland for his comments on a draft of this paper.
+
+References
+[App92] Andrew Appel. Compiling with Continuations. Cambridge University Press, 1992.
+[AW93] A. Aiken and E. Wimmers. Type inclusion constraints and type inference. In Proceedings of
+
+the 1993 Conference on Functional Programming Languages and Computer Architecture, pages
+31-41, Copenhagen, Denmark, June 1993.
+
+[AWL94] A. Aiken, E. Wimmers, and T.K. Lakshman. Soft typing with conditional types. In Twenty-First
+
+Annual ACM Symposium on Principles of Programming Languages, pages 163-173, Portland,
+Oregon, January 1994.
+
+[Dam94] Flemming M. Damm. Subtyping with union types, intersection types and recursive types. In
+
+Proceedings of the '94 International Symposium on Theoretical Aspects of Computer Software,
+pages 687-706, April 1994.
+
+9
+
+[Hei94] Nevin Heintze. Set Based Analysis of ML Programs. In Proceedings of the 1994 ACM Conference
+
+on LISP and Functional Programming, pages 306-17, June 1994.
+
+[MTH90] Robin Milner, Mads Tofte, and Robert Harper. The Definition of Standard ML. MIT Press,
+
+1990.
+
+[Pot96] Fran,cois Pottier. Simplifying subtyping constraints. In Proceedings of the SIGPLAN '96 International Conference on Functional Programming, May 1996. to appear.
+
+[Smi94] Geoffrey S. Smith. Principal type schemes for functional programs with overloading and subtyping. Science of Computer Programming, 23(2-3):197-226, December 1994.
+
+[TS96] Valery Trifonov and Scott Smith. Subtyping Constrained Types. In Proceedings of the 3rd
+
+International Static Analysis Symposium, page to be published, September 1996.
+
+[Yi94] Kwangkeun Yi. Compile-time detection of uncaught exceptions for Standard ML programs. In
+
+Proceedings of the First Annual Static Analysis Symposium, volume 864 of Lecture Notes in
+Computer Science. Springer, 1994.
+
+10

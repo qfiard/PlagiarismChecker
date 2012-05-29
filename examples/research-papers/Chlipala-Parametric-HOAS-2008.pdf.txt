@@ -1,0 +1,1463 @@
+
+
+Draft
+Parametric Higher-Order Abstract Syntax for MechanizedSemantics
+
+Adam Chlipala
+Harvard University
+adamc@cs.harvard.edu
+
+Abstract
+We present parametric higher-order abstract syntax (PHOAS), anew approach to formalizing the syntax of programming languages
+
+in computer proof assistants based on type theory. Like higher-order abstract syntax (HOAS), PHOAS uses the meta language's
+binding constructs to represent the object language's binding con-structs. Unlike HOAS, PHOAS types are definable in generalpurpose type theories that support traditional functional program-ming, like Coq's Calculus of Inductive Constructions. We walk
+through how Coq can be used to develop certified, executable pro-gram transformations over several statically-typed functional programming languages formalized with PHOAS; that is, each trans-formation has a machine-checked proof of type preservation and
+semantic preservation. Our examples include CPS translation andclosure conversion for simply-typed lambda calculus, CPS translation for System F, and translation from a language with ML-stylepattern matching to a simpler language with no variable-arity binding constructs. By avoiding the syntactic hassle associated withfirst-order representation techniques, we achieve a very high degree
+of proof automation.
+Categories and Subject Descriptors F.3.1 [Logics and meaningsof programs]: Mechanical verification; D.2.4 [Software Engineering]: Correctness proofs, formal methods, reliability; D.3.4 [Pro-gramming Languages]: Compilers
+
+General Terms Languages, Verification
+Keywords compiler verification, interactive proof assistants, de-pendent types, denotational semantics
+
+1. Introduction
+Compiler verification is one of the classic problems of formalmethods. Most all computer scientists understand the importance
+
+of the problem, as compiler bugs can negate the benefits of anytechniques for program correctness assurance, formal or informal.
+Unlike most potential subjects for program verification, we haveclear correctness specifications for compilers, based on the formal
+semantics of programming languages. Even better, the researchersinterested in program verification tend already to be quite familiar
+with compilers.
+
+[copyright notice will appear here]
+
+None of these points in favor of studying the problem are new;they have all been in force for decades, at least. Pondering the
+future 20 years ago, then, it might have seemed reasonable tohope that at least the most widely-used production compilers would
+have machine-checked soundness proofs today. Of course, this isfar from the case; we are not aware of any certified compilers in
+production use today.There have been some notably successful research projects.
+Moore (1989) used the Boyer-Moore theorem prover to certify thecorrectness of a language implementation stack for the Piton language. However, the Boyer-Moore prover has an important disad-vantage here: it is implemented as a monolithic set of decision procedures, all of which we must trust are implemented correctly tobelieve the result of the verification. We can be more confident in
+results produced with provers that, like Isabelle, follow the LCFtradition; or that, like Coq, are based on foundational type theories. Both of these implementation strategies allow the use of smallproof-checking kernels, which are all we need to trust to believe the
+final results.More recently, Leroy (2006) has implemented a certified compiler for a subset of C in Coq in the CompCert project. The finalproof can be checked with a relatively small proof checker which
+amounts to a type-checker for a dependently-typed lambda calcu-lus. However, the path to this result is a bumpy one. In addition to
+the compiler implementation proper, the implementation includesabout 17,000 lines of proof. With this as the state-of-the-art, it does
+not seem surprising that most compiler implementers would de-cline to verify their compilers, leaving that task to researchers who
+specialize in it.Can we get the best of both worlds? Can we verify compilers using cooperating decision procedures and produce easily-checkableproof witnesses in the end? In this paper, we suggest a new technique that removes one barrier in the way of that goal.Nearly all compiler verification research being done until
+very recently, including the two projects that we have alreadymentioned, focuses on first-order, imperative programming languages. However, HOT (higher-order typed) languages like MLand Haskell can benefit just as much from certified implementations, and, of course, they are near and dear to the hearts ofmany people working in program verification. Unfortunately, the
+pantheon of challenges associated with compiler verification onlygrows with the addition of higher-order features and fancy type
+systems.Central among these challenges is the question of how to deal
+with nested variable binding constructs in object languages. ThePOPLmark Challenge (Aydemir et al. 2005) helped draw attention to these issues recently, issuing a challenge problem in mech-anized language metatheory that drew many solutions employing
+many different binder representation strategies. The solutions werelargely split between implementations in Coq (Bertot and Cast'eran
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 1
+
+2004) and Isabelle (Paulson 1994) using first-order variable repre-sentations and solutions in Twelf (Pfenning and Sch"urmann 1999)
+using higher-order abstract syntax (Pfenning and Elliot 1988). Thefirst-order proofs required much more verbosity surrounding bookkeeping about variables, but the Twelf implementations involvedmore tedious proving for the actual "interesting" lemmas, as Twelf
+lacks any production-quality proof automation. This failing of thefirst-order solutions seems like an unavoidable drawback. The failing of the higher-order solutions seems less fundamental, thoughcertainly much more is known about proof assistant support for the
+logics at the cores of Isabelle and Coq than about such support forTwelf's meta-logic.
+
+In past work (Chlipala 2007), we tackled these representationissues in the context of compiler verification. Language metatheory problems are popular as benchmarks because they can admitrelatively straightforward pencil-and-paper solutions and because
+most programming languages researchers are already familiar withthem. At the same time, hardly anyone working outside of programming language research, including other computer scientists,recognizes their importance. It is also true that more denotational
+approaches to language semantics remove the need for traditionalsyntactic metatheory proofs. If you accept a denotational semantics mapping terms of an object language into a foundational typetheory as the specification of program meanings, then standard theorems like type safety and strong normalization can be "borrowed"from the meta language "for free."
+
+We presented a certified type-preserving compiler from simply-typed lambda calculus to an idealized assembly language used with
+a garbage-collecting runtime system. We proved type preservationand semantic preservation for each phase of the compiler, automating the proofs to a large extent using several decision procedures,including support from a new Coq plug-in for automatic generation of lemmas about operations that rearrange variables in ob-ject terms. We formalized language syntax and typing rules using dependently-typed abstract syntax trees, and we used type-theoretic denotational semantics to assign dynamic semantics via
+computable translations to Coq's Calculus of Inductive Construc-tions. Unfortunately, the hassles of first-order binder representations, such as the de Bruijn representation we chose, are only exac-erbated by adding dependent types.
+
+It is not obvious how to lessen this burden. Higher-order ab-stract syntax, as it is usually implemented, allows for writing nonterminating programs if standard pattern matching facilities arealso provided. The logic/programming language underlying Coq
+is designed to forbid non-termination, which would correspond tological unsoundness.
+
+In this paper, we present a retooling of our previous work basedon a new representation technique, parametric higher-order abstract syntax (PHOAS). PHOAS retains most of the primary ben-efits of HOAS and first-order encodings. That is, we use the meta
+language to do almost all of our variable book-keeping for us, butwe are still able to write many useful recursive, pattern-matching
+functions over syntax in a very direct way. These functions are de-finable in the Calculus of Inductive Constructions, and we can use
+Coq to prove non-trivial theorems about them, using reusable tac-tics to automate almost all of the work.
+
+In the next section, we introduce PHOAS and use it to imple-ment a number of translations between statically-typed lambda calculi in a way that gives us static proof of type preservation. In Sec-tion 3, we sketch how we used the Coq proof assistant to build
+machine-checked proofs of semantic preservation for the transla-tions from Section 2. Section 4 provides some statistics on the complexity of our Coq developments, including measurements of howmuch work is needed to extend a CPS translation with new types.
+
+We wrap up by surveying related work and discussing future direc-tions.
+
+We have added PHOAS support to our Coq language formaliza-tion library called Lambda Tamer. The source distribution, which
+includes this paper's main case studies as examples, can be ob-tained from:
+
+http://ltamer.sourceforge.net/
+One final note is in order before we proceed with the main pre-sentation. While we start off with a few small examples that are
+
+useful in operational treatments of language semantics, our focusis on denotational methods. Indeed, we make no particular claims
+about the overall benefits of PHOAS in non-denotational settings.One conclusion from this realization might be that PHOAS is "of
+only academic interest," since it will not help much with formal-izing most pencil-and-paper proofs found in POPL and ICFP papers. Instead, we believe that there is increasing evidence that de-notational proofs are, on average, significantly easier to formalize than operational proofs. They can even be easier to the pointwhere mechanized denotational proofs of theorems are feasible
+where operational proofs are not. Perhaps experience in mechaniza-tion should be guiding our choices of pencil-and-paper techniques,
+not the other way around. Any kind of scientific analysis wouldneed many more side-to-side comparisons of formalizations, but
+we hope that the results we present in this paper can at least con-tribute to keeping readers from dismissing denotational methods.
+
+2. Programming with PHOAS
+We will begin by demonstrating how to write a variety of usefulprograms that manipulate syntax implemented with PHOAS. We
+
+use a non-ASCII notation that is a mish-mash of Coq, Haskell,and ML conventions, designed for clarity for readers familiar with
+statically-typed functional programming.
+2.1 Untyped Lambda Calculus
+We begin with the syntax of untyped lambda calculus by defining arecursive type
+
+term that follows the usual HOAS convention.
+
+term : ?
+
+App : term ! term ! term
+
+Abs : (term ! term) ! term
+
+The fact that term is a type is indicated by assigning it type ?,the type of types. While Coq has an infinite hierarchy of universes
+
+for describing types in a way that disallows certain soundness-breaking paradoxes, we will collapse that hierarchy in this paper
+in the interests of clarity. The dubious reader can consult our im-plementation to see the corresponding versions that do not take this
+shortcut.
+
+App and Abs are the two constructors of terms, correspondingto function application and abstraction. The type of
+
+Abs does notmention any specification of which variable is being bound, as we
+
+can use the function space of CIC to encode binding structure. Forinstance, the identity function
+
+*x. x can be encoded as:
+
+id = Abs (*x. x)
+The * on the righthand side of the equation marks a CIC func-tion abstraction, not the object language abstraction that we are
+
+trying to formalize. This first example looks almost like cheating,since it includes the original term in it, but we can encode any
+lambda calculus term in this way, including the famous infinite-looping term
+
+(*x. x x) (*x. x x):
+
+diverge = App (Abs (*x. App x x)) (Abs (*x. App x x))
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 2
+
+selfApply = *x : term. match x with|
+
+App x y ) App x y|
+Abs f ) f (Abs f)
+bad = selfApply (Abs selfApply)
+
+Figure 1. An example divergent term
+Coq encodes programs and proofs in the same syntactic class,following the Curry-Howard Isomorphism. If we allow the existence of terms in this general class that do not terminate when runas programs, then we can prove any theorem with an infinite loop.
+Splitting programs and proofs into separate classes would be pos-sible, but it would complicate the metatheory and implementation.
+Moreover, programs that must terminate are simply easier to rea-son about, and this will be very important when we want to prove
+correctness theorems for program transformations.Unfortunately, if Coq allowed the definitions we have developed
+so far, we could write non-terminating programs and compromisesoundness. We do not even need any facility for recursive function
+definitions; simple pattern-matching is enough. Consider the term
+bad defined in Figure 1, following the same basic trick as the lastexample. No matter how many
+
+fi-reductions and simplifications ofpattern matches we apply,
+bad resists normalizing to an applicationof one of the
+term constructors.
+
+The root of the trouble here is that we can write terms that donot correspond to terms of the lambda calculus. Counterexamples
+
+like bad are called exotic terms. There are a number of tricks forbuilding HOAS encodings that rule out exotic terms, including
+meta language enhancements based on new type systems (Fegarasand Sheard 1996; Sch"urmann et al. 2001). The technique that
+we will use, PHOAS, does not require such enhancements. It isessentially a melding of weak HOAS (Despeyroux et al. 1995;
+Honsell et al. 2001) and the "boxes go bananas" (BGB) (Washburnand Weirich 2008) HOAS technique.
+
+We can illustrate the central ideas by modifying our exampletype definition for this section so that Coq will accept it as valid.
+Coq uses simple syntactic criteria to rule out inductive type defini-tions that could lead to non-termination. The particular restriction
+that rules out the standard HOAS encoding is the positivity restric-tion, which says (roughly) that an inductive type may not be used
+in the domain of a nested function type within its own definition.A small variation on the original definition sidesteps this rule.
+Instead of defining a type term, we will define an inductive typefamily
+
+term(V). Here we see the source of the name "parametrichigher-order abstract syntax," as the family
+
+term is parametric inan arbitrary type V of variables.
+
+term(V) : ?
+
+Var : V ! term(V)
+App : term(V) ! term(V) ! term(V)
+
+Abs : (V ! term(V)) ! term(V)
+
+Var, App, and Abs are the three constructors of terms. The newrepresentation strategy differs from the old HOAS strategy only in
+
+that binders bind variables instead of terms, and those variables are"injected" explicitly via the
+
+Var constructor. For example, we nowrepresent the identity function as:
+
+id = Abs (*x. Var x)
+If we fix a type V at the top level of a logical development andassert some axioms characterizing the properties of variables, we
+
+can arrive at weak HOAS with the Theory of Contexts (Honsellet al. 2001). This would be enough to allow us to build relational
+versions of all of the syntactic operations we care about, but it doesnot support a natural style of functional programming with syntax.
+For instance, it is unclear how to write a recursive function thatcounts the number of variable occurrences in a term.
+
+The BGB trick is to take advantage of the meta language'sparametricity properties to rule out exotic terms in a way that lets
+us "stash data inside of variables" when we later decide to analyzeterms in particular ways. In our setting, we accomplish this by
+defining the final type of terms like this:
+
+Term = 8V : ?. term(V)
+That is, we define a polymorphic type, where the universallyquantified variable V may be instantiated to any type we like.
+
+Parametricity is the "theorems for free" property that lets us drawconclusions like that the type 8
+
+o/ : ?. o/ ! o/ is inhabited onlyby the polymorphic identity function. For our running example,
+
+we can rely on parametricity to guarantee that Terms only "pushvariables around," never examining or producing them in any other
+way.
+
+Now we can quite easily define a function that counts the num-ber of variable occurrences in a term.
+
+numVars : term(unit) ! N
+numVars(Var ) = 1
+numVars(App e1 e2) = numVars e1 + numVars e2
+
+numVars(Abs e0) = numVars (e0 ())
+
+NumVars : Term ! N
+NumVars(E) = numVars (E unit)
+
+The function NumVars is passed a term E that can be instanti-ated to any concrete choice of a variable type. As the only thing we
+
+need to know about variables is where they are, we can choose tomake V the singleton type
+
+unit. Now we can use a straightforwardrecursive traversal of the
+term(unit) that results. The most interest-ing part of the definition is where, for the case of
+
+numVars(Abs e0),we call the meta language function
+e0 on (), the value of type unit,to specify "which variable we are binding" or, alternatively, which
+
+data we want to associate with that variable.Coq imposes strict syntactic termination conditions on recursive
+function definitions, but the definition here of numVars satisfiesthem, because every recursive call is on a direct syntactic subterm
+of the original function argument. The notion of syntactic subtermsincludes calls to functions that are arguments of constructors.
+
+For an example of a non-trivial choice of V, consider this func-tion which checks if its term argument is a candidate for a top-level
+j-reduction:
+
+canEta0 : term(bool) ! bool
+canEta0(Var b) = b
+canEta0(App e1 e2) = canEta0(e1) && canEta0(e2)
+
+canEta0(Abs e0) = canEta0(e0 true)
+
+canEta : term(bool) ! bool
+canEta(Abs e0) = match e0 false with|
+
+App e1 (Var false) )
+
+canEta0(e1)| )
+
+false
+canEta( ) = false
+
+CanEta : Term ! bool
+CanEta(E) = canEta(E bool)
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 3
+
+To check if a term is j-reducible, we instantiate V as bool andpattern match on the resulting specialized term. We can return
+
+falseimmediately if the term is not an abstraction. Otherwise, we apply
+
+the body to false, effectively substituting false for the abstraction'sargument variable. The term we get by applying to
+
+false had betterbe an application of some unknown term
+e1 to a variable that hasbeen tagged
+false (that is, the argument variable). If so, we traverse
+e1, substituting true for each new bound variable we encounter andchecking that every free variable is tagged
+
+true. If the traversal'stest passes, then we know that the original variable never appears
+
+in e1, so the original term is a candidate for j-reduction.
+
+We can also write recursive functions that construct terms. Weconsider capture-avoiding substitution as an example. Since we are
+
+using a higher-order binding encoding, we define the type of termswith one free variable like this:
+
+Term1 = 8V : ?. V ! term(V )
+Now we can implement substitution in a way where, whenwe are trying to build a term for a particular V type, we do our
+
+intermediate work with the variable type term(V). That is, we tageach variable with the term we want to substitute for it.
+
+subst : 8V : ?. term(term(V)) ! term(V)
+subst(Var e) = e
+subst(App e1 e2) = App (subst(e1)) (subst(e2))
+
+subst(Abs e0) = Abs (*x. subst(e0 (Var x)))
+
+Subst : Term1 ! Term ! Term
+Subst E1 E2 = *V : ?. subst(E1 (term(V)) (E2 V))
+
+The subst(Abs e0) case is trickiest from a termination checkingperspective, but the same syntactic subterm rule applies. Any call
+
+to a function that was an argument to the constructor we are patternmatching on is allowed, even if the call is inside a meta language
+binder and uses the bound variable.
+
+We hope that the examples in this section have provided a goodsense for how PHOAS supports relatively direct functional definitions of syntactic operations. The choice of different variabletypes for different functions provokes some cleverness from the
+programmer, on the order of the effort needed in selecting helperfunctions in traditional functional programming. Nonetheless, the
+convenience advantage of PHOAS over first-order techniques be-comes clear when we move to formal proofs about the functions
+we define, letting us proceed without proving any auxiliary lem-mas about variable manipulation.
+
+While examples of mechanized language formalization have al-most always been drawn from the array of syntactic metatheory
+properties of languages with operational semantics, in the rest ofthis paper we are concerned instead with proving that code translations on languages with denotational semantics preserve programmeaning. In the rest of Section 2, we will show how to define several translations on typed lambda calculi, using dependent types toprove type preservation simultaneously with defining the translations themselves. Section 3 expands on our results to prove seman-tic preservation for the same translations.
+
+2.2 CPS Translation for Simply-Typed Lambda Calculus
+We will start by writing a translation from direct-style simply-typedlambda calculus (STLC) into continuation-passing style. As our
+
+single base type, we choose bool, so that every type is inhabitedby multiple distinct values, making our final correctness theorem
+in Section 3 non-trivial.
+
+Types o/ ::= bool | o/ ! o/Variables
+
+xTerms
+
+e ::= x | true | false | e e | *x. e
+
+Types o/ ::= bool | o/ ! o/Variables
+
+xTerms
+
+e ::= |x| | true | false | e e | *fTerm functions
+f
+
+Figure 2. Syntax for STLC that makes PHOAS explicit
+
+We assume the standard typing rules and omit them here, thoughthey are implied by the CIC representation that we choose for
+terms. We have a straightforward algebraic datatype definition oftypes:
+
+type : ?
+Bool : type
+Arrow : type ! type ! type
+
+We represent terms with a type family term(V), as before. Thedifference is that now choices of V have type
+
+type ! ? instead oftype
+?. That is, we have a different type of variables for each objectlanguage type.
+
+term(V) : type ! ?
+
+Var : 8o/ : type. V(o/) ! term(V) o/
+Tru : term(V) Bool
+Fals : term(V) Bool
+App : 8o/1, o/2 : type. term(V) (Arrow o/1 o/2)!
+
+term(V) o/1 ! term(V) o/2
+Abs : 8o/1, o/2 : type. (V(o/1) ! term(V) o/2)!
+
+term(V) (Arrow o/1 o/2)
+Term = *o/ : type. 8V : type ! ?. term(V) o/
+
+This follows the general idea of abstract syntax tree types imple-mented using generalized algebraic datatypes in, for instance, GHC
+
+Haskell. The main difference is that, in Haskell, type indices mustbe meta language types, so we might use the Haskell boolean type
+in place of Bool and the Haskell function type constructor in placeof
+
+Arrow. Thus, to write recursive functions over those indices inHaskell requires something like type classes with functional dependencies (or the more experimental type operators), rather than thedirect pattern-matching definitions that are possible with our Coq
+encoding.Defining the syntax of every object language with the same simple, mostly textual inductive type definition mechanism is conve-nient from a foundational perspective, but it is generally clearer to
+work mostly with syntactic abbreviations closer to those used inpencil-and-paper formalisms. Coq even supports the registration of
+arbitrary user-specified recursive descent parsing rules, so we workwith the same simplification in our implementation, modulo a restriction to the ASCII character set. The syntax that we will use forSTLC, shown in Figure 2, is a slight modification that exposes the
+relevant parts of variable representation.We explicitly inject a variable
+
+x into the term type as |x|,and abstractions
+*f explicitly involve functions f from variablesto terms. From this point on, we will distinguish between meta
+
+language and object language lambdas by writing the former as b*and the latter as the usual
+
+*. We will write *x. e as shorthand for
+*(b*x. e).Figure 3 shows Coq code for this syntax formalization scheme.
+
+We make good use of Coq's facilities for user syntax extensionsand for "sections," which make it possible for us to parameterize
+the term type with a type family var without needing to mention
+var repeatedly within the definition.
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 4
+
+Inductive type : Type :=
+| TBool : type
+| TArrow : type -> type -> type.
+
+Notation "'Bool'" := TBool : source_scope.
+Infix "-->" := TArrow (right associativity,
+
+at level 60) : source_scope.
+
+Bind Scope source_scope with type.
+Section vars.
+
+Variable var : type -> Type.
+
+Inductive term : type -> Type :=
+| EVar : forall t,
+
+var t
+-> term t
+| ETrue : term TBool
+| EFalse : term TBool
+| EApp : forall t1 t2,
+
+term (t1 --> t2)
+-> term t1
+-> term t2
+| EAbs : forall t1 t2,
+
+(var t1 -> term t2)
+-> term (t1 --> t2).
+End vars.
+
+Figure 3. Coq code to define STLC syntax
+The target language for our CPS translation is a linearizedform of the source language, where programs are broken up into
+sequences of primitive operations and functions never return.
+
+Types o/ ::= bool | o/ ! 0 | o/ * o/Variables
+
+xTerms
+
+e ::= halt(x) | x x | let p in fPrimops
+p ::= |x| | true | false | *f| h
+
+x, xi | ss1x | ss2xTerm functions
+f
+
+We will use let x = e1 in e2 as shorthand for let e1 in b*x. e2.In the interests of space, we will omit here the Coq definition of
+the mutually inductive PHOAS types for terms and primops. Themain complication of the CPS language over the source language is
+that terms are represented with a type family cpsTerm(V, o/), with
+o/ : cpsType. While terms do not return directly, the meta languagetype of a term includes the parameter
+
+o/ to determine which typeof argument "the top-level continuation" is expecting. A primop
+
+whose value is of type o/2 and whose top-level continuation expectstype
+
+o/1 has type cpsPrimop(V, o/1) o/2.
+
+We can now give a straightforward definition of a CPS transla-tion that translates almost literally into Coq code. Coq has a notion
+of notation scopes to support overloaded parsing rules, and we willtake advantage of similar conventions here to shorten the definition. For instance, the text bool can mean either the source or CPSboolean type, depending on context, and we will use the notation
+b*c to indicate both the translation bo/c of a type and the translationb
+
+ec of a term. Our type translation is:
+
+b*c : type ! cpsTypeb
+boolc = boolb
+o/1 ! o/2c = (bo/1c * (bo/2c ! 0)) ! 0
+
+letTerm : 8V : cpsType ! ?.8
+
+o/1, o/2 : cpsType.
+
+cpsTerm(V, o/1)!
+
+(V(o/1) ! cpsTerm(V, o/2))!
+cpsTerm(V, o/2)
+letTerm (halt(x)) e0 = e0 x
+
+letTerm (x1 x2) e0 = x1 x2
+letTerm (let p in e) e0 = let x = letPrim p e0
+
+in letTerm (e x) e0
+letPrim : 8V : cpsType ! ?.8
+
+o/1, o/2, o/ : cpsType.
+
+cpsPrimop(V, o/1) o/!
+
+(V(o/1) ! cpsTerm(V, o/2))!
+cpsPrimop(V, o/2) o/
+letPrim (*f ) e0 = *x. letTerm (f x) e0
+
+letPrim p e0 = p
+
+Figure 4. Term splicing
+
+b*c : 8V : cpsType ! ?. 8o/ : type.
+
+term(V ffi b*c) o/ ! cpsTerm(V) bo/cb|
+x|c = halt(x)b
+truec = let x = true in halt(x)b
+falsec = let x = false in halt(x)b
+
+e1 e2c = letTerm be1c (b*f.
+
+letTerm be2c (b*x.
+let k = *r. halt(r) in
+let p = hx, ki in
+f p))b
+*fc = let f = *p.
+
+let x = ss1p in
+let k = ss2p in
+
+letTerm bf xc (b*r.
+k r)
+in halt(f)b*c
+: 8o/ : type.Term o/ ! CpsTerm bo/cb
+
+Ec = b*V : cpsType ! ?. bE (V ffi b*c)c
+
+Figure 5. CPS translation for STLC
+
+We traverse type structure, changing all function types intocontinuation types where a return continuation has been added as
+an extra argument.The
+
+let term form only allows us to bind a primop in a term. Todefine the main term translation, we want a derived
+
+let for bindingterms in terms, and we can define it as in Figure 4.
+
+Finally, we give the overall term translation in Figure 5.The definition is deceptively easy; Coq accepts it with no further
+fuss, which implies that a proof of type preservation for the trans-lation is implicit in the translation's definition. The trick to making
+this work lies in taking advantage of our freedom to pick smart inParametric Higher-Order Abstract Syntax for Mechanized Semantics 5
+
+Section cpsTerm.
+
+Variable var : ptype -> Type.
+
+Fixpoint cpsTerm t
+
+(e : term (fun t => var (cpsType t)) t)
+{struct e} : pterm var (cpsType t) :=
+match e in (term _ t)
+
+return (pterm var (cpsType t)) with
+| EVar _ v => PHalt (var := var) v
+| ETrue => x <- Tru; Halt x
+| EFalse => x <- Fals; Halt x
+| EApp _ _ e1 e2 =>
+
+f <-- cpsTerm e1;
+x <-- cpsTerm e2;
+k <- \r, PHalt (var := var) r;
+p <- [x, k];
+f @@ p
+| EAbs _ _ e' =>
+
+f <- PAbs (var := var) (fun p =>
+
+x <- #1 p;
+k <- #2 p;
+r <-- cpsTerm (e' x);
+k @@ r);
+Halt f
+end.
+End cpsTerm.
+
+Figure 6. Coq code for the STLC CPS translation
+stantiations for the variable type family V. In particular, we see anodd variable type choice in the type of the term translation.
+
+For a given V that we want to use for the resulting CPS term,we choose to type source variables with the function V ffi b*c,
+the composition of V with the type translation function. That is,while the translation takes source terms as input, we interpret their
+variables in a CPS-specific way. The source term is handed to usin parametric form, so it is no problem to choose its V to be the
+correct function. In doing so, we find that each variable in the termwe produce has exactly the right type to use as a CPS variable in
+the translation result.Our translation is a term of CIC, and CIC's strong normalization theorem implies that any application of the translation to aconcrete, well-typed source term can be normalized to a concrete,
+well-typed CPS term. Coq will perform such normalizations for usautomatically, during proofs and in independent queries. Coq will
+extract our translation to executable OCaml or Haskell code auto-matically, though unchecked casts will be inserted at points where
+the increased expressiveness of Coq's type system over OCaml's orHaskell's is critical.
+
+Figure 6 gives the Coq code for the main translation. We againmake use of sections, where, conceptually, we fix for the whole
+section the V choice var that we are compiling into, and, when weclose the section, the function
+
+cpsTerm is extended to take var asan extra argument. We use syntactic sugar for CPS terms that is
+
+defined elsewhere. Sometimes we need to drop down to using theraw constructors of the CPS language to help type inference. For
+instance, the snippet PHalt (var := var) v gives an explicitvalue for the implicit parameter
+
+var of the halt term constructor.
+
+2.3 CPS Translation for System F
+We can extend the development from the last subsection to arriveat a CPS translation for System F. The first wrinkle is that now
+
+the definition of the type languages becomes nontrivial, thanks
+
+to the presence of type variables. Fortunately PHOAS adapts tothis change quite naturally, and we can produce the following
+revised version of our source type language definition, where theparameter T has type
+
+?. From this point on in the paper, we willavoid textual names for constructors of inductive types, instead
+
+introducing constructors with their syntactic shorthands.
+
+type(T ) : ?| * |
+
+: T ! type(T )
+bool : type(T )* ! *
+
+: type(T ) ! type(T ) ! type(T )8 *
+: (T ! type(T )) ! type(T )
+
+We have a variable injection form |ff| as we had before at theterm level, and we have a universal type constructor 8
+
+f. We will
+
+write 8ff. o/ as shorthand for 8(b*ff. o/).Now we would like to define the syntax and typing of terms. To
+
+do this, we need to implement substitution of types for type vari-ables in types. At first blush, we might think we can drop in the
+strategy used in implementing substitution in Section 2. Unfortu-nately, that definition works on parameterized terms (capitalized
+Term), while here we have terms (lowercase term) specialized toparticular variable choices within a local scope. We have no way to
+force variables to take on a useful form to help us write the substi-tution function. We also cannot rearrange our definition so that we
+work with Terms instead of terms, because the term constructorfor type abstraction needs to bind a type variable. If the representation type for those variables were chosen concretely, we would beable to write exotic terms. Thus, we must instead define substitution relationally with inference rules, following the approach usedby Despeyroux et al. (1995).
+
+We are defining a judgment o/1[o/2] 7! o/3, where o/1 is a functionfrom type variables to types, and
+
+o/2 and o/3 are types. The meaningis that substituting
+o/2 for the type variable that o/1 abstracts overleads to
+o/3.
+
+(b* . bool)[o/] 7! bool (b*ff. |ff|)[o/] 7! o/ (b* . |ff|)[o/] 7! |ff|
+
+o/1[o/] 7! o/01 o/2[o/] 7! o/02
+(b*ff. o/1(ff) ! o/2(ff))[o/] 7! o/01 ! o/02
+
+8ff. (b*ff0.o/1(ff0)(ff))[o/] 7! o/01(ff)
+
+(b*ff. 8o/1(ff))[o/] 7! 8o/01
+Now we can define the syntax of terms, which are parameterizedon two different variable types.
+
+term(T , V) : type(T ) ! ?| * |
+
+: 8o/ : type(T ). V(o/) ! term(T , V) o/
+true : term(T , V) bool
+false : term(T , V) bool* *
+
+: 8o/1, o/2 : type(T ). term(T , V) (o/1 ! o/2)!
+
+term(T , V) o/1 ! term(T , V) o/2
+* * : 8o/1, o/2 : type(T ). (V(o/1) ! term(T , V) o/2)!
+
+term(T , V) (o/1 ! o/2)*
+[*] : 8o/1 : T ! type(T ). 8o/2, o/0 : type(T ).
+
+term(T , V) (8o/1) ! (o/1[o/2] 7! o/0)!
+
+term(T , V) o/0
+\Lambda  * : 8o/ : T ! type(T ).
+
+(8ff : T . term(T , V) (o/ ff))!
+
+term(T , V) (8o/)
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 6
+
+We have type abstractions \Lambda  f for functions f from type vari-ables to types, and we have type application
+
+e[o/] for term e with a8 type. The type of the type application constructor includes
+
+o/0, thetype that results from substituting the type argument in the body
+
+of e's 8 type. Not only that, but it is necessary to pass a first-class substitution proof to the type application constructor. The
+type (o/1[o/2] 7! o/0) stands for proofs of that particular proposi-tion. To support building values of this type, we can formalize the
+substitution inference rules quite directly in Coq with an inductivedefinition. We can then build substitution proofs for concrete terms
+quite easily by interpreting the judgment definition as a logic pro-gram, and we can prove general lemmas about substitutions where
+the proofs are fully automated using logic programming. UsingCoq's extraction mechanism, we can build an executable version of
+a translation where proof terms have been erased in a sound way.Thus, first-class proofs impose no runtime overhead, in contrast to
+the situation with, e.g., analogous implementations using GADTsin GHC Haskell.
+
+Finally, we can define the packaged PHOAS versions of typesand terms:
+
+Type : ?
+Type = 8T : ?. type(T )
+Term : Type ! ?
+Term = b*T : Type. 8T : ?. 8V : type(T ) ! ?.
+
+term(T , V) (T T )
+
+We define a CPS version of System F, following the sameconventions as in the last subsection. Here we will only give the
+
+grammar for this language:
+
+Types o/ ::= ff | bool | o/ ! 0 | o/ * o/ | 8ff. o/Terms
+
+e ::= halt(x) | x x | let p in fPrimops
+p ::= |x| | true | false | *f| h
+
+x, xi | ss1x | ss2x | x[o/] | \Lambda gTerm functions
+fPrimop functions
+
+g
+
+Now we can adapt the CPS translation from the last subsectionvery naturally. Here is the new type translation:
+
+b*c : 8T : ?. type(T ) ! cpsType(T )b|
+ff|c = |ff|b
+boolc = boolb
+o/1 ! o/2c = (bo/1c * (bo/2c ! 0)) ! 0b8
+
+o/c = 8ff. (bo/(ff)c ! 0) ! 0
+
+We apply a standard double negation transform (Harper andLillibridge 1993) to 8 types, which moves the type's body into a
+
+position where we can quantify over its free type variable withoutrunning afoul of the functions-never-return property of the CPS
+language.The
+
+letTerm and letPrim functions of the last subsection arereadily adapted to System F, and we use them in the adapted term
+
+translation shown in Figure 7.Writing the term translation this way elides one detail. Like
+at the source level, building a CPS type application term requiresproviding a proof that a particular type variable substitution is valid.
+We prove the following theorem, where the substitution notation isoverloaded for both the source and CPS languages:
+
+THEOREM 1 (CPS translation of substitution proofs). For all o/1,
+o/2, and o/3, if o/1[o/2] 7! o/3, then (b*ff. bo/1(ff)c)[bo/2c] 7! bo/3c.
+
+A straightforward induction on the derivation of the premiseproves Theorem 1. In Coq, the proof is literally just a statement
+
+b*c : 8T : ?. 8V : cpsType(T ) ! ?. 8o/ : type(T ).
+
+term(T , V ffi b*c) o/ ! cpsTerm(T , V) bo/cb|
+x|c = halt(x)b
+truec = let x = true in halt(x)b
+falsec = let x = false in halt(x)b
+
+e1 e2c = letTerm be1c (b*f.
+
+letTerm be2c (b*x.
+let k = *r. halt(r) in
+let p = hx, ki in
+f p))b
+*f c = let f = *p.
+
+let x = ss1p in
+let k = ss2p in
+
+letTerm (f x) (b*r.
+k r)
+in halt(f)b
+
+e[o/]c = letTerm bec (b*f.
+
+let f0 = f[bo/c] in
+let k = *r. halt(r) in
+f0 k)b
+\Lambda  ec = let f = \Lambda ff. *k.
+
+letTerm be ffc (b*v.
+k v)
+in halt(f)b*c
+: 8T : Type.Term T ! CpsTerm bT cb
+
+Ec = b*T : ?. b*V : cpsType(T ) ! ?. bE T (V ffi b*c)c
+
+Figure 7. CPS translation for System F
+
+of which induction principle to use, chained onto an invocation ofa generic simplification tactic from the Lambda Tamer library. The
+real term translation references this theorem explicitly to build aCPS substitution proof from a source substitution proof.
+
+2.4 Pattern Match Compilation
+To have any hope of handling real programming languages, PHOASmust be able to cope with constructs that bind multiple variables
+
+at once in complicated ways. ML-style pattern matching providesa familiar example. In this subsection, we will show how to implement a compilation from pattern matching to a more primitive typetheory. Our source language's grammar, in usual informal notation,
+is:
+
+Types o/ ::= unit | o/ ! o/ | o/ * o/ | o/ + o/Patterns
+
+p ::= x | hp, pi | inl p | inr pTerms
+
+e ::= x | () | e e | *x. e | he, ei | inl e | inr e|
+
+(case e of ~p ) ~e | ) e)
+
+To avoid dealing with inexhaustive match failures, we force caseexpressions to include default cases.
+
+The key issue in formalizing this language is deciding howto represent patterns and their uses to capture binding structure
+correctly, without making it too hard to write transformations. Westart in Figure 8 by defining patterns similarly to terms from Section
+2.2, but with an extra type index giving the types of the variablesthat a pattern binds. This index has type
+
+list type, using the Coq
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 7
+
+pat(V) : type ! list type ! ?| * |
+
+: 8o/ : type. pat(V) o/ [o/]h*
+, *i : 8o/1, o/2 : type. 8 ~o/1, ~o/2 : list type.
+
+pat(V) o/1 ~o/1 ! pat(V) o/2 ~o/2!
+
+pat(V) (o/1 * o/2) ( ~o/1 \Phi  ~o/2)
+inl * : 8o/1, o/2 : type. 8~o/ : list type.
+
+pat(V) o/1 ~o/ ! pat(V) (o/1 + o/2) ~o/
+inr * : 8o/1, o/2 : type. 8~o/ : list type.
+
+pat(V) o/2 ~o/ ! pat(V) (o/1 + o/2) ~o/
+
+Figure 8. Pattern syntax
+
+list constructor, with "cons" operator :: and concatenation operator\Phi .
+
+To make use of this binding information in the type we give caseexpressions, we will need an auxiliary type definition. The indexed
+heterogeneous list type family tuple is defined in the LambdaTamer library:
+
+tuple : 8T : ?. (T ! ?) ! list T ! ?
+tuple f [] = unit
+tuple f (h :: t) = fh * tuple f t
+
+We can give the case constructor the following type, using tupleto represent groups of variables being bound at once:
+
+case * of * ) * | ) * : 8o/1, o/2 : type. term(V) o/1!
+
+list (\Sigma ~o/. pat(V) o/1 ~o/*
+
+(tuple(V) ~o/ ! term(V) o/2))!
+term(V) o/2 ! term(V) o/2
+
+The list argument is the interesting one. We represent the patternmatching branches as a list of pairs of patterns and expressions. We
+
+need to use a \Sigma  dependent pair type to enforce the relationshipbetween the types of the variables a pattern binds and the types
+that the corresponding expression expects. The type family tuple Vtranslates a list of types into the type of a properly-typed variable
+for each.
+
+The elaborated version of this language is a small variation onthe source language of Section 2.2. We give only the syntax, in
+
+standard informal style:
+
+Types o/ ::= unit | o/ ! o/ | o/ * o/ | o/ + o/Terms
+
+e ::= x | () | e e | *x. e| h
+
+e, ei | ss1e | ss2e | inl e | inr e|
+(case e of inl x ) e | inr x ) e)
+
+We want to translate pattern matching in a way that avoidsdecomposing the same term twice in the dynamic execution of
+the translation of the same source case expression. To do this,we will use an intermediate representation of patterns that maps
+every possible "shape" of the discriminee to the proper expressionto evaluate.
+
+elabTerm is the type family for terms of the targetlanguage.
+
+ctree(V) : type ! ? ! ?
+ctree(V) (o/1 * o/2) T = ctree(V) o/1 (ctree(V) o/2 T )
+ctree(V) (o/1 + o/2) T = ctree(V) o/1 T * ctree(V) o/2 T
+
+ctree(V) o/ T = elabTerm(V) o/ ! T
+
+ctree expands a type into a possibly exponential number offunctions, one for each shape of that type. For instance, for any
+
+xPat(V) : 8o/ : type. 8~o/ : list type. 8T : ?.
+
+pat(V) o/ ~o/!
+
+(tuple (elabTerm(V)) ~o/ ! T )!
+T ! ctree(V) o/ T
+
+xPat(V) |x| s f = everywhere (b*d. s (d, ()))
+xPat(V) hp1, p2i s f = xPat(V) p1
+
+(b* ~x1. xPat(V) p2
+
+(b* ~x2. s ( ~x1 \Phi  ~x2)) f)
+(everywhere (b* . f))
+xPat(V) (inl p) s f = (xPat(V) p s f, everywhere (b* . f))
+xPat(V) (inr p) s f = (everywhere (b* . f), xPat(V) p s f)
+
+Figure 10. Pattern compilation
+T , ctree(V) ((unit + (unit ! unit)) * unit) T normalizes to theterm in Figure 9.
+
+We can define a translation of pats into ctrees, as in Figure10. The last two arguments of the function
+
+xPat are success andfailure continuations. We overload \Phi  to denote concatenation of
+
+tuples. We use an auxiliary function everywhere, which takes anexpression that needs no more free variables provided and builds a
+ctree that maps every shape to that expression.The
+
+xPat function is the essence of the translation. The remain-ing pieces are a way of merging
+
+ctrees, a way of expanding theminto expressions of the target language, and the translations for the
+
+kinds of expressions beyond case, which are very straightforward.As usual, all of these pieces have static types that guarantee that
+they map well-typed syntax to well-typed syntax.
+2.5 Closure Conversion for Simply-Typed Lambda Calculus
+The last three subsections have demonstrated how PHOAS sup-ports convenient programming with a variety of different kinds of
+
+variable binding. In every one of these examples, details of vari-able identity have been unimportant. However, there are important
+classes of language formalization problems where variable iden-tity is central. The example that we will use in this subsection is
+closure conversion, which has long been regarded as a tricky chal-lenge problem for HOAS. In Twelf, closure conversion might be
+formalized using syntactic marker predicates over variables or an-other approach that leaves binding completely higher-order. In contrast, here we will use the opposite approach. To write particularfunctions, we can choose the variable type V to follow any of the
+standard first-order representation techniques. That is, PHOAS canfunction as something of a chameleon, passing back and forth between first-order and higher-order representations as is convenient.To implement closure conversion for STLC, we chose to work
+with V as nat, the type of natural numbers. Variable numberswill be interpreted as de Bruijn levels, where a variable's number
+is calculated by finding its binder and counting how many otherbinders enclose the original binder. This gives us the convenient
+property that a variable's number is the same throughout the vari-able's scope. The encoding enjoys similar properties to de Bruijn
+indices (de Bruijn 1972) but is more convenient in this case.Since we are being explicit about variable identity, we can no
+longer get away with relying only on CIC's parametricity in defin-ing the translation. We need to define a notion of well-formedness
+of de Bruijn level terms. Later we will prove that every parametricterm is well-formed when instantiated with V as
+
+nat.
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 8
+
+(elabTerm(V) unit ! elabTerm(V) unit ! T ) * (elabTerm(V) (unit ! unit) ! elabTerm(V) unit ! T )
+
+Figure 9. Example normalized ctree type
+
+Our actual implementation of closure conversion is meant tocome after CPS conversion in a compilation pipeline, but here we
+will treat the source language of Section 2.2 instead for simplicity.We define well-formedness with a recursive function over terms,
+parameterized on an explicit type environment. The judgment isalso parameterized on a subset of the in-scope variables. The intended meaning is that only free variables included in this subsetmay be used. It is important that we are able to reason about wellformedness of terms in this way, because we will be choosing sub-sets of the variables in a term's environment when we pack those
+terms into closures.
+
+isfree = tuple (b* : type. bool)
+
+wf : 8\Gamma  : list type. 8fl : isfree \Gamma . 8o/ : type.
+
+term(nat) o/ ! ?
+wf fl |n| = fl.n = o/ (where o/ is the type passed in for |n|)
+wf fl true = unit
+wf fl false = unit
+wf fl (e1 e2) = wf fl e1 * wf fl e2
+
+wf fl (*e) = wf (true, fl) (e(length fl))
+
+The notation fl.n = o/ stands for the type of first-class proofs thatthe
+
+nth variable from the end of the associated \Gamma  is assigned type
+o/ and marked as present in fl. Since we number variables from theend of
+
+\Gamma , the *e case passes the term function e the length of fl asthe value of its new free variable, while we extend
+
+fl with true toindicate that the new variable may be referenced.
+
+Another central definition is that of the function for calculatingthe set of variables that occur free in a term. We use this function
+in the translation of every function abstraction, populating the clo-sure we create with only the free variables. We use auxiliary functions isfree none, which builds an isfree tuple of all false values;
+isfree one, which builds an isfree tuple where only one positionis marked
+
+true, based on the natural number argument passed in;and
+isfree merge, which walks two isfrees for the same \Gamma , applyingboolean "or" to the values in each position.
+
+fvs : 8o/ : type. term(nat) o/ ! 8\Gamma  : list type.
+
+isfree \Gamma 
+fvs |n| \Gamma  = isfree one n
+fvs true \Gamma  = isfree none
+fvs false \Gamma  = isfree none
+fvs (e1 e2) \Gamma  = isfree merge (fvs e1 \Gamma ) (fvs e2 \Gamma )
+
+fvs (*e) \Gamma  = ss2 (fvs (e (length \Gamma )) (o/ :: \Gamma ))
+
+(where o/ is the abstraction domain type)
+
+We need to prove a critical theorem about the relationship be-tween
+
+wf and fvs, even if we just want to get our closure conversionfunction to type-check:
+
+THEOREM 2 (Minimality of fvs). For any \Gamma  and o/, any fl for \Gamma ,and any
+
+e of type o/, if wf fl e, then wf (fvs e \Gamma ) e.
+
+The proof is based on two main lemmas. The first of themasserts that, when a term
+
+e is well-formed for any set of freevariables for
+\Gamma , that term is also well-formed for every set of freevariables containing
+
+fvs e \Gamma . The second lemma asserts that, whena term is well-formed for any set of free variables
+
+fl, every variableincluded in
+fvs e \Gamma  is also included in fl. Both of these lemmas
+
+are proved by induction on the structure of the term, appealing to afew smaller lemmas characterizing the interactions of the
+
+isfree *functions with variable lookup.
+
+The last element we need to present the closure conversion is atype of explicit environments. We implement a type family
+
+envOfby recursion over an
+isfree value. The resulting environment typecontains variables for exactly those positions marked with
+
+true.
+
+envOf(V) : 8\Gamma  : list type. isfree \Gamma  ! ?
+envOf(V) [] () = unit
+envOf(V) (o/ :: \Gamma ) (true, fl) = V(o/) * envOf \Gamma  fl
+envOf(V) (o/ :: \Gamma ) (false, fl) = envOf \Gamma  fl
+
+The full closure conversion involves a lot of machinery, so wewill only present some highlights here. The type of the translation
+
+builds on the familiar form from the previous subsections:
+
+xTerm : 8o/ : type. 8e : term(nat) o/.8
+
+\Gamma  : list type. 8fl : isfree \Gamma .
+wf e fl ! envOf \Gamma  fl ! ccTerm(V) bo/c
+
+To translate a term, we must provide both a superset of its free vari-ables and a well-formedness proof relative to that set. We can see
+
+why we want to require these proofs by looking at the translationcase for variables. We use the variables
+
+OE to stand for wf proofs and
+oe to stand for envOf explicit environments.
+
+xTerm |n| OE oe = |oe(n) , OE|
+Here we use the notation e , OE to denote the casting of a CICexpression
+
+e of type o/ to type o/0, by way of presenting an explicitproof
+OE that o/ = o/0. This is exactly the kind of proof provided tous by the variable case of
+
+wf.To have these equality proofs available at the leaves of a term,
+
+we need to thread them throughout the translation, in cases like thatfor function application:
+
+xTerm (e1 e2) OE oe = (xTerm e1 (ss1OE) oe)
+
+(xTerm e2 (ss2OE) oe)
+
+We used a pair type in the wf definition, applying it Curry-Howardstyle as the type of proofs of a conjunction of two other
+
+wf deriva-tions. Now we can use
+ss1 and ss2 to project out the two sub-proofsand apply them in the recursive
+
+xTerm calls.Most of the action in closure conversion happens for the function abstraction case. We present a very sketchy picture of this case,since there are many auxiliary functions involved that are not particularly surprising.
+
+xTerm (*e) OE oe = let f = *xenv. *xarg.
+
+let ~x = xenv
+in xTerm (e (length oe))
+
+(wfFvs OE) (xarg, ~x)
+in f (makeEnv (wfFvs0 OE) oe)
+
+The basic idea is that each function is modified to take its environ-ment of free variables as a new first argument, which is a tuple of
+
+the appropriate size and types. The notation let ~x = xenv is for arecursive function that binds all of the constituent free variables into
+genuine variables by pulling them out of the tuple xenv. With thosevariables bound, we can translate the function body
+
+e. We use afunction
+wfFvs for translating the proof of e's well-formedness for
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 9
+
+an arbitrary fl into a proof for e's real set of free variables, usingTheorem 2. The explicit environment we pass to
+
+xTerm is formedby adding
+e's "real" argument xarg to the front of an environmentbuilt from the
+
+~x. Finally, we unpack the closure we have built, usinga function
+makeEnv to build an explicit environment by choosingvalues out of
+
+oe. We need another auxiliary proof-translation func-tion
+wfFvs0, again based on Theorem 2.
+
+Our actual closure conversion case study works on the outputof Section 2.2's CPS translation, which adds additional complications. We also combine the translations commonly called "clo-sure conversion" and "hoisting" into a single translation, moving
+all function definitions to the top level at the same time that wechange them to take their environments as arguments. If we implemented the phases separately, it would be harder to enforce thatfunctions are really closed, since they would have some "off-limits"
+variables in their PHOAS scopes. With our implementation, thetype of the closure conversion function guarantees not only that
+well-typed syntax is mapped to well-typed syntax, but also that theoutput terms contain only closed functions.
+
+We export the final closure conversion as a function overuniversally-typed packages, so the messy use of de Bruijn levels is hidden completely from the outside. The closure conversionimplementation is essentially working with a first-order representation, and more code is needed than if we had fixed a first-orderrepresentation from the start, since we need to convert our higherorder terms into their first-order equivalents. Thus, PHOAS wouldnot make sense for an implementation that just did closure conversion. The benefit comes when one part of an implementation needsfirst-order terms, while other parts are able to take advantage of
+higher-order terms. PHOAS allows us to compose the two kinds ofphases seamlessly, where phases need not telegraph through their
+types which representations they choose.
+
+3. Proving Semantic Preservation
+Writing the translations of the last section with dependently-typedabstract syntax has given us all of the benefits of type-preserving
+
+compilation, without the need to rely on ad-hoc testing to dis-cover if our translations may sometimes propagate type annotations incorrectly. We would like to go even further and providethe classic deliverable of compiler verification, which is proof of
+semantic preservation. For some suitable notion of program mean-ing for each language we manipulate, we want to know that the
+output of a translation has the same meaning as the input. Follow-ing our past approach (Chlipala 2007), we choose a denotational
+style of meaning assignment that has been called type theoretic se-mantics (Harper and Stone 2000). That is, we provide definitional
+compilers from all of the languages we formalize into CIC, and weconstruct machine-checked proofs using Coq's very good built-in
+support for reasoning about the terms of CIC, in contrast to workingwith an explicit operational or denotational semantics for it.
+
+We want to automate our proofs as far as possible, to minimizethe overhead of adding new features to a language and its certified
+implementation. Towards this end, we have implemented a numberof new tactics using Coq's tactical language (Delahaye 2000). This
+is a dynamically-typed language whose most important feature is avery general construct for pattern matching on CIC terms and proof
+sequents, with a novel backtracking semantics for pattern matchfailure.
+
+The Lambda Tamer library contains about 100 lines of tacticcode that we rely on in the proofs that we will sketch in this section.
+Most proofs are performed by looping through a number of differ-ent simplification procedures until no further progress can be made,
+at which point either the proof is finished or we can report the set ofunproved subgoals to the user. The core simplification procedures
+
+[[*]] : type ! ?
+[[bool]] = bool
+[[o/1 ! o/2]] = [[o/1]] ! [[o/2]]
+
+[[*]] : 8o/ : type. term([[*]]) o/ ! [[o/]]
+[[|x|]] = x
+[[true]] = true
+[[false]] = false
+[[e1 e2]] = [[e1]] [[e2]]
+
+[[*e]] = b*x. [[e(x)]]
+
+[[*]] : 8o/ : type. Term o/ ! [[o/]]
+[[E]] = [[E [[*]]]]
+
+Figure 11. Denotation functions for STLC
+
+we use are simplification of propositional structure, application ofCIC computational reduction rules, Prolog-style higher-order logic
+programming, and rewriting with quantified equalities. We add afew tactics that simplify goals that use dependent types in tricky
+ways.We also add a quantifier instantiation framework. It can be hard
+to prove goals that begin with 9 quantifiers or use hypotheses thatbegin with 8 quantifiers, because we need to pick instantiations for
+the quantified variables before proceeding. Thus, it is helpful toprovide a quantifier instantiation tactic parameterized on a function
+that chooses an instantiating term given a CIC type. A defaultstrategy of picking any properly-typed term that occurs in the goal
+works surprisingly well because of the rich dependent types that weuse.
+
+3.1 CPS Translation for Simply-Typed Lambda Calculus
+The correctness proof for the CPS translation of Section 2.2 is thesimplest and involves almost no code that is not a small constant
+
+factor away from the complexity of a standard pencil-and-papersolution. We argue that the proof is actually simpler than it would
+be on paper, because automation takes care of almost all of thedetails. The human proof architect really only needs to suggest
+lemmas and the right induction principles to use in proving them.Before we can prove the correctness of the translation, we need
+to give dynamic semantics to our source and target languages. Wecan write a very simple denotation function for the source language,
+this time overloading the notation [[*]] for the denotation functions fortypes and terms, as shown in Figure 11.
+
+There is a surprising development hidden within the superfi-cially trivial definition of the
+
+term denotation function. We choosethe variable type family V to be the type denotation function. That
+
+is, we work with syntax trees where variables are actually the de-notations of terms. This is a perfectly legal choice of variable type,
+as shown in the final line above, which defines the denotation of auniversally packaged term. As a result, the translation of variables
+is trivial, and the translation of function abstractions can use a CICbinder which passes the bound variable directly to the syntactic abstraction body e.Figure 12 gives the Coq code corresponding to Figure 11.
+
+For space reasons, we omit the details of the semantics for theCPS language. It is in a slightly different form, where the meaning
+of term e of type o/ is written [[e]]k for some continuation k of type
+[[o/]] ! bool. The final result of evaluating e is thrown to k, whichreturns a boolean, the simplest type that we can use to express the
+
+results of a variety of possibly-failing tests.
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 10
+
+Fixpoint typeDenote (t : type) : Set :=
+
+match t with
+
+| Bool => bool
+| t1 --> t2 => typeDenote t1 -> typeDenote t2
+end.
+
+Fixpoint termDenote t (e : term typeDenote t)
+
+{struct e} : typeDenote t :=
+match e in (term _ t) return (typeDenote t) with
+
+| EVar _ v => v
+| ETrue => true
+| EFalse => false
+| EApp _ _ e1 e2 =>
+
+(termDenote e1) (termDenote e2)
+| EAbs _ _ e' => fun x => termDenote (e' x)
+end.
+
+Definition Term t := forall var, term var t.
+Definition TermDenote t (E : Term t) :=
+
+termDenote (E _).
+
+Figure 12. Coq code for STLC denotation functions
+To state the semantic correctness theorem, we define a standardsemantic logical relation, by recursion on the structure of syntactic
+types: '
+
+* : 8o/ : type. [[o/]] ! [[bo/c]] ! ?
+b1 'bool b2 = b1 = b2
+f1 'o/1!o/2 f2 = 8x1. 8x2. x1 'o/1 x2 ! 8k. 9r.
+
+f2 (x2, k) = k r ^ f1 x1 'o/2 r
+
+Now we can state semantic correctness as:
+THEOREM 3 (Semantic correctness). For every o/ : type and E :
+Term o/, for any continuation k : [[bo/c]] ! bool, there exists
+r : [[bo/c]] such that [[bEc]]k = k r and [[E]] 'o/ r.
+
+When we specialize the theorem to object language type bool, we
+get that, for any E : Term bool, [[bEc]](b*b. b) = [[E]]. To convinceourselves that this is the result we wanted, we only need to consider adequacy of the definitions of the syntax and semantics ofthe source and target languages, assuming that we believe that any
+compiler errors can be detected by boolean tests. This simplifica-tion will be even more welcome in the proofs of more complicated
+translations, where we do not want to include details of the logicalrelations we choose in the trusted code base.
+
+Thinking informally, we can prove Theorem 3 by inductionon the structure of
+
+E, relying on one other inductively-provedlemma about the correctness of
+
+letTerm. Unfortunately, Coq hasno concept of an induction principle for a function type, and that
+
+is how we are representing terms. Twelf's meta logic is all aboutsupporting induction over types involving function spaces. Can
+we import some of that convenience to Coq? In the rest of thissubsection, we focus on how to do that by introducing a kind
+of explicit well-formedness relation on terms. We can assert asan axiom that every term is well-formed, and indeed we believe
+that this is a consistent axiom, thanks to parametricity of CIC.Nonetheless, we have no proof of this worked out. It may be
+possible to adapt the proof for the Theory of Contexts (Bucalo et al.2006) or apply the techniques suggested by Hofmann (1999) for
+reasoning about HOAS. Regardless of the form that our confidencein the axiom takes, it might be worthwhile to consider an extension
+to Coq that makes this axiom provable within the logic, in much the
+
+(x1, x2) 2 \Gamma 
+\Gamma  ` |x1| j |x2| \Gamma  ` true j true \Gamma  ` false j false
+
+\Gamma  ` f1 j f2 \Gamma  ` a1 j a2
+
+\Gamma  ` f1 a1 j f2 a28
+x1, x2. (x1, x2), \Gamma  ` e1(x1) j e2(x2)
+
+\Gamma  ` *e1 j *e2
+
+Figure 13. Term equivalence inference rules
+
+same way that support for inductive types was added to an earlierversion of Coq, but we leave that for future work.
+
+At the same time, asserting the axiom is really only a con-venience in our development. We could restate our theorems to
+require that the "axiom" holds when applied to any terms thatare mentioned, and we could prove that our translations preserve
+well-formedness. This clutters PHOAS developments, but it is nothard to imagine some new support from Coq for automating these
+changes, letting the proof developer work with notation like whatappears in our current development. We would be doing extra work
+to prove lemmas that seem likely to be instances of more generalmeta-theorems, but we would at least avoid explicit dependence on
+axioms. Any ground instance of the axiom is provable easily by asimple logic program.
+
+In any case, it is convenient to have a well-formedness judgmentdefined for our PHOAS terms. Rather than define a traditional wellformedness judgment directly, we instead formalize what it meansfor two terms with different concrete choices for V to be equivalent.
+We say that a universally-packaged term is well-formed if and onlyif any choice of two V instantiations leads to a pair of equivalent
+terms. We denote the judgment as \Gamma  ` e1 j e2, where \Gamma  is a setof pairs of variables from the V types of
+
+e1 and e2. In Figure 13,we give the equivalence judgment for STLC in the usual informal
+
+natural deduction style, omitting some complications arising fromtyping. Now we assert as an axiom that, for any
+
+E : Term o/ andany types V
+
+1 and V2, ; ` E V1 j E V2.The judgment j suggests a useful proof strategy for Theorem
+
+3. By inducting over j derivations, we can in effect perform par-allel induction over a term
+
+E, where at each stage we have severalversions of
+E available, corresponding to different choices of Vbut known to share the same structure. To prove Theorem 3, it is
+
+useful to do parallel induction where we choose V to be both thesource-level type denotation function and the target-level denotation function composed with the type translation. In particular, themain action happens in proving this lemma:
+
+LEMMA 1. For every o/ : type, e1 : term([[*]]) o/, e2 : term([[*]] ffib*c
+
+) o/, and set of variable pairs \Gamma :
+
+* If \Gamma  ` e1 j e2*
+
+And for every (x1, x2) 2 \Gamma  associated with source type o/0, itfollows that
+
+x1 'o/0 x2,* Then
+
+for any continuation k : [[bo/c]] ! bool, there exists
+r : [[bo/c]] such that [[be2c]]k = k r and [[e1]] 'o/ r.
+
+The proof script for this lemma involves stating a few proof hints,asking to induct on the j derivation, and calling the generic simplification and quantifier instantiation tactic. We derive Theorem 3 asan easy corollary, producing the initial j proof by using the axiom
+we asserted.
+
+It is interesting to stop at this point and consider how "higher-order" this proof is. What have we gained over proofs with, for
+
+instance, nominal or de Bruijn representations? The main inducParametric Higher-Order Abstract Syntax for Mechanized Semantics 11
+
+tion principle comes from the rules for the equivalence judgment,which includes a first-order list of variable pairs. Parts of the proof
+involve sub-proofs of membership in this list, which we can thinkof as isomorphic to natural numbers. Nonetheless, in crucial contrast to nominal proofs, our proofs require no treatment of reason-ing about variable renamings or permutations; and, in contrast to de
+Bruijn proofs, the contexts of our equivalence judgment are freelyreorderable, with no need to mirror reorderings in terms by tweaking variable indices. We could also go even further and parameter-ize the well-formedness judgment by a predicate on variable pairs,
+removing the explicit list and just requiring that free variable pairssatisfy the predicate. This solution ends up working a lot like the
+Twelf facility for defining regular worlds and seems to be "just ashigher-order," though as the subject of an axiom it is perhaps harder
+to believe.
+
+3.2 CPS Translation for System F
+We can extend this correctness proof to Section 2.3's CPS transla-tion for System F. The main change is that we choose to do parallel
+
+induction with three different choices of the type variable type T ;we consider versions of source types where variables are sourcelevel type denotations, where variables are target-level type denota-tions, and where variables are relations between source- and targetlevel denotation types. We do this within an analogous parallel in-duction over terms.
+
+The idea is that, as we recurse through term structure, we stashthe appropriate specialization of our logical relation for each free
+type variable in that variable in the third parallel version of theterm.
+
+The logical relation from the last subsection is revised to dealproperly with type variables and universal types. Instead of taking
+a single type as its main argument, it instead takes all three parallelversions of the source type. Figure 14 presents the relation.
+
+We have omitted some explicit casts and other details neededto get the dependent typing to work out. The key new lemma
+that we must prove about this logical relation, compared to thelast subsection, is that for any 8 type body
+
+t and relation R overarbitrary types, ' gives us the same relation when called with
+
+t(R) as when called with the result of substituting R for t's freevariable using the substitution relation *
+
+[*] 7! * from Section 2.3.Our proof of that lemma is hundreds of lines, since we do not yet
+
+have effective automation support for the uses of dependent typingthat arise. With that lemma available, we prove the main theorem
+in a few dozen lines.
+
+3.3 Pattern Match Compilation
+The correctness proof for the pattern match compiler from Section2.4 is almost trivial once the translation is defined. We do not need
+
+a logical relation, because the source and target type systems areidentical; the final theorem is stated with simple equality. We need
+to state a few lemmas and give the right induction principles to useto prove them, but the proof is almost entirely automatic.
+
+3.4 Closure Conversion for Simply-Typed Lambda Calculus
+As for pattern match compilation, we state the closure conversioncorrectness theorem for Section 2.5's translation using equality.
+
+Since we have significantly more auxiliary functions than in theother examples, we need to state more lemmas about them, but the
+overall proof is again largely automated, relying on a few dozencarefully-chosen proof hints. We can also prove that every term
+is well-formed in the sense of Section 2.5's wf judgment, as aconsequence of the standard higher-order well-formedness axiom
+that we assume.
+
+Component Syntax Semantics Eq. Rel.STLC source 37 15 20
+
+STLC CPS 72 29 41STLC closure converted 94 38 -
+System F source 73 26 78System F CPS 108 38 -
+Pattern matching source 84 49 -Pattern matching target 67 13 -
+
+Figure 15. Lines-of-code counts for the object languages in themain case studies
+
+Component Translation Correctness proofSTLC CPS 54 67
+STLC closure conversion 554 284System F CPS 97 413
+
+Match compilation 194 138
+
+Figure 16. Lines-of-code counts for the translations in the maincase studies
+
+Feature unit * + N ListsSource syntax 5 18 20 16 16
+Source semantics 2 4 8 8 4Equivalence judgment 2 10 11 9 7
+
+CPS syntax 5 18 20 16 16CPS semantics 2 4 8 7 16
+Translation 5 17 17 15 39Logical relation 1 3 6 1 11
+
+Lemmas 0 0 0 0 26Proof hints 1 1 1 1 15
+
+Figure 17. Lines-of-code counts for features added to the STLCCPS case study
+
+4. Measuring the Overhead of Formal Proof
+Implementations and correctness proofs for the translations of Sec-tions 2.2 through 2.5 are included in our source distribution. In this
+
+section, we summarize the amounts of code needed for the differentpieces of these components and for some additional experiments.
+
+Figure 15 shows the number of lines of code used to formalizeeach language from the case studies. For each language, we show
+how many lines are needed to define its combined syntax and typesystem, along with how many lines are needed to give its dynamic
+semantics and how many lines are needed to define its equivalencejudgment, if we needed one for that case study. For each translation,
+Figure 16 give the size of the translation proper along with the sizeof its correctness proof. The latter counts include both code to state
+theorems and code to prove them.
+
+We also ran some experiments with extending our STLC CPSconversion with a number of standard types from functional programming, measuring how much we had to change our implemen-tation to add each feature. Figure 17 gives the results. We added
+unit, with its single term constructor; product types, with a pairformation constructor and two projection operators; sum types,
+with inl and inr injections and case analysis; natural numbers, with"zero" and "successor" constructors and one-level case analysis;
+and lists, with "nil" and "cons" operators and built-in "fold left"functions.
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 12
+
+'*,*,* : 8o/R : type(\Sigma T1, T2 : ?. T1 ! T2 ! ?). 8o/1, o/2 : type ? . [[o/1]] ! [[bo/2c]] ! ?
+b1 'bool,bool,bool b2 = b1 = b2
+f1 'o/R1!o/R2,o/11!o/12,o/21!o/22 f2 = 8x1. 8x2. x1 'o/R1,o/11,o/21 x2 ! 8k. 9r. f2 (x2, k) = k r ^ f1 x1 'o/R2,o/12,o/22 r
+
+v1 '|R|,|T1|,|T2| v2 = R v1 v2
+f1 '8o/R,8o/1,8o/2 f2 = 8T1, T2 : ?. 8R : T1 ! T2 ! ?. 8k. 9r. f2 T2 k = k r ^ f1 T1 'o/R(R),o/1(T1),o/2(T2) r'
+
+= False
+
+Figure 14. Logical relation for System F CPS translation
+For each feature, we list how many lines were needed for itssyntax/type system and dynamic semantics in the source and target
+languages, its inference rules for the source-level equivalence judg-ment, the CPS translation of its types and terms, its case in the logical relation used by the soundness proof, any extra lemmas used inthat proof, and the proof hints added to be used by the automation
+machinery. Only adding list types required proving a new lemma,which has to do with folding over two lists in parallel, maintaining
+a binary relation between accumulators. The proof hints added arealong the lines of "replace any variable of type
+
+unit with ()" and"when you see a pattern match on a value of sum type in the goal,
+
+try a case analysis on that value."
+
+5. Related Work
+PHOAS is weak HOAS (Despeyroux et al. 1995; Honsell et al.2001) where we replace a global type parameter with a parameter
+
+bound locally and instantiated with different values throughout adevelopment. In both settings, we rely on axioms to prove semantic correctness theorems, though we need no axioms for our typepreservation theorems with PHOAS. The ability to choose different
+concrete variable types for different contexts gives PHOAS someadditional power in both functional programming and proving. On
+the other hand, the axioms we assume for PHOAS are more com-plicated and language-specific than those weak HOAS assumes for
+the Theory of Contexts, though we could avoid the language speci-ficity by encoding all syntax in a single parameterized universal
+syntax type.Guillemette and Monnier (2008) used GHC Haskell to implement a compiler with a proof of type preservation but not semanticpreservation. The implementations of their transformations are very
+similar to ours. In one notable exception, they resort to first-orderrepresentation of type variables, to make theorems about substitution easier to prove. With Coq's support for automating higher-order proofs, we are able to stick to higher-order variable representation for both type and term variables.There have been many studies of the classic first-order variable
+binding representations within proof assistants, including studiesusing nominal syntax with two classes of variables in LEGO (Mckinna and Pollack 1999), de Bruijn indices in LEGO (Altenkirch1993), nominal syntax in Isabelle/HOL (Urban and Tasson 2005),
+and locally nameless syntax in Coq (Aydemir et al. 2008). All ofthese first-order approaches involve extra syntactic bookkeeping in
+the definition of functions over syntax and the statement and proofsof theorems about syntax. While this overhead should be compared
+to our use of term equivalence relations in PHOAS, we only paythat cost in our semantic correctness proofs, and our meta language
+parametricity lets us manifest proofs of well-formedness judgmentswhere needed, saving us from the standard first-order technique
+of threading such proofs throughout a development. The proofs oftype preservation implicit in our dependently-typed translations require no explicit tracking of object language typing contexts, and
+
+we are not aware of any proposals for avoiding this fundamentalcost of first-order representations.
+
+Developments using HOAS have most commonly been donein Twelf (Pfenning and Sch"urmann 1999), which supports logic
+programming, but not functional programming, over syntax. Tra-ditional HOAS removes the need to implement syntactic helper
+functions like substitution. We mostly get around the problem inPHOAS by sticking to denotational formalizations that involve few
+low-level syntactic operations. Twelf's meta-logic includes manyfeatures for reasoning about judgment contexts in inductive proofs;
+with PHOAS, we are reimplementing special cases of those fea-tures, with examples like the term equivalence judgments parameterized on variable contexts. The idiomatic Twelf style of logicprogramming with syntax seems to us subjectively more complicated than the functional programming style that we have usedin this paper, and it seems plausible that the Twelf style, with
+its use of syntactic marker predicates, could make it harder toprove semantic correctness of the translations, though we know of
+very little work that attempts in Twelf proofs of semantic correct-ness for translations between lambda calculi. There have been several approaches proposed for functional programming over HOASterms (Sch"urmann et al. 2001; Pientka 2008), but they all involve
+creating new type systems rather than working within a general-purpose type theory like CIC, and their implementations are still
+immature and lacking in the kind of "proof assistant ecosystem"associated with tools like Coq, Isabelle, and Twelf.
+
+Several projects have considered "hybrid" approaches, wheresyntax is implemented with de Bruijn indices at the lowest level, but
+a HOAS interface is built on top, including convenient inductionprinciples. This has been implemented in Isabelle/HOL (Ambler
+et al. 2002), Coq (Capretta and Felty 2006), and MetaPRL (Hickeyet al. 2006). PHOAS has a close qualitative connection to these approaches, as it also allows switching between first-order and higher-order views of terms, as demonstrated in our closure conversion.
+
+We already mentioned a few projects in compiler verification forfirst-order languages. The bibliography by Dave (2003) provides
+extensive pointers to other work.Minamide and Okuma (2003) verified CPS translations in Isabelle/HOL, using a nominal representation, and Dargaye andLeroy (2007) used Coq to implement a certified CPS translation
+for a simply-typed lambda calculus with a number of ML-like fea-tures. The languages of the latter project are more realistic than
+those we have treated in our case studies, but the target languagehas the drawback that it includes two different classes of variables
+to make the translation easier to verify. Both projects pay the usualbookkeeping costs of first-order methods.
+
+Tian (2006) formalized CPS translation correctness in Twelf. AsTwelf contains no production-quality proof automation, the proofs
+are entirely manual, leading to a much larger development than inour corresponding case study.
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 13
+
+6. Conclusion
+We have shown how parametric higher-order abstract syntax(PHOAS) can be used to support convenient functional programming with the syntax of languages with nested variable binders.Proof assistants like Coq can be used to produce very compact
+and highly automated proofs of correctness for program transfor-mations implemented with PHOAS. Translations that need to take
+variable identity into account take more effort to write, but the en-coding allows for relatively direct implementations, and compiler
+phases that need variable identity can be composed with phasesthat do not, without sacrificing ease of development and proof for
+the latter category.Notably absent among our case studies are impure object languages that support side effects and general recursive definitions.We showed in our earlier work (Chlipala 2007) how our methodology deals with first-order impure languages, but it is important toextend the results of this paper to higher-order impure languages.
+We are presently developing an approach to handling such lan-guages that maintains most of the programming simplicity and
+proof automation benefits of our pure case studies, based on a deepembedding in Coq of a meta language that supports impure features
+better than CIC does. With the right tactic support for this metalanguage, we can hope to make reasoning about impure program
+denotations almost as easy as reasoning about denotations directlyin CIC.
+
+References
+Thorsten Altenkirch. A formalization of the strong normalizationproof for System F in LEGO. In Proc. TLCA, pages 13-28,
+
+1993.
+Simon Ambler, Roy L. Crole, and Alberto Momigliano. Combininghigher order abstract syntax with tactical theorem proving and
+
+(co)induction. In Proc. TPHOLs, pages 13-30, London, UK,2002.
+
+Brian Aydemir, Arthur Chargu'eraud, Benjamin C. Pierce, RandyPollack, and Stephanie Weirich. Engineering formal metatheory.
+
+In Proc. POPL, pages 3-15, 2008.
+Brian E. Aydemir, Aaron Bohannon, Matthew Fairbairn, J. NathanFoster, Benjamin C. Pierce, Peter Sewell, Dimitrios Vytiniotis,
+
+Geoffrey Washburn, Stephanie Weirich, and Steve Zdancewic.Mechanized metatheory for the masses: The P
+
+OPLMARK chal-lenge. In Proc. TPHOLs, pages 50-65, 2005.
+
+Yves Bertot and Pierre Cast'eran. Interactive Theorem Provingand Program Development. Coq'Art: The Calculus of Inductive
+
+Constructions. Texts in Theoretical Computer Science. SpringerVerlag, 2004.
+
+Anna Bucalo, Furio Honsell, Marino Miculan, Ivan Scagnetto, andMartin Hofmann. Consistency of the theory of contexts. J.
+
+Funct. Program., 16(3):327-372, 2006.
+Venanzio Capretta and Amy P. Felty. Combining de Bruijn indicesand higher-order abstract syntax in Coq. In Proc. TYPES, pages
+
+63-77, 2006.
+Adam Chlipala. A certified type-preserving compiler from lambdacalculus to assembly language. In Proc. PLDI, pages 54-65,
+
+2007.
+Zaynah Dargaye and Xavier Leroy. Mechanized verification ofCPS transformations. In Proc. LPAR, pages 211-225, 2007.
+
+Maulik A. Dave. Compiler verification: a bibliography. SIGSOFTSoftw. Eng. Notes, 28(6):2-2, 2003.
+
+Nicolas G. de Bruijn. Lambda-calculus notation with namelessdummies: a tool for automatic formal manipulation with application to the Church-Rosser theorem. Indag. Math., 34(5):381-392, 1972.
+
+David Delahaye. A tactic language for the system Coq. In Proc.LPAR, pages 85-95, 2000.
+Jo"elle Despeyroux, Amy P. Felty, and Andr'e Hirschowitz. Higher-order abstract syntax in coq. In Proc. TLCA, pages 124-138,
+
+1995.
+Leonidas Fegaras and Tim Sheard. Revisiting catamorphisms overdatatypes with embedded functions (or, programs from outer
+
+space). In Proc. POPL, pages 284-294, 1996.
+Louis-Julien Guillemette and Stefan Monnier. A type-preservingcompiler in Haskell. In Proc. ICFP, 2008.
+
+Robert Harper and Mark Lillibridge. Explicit polymorphism andCPS conversion. In Proc. POPL, pages 206-219, 1993.
+Robert Harper and Christopher Stone. A type-theoretic interpreta-tion of Standard ML. In Proof, language, and interaction: essays
+
+in honour of Robin Milner, pages 341-387, 2000.
+Jason Hickey, Aleksey Nogin, Xin Yu, and Alexei Kopylov. Mech-anized meta-reasoning using a hybrid HOAS/de Bruijn representation and reflection. In Proc. ICFP '06, pages 172-183, 2006.
+Martin Hofmann. Semantical analysis of higher-order abstractsyntax. In Proc. LICS, pages 204-213, 1999.
+
+Furio Honsell, Marino Miculan, and Ivan Scagnetto. An axiomaticapproach to metareasoning on nominal algebras in HOAS. In
+
+Proc. ICALP, pages 963-978, 2001.
+Xavier Leroy. Formal certification of a compiler back-end or:programming a compiler with a proof assistant. In Proc. POPL,
+
+pages 42-54, 2006.
+James Mckinna and Robert Pollack. Some lambda calculus andtype theory formalized. J. Autom. Reason., 23(3):373-409,
+
+1999.
+Yasuhiko Minamide and Koji Okuma. Verifying CPS transforma-tions in Isabelle/HOL. In Proc. MERLIN, pages 1-8, 2003.
+
+J. Strother Moore. A mechanically verified language implementa-tion. J. Automated Reasoning, 5(4):461-492, 1989.
+L. C. Paulson. Isabelle: A generic theorem prover. Lecture Notesin Computer Science, 828:xvii + 321, 1994.
+F. Pfenning and C. Elliot. Higher-order abstract syntax. In Proc.PLDI, pages 199-208, 1988.
+Frank Pfenning and Carsten Sch"urmann. System description: Twelf- a meta-logical framework for deductive systems. In Proc.
+
+CADE, pages 202-206, 1999.
+Brigitte Pientka. A type-theoretic foundation for programmingwith higher-order abstract syntax and first-class substitutions. In
+
+Proc. POPL, pages 371-382, 2008.
+Carsten Sch"urmann, Jo"elle Despeyroux, and Frank Pfenning. Prim-itive recursion for higher-order abstract syntax. Theoretical
+
+Computer Science, 266:1-57, 2001.
+Ye Henry Tian. Mechanically verifying correctness of CPS compi-lation. In Proc. CATS, pages 41-51, 2006.
+
+C. Urban and C. Tasson. Nominal techniques in Isabelle/HOL. InProc. CADE, pages 38-53, 2005.
+Geoffrey Washburn and Stephanie Weirich. Boxes go bananas: En-coding higher-order abstract syntax with parametric polymorphism. J. Funct. Program., 18(1):87-140, 2008.
+
+Parametric Higher-Order Abstract Syntax for Mechanized Semantics 14

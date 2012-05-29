@@ -1,0 +1,592 @@
+
+
+A Few Principles of Macro Design
+David Herman
+Northeastern University
+
+dherman@ccs.neu.edu
+
+David Van Horn
+Brandeis University
+dvanhorn@cs.brandeis.edu
+
+Abstract
+Hygiene facilitates the implementation of reliable macros but doesnot guarantee it. In this note we review the introspective capabilities
+
+of macros, discuss the problems caused by abusing this power, andsuggest a few principles for designing well-behaved macros.
+
+1. Introduction
+Hygiene makes it easier to write reliable syntactic abstractions, butdoes not guarantee it. The power of macros lies in the ability to
+
+define syntactic abstractions, i.e., derived special forms that extendScheme as if they were a part of the language itself. In form and
+function, hygienic macros achieve this spectacularly well. But forreasoning about programs, they still fall short of this goal.
+
+Hygiene is often motivated by reference to variable conventionsand
+
+ff-equivalence [12, 1, 4], but these concepts are really onlyunderstood as properties of fully-expanded terms, with only the
+
+pre-defined forms of Scheme and no remaining macros. Indeed,the roles of identifiers as bindings, references, or quoted symbols
+are only discovered incrementally during the process of expansionas macro uses are eliminated. Effectively,
+
+ff-equivalence has nomeaning in Scheme until after expansion.
+
+Meanwhile, lexical scope is a practical language design prin-ciple because it allows programmers to understand the local definitions of a program by simple inspection. Indeed, as the R6RSdescribes, "Scheme is a statically scoped programming language.
+Each use of a variable is associated with a lexically apparent bind-ing of that variable" [16].
+
+Since macros may manipulate programs arbitrarily, it is notnecessarily possible to understand the binding structure of a program without first fully expanding its macros. Often, automatedtools such as the
+
+expand procedure or graphical IDE tools such asDrScheme's "Check Syntax" button [5] fulfill this need. But such
+
+tools either require inspecting fully-expanded code, revealing thecomplete implementation details of their macros, or at least preclude simple syntactic inspection of the source program. To achievetrue syntactic abstraction, programmers should be able to use and
+understand macros as if they were built-in forms in Scheme. Specif-ically, users should be able to understand a macro's scoping discipline without reference to its implementation or expansion.
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+
+Copyright cfl ACM [to be supplied]. . .$5.00.
+
+A Programming Puzzle
+Albert Meyer posed thirteen provocative programming puzzles toshow that, when it comes to reasoning about programs, "intuition
+
+has its limits" [13]. Let us reconsider one of Meyer's puzzles,tailored for Scheme:
+
+PUZZLE Exhibit a simple context into which any two Scheme pro-grams can be substituted, such that if the Scheme programs are
+not identical S-expressions, the resulting programs yield differentresults.
+
+The answer is simple: (quote \Lambda ) distinguishes any two Schemeprograms syntactically by reifying their source as runtime values.
+
+Of course, it is also possible for a macro to quote its argument,so another solution to the puzzle is:
+
+(let-syntax ((q (syntax-rules ()
+
+((q x) (quote x)))))
+(q \Lambda ))
+
+In fact, any Scheme context C[(m \Lambda )] involving the applicationof a macro
+
+m might quote its argument. Given that macros areTuring-complete, the question of whether
+
+m quotes its argument isundecidable.
+
+But quote is not the only way a Scheme program can in-spect its own source code. Whereas
+
+quote turns source text intodata that a program can consume at runtime, macros written with
+
+syntax-rules can actually make compile-time decisions basedon program source text. In Section 2, we review several known
+techniques exploiting this introspective power to demonstratepathological hygienic macros: one that distinguishes all syntactic differences between arbitrary Scheme programs, and a classic
+syntax-rules macro that behaves like an unhygienic macro.Such dramatic exploitation of syntactic introspection is probably rarely needed. And in Section 3, we show that the power ofScheme macros comes at a price: the application of any macro
+may eliminate all Scheme program equivalences in its arguments.In practice, though, well-behaved macros seem to be usable as
+true abstractions, i.e., without exposing their implementations. InSection 4, we describe a few simple design principles for writing
+macros that act as consistent extensions of Scheme, so that clientscan treat them as if they were built-in language forms.
+
+2. The Introspective Power of Macros
+In this section, we review the introspective power of syntax-rulesand use several known tricks to demonstrate a solution to Meyer's
+
+puzzle that distinguishes two programs syntactically at macro-expansion time.
+
+2.1 A Compile-Time Predicate
+Figure 1 gives a definition of a macro sexp=?, which serves as acompile-time predicate. Because of the non-strict nature of macro
+
+expansion, predicates are written in continuation-passing style,
+
+with two additional arguments for the respective success and fail-ure continuations. Thus
+
+sexp=? takes four arguments: two termsto compare as S-expressions and two continuation terms.
+
+The definition of sexp=? decomposes its arguments struc-turally, comparing the contents of pairs and vectors componentwise. In the final clause, sexp=? uses an auxiliary predicate
+ident? to test whether the arguments are identifiers or constants,as well as comparison predicates
+
+ident=? and const=? to com-pare them.
+
+The predicate ident? is due to Kiselyov [11]. The implementa-tion defines a derived macro
+
+test, which cleverly expands the term
+a into the pattern of test. If a is bound to an identifier, then apply-ing
+
+test to an identifier will match its first rule and expand to thesuccess continuation. Otherwise, applying
+
+test to an identifier willnot match the first rule, since a compound pattern never matches an
+
+identifier; in this case the second rule will apply and test will ex-pand to the failure continuation. Thus by applying
+
+test to the iden-tifier
+*anident*, ident? serves as a predicate testing whether itsargument
+
+a is bound to an identifier.The predicates
+
+ident=? and const=?, due to Petrofsky andKiselyov [14, 10], compare two terms which are assumed to both
+
+be identifiers or constants, respectively. Like the macro ident? de-scribed above,
+
+ident=? defines a nested macro test, but inge-niously also expands its argument
+
+a into the literals list of test.Thus the first rule of the
+test macro compares the identifier boundto
+a as a syntactic keyword rather than an ordinary pattern vari-able. By applying
+
+test to the argument b, the two identifiers areeffectively compared for syntactic equality.1 The implementation
+
+of const=? is similar but does not require the use of the literals listto match constants.
+
+2.2 Seemingly Unhygienic Macros with syntax-rules
+The hygiene conditions [12, 1] for macro expansion are describedinformally as properties of variable occurrences:
+
+1. It is impossible to write a macro that introduces a bind-ing that can capture references other than those introduced by the macro.
+2. It is impossible to write a macro that introduces a refer-ence that can be captured by bindings other than those
+
+introduced by the macro.
+A macro that violates the first hygiene condition, for example, must"introduce" a binding--i.e., an identifier that does not occur in the
+
+macro's input--that captures a variable reference from its input.Petrofsky [14] and Kiselyov [10] described a clever technique
+for implementing macros with syntax-rules that appear to vio-late the hygiene conditions. For example, a
+
+loop macro that im-plicitly binds the variable
+break to a captured continuation for es-caping the loop might appear to be unhygienic:
+
+(loop (set! x (+ x 1))
+
+(display x)
+(if (>= x 100)
+
+(break #f)))
+
+However, even a hygienic macro can search for a reference in itsinput and copy that identifier into a binding position. The implementation of loop appears in Figure 2. The auxiliary macro findsearches for an identifier in a term, inserting the found identifier
+into a success continuation term or else expanding into a failurecontinuation term. The
+
+loop macro uses find to extract the iden-tifier
+break from the loop body and bind it as the argument to
+
+1 More precisely, the identifiers are compared as if with the procedure
+free-identifier=? [4, 16].
+
+(define-syntax sexp=?
+
+(syntax-rules ()
+
+((sexp=? (a1 . b1) (a2 . b2) yes no)
+
+(sexp=? a1 a2 (sexp=? b1 b2 yes no) no))
+((sexp=? (a1 . b1) e2 yes no)
+
+no)
+((sexp=? e1 (a2 . b2) yes no)
+
+no)
+((sexp=? #(e1 ...) #(e2 ...) yes no)
+
+(sexp=? (e1 ...) (e2 ...) yes no))
+((sexp=? #(e1 ...) e2 yes no)
+
+no)
+((sexp=? e1 #(e2 ...) yes no)
+
+no)
+((sexp=? e1 e2 yes no)
+
+(ident? e1
+
+(ident? e2 (ident=? e1 e2 yes no) no)
+(ident? e2 no (const=? e1 e2 yes no))))))
+
+(define-syntax ident?
+
+(syntax-rules ()
+
+((ident? a yes no)
+
+(let-syntax ((test (syntax-rules ()
+
+((test a y n) y)
+((test _ y n) n))))
+(test *anident* yes no)))))
+
+(define-syntax ident=?
+
+(syntax-rules ()
+
+((ident=? a b yes no)
+
+(let-syntax ((test (syntax-rules (a)
+
+((test a y n) y)
+((test x t n) n))))
+(test b yes no)))))
+
+(define-syntax const=?
+
+(syntax-rules ()
+
+((const=? a b yes no)
+
+(let-syntax ((test (syntax-rules ()
+
+((test a y n) y)
+((test _ y n) n))))
+(test a b yes no)))))
+
+Figure 1. A compile-time solution to Meyer's puzzle.
+
+call/cc, or else introduces a variable dummy if break does notoccur in the body.
+
+The intuition that loop is unhygienic is based on the assumptionthat the identifier
+
+break does not occur in the input to loop, so itsbinding must therefore have been introduced by the macro. But this
+
+assumption is false since loop is able to find references to breakin the body expression. Thus
+
+loop does not introduce the bindingfor
+break at all; it merely copies an occurrence into both bindingand reference positions.
+
+3. Hygiene is Not a Cure-All
+As the above examples demonstrate, even with the rather simplehygienic macro system of
+
+syntax-rules, it is still possible towrite rather ill-conceived macros. The question then is how to use
+
+hygienic macros effectively, and how better to understand programsthat use them.
+
+(define-syntax find
+
+(syntax-rules ()
+
+((find ident (a . b) sk fk)
+
+(find ident a sk (find ident b sk fk)))
+((find ident #(a ...) sk fk)
+
+(find ident (a ...) sk fk))
+((find ident a (sk-op . sk-args) fk)
+
+(ident? a
+
+(ident=? ident a (sk-op a . sk-args) fk)
+fk))))
+
+(define-syntax loop
+
+(syntax-rules ()
+
+((loop e)
+
+(let-syntax ((k (syntax-rules ()
+
+((_ ident e*)
+
+(call/cc (lambda (ident)
+
+(let f ()
+
+e*
+(f))))))))
+(find break e (k e) (k dummy e))))
+((loop es ...)
+
+(loop (begin es ...)))))
+
+Figure 2. Petrofsky's loop macro.
+
+3.1 Is the Theory of Macros Trivial?
+The old Lisp programming construct of fexprs, i.e., functions thatdynamically receive their arguments as source code, is widely deprecated because it allows programs to distinguish essentially allsyntactic differences between programs [15]. In effect, the operator
+in any procedure application might turn out to be a fexpr, whichcould dynamically distinguish any syntactic transformation within
+its arguments. This causes problems for compilers, which cannotthen exploit standard program equivalences to perform optimizations, as well as programmers, because their programs become sen-sitive to even the slightest changes.
+
+Wand [17] formalized this idea in a lambda calculus with fexprsby proving that for any program
+
+p, we can construct a contextthat distinguishes any
+p0 6=ff p.2 With the definitions in Figure 1,we can similarly construct a context for a Scheme program
+
+p thatdistinguishes all other programs at macro-expansion time:
+
+(sexp=? p \Lambda  #t #f)
+In the extreme, this implies that the use of an untrusted macro inScheme can defeat any program equivalences we might expect to
+
+hold for the arguments passed to the macro. Does this mean thathygienic macros are as problematic and difficult to reason about as
+fexprs?Certainly not! In practice, hygienic macros do not prove to be as
+troublesome as fexprs, whether for compilers or for programmers.For the former, the reason is simple: whereas fexprs can inspect
+source code dynamically, macros are restricted to performing thisintrospection at compile-time. The compiler only needs to operate
+on a program (or module [6]) after expansion, at which point it cansafely perform optimizations. For programmers, however, working
+with a fully-expanded program would be impractical. But well-written macros serve as syntactic abstractions, allowing clients to
+use them without inspecting their expansion.
+
+2 In Wand's simple model, fexprs cannot distinguish ff-conversions, although in real implementations even variable names are observable.
+
+3.2 Alpha, the Ultimate Refactoring
+A well-written syntactic abstraction should behave like a consistentextension of Scheme. Unlike
+
+sexp=?, which interferes with almostall program equivalences, a macro should not subvert the usual semantic properties of Scheme. Program equivalences are especiallyimportant because they facilitate program refactoring [7], i.e., improving internal characteristics of a program without changing itsexternal behavior.
+
+A particularly important program equivalence for Scheme is ff-equivalence. Indeed, hygiene is often motivated by reference to
+ff-conversion and variable conventions [12, 1, 4]. Now, the onlyknown notion of
+
+ff-equivalence for Scheme involves fully expand-ing programs and comparing the results. Automated tools such as
+
+the ff-renaming feature of the DrScheme IDE [5] must internallyexpand a program to determine the scoping relationships. But human readers should certainly not have to inspect the output of ex-pansion to understand a program.
+
+Consider the standard let form: the Scheme standard allowsfor the possibility of
+
+let to be implemented as a macro, but pro-grammers can think of it as a built-in form. Moreover, we can think
+
+of Scheme's core notion of ff-equivalence over the built-in formsas if it were extended with a rule:
+
+e1 =ff e01 z fresh e2[z/x] =ff e02[z/x0]
+
+(let ((x e1)) e2) =ff (let ((x0 e01)) e02)
+
+Because let is well-behaved, programmers understand this ruleintuitively and act as though it is a primitive form, regardless of
+
+whether their Scheme implementation implements let as a macro.
+
+4. Principles of Macro Design
+By foregoing some of the introspective power of macros, macrowriters can allow their clients to use macros as if they were builtin forms in Scheme. In this section, we catalog several designprinciples for writing well-behaved macros and demonstrate how
+macros like sexp=? and loop violate these principles.Just as many hygienic macro systems are designed to allow for
+the occasional use of intentional variable capture, we acknowledgethat our design rules are not always appropriate and can sometimes
+be disregarded to good effect. For this reason we also discuss somereasonable exceptions to our rules.
+
+4.1 Design with ff-equivalence in mind.
+For clients of the let macro to intuit the ff-equivalence rule de-scribed in the previous section,
+
+let needs to obey a documentedscoping discipline. Section 11.4.6 of the R
+
+6RS explains this discipline in prose, which we could summarize in an informal bindingspecification:
+
+;; (let ((x:ident expr) ...) expr[x ...]) :: expr
+This specification indicates the general shape of the macro [2],such as the parenthesization of the individual clauses, as well as
+
+the binding structure. The name x is used as a placeholder to referto the identifiers bound in the clauses, to show that these variables
+are added to the lexical environment of the body expression.Documenting the scoping discipline of a macro helps impose
+structure on its design and conveys the information clients needin order to know how to
+
+ff-convert uses of the macro. Despite thelack of a general
+ff-equivalence relation for Scheme programs withmacros, macros that obey regular scoping disciplines can still be
+
+ff-converted in a natural way.The remaining design principles in this section can be seen as
+ways of designing macros with ff-equivalence in mind.
+
+4.2 Use identifiers consistently.
+The hygiene conditions refer to "bindings" and "references," whichare only discovered incrementally during the process of macro expansion; until macros are expanded into primitive Scheme formssuch as
+
+lambda, the binding structure of a term is unknown. Ingeneral, an identifier is only known to be a binding or a reference
+
+(or in fact a quoted symbol) by completely expanding the programand relating the identifier in the unexpanded program to its corresponding identifier in the expanded program.But such a mapping may not be one-to-one; macros are not
+required to use every argument exactly once. It is not hard toconstruct macros that copy an input identifier into several different
+contexts:
+;; (dup x:ident expr[x]) :: expr
+(define-syntax dup
+
+(syntax-rules ()
+
+((dup a e)
+
+(begin
+
+(set! a 42)
+(lambda (a) e)))))
+
+The same variable a is used both as a free variable to be updatedto
+
+42 and a bound name within the subexpression e. So in anapplication such as
+
+(dup x x), different choices of names for
+x change the meaning of the expression. This does not followthe usual structure of Scheme binding constructs: since the first
+
+occurrence of x is both free and bound, its inner binding cannotbe
+
+ff-converted independently from its surrounding binding.Sometimes it may be a useful shorthand to use a single identifier
+
+both as a bound variable and as a free reference. For example, anobject-oriented library might provide a syntax for inheriting a field
+in a subclass with a single identifier simultaneously specifying thename of the inherited variable and binding the variable locally:
+
+;; (inherit x:ident) :: defn[x]
+(inherit foo)
+
+Here foo serves both as a reference and a binding occurrence.But our design principle also suggests an alternative, more flexible
+
+syntax that allows the two uses of foo to operate independently:
+;; (inherit ident as x:ident) :: defn[x]
+(inherit foo as bar)
+
+In this revised syntax, the first variable serves as a reference tothe field being inherited, whereas the second variable is the local
+
+binding. This allows for the possibility of ff-renaming the localbinding independently from the name of the inherited field. The
+former syntax is useful for common cases, but the latter syntax ismore amenable to
+
+ff-conversion.
+
+4.3 Avoid observing variable names.
+In addition to copying an identifier into both free and binding posi-tions, quoting a bound identifier can be problematic. For example,
+
+we could devise an alternative to lambda that disallows the specificvariable name
+
+quux:
+
+;; (lambda* (x:ident ... . rest:ident)
+;; expr[x ... rest]) :: expr
+(define-syntax lambda*
+
+(syntax-rules ()
+
+((lambda* (x ... . rest) b ...)
+
+(if (memq 'quux '(x ... rest))
+
+(error 'lambda* "bad name: quux")
+(lambda (x ... . rest) b ...)))))
+
+By inspecting the bound variables and disallowing a particularname,
+
+lambda* restricts the usual freedom of the programmer to
+ff-convert a bound variable to any name.More subtly,
+
+syntax-rules provides another means for ob-serving names through the literals list [16], which allows a macro
+
+to match against particular identifiers in a pattern. The ident=?macro of Section 2 uses the literals list for just this purpose. While
+the intention of the literals list is to identify certain identifiers assyntactic keywords, there is nothing preventing its use as a general mechanism for comparing identifiers as with ident=?. Inother words,
+
+syntax-rules provides enough introspective powerto compare identifiers at compile-time just as
+
+quote and eq? cando at runtime.
+
+Observing variable names can sometimes be useful for intro-spective facilities like IDE's and automated documentation tools.
+A Scheme with a "docstring" facility like Emacs Lisp's might pro-vide a form
+
+define/doc for associating a documentation stringwith a variable definition:
+
+;; (define/doc x:ident expr expr) :: defn[x]
+(define-syntax define/doc
+
+(syntax-rules ()
+
+((define/doc x doc e)
+
+(begin
+
+(define x e)
+(set-doc! x (format "~a: ~a" 'x doc))))))
+
+If the library exposes this documentation string, then the pro-gram could discover the variable name and become sensitive to
+
+ff-conversions. In practice, though, programmers adhere to con-ventions that docstrings are strictly for informative purposes, such
+as displaying to a user, and should not be relied on for the internallogic of programs.
+
+4.4 Treat subterms as atomic.
+Ganz et al [8] coined the term analytic macros to describe macrosthat inspect the internal structure of their subterms. This often occurs when macro-writers are tempted to optimize their macros forspecial cases of their input. For example, a logical
+
+or operator usu-ally needs to bind the result of its first expression to a temporary
+
+variable in order to prevent evaluating the expression twice, but ifthe expression is itself already a variable, the additional temporary
+variable is superfluous. A macro-writer might be tempted to opti-mize the
+
+or macro by optimizing this special case:
+
+;; (or expr expr) :: expr
+(define-syntax or
+
+(syntax-rules ()
+
+((or e1 e2)
+
+(ident? e1
+
+(if e1 e1 e2)
+(let ((tmp e1))
+
+(if tmp tmp e2))))))
+
+In the "macro-writer's bill of rights" [3], Dybvig explains thatthese are the kinds of optimizations that a compiler can make perfectly well all by itself. Useless variable elimination is an easyand common compiler optimization. Dybvig argues that compilers
+should alleviate the incentive for hand-writing such optimizationsby performing them automatically. The simpler and clearer implementation of or that the programmer ought to write is:
+;; (or expr expr) :: expr
+(define-syntax or
+
+(syntax-rules ()
+
+((or e1 e2)
+
+(let ((tmp e1))
+
+(if tmp tmp e2)))))
+
+This simpler version of or is easier to read and maintain sinceit treats only the general case and leaves the delicate business of
+optimization to the compiler.Analytic macros can violate information hiding by observing
+very fine-grained details about the implementation of an expres-sion. The
+
+sexp=? macro of Section 2 uses this introspective powerto compare terms for syntactic equality. And the
+
+loop macro com-bines the analytic
+find with duplicating the identifier break intoboth binding and reference positions to behave much like an unhygienic macro.
+5. Discussion
+It is an established fact, though perhaps not widely-enough under-stood, that even hygienic macros allow for extremely fine-grained
+
+syntactic introspection. Based on this observation, we have pro-posed some principles for designing macros that at least informally
+allow programmers to use ff-conversion on unexpanded Schemeprograms as a semantics-preserving transformation.
+
+Herman and Wand [9] have studied hygienic macros in a re-stricted setting that enforces design principles through a static type
+system. The informal binding specifications we use here are de-scribed formally as types, which allows for a formal definition of
+ff-equivalence of programs with macros independent of the expan-sion algorithm. Hygienic expansion is then shown to preserve the
+meaning of ff-equivalent source programs.In general, the flexibility of full Scheme seems to preclude the
+semantic properties (primarily, the definition and preservation of
+ff-equivalence) provided in that setting. But more work is neededto study whether those properties extend to macros written according to such a discipline, when implemented in the context of fullScheme. Until then, we hope the informal principles described in
+this note shed some light on the design of reliable macros.
+Acknowledgments
+We are indebted to Will Clinger, Jacob Matthews, Sam Tobin-Hochstadt, Mitchell Wand, and the anonymous reviewers for their
+
+attentive readings and insightful comments.
+References
+
+[1] William Clinger and Jonathan Rees. Macros that work. In Principlesof Programming Languages (POPL), 1991.
+
+[2] Ryan Culpepper and Matthias Felleisen. Taming macros. InGenerative Programming and Component Engineering (GPCE),
+
+October 2004.
+[3] R. Kent Dybvig. The guaranteed optimization clause of themacro-writer's bill of rights, 2004.
+
+http://video.google.com/
+videoplay?docid=-6899972066795135270.
+
+[4] R. Kent Dybvig, Robert Hieb, and Carl Bruggeman. Syntacticabstraction in Scheme. Lisp and Symbolic Computation, 5(4):295-
+
+326, December 1993.
+[5] Robert Bruce Findler, John Clements, Cormac Flanagan, MatthewFlatt, Shriram Krishnamurthi, Paul Steckler, and Matthias Felleisen.
+
+DrScheme: a programming environment for Scheme. Journal ofFunctional Programming, 12(2):159-182, 2002.
+
+[6] Matthew Flatt. Composable and compilable macros: You want itwhen? In International Conference on Functional Programming
+
+(ICFP'2002), 2002.
+[7] Martin Fowler. Refactoring: Improving the Design of Existing Code.Addison-Wesley, 1999.
+
+[8] Steven E. Ganz, Amr Sabry, and Walid Taha. Macros as multi-stagecomputations: type-safe, generative, binding macros in MacroML. In
+
+ICFP 2001, pages 74-85, 2001.
+[9] David Herman and Mitchell Wand. A theory of hygienic macros. InESOP '08: Proceedings of the Seventeenth European Symposium On
+
+Programming, March 2008.
+
+[10] Oleg Kiselyov. How to write seemingly unhygienic and referentiallyopaque macros with syntax-rules. In Workshop on Scheme and
+
+Functional Programming, October 2002.
+[11] Oleg Kiselyov. How to write symbol? with syntax-rules, September2003.
+
+http://okmij.org/ftp/Scheme/macro-symbol-p.txt.
+
+[12] Eugene E. Kohlbecker, Daniel P. Friedman, Matthias Felleisen, andBruce F. Duba. Hygienic macro expansion. In Proceedings of the
+
+1986 ACM Conference on LISP and Functional Programming, pages151-161, 1986.
+
+[13] Albert R. Meyer. Thirteen puzzles in programming logic. InD. Bjo/rner, editor, Proceedings of the Workshop on Formal Software
+
+Development: Combining Specification Methods. Lecture Notes inComputer Science, May 1984.
+
+[14] Al* Petrofsky. How to write seemingly unhygienic macros usingsyntax-rules, November 2001.
+
+http://groups.google.com/
+group/comp.lang.scheme/msg/5438d13dae4b9f71.
+
+[15] Kent M. Pitman. Special forms in Lisp. In LFP '80: Proceedingsof the 1980 ACM conference on LISP and functional programming,
+
+pages 179-187, New York, NY, USA, 1980. ACM.
+[16] Michael Sperber, R. Kent Dybvig, Matthew Flatt, and Anton vanStraaten (Editors). Revised
+
+6 report on the algorithmic language
+
+Scheme, 2007.
+[17] Mitchell Wand. The theory of fexprs is trivial. Lisp and SymbolicComputing, 10(3):189-199, 1998.

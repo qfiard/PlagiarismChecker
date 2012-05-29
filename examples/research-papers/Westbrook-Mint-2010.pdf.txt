@@ -1,0 +1,1510 @@
+
+
+Mint: Java Multi-stage Programming Using Weak Separability
+
+Edwin Westbrook Mathias Ricken Jun Inoue Yilong Yao Tamer Abdelatif1 Walid Taha
+
+Rice University{
+emw4,mgricken,ji2,yy3}@cs.rice.edu, eng.tamerabdo@gmail.com, taha@cs.rice.edu
+
+Abstract
+Multi-stage programming (MSP) provides a disciplined approachto run-time code generation. In the purely functional setting, it
+
+has been shown how MSP can be used to reduce the overheadof abstractions, allowing clean, maintainable code without paying performance penalties. Unfortunately, MSP is difficult to com-bine with imperative features, which are prevalent in mainstream
+languages. The central difficulty is scope extrusion, wherein freevariables can inadvertently be moved outside the scopes of their
+binders. This paper proposes a new approach to combining MSPwith imperative features that occupies a "sweet spot" in the design
+space in terms of how well useful MSP applications can be ex-pressed and how easy it is for programmers to understand. The key
+insight is that escapes (or "anti-quotes") must be weakly separablefrom the rest of the code, i.e. the computational effects occurring
+inside an escape that are visible outside the escape are guaranteedto not contain code. To demonstrate the feasibility of this approach,
+we formalize a type system based on Lightweight Java which weprove sound, and we also provide an implementation, called Mint,
+to validate both the expressivity of the type system and the effectof staging on the performance of Java programs.
+
+Categories and Subject Descriptors D.3.1 [Programming Lan-guages]: Formal Definitions and Theory; D.3.3 [Programming
+Languages]: Language Constructs and Features
+General Terms Languages
+Keywords Multi-staged languages, Multi-stage programming,Type systems, Java
+
+1. Introduction
+Abstraction mechanisms, such as reflection and design patterns,are useful for writing clean, maintainable code. Often, however,
+
+such mechanisms come with a steep performance overhead, mak-ing them less useful in real systems. Our goal is to allow software
+developers to use such abstractions, but have them be executed in anefficient manner. One approach to this problem is multi-stage programming (MSP), a language feature that provides a disciplinedform of runtime code generation. Just by inserting staging annotations, a form of quasi-quotation, the developer can change pro1 Ain Shams University.
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+PLDI 2010 June 5-10, 2010, Toronto, Canada.Copyright cfl 2010 ACM 978-1-4503-0019/10/06.. . $10.00
+
+grams that use expensive abstractions into program generators,which generate programs without the abstractions. This reduces
+the runtime cost of abstractions, because the overhead is only paidwhen the generators are executed, not at the time the programs they
+generate are run.A key issue for MSP is type safety, which ensures statically that
+all programs generated at runtime will be well-formed. Although ithad been known how to ensure type safety for MSP in the purely
+functional setting [4, 27, 28], it previously remained an open chal-lenge how to extend this guarantee to mainstream languages such as
+Java. In particular, standard features of mainstream languages, suchas imperative assignment, can lead to scope extrusion, in which
+variables in code fragments may move out of the scopes where theyare defined. Several approaches to this problem have been proposed
+[1, 11, 12, 14] that give the expert MSP user fine-grained controlover scoping in code; however, there is still a need for a type system that makes MSP accessible to general programmers. Mint pro-vides a type system that is well-suited for the prevalent culture of
+programming in languages like Java. Specifically, Mint allows im-perative generators and does not require a functional programming
+style, a style that often is inconvenient in Java. The type system re-mains simple while being more expressive than any previous type
+system that statically ensures type safety of generated code.
+Contributions
+To make MSP accessible to programmers in mainstream languages,we propose a new approach to type-safe MSP that we argue occupies a "sweet spot" in the design space in terms of how well usefulMSP applications can be expressed and how easy it is for programmers to understand. Our contributions include:
+
+* After a brief introduction to staging in Java (Section 2), we
+
+analyze and explain why scope extrusion can arise with naiveapproaches to MSP in Java or in similar languages (Section 3).
+
+* We introduce the notion of weak separability as a solutionto the scope extrusion problem (Section 4). Weak separability
+
+ensures that any effects that can be observed outside escapedexpressions will not involve code objects. We present a type
+system that realizes this idea, and show that it is sufficient toprevent scope extrusion.
+
+* We demonstrate the expressivity of the type system using a
+
+number of small examples illustrative of important classes ofprograms for which MSP can be useful (Section 5). The examples show the use of MSP for building interpreters, numericalcode, and reflective programs. The examples also emphasize
+that the type system allows expressing imperative generatorsthat, for example, throw exceptions or store code in locations
+that cannot escape the scope of a surrounding dynamic binder.*
+We formalize the semantics and prove the type safety of a corecalculus illustrating the key features of the proposed type system. (Section 6). Proving type safety establishes that a wellpublic static
+Integer power ( Integer x, Integer n){
+
+if (n == 1)
+
+return x;
+else
+
+return x * power (x, n -1);
+}
+
+(a) The Unstaged Power Function
+
+public static
+Code < Integer > spower (Code < Integer > x, int n){
+
+if (n == 1)
+
+return x;
+else
+
+return <| `x * `( spower (x, n -1)) |>;
+}
+
+(b) The Staged Power Function
+
+Figure 1. Staging the Power Function in Mint
+
+typed program is guaranteed to be free of any runtime errors,including possible scope extrusion and generation (and execution) of ill-formed code. The novelty of the type system is inthe use of a stack of store typings, instead of a single store typing, to mirror the dynamic binding structure of the term. Thiscaptures the fact that heap locations allocated inside dynamic
+binders may not be visible outside those binders. Lemmas areonly stated here; full proofs are given in the companion technical report [29] .*
+We have implemented the type system in an MSP extension ofOpenJDK [17] called Mint [18]. The implementation was used
+
+to type check all examples presented in the paper. We also usethe implementation to confirm that MSP in Java -- a language
+typically implemented using JIT compilation -- can lead toperformance speedups similar to those seen by MSP extensions
+of other languages (Section 7).
+2. Multi-Stage Programming in Mint
+Mint extends Java 6 with the three standard MSP constructs: brack-ets, escape, and run (see e.g. [26]). Brackets are written as
+
+<| |>and delay the enclosed computation by returning it as a code object.
+
+For example, <| 2 + 3 |> is a value. Brackets can contain a blockof statements if the block is surrounded by curly braces:
+
+<| { C. foo ();
+
+C. bar (); } |> // has type Code <Void >
+
+Code objects have type Code<T>, where T is the type of the expres-sion contained. For example,
+
+<| 2 |> has type Code<Integer>. Abracketed block of statements always has type
+
+Code<Void>.Code objects can be escaped or run. Escapes are written as
+
+`and allow code objects to be spliced into other brackets to create
+
+bigger code objects. For example,
+
+Code < Integer > x = <| 2 + 3 |>;
+Code < Integer > y = <| 1 + `x | >;
+
+stores <| 1 + (2 + 3) |> into y. Run is provided as a method
+run() that code objects support. For example, executing
+
+int z = y. run ();
+after the above example sets z to 6.Mint also allows cross-stage persistence (CSP), wherein a variable bound outside brackets can be used inside the brackets, as in
+
+int x = 1;
+Code < Integer > c = <| x + 1 |>;
+
+Weak separability, the requirement Mint uses to ensure safety,places certain restrictions on CSP; see Section 4.
+
+Basic MSP in Mint can be illustrated using the classic powerexample. Figure 1(a) displays the unstaged power function in Java.
+Figure 1(b) displays a staged version. The staged method spowertakes in an argument
+
+x that is a piece of code for an integer, alongwith an integer
+n, and returns code that multiplies x by itself n times.
+
+3. The Scope Extrusion Problem
+One of the most important properties of MSP languages is the guar-antee that program generators will always produce well-formed
+
+code. It is known how to achieve this in the purely functional set-ting [4, 27, 28]. In the presence of imperative features, however,
+guaranteeing this is more challenging because of the possibility ofscope extrusion, where a code object containing a variable is used
+outside the scope of the binder for that variable. If such a code ob-ject were allowed to be compiled and run, a runtime error would
+be emitted, because the result of compiling and running code withfree variables is undefined.
+
+Scope extrusion can be caused by the following situations:
+1. Assigning a code object to a variable or field that is reachableoutside the escape, for example:
+
+Code < Integer > x;
+
+<| { Integer y = foo ();
+
+`(x = <| y | >); } | >;
+
+2. Throwing an exception that contains a code object, for example:
+
+Code < Integer > meth (Code < Integer > c) {
+
+throw new CodeContainerException (c );
+}
+
+<| { Integer y; `( meth ( <| y | >)); } |>
+
+3. Cross-stage persistence (CSP) of a code object, an example ofwhich is displayed in Figure 2.
+
+The first two cases are straightforward; the first example ex-trudes
+
+y from its scope by assigning <| y |> to the variable x boundoutside of the scope of
+
+y, while the second example throws an ex-ception containing
+<| y |> outside the scope of y. The third exam-ple, however, is more subtle. This example creates an anonymous
+
+inner subclass of Thunk, whose call method returns a code objectcontaining the variable
+
+y. This Thunk object is then passed to doCSPin the escape, yielding the code object
+
+<| { Integer y = foo ();
+
+Code < Integer > d = T. call (); } |>
+
+where T is the anonymous inner subclass of Thunk. In a substitution-based semantics that substitutes values directly for variables, no
+
+scope extrusion would occur, because running this code objectwould substitute the return value of
+
+foo() for y in T, thus producinga new copy of
+T whose call method returns <| r |>, where ris the return value of
+
+foo(). Such a semantics, however, wouldbe impractical for a language like Java, because it would involve
+
+traversing the (possibly compiled) method definitions of T, and itwould also be confusing, because the
+
+call method of T itself wouldnot be called when this example was run. In an environment-based
+
+semantics, which moves the value to some location in a separateenvironment and substitutes an index of that location (usually the
+variable itself) for the variable, running the above code would
+
+simply return the value of T.call(), which would produce thecode object
+
+<| y |>, with y being out of its scope. The cross-stagepersistence of the
+
+Thunk is essentially the same as storing the valueof
+T in a global reference cell or hash table, and as soon as thatis done, the
+
+Thunk has been moved outside the scope of y. Ourformalization of Mint properly models this indirection, although we
+
+model the environment as part of the heap rather than as a separateentity (see Section 6).
+
+4. Weak Separability
+The three situations mentioned in the previous section necessarilyall involve code objects; effects that do not involve code cannot
+
+cause scope extrusion. We therefore first define the term code-free:
+Definition 1. A type is code-free if it is not a subtype of Code<T>,the types of all of its fields are code-free, all of its methods' return
+
+types are code-free, and its class is final. A value is code-free if itstype is code-free.
+
+If a value x is code-free, then no code object is reachable from
+x, and scope extrusion cannot occur due to effects involving x.The requirement that a class is final means that the class is not
+
+allowed to be subclassed. This restriction ensures that a subclasswith an additional field of type
+
+Code<T> cannot be substituted atruntime. Making Java classes final is unusual, but only because
+
+there are almost no benefits to declaring a class final. In our ex-perience, most Java classes written by application developers can
+be final.Commonly used code-free types include number types such as
+Integer and Double, the String class, arrays of code-free types,and all of Java's reflection classes such as
+
+Class and Field. It doesnot include
+Object, for example, as this type is not final, and an
+Object could be a code object at runtime.Scope extrusion can be prevented by requiring that escapes are
+
+weakly separable, which we define informally:
+Informal Definition 1. A term is weakly separable if both sideeffects observable outside the term and cross-stage persistence involve only code-free values.
+
+Intuitively, requiring escapes to be weakly separable will pre-vent scope extrusion, because no code object can be moved outside
+
+of an escape. A similar but stronger restriction was used in the sys-tems of Kameyama et al. [11, 12] to ensure that no effects occurring inside escapes could be visible outside the escapes.1 We callthe condition introduced by Kameyama et al. separability.
+
+We leave the notion of weak separability only informally de-fined here both because formalizing it would require complex semantic definitions and because it is undecidable in general. Instead,we provide a conservative approximation of weak separability that
+is used by Mint. This approximation is decidable, and we showbelow that it still leaves an expressive language. Unless otherwise
+specified, the phrase "weakly separable" in the remainder of thisdocument refers to this approximation:
+
+Definition 2. A Mint term e is weakly separable iff:
+
+1. Assignment is made only to variables bound within e, or tofields or variables of code-free types;
+
+2. Exceptions are only thrown by a throw new C(e1, ..., en);construct where the
+
+ei are code-free, or the exception is caughtby an enclosing
+try-catch construct before it can leave e;
+
+3. Cross-stage persistence occurs only for final variables of code-free types;
+
+4. Only weakly separable methods and constructors are called.
+1 Technically, Kameyama et al. placed this restriction on future-stage
+binders.
+
+We are using the word term to describe an expression, state-ment, or method body. The notion of pseudo-expression in Section
+6.2 is a direct formalization of this kind of term.The first three of the clauses in the definition above directly
+preclude the three cases of scope extrusion in the previous section.The restriction on throwing exceptions is syntactic and allows for a
+static check of code-freedom. Note that the final restriction onCSP variables exists so that the value of the variable does not
+change over the lifetime of the code object; Java has a similarrestriction for variables referenced inside anonymous inner classes.
+The last clause ensures that all methods called from the body ofa weakly separable term also satisfy weak separability. To check
+this condition, methods that are going to be called from the bodyof an escape are explicitly annotated in Mint with the keyword
+separable.To demonstrate how weak separability works in practice, the
+following code gives examples showing how each of the fourclauses of weak separability can fail. Since all of these examples
+occur in the method foo, which is marked as separable, each ofthese examples represents a type error in the program. The first
+example, which assigns to x.c, violates clause 1 of Definition 2since
+
+x.c has the non-code-free type Code<C>. The second exampleviolates clause 2 since it passes a code object to the constructor
+
+of an exception which is being thrown. The third example violatesclause 3 because it uses cross-stage persistence on the value
+
+x oftype
+C; the type C is not code-free because it contains the field c oftype
+Code<C>. Finally, the fourth example violates clause 4 becauseit calls the method
+
+bar(), which is not marked with the separablekeyword.
+
+class C {
+
+Code < Integer > c;
+
+void bar () { ... }
+separable C foo ( final C x) {
+
+// x.c is not code - free (1)
+x.c = <|1| >;
+
+// CodeContainerException takes a
+// non - code - free argument (2)
+
+throw new CodeContainerException (<|x | >);
+
+// not a 'throw new C(e1 , ... , en ); '
+// construct (2)
+
+CodeFreeException e =
+
+new CodeFreeException ();
+throw e; // error
+
+// CSP of x but C is not code - free (3)
+Code <C> y = <|x| >;
+
+// bar () is not marked separable (4)
+
+bar ();
+}
+}
+
+5. Expressivity
+Weak separability is a highly expressive notion that excludes onlya few coding patterns, such as generators that store open code
+
+in a global data structure. Such situations can be addressed byintroducing a local data structure and ensuring that it is not used
+outside the dynamic binder. The separability restriction is onlyproblematic when the coding pattern requires scope extrusion.
+
+In an imperative language like Java, being able to write codegenerators with side effects is a desirable property: An imperative
+programming style fits better into the language's culture, while
+
+interface Thunk { Code < Integer > call (); }
+Code < Code < Integer >> doCSP ( Thunk t) {
+
+return <| t. call () |>;
+}
+
+<| {
+
+Integer y = foo ();
+Code < Integer > d = `( doCSP ( new Thunk () {
+
+Code < Integer > call () {
+
+return <| y | >;
+}}));
+} |>. run ();
+
+Figure 2. Cross-stage Persistence of Code Objects
+
+functional programming in Java can often be inconvenient andverbose.
+
+Weak separability does not severely restrict expressiveness be-cause there is a tendency for the computational effects used in code
+generators to be separable: It is rare that generators are required toexport code objects through side effects; all other side effects not
+involving code are weakly separable and therefore allowed. Fur-thermore, the
+
+run() method is only called outside of any bracketsin almost all applications of MSP, and cross-stage persistence is
+
+mostly used for primitive types. Generated code is not restricted byweak separability at all.
+
+To illustrate these points, the remainder of this section describesthe implications of weak separability and examines a number of
+MSP examples in Mint, namely: staging an interpreter, a classicMSP example; staging array views [22] to remove abstraction overhead; and loop unrolling. The staged interpreter shows that throw-ing a code-free exception in a code generator is allowed. Both staging array views and loop unrolling demonstrate generators for im-perative code. Section 5.3 gives another example, a staged serializer that uses Mint's reflection capabilities. The performance of allthese examples is evaluated in Section 7.
+
+5.1 Staged Interpreter
+Staged interpreters are a classic application of MSP. To demon-strate that staged interpreters can be written in Mint, we have implemented an interpreter for a small programming language called
+lint [26], which supports integer arithmetic, conditionals, and re-cursive function definitions of one variable.
+
+The unstaged interpreter represents expressions with the Expinterface, and instantiates this interface with one class for each
+kind of AST node in the language. This interface specifies thesingle method
+
+eval for evaluating the given expression, whichtakes two environments, one for looking up variables and the other
+
+for looking up defined functions. The environments are modeled asfunctions, implemented using anonymous inner classes. The empty
+environments unconditionally throw an exception.Application of defined functions, for example, is implemented
+as follows:
+
+class App implements Exp {
+
+private String _s;
+private Exp _a; // argument
+public App ( String s, Exp a) {
+
+_s = s; _a = a;
+}
+
+public int eval ( Env e , FEnv f) {
+
+return f. get (_s ). apply (_a. eval (e, f));
+} }
+
+where f.get(_s) looks up the defined function named by the string
+_s as an object of the class Fun. The Fun class has an apply method
+
+for applying a function to an argument, and this is used here toapply the function to the result of evaluating the argument
+
+_a. If _sdoes not name a valid, defined function in
+f, then get throws anexception.
+
+The staged interpreter redefines the eval method to return
+Code<Integer>, so that evaluating an expression yields code tocompute its value. This method is marked as
+
+separable so that itcan be called from inside an escape. For example, staging the
+
+Appclass above yields the following:
+
+class App implements Exp { /* ... */
+
+separable Code < Integer > eval ( Env e, FEnv f) {
+
+return <| `(f. get (_s )). apply (
+
+`( _a. eval (e,f ))) | >;
+} }
+
+The get method is again used to look up the function namedby
+
+_s. The return type of get is now Code<Fun>, meaning that
+get returns code for the defined function. This code is splicedinto the returned code, and its result is applied to the evaluation
+
+of the argument using the apply method. The argument for applyis obtained by splicing in the code object returned by
+
+_a.eval. If
+_s does not name a valid, defined function, then the get methodthrows an exception.
+
+interface Env {
+
+public separable Code < Integer > get ( String y );
+}
+
+static separable Env ext( final Env env ,
+
+final String x, final Code < Integer > v) {
+return new Env () {
+
+public separable
+Code < Integer > get ( String y) {
+
+if (x ==y) return v; // lookup succeeded
+
+else return env . get (y); // recurse
+} }; }
+
+Env env0 = new Env () { // empty environment
+
+public separable Code < Integer >
+get ( String s) {
+
+throw new Yikes (); // unconditional throw
+}
+};
+
+Note that this is the only computational effect in the wholestaged interpreter that happens inside a code generator. It is weakly
+
+separable, however, because the thrown exception need only con-tain the string argument
+
+_s that was not found in the environment;the exception therefore is code-free.
+
+5.2 Array Views
+As discussed, weak separability does not restrict the computationaleffects in generated code; it only restricts effects in the code generators themselves. As an example of this, we use staging to re-move overhead in array views, which are useful for parallel programming.It can be challenging for a compiler to parallelize Java code that
+uses multi-dimensional arrays, implemented in Java as nested one-dimensional arrays. This arrangement prevents the compiler from
+assuming that A[i][j] and A[i+1][j] refer to different locations.In one-dimensional arrays, each index refers to a different location,
+and this knowledge allows for simpler parallelization.To address the problems with multi-dimensional arrays in Java,
+the Habanero project [8] provides array views, which map subsec-tions of multi-dimensional arrays to one-dimensional arrays without requiring the programmer to perform the arithmetic manually[22].
+
+Much simplified, an array view stores a reference to a one-dimensional base array and provides
+
+get and set methods forseveral numbers of dimensions. The example below shows
+
+get and
+set for a two-dimensional double array:
+
+class DoubleArrayView {
+
+double [] base ;
+public double get (int i, int j) {
+
+return base [ offset + (j-j0 ) + jSize *(i-i0 )];
+}
+
+public void set ( double v, int i, int j) {
+
+base [ offset + (j -j0) + jSize *(i -i0 )] = v;
+}}
+
+The methods calculate the index in the base array for the coor-dinates (here:
+
+i, j) using the minimum values for those dimensions(here:
+i0, j0), the size of the dimensions (here: iSize, jSize) andthe start index of the view (
+
+offset). This calculation is performedfor every array access.
+
+The overhead of this calculation can be removed by stagingthe array view. The base array itself and the parameters
+
+i0, j0,
+iSize, jSize, and offset describing the array view are replacedby code values that can be spliced together as needed. The
+
+getmethod returns
+Code<Double>, code to retrieve the value in thearray. The
+set method returns Code<Void> and is a generator forcode performing the array assignment.
+
+class SDoubleArrayView {
+
+Code < double []> base ;
+
+public separable
+Code < Double > get ( final int i, final int j) {
+
+return <| `( base )[ `( offset ) + (j - `( j0 )) +
+
+`( jSize )*(i - `( i0 ))] | >; }
+public separable
+Code <Void > set ( final Code < Double > v,
+
+final int i, final int j) {
+return <| {
+
+`( base )[ `( offset ) + (j -`( j0 )) +
+
+`( jSize )*(i -`( i0 ))] = `(v); } |>; }
+}
+
+Staging allows us to work with the array view at a high levelwithout paying for the overhead at runtime. For example, a matrix
+
+transpose can be written as
+
+public Code <Void > stranspose ( int m, int n,
+
+final SDoubleArrayView input ,
+final SDoubleArrayView output ) {
+Code <Void > stats = <| { } |>;
+
+for( int i = 0; i < m; i ++)
+
+for ( int j = 0; j < m; j ++)
+
+stats = <| {
+
+` stats ;
+
+`( output . set( input . get (i,j),j,i )); } | >;
+return stats ;
+}
+
+Code < Void > c = stranspose (4 , 4, a, b);
+
+This method generates code consisting of direct array accesses:
+b [0+(0 -0)+4*(0 -0)] = a [0+(0 -0)+4*(0 -0)];
+b [0+(0 -0)+4*(1 -0)] = a [0+(1 -0)+4*(0 -0)]; // ...
+
+An optimizing compiler will replace the computations withconstants, completely removing the cost of the abstraction in the
+
+generated code.Note that the size of the dimensions does not have to be known
+statically, but at generation time; only the number of dimensions ofthe array has to be known statically. Therefore, the size of the array
+can vary, and this optimization is applicable in many situations.This example performs loop unrolling as well. The code objects
+that perform the array assignments, returned by the set method,are accumulated into another code object
+
+stats. At the end of thetwo nested loops,
+stats will contain the sequence of statementsfor the entire matrix transpose operation. The code generator is
+
+written in an imperative style consistent with the prevalent Javaculture. The body of the method is weakly separable because
+
+stats
+
+is bound inside the method; the code inside stats returned by the
+stranspose method is not weakly separable, but that is not requiredof generated code.
+
+Staged array views and loop unrolling serve as compelling ex-amples how MSP can reduce abstraction overhead in an imperative
+setting.
+5.3 Staged Reflection Primitives
+Neverov observed that staging and reflection in languages likeC# and Java can be highly synergistic [15]. He also noticed that
+
+fully exploiting this synergy requires providing a special libraryof staged reflection primitives. Mint provides such a library. The
+primitives are based on the standard reflection primitives in the Javalibrary, including the
+
+Class<A> and Field classes. 2To represent these in Mint, the library adds two corresponding
+
+types, ClassCode<A> and FieldCode<A,B>. The ClassCode<A> typeis indexed by the class itself, just like the type
+
+Class<A> it is mod-eled after. For example, the corresponding class for
+
+Integer objectshas type
+ClassCode<Integer>. Any ClassCode<A> object providesmethods for manipulating the class, corresponding to the methods
+
+of Class<A>. For example, the cast method of ClassCode<A> takesany code object of type
+
+Code<Object> and inserts a cast in the codeobject, yielding a code object of type
+
+Code<A>. Because the cast isinserted into the code, any exceptions raised by the cast will not
+
+happen until the code is run with the run() method. The class alsoprovides methods for looking up a class by name and for retrieving
+the fields of a class.The type
+
+FieldCode<A,B> represents a field in class A that hastype
+B. It provides a get method which takes a Code<A> value andreturns a value of type
+
+Code<B>. This method constructs field se-lection (intuitively, a
+<| (`a).f |> code fragment) on that object.The type also provides a
+
+getFieldClassCode method to return a
+ClassCode<B> object for the type B.The fields of a class are returned using the
+
+getFields()method in
+ClassCode<A>. The return type of getFields() is
+FieldCode<A,?>[], where the ? represents an existential type inJava's generics. The method therefore returns an array of fields
+
+contained in class A, all of which have "some" type.The following example illustrates the use of these classes. The
+code defines a serializer, which recursively converts an object andall of its fields to a string representation. Serializers are often
+slow, however, because they must use Java's reflection primitivesto determine the fields of an object at runtime. Here we show how
+to write a staged serializer, which generates a serializer for a givenstatic type. This approach performs the necessary reflection when
+the serializer is generated, and produces code to serialize all of agiven object's fields without reflection:
+
+public static separable <A> Code <Void >
+
+sserialize ( ClassCode <A> t, final Code <A> o) {
+
+if (t. getCodeClass ()== Byte . class )
+
+return <| {
+
+writeByte ( `(( Code <Byte >)o )); } |>;
+else if (t. getCodeClass ()== Integer . class )
+
+return <| {
+
+writeInt ( `(( Code < Integer >)o )); } | >;
+Code <Void > result = <| { } | >;
+
+for ( FieldCode <A ,? > fc : t. getFields ()) {
+
+result = <| { ` result ;
+
+`( sserializeField (fc , o )); } | >; }
+return result ;
+}
+
+2 The Mint reflection library does not support all reflection primitives. For
+example, Method and Constructor have multiple parameters. This wouldrequire adding indexed types to Java, and is therefore outside the scope of
+
+this work.
+
+The code to write primitive fields is generated directly. Non-primitive fields are visited recursively. The code is then spliced
+together and returned. This example was inspired by a similar ex-ample given by Neverov and Roe [15].
+
+6. Type Safety
+We now turn to formalizing a subset of Mint, called LightweightMint (LM), and to proving type safety. Type safety implies that
+
+scope extrusion is not possible in Mint.LM is based on Lightweight Java [25] (LJ), a subset of Java
+that includes imperative features. LM includes staging constructs(brackets, escapes, and run), assignments, and anonymous inner
+classes (AICs). These features--especially the staging constructsand AICs--make the operational semantics and type system large;
+staging constructs alone double the number of rules in the opera-tional semantics, while AICs increase the complexity of the type
+system. All of these features, however, are necessary to capturethe safety issues that arise in Mint. Specifically, assignments are
+required to cause many forms of scope extrusion, and AICs are re-quired to create the scopes (i.e., the additional variable bindings)
+that can be extruded. AICs also lead to more complex possibilitiesfor scope extrusion as shown, for example, in Figure 2 of Section
+3, which uses an AIC in combination with CSP to perform scopeextrusion. We wish to show that such possibilities are prevented by
+our system.A noteworthy feature of the type system is the use of a stack
+of store typings instead of a single store typing. The standard wayto express type preservation of programs with mutable references
+is to have a store typing \Sigma  that assigns types to locations thatare allocated during evaluation. Preservation then states that, if
+e1, typable with store typing \Sigma , takes a computation step to e2(possibly allocating new store locations), then
+
+e2 is typable witha new, possibly extended, store typing
+\Sigma 0. Instead, we use a stackof store typings, represented as a sequence. Each time evaluation
+
+enters the scope of a variable binding, say of x, we push a new \Sigma to the right of the sequence that may type heap locations holding
+code values containing x free. During execution, type assignmentsto non-code-free heap locations
+
+l allocated within this scope arealways added to this
+\Sigma . The \Sigma  is popped from the right uponleaving the scope of
+x, so references to l are only typable in thescope of
+x.When we pop a
+
+\Sigma  from the stack of \Sigma 's, we always salvagecode-free locations and tack them on to the
+
+\Sigma 's that remain, so thatthose locations can be used elsewhere. The Smashing Lemma guarantees that this contraction, or smashing, of the store typing stackis safe. For this strategy to work, the
+
+\Sigma 's must obey a conditionsomewhat similar to the Barendregt variable convention: whenever
+
+\Sigma  is appended to the store typing stack, the locations in \Sigma  must befresh with respect to other
+
+\Sigma 's in the same typing derivation; i.e.,the domains of all distinct
+\Sigma 's appearing in a single derivation treemust be disjoint. Otherwise, a location
+
+l that types h|x|i under one
+\Sigma  can be used to type an incompatible object in a disjoint subtreeof the derivation tree. A more rigorous definition of this constraint
+
+can be found in the companion technical report [29].To simplify the formalism, LM disallows assignments to local
+variables; all assignments must be to object fields. This restrictionby itself would completely rule out assignments in escapes, however. To rectify this problem, we add a restricted form of let, writ-ten as
+
+let x <= new C (...) in ...
+which always allocates a new instance of a class C that is notan AIC. We then relax the restrictions on escapes to allow field
+
+assignments if the object containing the field was allocated by a letinside the escape. Local variable assignment can then be modeled
+
+extensible class names Dfinal class names
+
+Fvariables
+
+xfield names
+fmethod names
+mheap locations
+
+lclasses
+C ::= D | Fseparability marker
+
+S ::= sep | inseptypes
+
+o/ ::= C | CodehS , o/iclass declarations
+CL ::= class C extends D
+
+{ho/i fiiIi ; hM0j iJj }method declarations
+Mn ::= S o/ m(ho/i xiii){en}class hierarchy
+
+P ::= hCLiiiprograms
+
+p ::= P, e0expressions
+en ::= x | l | en.f | (en.f := en)|
+
+en.m(heni ii)|
+let x ( new C(heni ii) in en|
+new D(heni iIi ) {hMnj iJj }| h|
+
+en+1|i | `en-1[n > 0]|
+en.run()values
+vn ::= l | en-1[n > 0]
+
+NB: Production rules marked [n > 0] can be used only if n > 0.
+
+Figure 3. Lightweight Mint syntax.
+
+by replacing any local variable binding x of type C for which thereis an assignment by a
+
+let-binding of a new variable x_cell of type
+CCell, defined as follows:
+
+public class CCell { public C x; }
+Uses of x, including assignments to x, can then be replaced by usesof
+
+x_cell.x. Thus, we model the environment as part of the heap,meaning that the values of variables are always heap locations. This
+
+is equivalent to an environment-based semantics, which modelsvariables as locations in a special environment object.
+
+6.1 Syntax
+In this section, we formalize the syntax of LM. We use the follow-ing sequence notation:
+
+Notation. We write ha, b, c, . . .i for sequences, with the shorthandh
+
+AiiJi=I for hAI, AI+1, . . . , AJ i. I may be omitted, and it defaultsto 1.
+
+J may also be omitted when clear from context. The emptysequence is written hi. Concatenation of sequences
+
+s1 and s2 iswritten
+s1 ffi s2, with the shorthand hAiii, A for hAiii ffi hAi. Wealso use h
+
+eiiJi=I[i0 ! x] to denote heiii with ei0 replaced by x.
+
+The syntax of LM is given in Figure 3. Expressions are stratifiedinto levels. An expression is at level
+
+n if, for every point in theexpression, the nesting of escapes is at most
+
+n levels deeper thanbrackets. Clearly, a leveln expression is also a level-(n + 1)expression. This stratification induces a similar structure on method
+
+declarations. A complete program must not have any unmatchedescapes, so the bodies of methods declared in the class hierarchy
+are required to be at level 0. Likewise, the initial expression in aprogram is required to be at level 0. Values are also stratified: a
+value at level 0 is just a heap location, and a value at any level
+n > 0 is any expression at level < n.
+
+Remark. The n in en is a constraint on the shapes of terms that thismetavariable ranges over and is not something that forms a part of
+
+any concrete term. Similar precautions apply to other superscriptedmetavariables in this formalism, like
+
+vn and Mn.
+
+We categorize classes (C) as final (F ) or extensible (D) de-pending upon their names. In the implementation, they are rather
+
+categorized according to the manner in which they are declared,but using disjoint sets of names gives a simpler system. The types
+(o/) include classes as well as the code type CodehS , o/i, which isconsidered distinct from the classes.
+
+This code type CodehS , o/i is indexed by a separability marker
+S, which indicates whether a code object is itself separable,and the type
+
+o/ of the expression in the code object. Specifi-cally,
+Codehsep, o/i is the type of code objects containing sepa-rable code, which is a subtype of the standard code type, written
+
+Codehinsep, o/i. This distinction is necessary in the case of a sep-arable expression which itself contains a nested escape
+
+`e, sincewe must know for type preservation that
+`e is guaranteed to reduceonly to separable code. In this case,
+e must have type Codehsep, o/i.We do not allow an AIC to have fields or methods that its parent
+
+does not, although we allow method overrides. Additional fields ormethods can be emulated by declaring (statically) a new subclass
+with those fields and creating anonymous subclasses of those.We do not include the syntax
+
+(new C( . . . )) for instantiatingordinary (i.e., non-AIC) classes because one can write
+
+(let x (
+new C( . . . ) in x) instead. Sequencing (e1; e2) is also omittedbecause this code can be written
+
+seq.call(e1, e2), where seq.callis a method that ignores its first argument and returns its second.
+
+All judgments and functions in the following discussions im-plicitly take a class hierarchy
+
+P as a parameter. We avoid writingit out explicitly because it is fixed for each program and there is no
+
+fear of confusion.
+
+6.2 Operational Semantics
+Figure 4 shows the small-step semantics for Lightweight Mint. This
+figure defines the judgment H1, be1 n H2, be2 which states thatheap
+
+H1 and pseudo-expression be1 evaluate in a single step at level
+n to H2 and be2, respectively. The notion of heap is standard; a heapis a finite mapping from locations to heap elements, where a heap
+
+element contains a runtime type tag with either the contents of theobject or a code value if the tag is
+
+Code. The notion of a pseudo-expression, defined as either an expression or a method body, is
+
+used because execution can occur within bodies of methods definedat level
+
+> 0. Similarly, we define the notion of pseudo-value, whichis either a value or a method body with no unresolved escapes at the
+
+current level.Figure 4 contains a number of helper functions.
+
+fields() extractsthe fields of a type.
+method() looks up a method, respectingoverriding rules.
+mbody() extracts the specified method's formalarguments and body. Code types do not have methods (
+
+run() isformally not a method).
+mname extracts the method name from amethod declaration.
+
+The single-step evaluation judgment n is defined as the closure
+of the primitive one-step relation kprim under n, k-evaluation contexts
+
+En,k. These are pseudo-expressions with a hole *. This hole can befilled with an expression
+
+e, written En,k[e]; the superscripts n and
+k express that filling the hole with a level k expression yields alevel
+
+n pseudo-expression. Most of the primitive reduction stepsare straightforward, including rules for class instantiation, method
+
+invocation, and assignment. These reductions only occur at level0, to prevent reductions from occurring inside code objects. As local variables are immutable, we can model method invocation and
+let-execution by substitution. The local environment L found inLJ [25] is therefore unnecessary, and the small-step judgment is
+
+made between heap-term pairs rather than environment-heap-termtriples. This is not the same as using a substitution-based semantics,
+because only heap locations are substituted for variables, i.e., vari-ables are instantiated by their location on the heap. This is equivalent to an environment-based semantics, as discussed in the beginoperational terms
+
+heaps H : l fin! hruntime type tags
+
+T :: = C | sub D {hM0i ii} | Codeheap elements
+
+h :: = (C, hliii) | (Code, h|e0|i)|
+
+(sub D {hM0i ii}, hljij)pseudo-expressions b
+en :: = en | Mnpseudo-values b
+vn :: = vn | Mn-1[n > 0]
+
+evaluation contextsE
+
+n,k ::= En,ke | En,k
+
+MEn,k
+
+M ::= S o/ m(ho/i xiii){E
+
+n,ke }[n > 0]E
+
+n,ke ::= *[n = k] | En,ke .f | (En,ke .f := en)|
+
+(vn.f := En,ke ) | En,ke .m(heni ii)|
+vn.m(hvni ii, En,ke , henj ij)|
+let x ( new C(hvni ii, En,ke , henj ij) in en|
+let x ( new C(hvni ii) in En,ke [n > 0]|
+new D(hvni ii, En,ke , henj ij){hMna ia}|
+new D(hvni ii){hMn-1j ij, En,kM , hMna ia}[n > 0]| h|E
+
+n+1,ke |i | `En-1,ke [n > 0] | En,ke .run()
+
+H, en nprim H, en and H, ben n H, ben
+
+l 62 dom H
+H, new D(hliii){hM0j ij} 0prim H[l 7! (sub D {hM0j ij}, hliii)], l
+
+H(l) = (T, hliii) fields(T ) = hfiii
+
+H, l.fi0 0prim H, li0
+
+H(l) = (T, hliii)
+H, (l.fi0 := l0) 0prim H[l 7! (T, hliii[i0 ! l0])], l0
+
+H(l) = (T, . . .) mbody(m, T ) = (hxiii, e0)
+
+H, l.m(hliii) 0prim H, [hliii/hxiii][l/this]e0
+
+l 62 dom H
+H, let x ( new C(hliii) in e0 0prim H[l 7! (C, hliii)], [l/x]e0
+
+H(l) = (Code, h|e0|i)
+
+H, `l 1prim H, e0
+
+H(l) = (Code, h|e0|i)
+
+H, l.run() 0prim H, e0
+
+l 62 dom H
+H, h|e0|i 0prim H[l 7! (Code, h|e0|i)], l
+
+H1, ek1 kprim H2, ek2
+H1, En,k[ek1] n H2, En,k[ek2]
+
+Figure 4. Small-step semantics for Lightweight Mint.
+
+ning of this section, but makes the formalism simpler because ofthe removal of the local binding
+
+L found in LJ.
+
+Each staging construct induces a primitive reduction rule. Es-cape and run extract expressions from brackets. Escape reduces
+only at level 1 and run only reduces at level 0. These are standard inmulti-stage languages [27], except that the code values are on the
+heap. Brackets allocate a code object on the heap. CSP, which canbe regarded as execution at arbitrarily high levels, is automatically
+taken care of by substitution and does not give rise to a redex.
+6.3 Type System
+Figure 5 shows the type system. A variable typing (or type environ-ment) comes in pairs, separated by a | . The predicate
+
+iscfhFii(o/)asserts that
+o/ is code-free assuming that the final classes hFiiare. Thus
+iscfhi(o/), also written iscf(o/), means that o/ is code-free. Note, however, that
+
+iscf() does not require method types tobe code-free because the formal language does not model class
+
+declarations within anonymous inner classes. The auxiliary func-tions
+
+ftypes(), ftypei(), and mtype() are similar to fields() and
+method(), but they extract type information. The top-level judg-ment `
+
+p asserts that program p is a valid "initial state" of exe-cution: the class hierarchy
+
+P contained in p must be well-formedand the expression
+e contained in p must be well-typed and free ofheap locations. A class hierarchy
+
+P is well-formed, written ` P ,if
+P is acyclic, field names and types (including inherited ones) donot clash within each class, and each class is well-formed. We omit
+
+a formalization of the first two checks but will use them implicitlyby assuming that auxiliary functions like
+
+fields() and mtype() arealways unambiguous and that the sequence returned by
+
+fields() isfinite and has no duplicates. Classes are well-formed if they contain no locations, their methods are well-typed, and any overriddenmethods have the same types as in the superclass.
+
+The bottom half of Figure 5 defines typing for pseudo-expres-sions with the judgment h
+
+\Sigma iii; \Gamma  `n ben : bo/|S, which states that thepseudo-expression b
+en has type bo/ at level n under the stack h\Sigma iii ofstore typings and the pair
+
+\Gamma  of contexts. If S = sep, this judgmentfurther states that the pseudo-expression b
+
+en is weakly separable.Variable typing
+\Gamma  is partitioned into two parts in order to checkweak separability of field assignments. The right part contains the
+
+variables that were bound within the current method or enclosingescape, which are precisely the variables whose fields can be assigned to without violating weak separability. We always assumethat no variables are repeated in
+
+\Gamma .Most of the rules for typing pseudo-expressions are straightforward. The first rule generalizes subtypes to supertypes. (Subtypingrules are omitted due to space limitations; they are the same as in
+plain Java.) The next two rules look up the types for variables andlocations in the variable and store typings, respectively. CSP is only
+allowed (by k > 0 or n > 0, respectively) if the associated type iscode-free. The next rule is typing
+
+let-expressions by extending thecurrent context with the
+let-bound variable, while the rule follow-ing is typing field lookups by typing the object and then looking up
+
+the relevant field type. In typing the body of a future-stage let, anew frame
+
+\Sigma  is added to the current stack h\Sigma iii to allow for thepossibility of heap locations containing code objects with the variable x free.The next three rules type field assignments
+
+(e1.f := e2) bychecking that
+e1 has some o/1 and that the type o/2 of e2 matchesthe appropriate field type of
+
+o/1. The first of these rules applies toarbitrary
+e1 and types the assignment as weakly separable onlyif the field has code-free type. The second and third rule handle
+
+assignments of non-code-free type in a weakly separable context.The second rule requires
+
+e1 to be a variable x and allows theassignment to be typed as separable only if the variable is in
+
+\Gamma 2(recalling that
+\Gamma 2 gives precisely the variables whose fields canbe modified without violating weak separability). The third rule
+
+essentially captures how a judgment using the first or the second
+
+rule transforms under substitution of a location l for the x in thesecond rule: it requires that either the location
+
+l is in the topmoststore typing or the type of the field is code-free.
+
+The rule following is typing method calls by looking up the typeof the given method. The rule on the immediate right checks wellformedness of AIC definitions. Finally, the last three rules typebrackets, escape, and run, where typing h|
+
+e|i requires typing e atthe next level and adds the code type; typing
+
+`e requires typing eat a code type on the previous level and removes the code type;
+
+and typing e.run() types e at a code type on the same level andremoves the code type. Brackets can always be weakly separable,
+run is never weakly separable, and escapes `e are only weaklyseparable if
+
+e has type Codehsep, o/i.The remainder of Figure 5 defines the following judgments.
+
+h\Sigma iii; \Gamma  `n sub D {hMni i} states that an anonymous subclassof
+
+D with method definitions hMni i is well-formed. This re-quires the methods h
+
+Mni i to have the appropriate types. It alsorequires, if
+n = 0, that all the locations in the AIC are contained in
+dom([i\Sigma i), ensuring that no new frames can be added to the stack
+
+of store typings. The judgment h\Sigma iii; \Gamma  `n Mn : ho/iii S! o/|Sstates that method
+
+M has input types ho/ii, output type o/, and fur-ther is weakly separable if
+
+S = sep. Note that this rule is allowedto push a new frame onto the stack of store typings when the level
+
+n > 0. This is because there may be some locations in the store thatcontain code that include the free variables bound inside
+
+M. Notealso that passing inside a method resets the vertical bar | in
+
+\Gamma  tothe end, indicating that weakly separable expressions in the method
+
+cannot freely access variables bound at or before the method M.The judgment h
+
+\Sigma iii; \Gamma  ` H states that the store H is well-formed under the given stack of store typings. This judgment includes the typing context \Gamma  because the store may contain codewith free variables. This judgment requires that, for all locations
+
+lin the stack of store typings, the heap for
+H(l) is well-typed. Notethat there may be more locations in
+H than in the domain of h\Sigma iii,allowing the possibility that other frames could be pushed onto this
+
+stack. The judgment h\Sigma iii; \Gamma  ` h : o/ is then used to state thatheap form
+
+h has type o/. The rules for this judgment require thatthe expressions contained in the heap form
+
+h are well-typed. Thetyping context used to type these expressions is the restriction of
+
+\Gamma to the variables of level greater than 0. This is because heap forms
+
+are allowed to have code objects with free variables in them, butthese free variables must be bound in other code objects, meaning
+they must have been bound at level greater than 0. Note that, as aside effect of these definitions, if h
+
+\Sigma iii; \Gamma  ` H holds then H re-stricted to
+dom([i\Sigma i) is closed under reachability, meaning thatno location in this domain can reference a location outside of it.
+
+6.4 Soundness
+We now outline the key parts of our type soundness proof. Com-plete proofs can be found in the companion technical report [29].
+
+Type soundness is proved by the usual Preservation and Progresslemmas. Progress follows directly from Unique Decomposition,
+which states that any well-typed expression is either a value or con-tains a unique redex, which can be contracted by the operational
+rules. Uniqueness also ensures that our semantics is deterministic.
+Lemma 1 (Unique Decomposition). If h\Sigma iii; \Gamma  `n ben : o/|Sand b
+
+en is not a pseudo-value then ben is uniquely decomposed asb
+en = En,m[rm], where = denotes syntactic equality modulo ffconversion.
+
+The proof of Preservation is more complicated. One technicaldifficulty is that the extra
+
+\Sigma  added in the rules for binding con-structs are unrestricted and therefore may include locations that are
+
+not in the current heap. To avoid this problem, we introduce typingfor configurations--pairs of heaps and pseudo-expressions. The
+
+typing terms
+
+variable typing \Gamma  : x fin! o/n
+store typing \Sigma  : l fin! o/
+variable typing pair \Gamma  ::= (\Gamma |\Gamma )
+
+pseudo-types bo/ ::= o/|ho/iii S! o/
+
+iscfhFii(o/), iscf(o/)
+
+F 2 hFii
+iscfhFii(F )
+
+iscfhi(o/)
+
+iscf(o/) 8
+
+i. iscfhFji,F (ftypei(F ))
+
+iscfhFji(F )
+
+cf(\Sigma ), locs(be), ftypes(o/), ftypei(o/), ftype(f, o/)
+
+cf(\Sigma ) = \Sigma |L where L = {l 2 dom(\Sigma ) : iscfhi(\Sigma (l))}.
+locs(be) = {l : l is a subterm of be}
+ftypes(o/) = ho/iii assuming fields(o/) = ho/i fiii
+ftypei(o/) = ftype(fi, o/) = o/i assuming o/i fi 2 fields(o/)
+
+` p, ` P , ` CL
+
+` P hi; ;|; `0 e0 : o/|S locs(e0) = ;`
+
+P, e0
+
+inheritance is acyclic no field names clash h` CLiii` h
+
+CLiii
+
+hlocs(M0i ) = ;ii hhi; ;|this : C0 `0 M0i iih
+mtype(mname(Mi), D) = undef or mtype(M0i )ii`
+
+class C extends D {ho/j fjij;hM0i ii}
+
+h\Sigma iii; \Gamma  `n sub D {hMni i}
+
+hh\Sigma iii; \Gamma 1|\Gamma 2, this : Dn `n Mnj : o/j|Sjij
+n > 0 . dom([i\Sigma i) ' locs(sub D {hMnj ij})h
+
+\Sigma iii; \Gamma 1|\Gamma 2 `n sub D {hMnj ij}
+
+where o/j = mtype(mname(Mnj ), D).
+
+h\Sigma iii; \Gamma  `n Mn : ho/iii S! o/|S
+
+h\Sigma iii, \Sigma ; \Gamma 1, \Gamma 2, hxi : o/ni ii|; `n en : o/|S
+h\Sigma iii; \Gamma 1|\Gamma 2 `n S o/ m(ho/i xiii){en} : ho/iii S! o/|S0
+
+h\Sigma iii; \Gamma  ` H
+
+8l 2 dom([i\Sigma i). h\Sigma iii; \Gamma  ` H(l) : ([i\Sigma i)(l)h
+
+\Sigma iii; \Gamma  ` H
+
+h\Sigma iii; \Gamma  ` h : o/
+
+h\Sigma iii; \Gamma  ` h : o/ o/ OE o/0h
+
+\Sigma iii; \Gamma  ` h : o/0 h
+
+([i\Sigma i)(lj) OE ftypej(C)ijh
+
+\Sigma iii; \Gamma  ` (C, hlji) : C
+
+h\Sigma iii; \Gamma >=1 `0 h|e0|i : CodehS, o/i|S0h
+
+\Sigma iii; \Gamma  ` (Code, h|e0|i) : CodehS, o/i
+
+h\Sigma iii; \Gamma >=1 `0 sub D {hM0j ij}h
+
+([i\Sigma i)(lk) OE ftypek(D)ikh
+
+\Sigma iii; \Gamma  ` (sub D {hM0j ij}, hlkik) : D
+
+where \Gamma >=1(x) = o/n () \Gamma (x) = o/n ^ n >= 1.
+
+h\Sigma iii; \Gamma  `n en : o/|S Additional constraints on h\Sigma iii are discussed in the text.
+
+o/0 OE o/ h\Sigma iii; \Gamma  `n en : o/0|Sh
+
+\Sigma iii; \Gamma  `n en : o/|S
+
+\Gamma (x) = o/n iscf(o/) . k = 0h
+
+\Sigma iii; \Gamma  `n+k x : o/|S
+
+([i\Sigma i)(l) = o/ iscf(o/) . n = 0h
+
+\Sigma iii; \Gamma  `n l : o/|S
+
+hh\Sigma iii; \Gamma 1|\Gamma 2 `n enj : ftypej(C)|Sijh
+
+\Sigma iii, \Sigma ; \Gamma 1, \Gamma 2|x : Cn `n en : o/|Sh
+
+\Sigma iii; \Gamma 1|\Gamma 2 `n (let x ( new C(henj ij) in en) : o/ |S h
+
+\Sigma iii; \Gamma  `n en : o/|Sh
+\Sigma iii; \Gamma  `n en.f : ftype(f, o/)|S
+
+hh\Sigma iii; \Gamma  `n enj : o/j|Si2j=1
+ftype(f, o/1) = o/2 S = insep . iscf(o/2)h
+
+\Sigma iii; \Gamma  `n (e1.f := e2) : o/2|S
+
+\Gamma (x) = o/n1 h\Sigma iii; \Gamma 1|\Gamma 2 `n en : o/2|sep
+
+x 2 dom \Gamma 2 ftype(f, o/1) = o/2h
+
+\Sigma iii; \Gamma 1|\Gamma 2 `n (x.f := en) : o/2|sep
+
+([i\Sigma i)(l) = o/1 iscf(o/2) . (n = 0 ^ l 2 dom \Sigma I)
+
+ftype(f, o/1) = o/2 h\Sigma iiIi ; \Gamma  `n en : o/2|seph
+
+\Sigma iiIi ; \Gamma  `n (l.f := en) : o/2|sep
+
+h\Sigma iii; \Gamma  `n en : o/|S hh\Sigma iii; \Gamma  `n enj : o/j|Sij
+
+mtype(m, o/) = ho/jij S! o/h
+\Sigma iii; \Gamma  `n en.m(henj ij) : o/|S
+
+hh\Sigma iii; \Gamma  `n enj : ftypej(D)|Sijh
+
+\Sigma iii; \Gamma  `n sub D {hMnk ik}h
+
+\Sigma iii; \Gamma  `n new D(henj ij) {hMnk ik} : D|S h
+
+\Sigma iii; \Gamma 1, \Gamma 2|; `n+1 e : o/|Sh
+\Sigma iii; \Gamma 1|\Gamma 2 `n h|e|i : CodehS, o/i|S0 h
+
+\Sigma iii; \Gamma  `n en : CodehS, o/i|seph
+
+\Sigma iii; \Gamma  `n+1 `e : o/|S
+
+h\Sigma iii; \Gamma  `n e : CodehS, o/i|S0h
+
+\Sigma iii; \Gamma  `n e.run()|insep
+
+Figure 5. Type system for Lightweight Mint.
+
+judgment h\Sigma iii; \Gamma  `n (H, ben) : o/|S then specifies that the config-uration
+
+(H, ben) is well-typed. Configuration typing rules are iden-tical to pseudo-expression typing rules except that each rule also
+
+requires the heap H to be well-formed under the current context.For example, the rule for
+
+let becomes:hh
+
+\Sigma iii; \Gamma  `n (H, enj ) : ftypej(C)|Sijh
+\Sigma iii, \Sigma ; \Gamma , x : Cn `n (H, en) : o/|S h\Sigma iii; \Gamma  ` Hh
+
+\Sigma iii; \Gamma  `n (H, let x ( new C(henj ij) in en) : o/ |S
+A second technical difficulty is that a reduction step inside a letform or AIC that pushes a new frame
+
+\Sigma  onto h\Sigma iii might modify acode-free location in
+dom([i\Sigma i) to reference a location in the newframe
+\Sigma . Then the resulting heap is ill-formed under h\Sigma iii, be-cause this portion of the heap is not closed under reachability. The
+
+Smashing Lemma solves this problem by smashing the top two \Sigma 'sof h
+
+\Sigma iii into one, giving a shorter store typing stack. Informally,it states that the side-effects of a small-step happening inside a dynamic binder are invisible from outside except for allocations ofcode-free locations.
+
+Lemma 2 (Smashing). If
+
+1. \Gamma 01 [ \Gamma 02 ' \Gamma 1 [ \Gamma 2
+2. h\Sigma iiIi ; \Gamma 1|\Gamma 2 ` H1
+3. h\Sigma iiIi , \Sigma ; \Gamma 01|\Gamma 02 ` H2
+4. H1|L = H2|L where L = dom([Ii=1\Sigma i)- dom(cf([Ii=1\Sigma i))
+
+then h\Sigma iiI-1i , (\Sigma I [ cf(\Sigma )); \Gamma 1|\Gamma 2 ` H2.
+
+The different store typing stacks capture different views of theheap. The stack h
+
+\Sigma iiIi captures the locations that can legally bereferenced outside the binder (the outer view). The stack h
+
+\Sigma iiIi , \Sigma captures what can be referenced from inside the binder (the inner
+
+view). Similarly, the variable typing pair \Gamma 1|\Gamma 2 is used outside thebinder while
+
+\Gamma 01|\Gamma 02 is used inside the binder. The inner variabletyping pair contains typings for the new variables in addition to
+
+those in the outer variable typing pair (condition 1). Code insidethe binder may refer to locations that were illegal outside, namely
+those with code values that (may) contain free variables in (\Gamma 01 [
+\Gamma 02) \ (\Gamma 1 [ \Gamma 2). The extra \Sigma  available in the inner view providesthis extension to set of visible locations in the outer view.
+
+Suppose a small-step in the inner context takes the heap from
+H1 to H2. Our concern is whether H2 is still well-formed, espe-cially in the outer view. The heap had better be well-formed at the
+
+beginning in both the inner and outer views; the outer one mattershere (condition 2). After the small-step, we can easily show in the
+proof of Preservation that the new heap H2 is well-formed in theinner view, by a suitable inductive hypothesis (condition 3). Recall
+that any new allocations during the small-step are attributed to thetopmost store typing
+
+\Sigma , so the prefix h\Sigma iiIi remains the same as inthe check on
+H1. All the code-free restrictions on side effects existto ensure that the small-step could not have touched any non-codefree locations that are visible in the outer view (condition 4). Thelemma then asserts under these conditions that
+
+H2 is indeed well-formed in the outer view, provided that we salvage any new codefree allocations from \Sigma  into h\Sigma iiIi . We add these new allocationsto the topmost store typing,
+
+\Sigma I, in compliance with the conventionof only modifying the topmost store typing.
+
+The Smashing Lemma implies the absence of scope extrusion,as it states that any code locations that could potentially cause scope
+extrusion are not reachable outside their respective scopes.
+Lemma 3 (Preservation). If h\Sigma iii, \Sigma R; \Gamma 1|\Gamma 2 `n (H1, ben1 ) : o/|S
+and (H1, ben1 ) n (H2, ben2 ), then 9\Sigma 0R such that
+
+1. \Sigma 0R ' \Sigma R
+2. h\Sigma iii, \Sigma 0R; \Gamma 1|\Gamma 2 `n (H2, ben2 ) : o/|S
+
+Benchmark speedup unstaged us staged us
+power 9.2 0.060 0.0065
+fib 8.8 0.058 0.0065
+mmult 4.7 13 2.7
+eval-fact 20 0.83 0.042
+eval-fib 24 18 0.73
+av-mmult 65 20 0.30
+av-mtrans 14 1.0 0.071
+serialize 26 1.5 0.057
+
+Figure 6. Benchmark results.
+
+3. H1|L = H2|L where L = dom([i\Sigma i) - dom(cf([i\Sigma i))
+
+This statement is an abridged version. As mentioned at the be-ginning of this section, we need freshness assumptions about heap
+
+locations in \Sigma , and this lemma must be expanded to incorporatethem. The companion technical report contains a complete statement and a proof of this lemma.
+
+7. Performance
+To validate both the expressivity of our type system as well asthe potential usefulness of MSP for Java, we extended the Java
+
+OpenJDK compiler [17] with our proposed type system and withruntime support for staging. All examples presented earlier in the
+paper were type-checked using this implementation [18]. In thissection, we present timing results that confirm that MSP can affect
+the performance of Java programs in a way similar that observed inother languages.
+
+7.1 Benchmarks
+In order to measure the performance impact of MSP in Mint, wehave benchmarked the following Mint examples:
+
+* power is the power example from Section 2, called with base 2and exponent 17.
+
+* fib recursively computes the 17th element of the generalizedFibonacci function starting from 2 and 3.
+
+* mmult performs sparse matrix multiplication, in which every
+
+1 in the left matrix omits the floating-point multiplication atruntime and every 0 omits the multiplication and the addition.
+
+The benchmark is multiplies an 11-by-11 unsymmetric sparsematrix [6] with itself.
+
+* eval-fact calculates the factorial of 10 using the lint interpreter discussed in Section 5.1.*
+
+eval-fib calculates the 10th number in the standard Fibonaccisequence using the
+
+lint interpreter.*
+
+av-mmult performs the same sparse matrix multiplication as
+mmult, but accesses the matrix using the array views describedin Section 5.2.
+
+* av-mtrans performs a matrix transpose using array views.
+
+* serialize uses the serializer generator discussed in Section 5.3
+
+to write the primitive fields contained in an object hierarchy twolevels deep to an output stream.
+
+For each operation in the benchmarking process (unstaged,staged), we first determine the number of repetitions that are required for the operation to run for 1-2 s. This calibration phase alsoallows the JIT compiler to finish optimizing the program both for
+the unstaged and the staged code. We then run as many repetitionsof the operation as determined in the previous step and record the
+total time. The average runtime of a single repetition is calculatedfor each operation and used for the benchmark.
+
+Timings were recorded on an Apple MacBook with a 2.0 GHzIntel Core Duo processor, 2 MB of L2 cache, and 2 GB main
+memory, running Mac OS 10.4.11 Tiger and the SoyLatte 1.0.3JVM [24].
+
+7.2 Results
+The results are given in Figure 6. Performance improved in allcases. The speedups, defined as unstaged time divided by staged
+
+time, range from 4.7 to 65. The staged versions of power and fibexecuted approximately nine times faster than the unstaged code
+due to the removal of recursion. The mmult benchmark involvedmostly tight
+
+for loops and could only be sped up by a factor of 4.7.Staging the
+lint interpreter removed call overhead and improvedthe performance of the
+
+eval-fact and eval-fib benchmarks byfactors of 20 and 24, respectively. In the
+
+av-mmult and av-mtransbenchmarks, loops were unrolled and the layer of indirection in the
+
+form of array views was replaced by direct array accesses, resultingin speedups of 65 and 14, respectively. Finally, the
+
+serializerbenchmark also benefited from staging through the removal of
+
+reflection, and execution time was reduced by a factor of 26. Theseimprovements make it clear that the presence of JIT technology
+in Java does not subsume the need for staging techniques, andthat the performance benefits reported in previous work [5, 26] on
+languages without JIT technology apply to Java as well.
+8. Related Work
+A distinguishing feature of Mint is a strong, expressive, and safetype system that permits both manipulation of open terms and imperative programming. Few multi-level imperative languages havesuch a type system, and fewer yet come with rigorous type safety
+proofs. `C [19] and Jumbo [13] do not guarantee well-formednessof generated code. Cyclone [23] statically guarantees type safety
+(including well-formedness) of generated code, but does not treatcode as first-class values. This design helps Cyclone's runtime code
+generator to be very fast and still produce high-quality code, butlimits programmers in the way they can write generators. Other
+works on staging extensions to Java by Sestoft [21], Schultz et al.[20], and Zook et al. [30] focus on exploring novel uses of staging
+and/or quantifying performance benefits. As such, these authors donot attempt to establish safety properties of their extensions.
+
+Some multi-stage systems based on Java offer safety proper-ties, but formalizations and proofs are often absent or incomplete.
+Metaphore [15] comes with a core typed, Java-like calculus butits type soundness is left unproved. The calculus also leaves out
+side effects. SafeGen [10] is claimed to guarantee well-typednessof generated code, but the authors do not prove such a result or
+formalize their system. MorphJ [9] focuses on reflection and doesnot allow manipulation of arbitrary code values (in particular open
+terms). The paper proves soundness, but the system does not modelside effects. F"ahndrich et al. [7] propose a system similar to MorphJ
+that allows the user to perform limited manipulations of code val-ues, using reflection, in a type-safe manner. DynJava [16] has static
+type checking for dynamically generated code based on annota-tions about the types of free variables in code fragments. The authors claim type safety, but do not appear to offer a rigorous proof.The type annotations also make their code generation system unhygienic (i.e. ff equivalence fails for dynamic code).Much of the work on type safety proofs in the literature are for
+functional languages, where imperative extensions similarly causescope extrusion [2, 3, 11, 12, 14]. Mint either compares favorably
+or is competitive with all of these systems. Calcagno et al. [3]allow imperative operations on code but do not support imperative
+operations on open terms. Aktemur [1] and Kim et al. [14] supportunrestricted imperative operations on open terms but give up
+
+ff-equivalence for future-stage code. Kim et al. delegate hygiene to a
+
+specialized binder **, whose semantics can be explained only interms of a "gensym." Type terms also tend to be very large in their
+systems which may limit the programmer's ability to write downor interpret types and correct type errors; this problem is offset to
+some extent, however, by type inference. Aktemur's and Kim etal.'s systems allow storing open terms in global variables that can
+(potentially) outlive the scope of the variables they contain, whichcannot be done in Mint. However, we are not aware of any use for
+this technique, apart from examples by Kim et al. that deliberatelyviolate hygiene [14]. Unhygienic generation brings up the problem
+of inadvertent variable capture, and preventing it is a desirablefeature of MSP.
+
+Ancona and Moggi [2] and Kameyama et al. [11, 12] are theonly works we know of that combine imperative operations on open
+terms and ff-equivalence. Kameyama et al.'s approach [12] is clos-est to the weak separability approach presented in this paper, in that
+they limit the effects allowed within escapes. What distinguishesMint from Ancona and Moggi's and Kameyama et al.'s systems is
+that Mint allows effects occurring in escapes to be visible outsidethe escapes as long as they do not involve code objects, whereas
+Ancona and Moggi and Kameyama et al. unconditionally prohibitsuch effects. This difference makes our system more expressive,
+which is demonstrated in Section 5.1, where we throw an excep-tion in a code generator, and in Section 5.2, where we accumulate
+code in a for-loop. Neither Ancona and Moggi's nor Kameyamaet al.'s system can directly express either of these examples. Even
+if we consider extending these systems, it is unclear how to extendthem to handle Section 5.1's example. To allow the example in Section 5.2, their calculi must incorporate arrays, which is a nontrivialtheoretical exercise. Our type system is thus better suited to Java
+programming, which in general makes heavy use of effects.Furthermore, Kameyama et al. take delimited control operators
+as the primitives for effects, which are not found in mainstreamlanguages like Java. In order to track the use of delimited control
+operators, they must use an effect type system, which complicatestypes and typing rules. It is true that delimited control allows
+Kameyama et al. to express computations that are not easy totranscribe to assignment-based systems like Mint; however, the
+advantage of their system is in the underlying imperative primitiveand is not in an essential limitation of the weak separability idea
+itself.Ancona and Moggi's system executes effects within dynamic
+binders not at code generation time but at the time the generatedcode is run. In other words if dynamic binders are involved, Ancona
+and Moggi's system cannot express effectful code generators al-though it can express generators that generate effectful code. Their
+system is similar to Aktemur's [1] and Kim et al.'s [14] in that theyuse fresh names. All such calculi currently require explicitly listing
+the free variables in the code type, and explicitly managing hy-giene and free variables explicitly in terms. Most importantly, the
+extra constraints in the type require polymorphism and structuralsubtyping to be introduced in the language. Mainstream objectoriented languages such as Java and C# support nominal subtyping,not structural subtyping.
+
+9. Conclusion
+This paper has proposed a practical approach to adding MSP tomainstream languages in a type-safe manner that prevents scope
+
+extrusion. The approach is simpler than prior proposals, and weexpect that it will be easily and intuitively understood by programmers. The key insight is that safety can be ensured with weak sepa-rability, which places straightforward restrictions on the forms and
+types of computational effects that occur inside escape expressions,so that these effects cannot cause code to leak outside of escapes.
+The proposal has been validated both by proving that weak separability is enough to ensure safety and by demonstrating by examplethat many useful MSP applications can still be written that adhere
+to these restrictions.A future direction for this work is to try to simplify the idea of
+weak separability to more closely match the intuition behind theconcept. We believe there is some system similar to environment
+classifiers, in which quantifying on type variables can be used toimplicitly capture the property that we wish to express. Instead
+of quantifying a type variable at the occurrence of run() as inenvironment classifiers, however, we believe that weak separability
+can be expressed by quantifying a type variable at the occurrenceof an escape. This would simplify the type system and possibly add
+more expressive power to the language.
+
+Acknowledgments
+We thank Yannis Smaragdakis, Julia Lawall and Samuel Kaminfor their helpful comments. We thank the anonymous reviewers for
+
+their valuable feedback.
+
+References
+
+[1] Baris Aktemur. Type Checking Program Generators Using theRecord Calculus, 2009.
+
+http://loome.cs.uiuc.edu/pubs/
+transformationForTyping.pdf.
+
+[2] Davide Ancona and Eugenio Moggi. A fresh calculus for name man-agement. In GPCE '04: Proceedings of the 3rd International Conference on Generative Programming and Component Engineering, vol-ume 3286, pages 206-224, 2004.
+
+[3] Cristiano Calcagno, Eugenio Moggi, and Walid Taha. Closed Typesas a Simple Approach to Safe Imperative Multi-stage Programming.
+
+In ICALP '00: Proceedings of the 27th International Colloquium onAutomata, Languages and Programming, pages 25-36, 2000.
+
+[4] Cristiano Calcagno, Eugenio Moggi, and Walid Taha. ML-like infer-ence for classifiers. In ESOP '04: Proceedings of the 13th European
+
+Symposium on Programming, pages 79-93, 2004.
+[5] Cristiano Calcagno, Walid Taha, Liwen Huang, and Xavier Leroy. Im-plementing multi-stage languages using asts, gensym, and reflection.
+
+In GPCE '03: Proceedings of the 2nd International Conference onGenerative Programming and Component Engineering, pages 57-76,
+New York, NY, USA, 2003. Springer-Verlag New York, Inc.
+[6] Tim Davis and Yifan Hu. The University of Florida Sparse Ma-trix Collection.
+
+http://www.cise.ufl.edu/research/sparse/
+matrices/Pajek/Tina DisCal.html.
+
+[7] Manuel F"ahndrich, Michael Carbin, and James R. Larus. Reflectiveprogram generation with patterns. In GPCE '06: Proceedings of
+
+the 5th International Conference on Generative Programming andComponent Engineering, pages 275-284, 2006.
+
+[8] Habanero Multicore Software Research Project.
+
+http://habanero.rice.edu.
+
+[9] Shan Shan Huang and Yannis Smaragdakis. Expressive and safestatic reflection with MorphJ. In PLDI '08: Proceedings of the 2008
+
+ACM SIGPLAN Conference on Programming Language Design andImplementation, pages 79-89, 2008.
+
+[10] Shan Shan Huang, David Zook, and Yannis Smaragdakis. Staticallysafe program generation with safegen. In GPCE '04: Proceedings
+
+of the 3rd International Conference on Generative Programming andComponent Engineering, pages 309-326, 2005.
+
+[11] Yukiyoshi Kameyama, Oleg Kiselyov, and Chung chieh Shan. Closingthe stage: from staged code to typed closures. In PEPM '08: Proceedings of the 2008 ACM SIGPLAN Symposium on Partial Evaluationand Semantics-based Program Manipulation, pages 147-157, 2008.
+
+[12] Yukiyoshi Kameyama, Oleg Kiselyov, and Chung chieh Shan. Shiftingthe stage: Staging with delimited control. In PEPM '09: Proceedings
+
+of the 2009 ACM SIGPLAN Workshop on Partial Evaluation andProgram Manipulation, pages 111-120, 2009.
+
+[13] Sam Kamin, Lars Clausen, and Ava Jarvis. Jumbo: Run-time codegeneration for Java and its applications. In CGO '03: Proceedings of
+
+the International Symposium on Code Generation and Optimization,pages 48-56, 2003.
+
+[14] Ik-Soon Kim, Kwangkeun Yi, and Cristiano Calcagno. A polymorphicmodal type system for lisp-like multi-staged languages. In POPL '06:
+
+Conference record of the 33rd ACM SIGPLAN-SIGACT symposiumon Principles of programming languages, pages 257-268, New York,
+NY, USA, 2006. ACM.
+[15] Gregory Neverov and Paul Roe. Metaphor: A Multi-stage, Object-Oriented Programming Language. In GPCE '04: Proceedings of
+
+the 3rd International Conference on Generative Programming andComponent Engineering, pages 168-185, 2004.
+
+[16] Yutaka Oiwa, Hidehiko Masuhara, and Akinori Yonezawa. DynJava:Type safe dynamic code generation in Java. In PPL '01: Proceedings of the 3rd JSSST Workshop on Programming and ProgrammingLanguages, March 2001.
+
+[17] OpenJDK Project. http://openjdk.java.net.
+[18] Rice PLT. Mint Multi-stage Java Compiler. Available at
+
+http://www.javamint.org.
+
+[19] Massimiliano Poletto, Wilson C. Hsieh, Dawson R. Engler, andM. Frans Kaashoek. C and tcc: a language and compiler for dynamic
+
+code generation. ACM Transactions on Programming Languages andSystems, 21(2):324-369, 1999.
+
+[20] U.P. Schultz and J.L. Lawall C. Consel. Automatic Program Special-ization for Java. ACM Transactions on Programming Languages and
+
+Systems, 25(4):452-499, 2003.
+[21] Peter Sestoft. Runtime code generation with JVM and CLR. Availableat
+
+http://www.dina.dk/sestoft/publications.html, 2002.
+
+[22] Jun Shirako, Hironori Kasahara, and Vivek Sarkar. Language exten-sions in support of compiler parallelization. In Languages and Compilers for Parallel Computing: 20th International Workshop, LCPC2007, Urbana, IL, USA, October 11-13, 2007, Revised Selected Papers, pages 78-94, Berlin, Heidelberg, 2008. Springer-Verlag.
+[23] Frederick Smith, Dan Grossman, J. Gregory Morrisett, Luke Hornof,and Trevor Jim. Compiling for template-based run-time code generation. Journal of Functional Programming, 13(3):677-708, 2003.
+[24] SoyLatte Project. http://landonf.bikemonkey.org/static/
+
+soylatte/.
+
+[25] Rok Strni^sa, Peter Sewell, and Matthew Parkinson. The Java mod-ule system: Core design and semantic definition. In OOPSLA '07:
+
+Proceedings of the 22nd Annual ACM SIGPLAN Conference on Ob-ject Oriented Programming Systems and Applications, pages 499-514,
+2007.
+[26] Walid Taha. A gentle introduction to multi-stage programming. InDSPG '03: Proceedings of the International Seminar on DomainSpecific Program Generation, 2003.
+[27] Walid Taha, Zine el-abidine Benaissa, and Tim Sheard. Multi-Stage Programming: Axiomatization and Type Safety (Extended Abstract). In ICALP'98: 25th International Colloquium on Automata,Languages, and Programming, pages 918-929, 1998.
+
+[28] Walid Taha and Michael Florentin Nielsen. Environment classifiers.In POPL '03: Proceedings of the 30th ACM SIGPLAN-SIGACT symposium on Principles of programming languages, pages 26-37, NewYork, NY, USA, 2003. ACM.
+
+[29] Edwin Westbrook, Mathias Ricken, Jun Inoue, Yilong Yao, TamerAbdelatif, and Walid Taha. Multi-stage Programming for Mainstream
+
+Languages. Technical Report TR09-02, Rice University, 2009.
+[30] David Zook, Shan Shan Huang, and Yannis Smaragdakis. GeneratingAspectJ Programs with Meta-AspectJ. In GPCE '04: Proceedings
+
+of the 3rd International Conference on Generative Programming andComponent Engineering, pages 1-18, 2004.

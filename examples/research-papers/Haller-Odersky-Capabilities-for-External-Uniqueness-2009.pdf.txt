@@ -1,0 +1,1860 @@
+
+
+Capabilities for External Uniqueness
+
+Philipp Haller and Martin Odersky
+
+EPFL, Switzerland
+LAMP-REPORT-2009-001
+
+Abstract. Unique object references have many important applications
+in object-oriented programming. For instance, with suOEcient encapsula-
+tion properties they enable safe and eOEcient transfer of message objects
+between concurrent processes. However, it is a long-standing challenge to
+integrate unique references into practical object-oriented programming
+languages.
+This paper introduces a new approach to external uniqueness. The idea is
+to use capabilities for enforcing both aliasing constraints that guarantee
+external uniqueness, and linear consumption of unique references. We
+formalize our approach as a type system, and prove a type preservation
+theorem. Type safety rests on an alias invariant that builds on a novel
+formalization of external uniqueness.
+We show how a capability-based type system can be used to integrate
+external uniqueness into widely available object-oriented programming
+languages. Practical experience suggests that our system allows adding
+uniqueness information to common collection classes in a simple and
+concise way.
+
+1 Introduction
+Message-based concurrency provides robust programming models that scale from
+multi-core processors to distributed systems, web applications and cloud comput-
+ing. Seamless scalability requires that local and remote message send operations
+should behave the same. A good candidate for such a uniform semantics is that a
+sent message gets moved from the memory region of the sender to the (possibly
+disjoint) memory region of the receiver. Thus, a message is no longer accessible
+to its sender after it has been sent. This semantics also avoids data races if con-
+current processes running on the same computer communicate only by passing
+messages.
+
+However, moving messages physically requires expensive marshalling (i.e.,
+copying). This would prohibit the use of message-passing altogether in performance-
+critical code that deals with large messages, such as image processing pipelines or
+network protocol stacks [17, 18]. To achieve the necessary performance in these
+applications, the underlying implementation must pass messages between pro-
+cesses running on the same shared-memory computer by reference. But reference
+passing makes it challenging to enforce race freedom, especially in the context of
+imperative, object-oriented languages, where aliasing is common. The two main
+approaches to address this problem are:
+
+* Immutable messages. Only allow passing objects of immutable type. Exam-
+
+ples are Java-style primitive types (e.g., int, boolean), immutable strings,
+and tree-shaped data, such as XML.
+
+* Alias-free messages. Only a single, unique reference may point to each mes-
+
+sage; upon transfer, the unique reference becomes unusable [18, 35, 36].
+
+Immutable messages are used, for instance, in Erlang [3], a programming lan-
+guage created by Ericsson that was used at o/rst in telecommunication systems,
+but is now also o/nding applications in Internet commerce (e.g., Amazon's Sim-
+pleDB [34]).
+
+The second approach usually imposes constraints on the shape of messages
+(e.g., trees [36]). Even though messages are passed by reference, message shape
+constraints may lead indirectly to copying overheads; data stored in an object
+graph that does not satisfy the shape constraints must o/rst be serialized into a
+permitted form before it can be sent within a message.
+
+Scala [33] provides Erlang-style concurrent processes as part of its standard
+library in the actors package [21]. Scala's actors run on the standard Java plat-
+form [27]; they are gaining rapidly support in industry, with applications in
+the lift web application framework [20], the Kestrel message queue system [24]
+powering the popular Twitter micro-blogging service, and others.
+
+In Scala actors, messages can be any kind of data, mutable as well as im-
+mutable. When sending messages between actors operating on the same com-
+puter, the message state is not copied; instead, messages are transferred by
+reference only. This makes the system AEexible and guarantees high performance.
+However, race safety has previously neither been enforced by the language, nor
+by the run-time library.
+
+This paper proposes a new type-based approach to statically enforce race
+safety in Scala's actors. Our main goal is to ensure race safety with a type
+system that's simple and expressive enough to be deployed in production sys-
+tems by normal users. Our system removes important limitations of existing
+approaches concerning permitted message shapes. At the same time it allows
+interesting programming idioms to be expressed with fewer annotations than
+previous work, while providing equally strong safety guarantees. Our approach
+combines capabilities [19, 7] and external uniqueness [10, 42]. Capabilities express
+access permissions for objects. In the simplest case, a capability is binary, that
+is, either the capability is available, in which case the associated object may be
+accessed, or the object is not accessible. External uniqueness is used to control
+aliasing of transferred objects.
+
+The contributions of this paper are as follows:
+
+* As our main technical contribution we introduce Object Capability Types
+
+(OCT), a type system that uses capabilities for enforcing both external
+uniqueness, and linear consumption of unique references, making the sys-
+tem uniform and simple. We present a formalization of OCT and provide a
+complete proof of a type preservation theorem.
+
+* We formally state an alias invariant of OCT that implies safe ownership
+
+transfer. The invariant builds on a novel formalization of external uniqueness
+that is not based on ownership.
+* We show how OCT can be applied to message-based concurrency by provid-
+
+ing tracked references in the style of Singularity [18]. Our approach improves
+on the state of the art in message-based concurrency by (1) integrating ex-
+ternal uniqueness and adoption [19], which enables aliased objects to point
+to unique objects in a statically safe way, while (2) avoiding the problems of
+destructive reads [7].
+* We have implemented OCT as an extension of the EPFL Scala compiler. In
+
+Section 8.1 we show that virtually all methods of common collection classes
+in Scala's standard library can be annotated with uniqueness information in
+a simple way without any changes to their implementation.
+
+The rest of the paper is organized as follows. In Section 2 we motivate why
+unique object references are useful in the context of message-based concurrency.
+Section 3 introduces a system of annotations that allows expressing and enforcing
+uniqueness properties in object-oriented programs. In Section 4 we formalize our
+approach in the form of type rules for an imperative object calculus. In Section 5
+we introduce an operational semantics for our core language, and use it to prove
+a type preservation theorem. Section 6 formalizes aliasing guarantees of our type
+system. In Section 7 we extend our system to advanced constructs such as nested
+classes. We report on an implementation for Scala and practical experience in
+Section 8. Section 9 reviews related work, and Section 10 concludes.
+
+2 Example
+Consider the following example of an actor that receives a reference to a linked
+list.
+
+actor -
+
+receive -
+
+case rlist: LinkedList =? ...
+""
+""
+
+At o/rst, rlist is the only active reference to the received list; therefore, it would
+be safe to pass it on to another actor, as long as the reference is not accessed
+after it has been sent. Assume, however, that another list should be appended
+to the received list before it is passed on.
+
+case rlist: LinkedList =?
+
+val other: LinkedList = ...
+rlist.append(other)
+next.send(rlist)
+
+The other list may have been built locally or may have been received from
+elsewhere. Using the append method of the LinkedList class, we append other
+
+class Node -
+
+var el: Object
+var prev, next: Node
+""
+class LinkedList -
+
+var head: Node
+def append(other: LinkedList) -
+
+if (head == null)
+
+head = other.head
+else if (other.head != null) -
+
+var h = head
+while (h.next != null) h = h.next
+h.next = other.head
+h.next.prev = h
+""
+""
+""
+
+Fig. 1. Example: Doubly-linked list with append method.
+
+to rlist. Then, the extended rlist is sent to the next actor. Ideally, it should
+be safe to use the append method as it is shown in Figure 1, which involves
+no copying. For this, we have to check that the method does not change the
+(external) aliasing of its receiver. In other words, a unique reference to a list,
+such as rlist, should remain unique after invoking append on it. The challenge
+in verifying the safety of the append method is that it creates aliases of existing
+objects.
+
+Such a scenario is typical in message-based concurrency, where it is important
+to avoid copying when constructing a new message from a received message.
+An actor should be able to mutate a received message, and then pass along a
+reference to the mutated message as in the above example. However, this requires
+checking that the mutation did not introduce any aliasing that could violate race
+safety.
+
+In the next section we introduce a type system that can verify that the append
+method maintains the uniqueness of its receiver. This is done by showing that
+the aliases that the method creates are strictly internal to the data structure.
+
+3 Object Capability Types
+In this section we introduce a set of annotations and expressions that ensure
+external uniqueness in the presence of mutation and aliasing. The type safety of
+our system is based on an alias invariant that we discuss subsequently. Section 4
+presents a formalization of the type rules that guarantee this alias invariant.
+
+Figure 2 shows the example that we introduced in Section 2 with additional
+annotations that allow our type system to verify the safety of the append method.
+
+class Node -
+
+var el: Object
+var prev, next: Node
+""
+class LinkedList -
+
+var head: Node
+@transient
+def append(other: LinkedList @unique) -
+
+expose (this) - xl =?
+
+val ol = localize(other, xl)
+if (xl.head == null)
+
+xl.head = ol.head
+else if (ol.head != null) -
+
+var h = xl.head
+while (h.next != null) h = h.next
+h.next = ol.head
+h.next.prev = h
+""
+""
+""
+""
+
+Fig. 2. Example: Safe append using expose and localize.
+
+In Section 3.4, we show how some of the additional annotations can be inferred
+by our system. We now explain each of the annotations and operations in turn.
+
+3.1 Annotations
+Our system uses three annotations, @unique, @transient, and @exposed. Only
+local variables, method parameters (including the receiver), and method re-
+sults can carry these annotations. This means that class declarations remain
+unchanged. In the following we explain the @unique and @transient annota-
+tions. We defer a discussion of @exposed until Section 3.5.
+
+The @transient annotation at the deo/nition of the append method in Fig-
+ure 2 actually applies to the receiver, i.e., this. It requires this to be unique;
+moreover, calling the method will not consume this reference, that is, after the
+call the reference is still available (and unique). This corresponds to our require-
+ment that ownership transfer should be safe after calling append. The @unique
+annotation at the argument type requires the argument to be unique. Moreover,
+it grants the method the right to consume the argument, which means that it is
+invalid to access the argument after the call returns.
+
+3.2 Expose and Localize
+To prevent aliases that could destroy its uniqueness, a unique object must be
+exposed before its o/elds can be accessed. In the example, the expression
+
+expose (this) - xl =? ... ""
+exposes the receiver and provides access to its o/elds via xl. Inside the new scope,
+xl has a type of the form ae . LinkedList (guarded type) where ae is a capability
+(or guard) that is freshly generated.
+
+Guarded types serve as a protection from unwanted aliases. A guarded type
+oe . C is only compatible with guarded type oe0 . C if oe and oe0 are known to be
+equal. In the example, this means that it is impossible to store xl in the o/eld
+of some object that is reachable from outside the scope of expose, since the
+capability ae in its type was freshly generated by the expose.
+
+Note that it is safe for an object reachable from xl to refer to a unique
+object. That way, no external alias to xl, or an object reachable from xl is
+created. Thus, the external uniqueness of xl is preserved. For this reason, our
+system provides a localize operation that makes a unique object available to
+be referred to from an object with the same guard as its second argument. Note
+that localize consumes the unique object, otherwise objects with other guards
+could refer to it as well. In the example, the expression localize(other, xl)
+has type ae . LinkedList, since xl is guarded by ae; this enables o/elds of xl to
+refer to the localized object.
+
+Field selections propagate guards: xl.head has the same guard as xl; since
+ol is localized to xl, ol.head has the same guard. Thus, the assignments that
+follow are permitted.
+
+Intuitively, the external uniqueness of xl is preserved, because we create only
+references between objects reachable from either this or other; since other was
+unique, no external aliases are created. In the following section, we introduce an
+alias invariant that precisely expresses what property our type system provides.
+
+3.3 Alias Invariant
+One of the goals of our system is to allow transferring a unique object to the
+context of another unique object without copying. Typically, the objects that we
+want to transfer contain sub-objects that represent the containing object. For
+instance, the representation of the doubly-linked list shown in Figure 1 consists
+of a group of linked Node objects. This example shows that the (internal) sub-
+objects are often aliased in possibly complex ways. In our system, the fact that it
+is safe to transfer an object depends on the objects reachable from it. An object
+o1 is reachable from another object o2 if and only if a o/eld of o2 refers to o1 or
+an object reachable from o2 refers to o1. Our system guarantees safe transfer for
+object graphs characterized as clusters.
+
+Deo/nition 1 (Cluster) Let o be an object and R be the set of objects reachable
+from o. Deo/ne Cl(o) = R [ {o}. Then, Cl(o) is a cluster if and only if every
+object in R is only reachable from objects in Cl(o).
+
+For each object o that we want to transfer, Cl(o) must be a cluster. This means
+that the objects reachable from o must be self-contained in the sense that they
+
+are not reachable from outside the cluster Cl(o). There are no restrictions wrt.
+references between objects in Cl(o) in our system.
+
+Note that clusters are not declared explicitly in programs. Instead, our type
+system checks the cluster property according to the way an object is constructed
+and operated on subsequently.
+
+Deo/nition 2 (External Uniqueness) A reference r to an object o is externally-
+unique if Cl(o) is a cluster and r is the only accessible external reference into
+Cl(o).
+
+A reference is external to a cluster Cl(o) if it is not stored in a o/eld of an object
+in Cl(o). A reference is accessible if it may be accessed in the current program
+execution. We often call a reference just unique if it is externally-unique.
+
+Instantiating a new object creates a unique reference, provided that all con-
+structor arguments are unique (or immutable, such as primitive values), and the
+constructor satiso/es certain sanity constraints, such as not leaking this or any
+of its arguments to static class members. We use a backwards AEow analysis to
+enforce uniqueness of constructed objects like in other systems [35]. In existing
+(Java) programs, constructors return unique objects in most cases [9, 28].
+
+For example, assume we want to create an instance of the doubly-linked list
+shown in Figure 1. The default constructors of the LinkedList and Node classes
+(not shown) initialize all o/elds to null and return unique references to the newly
+created instances.
+
+Like method parameters, also local variables and method returns can carry
+the @unique annotation to indicate that the corresponding reference should be
+unique.
+
+Deo/nition 3 (Tracked Variable) Tracked variables are local variables and
+method parameters that carry the @unique annotation.
+
+Note that a tracked variable does not always hold a unique reference. For
+instance, when a tracked variable is exposed, there may be multiple external
+references into the exposed cluster. However, transferring a unique object to
+another context is only safe when the tracked variable that holds a reference to
+it is not exposed. This is expressed by the following alias invariant.
+
+Deo/nition 4 (Alias Invariant) A tracked variable is
+externally-unique when it is consumed.
+
+Our type system guarantees statically that a cluster of objects is externally-
+unique when it is transferred, which implies type safety.
+
+3.4 Generalizing Uniqueness and Borrowing
+The SingleLinkedList class in Scala's standard collections library contains the
+following recursive append method:
+
+def append(that: SingleLinkedList) -
+
+if (next eq null)
+
+next = that
+else
+
+next.append(that)
+""
+
+Again, we would like to express that the method maintains the uniqueness of
+the receiver, provided the parameter that is unique. Therefore, we annotate the
+method as @transient, which actually means that the receiver is required to be
+unique; moreover, calling the method will not destroy its uniqueness. We mark
+the that parameter as @unique, because it is required to be unique and the
+method consumes it. Since append accesses the receiver's next o/eld, we must
+expose the receiver to gain temporary access to its o/elds:
+
+@transient
+def append(that: SingleLinkedList @unique) -
+
+expose (this) - xt =?
+
+if (xt.next eq null)
+
+xt.next = that // consume `that`
+else
+
+// `xt.next` is exposed
+xt.next.append(that)
+""
+""
+
+As before, xt has type ae.SingleLinkedList for some guard ae that was generated
+fresh for type checking the scope that expose opens. Note that in the o/rst branch
+of the if-expression, that is localized implicitly to the cluster of xt; in many cases,
+such as the above, localize expressions can be inferred.
+
+Since o/eld selections propagate guards, the receiver xt.next of the method
+invocation in the else-branch of the if-expression has type ae.SingleLinkedList.
+However, append expects the receiver to be transient. Informally, it is clear that
+the recursive call is harmless; it does not destroy the uniqueness of the original
+receiver. Indeed, our type system accepts the method invocation. In the following
+we explain why it is safe to do so.
+
+A method that takes a transient parameter, say, x, is type-checked under the
+assumption that x is a unique reference into some cluster. The type system makes
+sure that at the end of the method body, the target of x is still a cluster, and no
+additional external reference into the same cluster was created. Exposed objects
+are generally not unique, since at any program point, there may exist arbitrary
+aliases from stack locations (local variables, method parameters, etc.). However,
+an exposed reference always points into a cluster. This property is maintained
+when passing an exposed reference as a transient parameter in a method call.
+Furthermore, the method is prevented from creating additional external refer-
+ences into the cluster. Therefore, the corresponding expose expression (still)
+guarantees the external uniqueness of the exposed object.
+
+In summary, an exposed object is compatible with a transient formal method
+parameter as long as the underlying class types conform. This means that the
+transient qualio/er is strictly more general than both the exposed and unique
+qualio/ers, in the sense that both exposed and unique objects can be passed as
+transient parameters. This relationship between exposed and transient objects
+means that it is safe to implicitly expose all transient parameters (including the
+receiver) for the entire method body.
+
+For example, in the body of the append method in Figure 2, it is not necessary
+to write the expose expression explicitly. Since the receiver is transient, the type
+checker infers an expose expression for this that spans the entire method body.
+
+3.5 Exposed Parameters
+In addition to the append method we discussed above, the SingleLinkedList
+class also contains the following insert method:
+
+def insert(that: SingleLinkedList) -
+
+if (that ne null) -
+
+that.append(next)
+next = that
+""
+""
+
+It uses append to insert another list that at the current position (the receiver
+is the current node in the linked list). For this, it passes the receiver's next
+reference to append.
+
+Assume that we want to make the receiver of insert transient or unique.
+Then, we have to expose it to make its next o/eld accessible under some guarded
+type ae . SingleLinkedList. In the previous section we have seen that it is safe
+to pass a reference of guarded type to a method expecting a transient parameter.
+However, the parameter of append is marked as @unique, which is incompatible
+with references of guarded type, since the parameter is potentially consumed.
+This restriction is artio/cial, though. When considering only the (transitive) alias-
+ing eoeect of insert, it should be valid to annotate the receiver with @transient
+and the parameter with @unique.
+
+To allow reusing the append method, we generalize it by annotating its re-
+ceiver and parameter as @exposed:
+
+@exposed
+def append(that: SingleLinkedList @exposed) -
+
+if (next eq null)
+
+next = that
+else
+
+next.append(that)
+""
+
+Note that we can now use the unmodio/ed body of the original, non-annotated
+append method. The @exposed annotations indicate that both the receiver and
+
+the that parameter have guarded type ae . SingleLinkedList for some common
+guard ae.
+
+In general, the guard in the type of an exposed parameter (including the
+receiver) is shared by all other exposed parameters. This means that exposed
+parameters are required to be part of the same cluster. As a result, references
+between those objects are unrestricted, enabling AEexible imperative implemen-
+tations.
+
+We can use the modio/ed version of append in the implementation of insert
+as follows:
+
+@transient
+def insert(that: SingleLinkedList @unique) -
+
+val locThat = localize(that, this)
+if (locThat ne null) -
+
+locThat.append(next)
+next = locThat
+""
+""
+
+Note that the receiver is exposed implicitly; as discussed in the previous section,
+transient references can safely be treated as exposed. The parameter is localized
+to this. Therefore, the invocation of append and the following assignment type
+checks.
+
+In summary, exposed parameters allow a AEexible reuse of methods. Transient
+references are compatible with exposed parameters, requiring no changes at the
+call site. Unique references must be exposed or localized by the caller. Methods
+with exposed parameters enable a great deal of AEexibility in their implemen-
+tation. In Section 8.1 we show that virtually all methods of common collection
+classes in Scala's standard library can be annotated using @exposed without any
+changes to their implementation.
+
+4 The Type System
+This section presents a formal description of our type system. To simplify the
+presentation of key ideas, we present our type system in the context of a core
+subset of Java [4] inspired by FJ [23]. We add the expose and localize expres-
+sions, and augment the type system with capabilities to enforce uniqueness and
+aliasing constraints. Our approach, however, extends to the whole of Java and
+other languages like Scala. We discuss important extensions in Section 7.
+
+The core language syntax is shown in Figure 3. The syntax of programs,
+classes and expressions is standard; method deo/nitions are extended with ad-
+ditional typing constraints on the receiver and the arguments that we discuss
+below. In the examples of the previous section, types could be annotated with
+@unique, @transient, and @exposed. In our formalization, these annotated
+types are represented as class types with associated capabilities; however, these
+capabilities are implicit and never appear in actual programs. In the following we
+
+P ::= cdef t
+cdef ::= class C extends D {l : C; meth}
+meth ::= def m[ae ? \Delta ](x : T ) : (\Delta 0, T ) = t
+t ::=
+
+x | r | t.l | t1.l = t2 | t0.m(t)
+new C(t) | localize(t1, t2)
+expose x = t1 in t2
+T ::= ae I C | ae . C
+
+C, D 2 Classes
+x 2 V ars
+l 2 F ields
+r 2 RefLocs
+ae 2 Guards
+
+Fig. 3. Core language syntax
+
+discuss the representation of types annotated with @unique. The @transient
+and @exposed annotations are only used in method deo/nitions. We discuss them
+in Section 4.1.
+
+The type @unique C translates to a tracked type of the form ae I C for some
+guard ae. Guards are used together with a system of capabilities to make sure
+that objects of tracked type are consumed at most once. The type system ensures
+that whenever an object of type ae I C is accessed, the capabilities available at
+the current program point include the singleton capability {ae}. This is done by
+tracking the set of available capabilities during type checking. When an object
+of type ae I C is consumed, the capability {ae} is removed from the available
+capabilities. Since capabilities may not be duplicated, a unique reference becomes
+unusable once its capability is consumed.
+
+Capabilities are formed by joining together singleton capabilities using the \Omega 
+operator. The empty capability is written ?. The capability that includes only
+the singleton capabilities {ae} and {oe} is expressed as ae\Omega oe. Note that we omit the
+braces from singleton capabilities when joining them with other capabilities. We
+use the terms capability and guard interchangeably when talking about singleton
+capabilities. We use ae 2 \Delta  as an alternative notation for expressing \Delta  = ae \Omega  \Delta 0
+for some \Delta 0. The capability \Delta  - \Delta 0 contains all guards ae with ae 2 \Delta  ^ ae /2 \Delta 0.
+
+Note that capabilities are a purely static concept; after type checking, capa-
+bilities and the expose and localize expressions, which only operate on capa-
+bilities, are erased from the program. Consequently, capability checking incurs
+no runtime overhead.
+
+A tracked object that has been exposed is given a guarded type of the form
+ae.C. In contrast to tracked types, objects of guarded type may have an unknown
+number of aliases. Roughly speaking, objects of guarded type can be mutated
+as long as their o/elds point to objects that have types guarded by the same
+capability. Standard class types are expressed as guarded types ffl . C where the
+guard ffl corresponds to the empty capability ?.
+
+4.1 Method Deo/nitions
+Method deo/nitions are extended with two capabilities \Delta  and \Delta 0 that specify
+required and provided capabilities, respectively. Guards in \Delta  may occur in the
+argument types T . The provided capabilities \Delta 0 contain the required capabili-
+ties that are (still) available after an invocation of the method. If the method
+returns a unique object, the result type is tracked, and \Delta 0 contains an additional
+capability corresponding to the guard of the result type. Optionally, the type of
+the receiver can be qualio/ed using ae? where ae 2 \Delta  and ? 2 {., I}. It allows ex-
+pressing whether the receiver is required to be tracked or guarded, and whether
+it is potentially consumed (ae /2 \Delta 0) or not (ae 2 \Delta 0).
+
+The required and provided capabilities \Delta  and \Delta 0, respectively, correspond to
+source-level annotations on parameter types (including the receiver) and result
+types. For example, the method deo/nition
+
+@transient
+def append(other: LinkedList @unique)
+
+corresponds to the following method type:
+
+[ae I](ae \Omega  oe, oe I LinkedList) ! ({ae}, Unit) (1)
+Both the @transient and @unique annotations translate to tracked types, indi-
+cated by the ae I and oe I preo/xes. Moreover, the required capabilities include
+both ae and oe, meaning both the receiver and the parameter must be accessible.
+The provided capabilities contain only ae, since oe may be consumed. Parameter
+types annotated with @exposed correspond to guarded types. For example, the
+method deo/nition
+
+@exposed
+def append(other: LinkedList @exposed)
+
+corresponds to the following method type:
+
+[ae .]({ae}, ae . LinkedList) ! ({ae}, Unit) (2)
+Note that the receiver and parameter types are guarded by the same capability
+ae, as motivated in Section 3.5.
+
+4.2 Well-Formedness
+For type checking programs we assume a o/xed, well-formed class table that de-
+o/nes the sub-typing relation <:. Furthermore, the class table provides a standard
+function f ields(C) = l : D where l : D are all o/elds in C and super-classes of
+C. We also use the standard auxiliary functions mtype(C, m) = [ae ?](\Delta , T ) !(
+
+\Delta 0, T ) and mbody(C, m) = (x, t) where def m[ae ? \Delta ](x : T ) : (\Delta 0, T ) = t is
+deo/ned in the most direct superclass of C that deo/nes m.
+
+A method m is well-formed in a class C if its body is well-typed in an envi-
+ronment \Gamma  that maps m's formal parameters to their declared types, and this
+
+\Gamma  = x : T , this : ae ? C override(C, m)
+
+\Gamma  ; \Delta  ` t : T0 ; \Delta 0 T0 <: T
+\Delta 0 ` \Delta  . (\Delta 0 = ^\Delta  \Omega  ae ^ ^\Delta  ` \Delta  ^ T0 = ae I C0)
+
+C ` def m[ae ? \Delta ](x : T ) : (\Delta 0, T ) = t (
+
+WF-Method)
+
+(8D. C <: D )
+mtype(D, m) is undeo/ned .
+mtype(C, m) = oe(mtype(D, m)))
+
+override(C, m) (WF-Override)
+
+C ` meth`
+class C extends D {l : C; meth} (
+
+WF-Class)
+
+Fig. 4. Well-Formedness
+
+to ae ? C where ae? is the guard that the method requires for the receiver (WF-
+Method). Moreover, the capability \Delta 0, which is available after type-checking
+the method body, must contain a subset of the guards in the initial capability \Delta ,
+except if the return type T0 is tracked, in which case \Delta 0 must also contain the
+capability of T0. A method m respects the overriding rule if it does not override
+or if the signatures of all overridden methods can be unio/ed using appropri-
+ate substitutions (WF-Override). A class C is well-formed if all its method
+deo/nitions are well-formed (WF-Class).
+
+4.3 Type Rules
+Figure 5 shows the typing rules. The typing judgement has the form \Gamma  ; \Delta  `
+t : C ; \Delta 0. \Gamma  maps (free) variables to types. \Gamma  is an immutable map and the
+facts that it implies can be used arbitrarily often in typing derivations. \Delta  and \Delta 0
+are capabilities, which may not be duplicated. As part of the typing derivation,
+capabilities may be consumed or generated. \Delta 0 denotes the capabilities that are
+available after deriving the type of the term t.
+
+The rule for typing variables (T-Var) is standard; the capability set is un-
+changed.
+
+Selecting a o/eld from a term t of guarded type yields a type guarded by the
+same capability (T-Sel). While deriving the type for t the set of available capa-
+bilities may change resulting in a new set \Delta 0; this set describes the capabilities
+available after typing the o/eld selection.
+
+Assigning to a o/eld of some guarded type requires the right-hand side to be
+guarded by the same capability ae (T-Assign). After deriving types for t1 and
+t2, ae must be available. Furthermore, ae is not consumed by the assignment.
+
+The rule for instance creation (T-New) requires all constructor arguments
+to be tracked, and their corresponding capabilities to be available. In this case,
+there is no reference that could point into the object graph rooted at the new
+instance; thus, we can assign a tracked type with a fresh capability to the new
+instance. The capabilities aei of the arguments are consumed.
+
+Type Assignment \Gamma  ; \Delta  ` t : T ; \Delta 0
+
+x : T 2 \Gamma 
+\Gamma  ; \Delta  ` x : T ; \Delta  (
+
+T-Var)
+
+\Gamma  ; \Delta  ` t : ae . C ; \Delta 0
+
+fields(C) = l : D
+
+\Gamma  ; \Delta  ` t.li : ae . Di ; \Delta 0 (
+
+T-Sel)
+
+\Gamma  ; \Delta  ` t1 : ae . C ; \Delta 0
+l : D 2 fields(C) E <: D
+
+\Gamma  ; \Delta 0 ` t2 : ae . E ; \Delta 00 \Omega  ae
+
+\Gamma  ; \Delta  ` t1.l = t2 : ae . C ; \Delta 00 \Omega  ae (T-Assign)
+
+8i 2 {1..n} \Gamma  ; \Delta i ` ti : aei I Ci ; \Delta i+1 \Omega  aei
+
+fields(C) = l : D C <: D ae fresh
+
+\Gamma  ; \Delta 1 ` new C(t) : ae I C ; \Delta n+1 \Omega  ae (
+
+T-New)
+
+\Gamma  ; \Delta  ` t1 : ae1 I C ; \Delta 0 \Omega  ae1
+
+\Gamma  ; \Delta 0 ` t2 : ae2 . D ; \Delta 00
+
+\Gamma  ; \Delta  ` localize(t1, t2) : ae2 . C ; \Delta 00 (T-Loc)
+
+\Gamma  ; \Delta  ` t1 : ae I C ; \Delta 0 \Omega  ae
+
+ae0fresh ae0 /2 T
+\Gamma , x : ae0 . C ; \Delta 0 \Omega  ae0 ` t2 : T ; \Delta 00 \Omega  ae0
+
+\Gamma  ; \Delta  ` expose x = t1 in t2 : T ; \Delta 00 \Omega  ae (
+
+T-Exp)
+
+8i 2 {0..n} \Gamma  ; \Delta i ` ti : Ui ; \Delta 0i+1
+\Delta 0i+1 := j \Delta i+1 \Omega  aei if Ui = aei I Ci\Delta 
+
+i+1 otherwise
+
+mtype(m, C0) = [ae ?](\Delta 0, F ) ! (\Delta 00, C)
+oe = unify(U, F ) U <: oeF oe(ae) = ae0
+
+\Delta t = {aei|Ui = aei I Ci} U0 = ae0 ? C0
+\Delta n+1 \Omega  \Delta t = oe\Delta 0 \Omega  \Delta r \Delta 000 = oe\Delta 00 \Omega  \Delta r
+
+\Gamma  ; \Delta 0 ` t0.m(t) : oeC ; \Delta 000 - (\Delta t - \Delta 0) (
+
+T-Invk)
+
+Fig. 5. Type Assignment
+
+The rule for localization (T-Loc) allows a term t1 of tracked type to be
+treated as a term guarded by the same capability as a term t2. For example, this
+allows t1 to refer to t2 (and vice versa). Since from that point on, aliases of t1
+are no longer tracked, its capability ae1 is consumed.
+
+The expose operation allows a term t1 of tracked type to be bound to a
+variable of guarded type in a given term t2 (T-Exp). Note that the capability ae
+to access t1 is temporarily revoked during the evaluation of t2. This is done to
+prevent consuming t1 in the scope of expose. The guard ae0 in the type of x may
+not occur in the type of t2.
+
+The rule for method invocation (T-Invk) is the most complex rule because
+it deals with guard polymorphism. Since guards are never written explicitly in
+a program, methods that operate on tracked or guarded types have to be poly-
+morphic in the respective guards. For example, consider a method m deo/ned in
+class C of the following type:
+
+[oe1 .](oe1 \Omega  oe2, oe2 I D) ! ({oe1}, oe1 . E) (3)
+Clearly, an invocation o.m(x) of that method should be valid in an environment
+\Gamma  ; \Delta  \Omega  ae1 \Omega  ae2 where \Gamma  = \Gamma  0, o : ae1 . C, x : ae2 I D. We should be able to
+replace oei with aei (i = 1, 2) in the method type, so that o.m(x) can be assigned
+a type.
+
+We make this intuition precise by universally quantifying over the capabili-
+ties required by the method. Type checking then proceeds as follows. First, the
+argument types are unio/ed yielding a substitution that maps guard variables to
+concrete guards. The substitution is then applied to the argument types F that
+occur in the method type for checking the usual sub-typing constraints. The set
+of capabilities \Delta n+1 \Omega  \Delta t that is available after assigning types to the receiver
+and all arguments must be composed of the capabilities required by the method
+after applying the substitution and additional capabilities \Delta r. The resulting set
+of capabilities is composed of the capabilities provided by the method after ap-
+plying the substitution and \Delta r. Capabilities in \Delta t - \Delta 0 are removed from the
+resulting capabilities, since they correspond to newly created objects that are
+no longer accessible in the context of the method invocation.
+
+4.4 Typing Instance Creation
+Using the type rules presented so far, creating a new instance that should be-
+come part of some exposed cluster involves several steps. Firstly, we have to
+create a unique object, which, according to rule (T-New), requires all construc-
+tor parameters to be unique. This means that we cannot pass any references to
+objects of the target cluster, since they are exposed with guarded types. There-
+fore, all o/elds that are supposed to refer to such objects must be initialized to
+unique dummy objects. In the second step, the new instance must be localized
+to the target cluster. Finally, all o/elds pointing to dummy objects have to be
+reassigned. This pattern can be simplio/ed by using the following additional type
+rule for creating new instances.
+
+8i 2 {1..n} \Gamma  ; \Delta i ` ti : ae . Ci ; \Delta i+1 \Omega  ae
+
+fields(C) = l : D C <: D
+
+\Gamma  ; \Delta 1 ` new C(t) : ae . C ; \Delta n+1 \Omega  ae (T-New2)
+
+In this rule, we require that all constructor arguments have types guarded
+by the same capability ae. Intuitively, all of those objects are part of the same
+cluster, which is currently exposed under ae. Assigning a type guarded by ae to
+the new instance allows that instance to become part of the same object graph
+(by subsequent o/eld assignment). Note that the common capability ae is not
+consumed in this case.
+
+It is worth noting that any program using this additional type rule can be
+rewritten to a program that can be type-checked without this rule. For this, we
+need a way to obtain unique (or immutable) default objects for a given class type.
+In practical languages like Java, we could use the null literal for this purpose.
+In our simplio/ed core language we assume there is a function def ault(D) that
+returns a unique instance of class D by initializing its o/elds with default instances
+for their respective types (for simplicity we ignore recursive class types). Then,
+we can rewrite an instance creation expression (new C(t) : ae . C) type-checked
+with rule (T-New2) as follows (let f ields(C) = l : D).
+
+(. . .
+
+(localize(new C(default(D)), t1).l1 = t1).
+. . .).ln = tn
+
+4.5 Unique Fields
+If unique references can only be stored on the stack, they have to be explic-
+itly threaded through computations to the point where they are used. Explicit
+threading of unique references can be avoided by storing them in o/elds. This
+way, a single object can provide access to multiple unique references that may
+be consumed separately. In the annotation system of Section 3, o/elds that may
+hold unique references are marked as @unique. Any object in a cluster may
+have o/elds holding unique references. Since objects in a cluster may be arbitrary
+aliased, this means that we cannot assume that the unique o/elds are contained
+in unique objects. Moreover, when consuming (the target of) a unique o/eld, we
+have to make sure that the o/eld is re-assigned before it may be accessed again
+to avoid illegal aliases.
+
+Rather than destructively reading the o/eld, we record the o/eld accessibility in
+the capability of the containing object. For this, we re-organize the tracked types
+and their capabilities as follows. Firstly, we omit the class type from tracked
+types, which are now simply written tr(ae). Secondly, we extend the capabili-
+ties, so that they include the class type plus information about unique o/elds.
+A singleton capability is now written {ae 7! C[k : tr(o/ )]}, instead of just {ae}.
+Following the class type C, we provide a sequence of o/eld names together with
+their (tracked) types. Each element kj : tr(o/j) of the sequence corresponds to a
+unique o/eld of class C. The capability of a class without unique o/elds is written
+
+{ae 7! C}. Note that a simple tracked type ae I C with capability {ae} is equiva-
+lent to a type tr(ae) with capability {ae 7! C}. Each unique o/eld kj has a tracked
+type tr(o/j). This allows us to control access to it using a capability {o/j 7! Dj},
+where Dj is the class type of the o/eld. Access to unique o/elds is provided using
+an additional rule for expose:
+
+\Gamma  ; \Delta  ` t1 : ae . C ; \Delta 0 \Omega  ae
+uniqueF ields(C) = k : E ae0fresh
+
+\Delta F := {ae0 7! C[k : tr(o/ )]}\Omega {o/ 7! E}
+\Gamma , x : tr(ae0) ; \Delta 0 \Omega  \Delta F ` t2 : D ; \Delta 000 \Omega  oe\Delta F
+
+\Gamma  ; \Delta  ` expose x = t1 in t2 : D ; \Delta 000 \Omega  ae (T-Exp2)
+
+The o/rst dioeerence to the previous rule (T-Exp) is that the object to be
+exposed, denoted by t1, must have a guarded type ae . C; rule (T-Exp) only
+exposes objects of tracked type. Using the uniqueF ields predicate, we obtain
+a list of o/elds that are marked as unique in class C, together with their types.
+expose introduces x as an alias for (the result of) t1, which provides access to
+it under a tracked type tr(ae0). This allows us to record the types of its unique
+o/elds in the capability {ae0 7! C[k : tr(o/ )]}. The capability to access C's unique
+o/elds, \Omega {o/ 7! E}, is available for type-checking t2, the body of expose. This
+means that the unique o/elds are accessible through o/eld selection under tracked
+types in the scope of t2. Note that capability {ae} is not available in t2 to avoid
+exposing t1 multiple times, which could produce aliases of unique o/elds. At the
+end of type-checking t2, the capability to access the containing object, as well
+as all unique o/elds, must be available. Together with the assignment rule below,
+this makes sure that the unique o/elds either have not been consumed, or have
+been re-assigned in the scope of t2. The substitution oe indicates that some of
+the guards in o/ may be renamed due to re-assignment, which is checked using
+the following rule.
+
+\Gamma  ; \Delta  ` t1 : tr(ae) ; \Delta 0
+l : D 2 f ields(C) E <: D o/ 0fresh
+
+\Delta ae := {ae 7! C[k : tr(o/ )]} l = kj
+\Gamma  ; \Delta 0 ` t2 : tr(ae0) ; \Delta 00 \Omega  {ae0 7! E} \Omega  \Delta ae
+
+\Gamma  ; \Delta  ` t1.l = t2 : tr(ae) ; \Delta 00 \Omega  [o/ 0/o/j]\Delta ae \Omega  {o/ 0 7! D} (T-Assign2)
+
+Term t1 must have tracked type tr(ae), and its class must have a unique o/eld l,
+that is, l must correspond to some kj in the list of unique o/elds. The right-hand
+side t2 must also have tracked type; its capability is consumed by the assignment.
+When assigning to a unique o/eld, the capability to access it is restored. To make
+sure we do not accidentally create duplicate capabilities, we create a fresh guard
+o/0 for the capability of the unique o/eld. Then, we update the type of kj to tr(o/ 0)
+and add the new capability {o/ 0 7! D} to the environment.
+
+Evaluation t, s, d + t0, s0, d0
+
+t, s, d + r, s0, d0 s0(r) = oe . C(r)
+s0(ri) = oei . D(s) s00 = s0[ri 7! oe . D(s)]
+
+t.li, s, d + ri, s00, d0 (
+
+B-Sel)
+
+t, s, d + r, s0, d0
+t0, s0, d0 + r0, s00, d00 s00(r) = oe . C(r)
+
+s000 = s00[r 7! oe . C([r0/ri]r)]
+
+t.li = t0, s, d + r, s000, d00 (
+
+B-Ass)
+
+t1, s, d + r1, s2, d28
+i 2 {2..n}. ti, si, (di - {oei-1}) + ri, si+1, di+18
+
+i 2 {1..n}. si+1(ri) = oei I Di(qi)
+d0 = (dn+1 - {oen}) [ {oe} oe /2 dn+1
+s0 = sn+1[r 7! oe I C(r)] r /2 dom(sn+1)
+
+new C(t), s, d + r, s0, d0 (B-New)
+
+t0, s, d + r0, s1, d18
+i 2 {1..n}. ti, si, di + ri, si+1, di+1
+sn+1(r0) = oe ? C(r0) mbody(m, C) = (x, t0)
+
+[r/x, r0/this]t0, sn+1, dn+1 + r0, s0, d0
+
+t0.m(t), s, d + r0, s0, d0 (
+
+B-Invk)
+
+t, s, d + r, s0, d0 s0(r) = oe I C(r)
+d00 = d0 - {oe} t0, s0, d00 + r0, s00, d000
+s00(r0) = oe0 . D(s) s000 = s00[r 7! oe0 . C(r)]
+
+localize(t, t0), s, d + r, s000, d000 (
+
+B-Loc)
+
+t1, s, d + r1, s0, d0 s0(r1) = oe I D(s)
+oe 2 d oe0 /2 d0 d00 = (d0 - {oe}) [ {oe0}
+s00 = s0[r1 7! oe0 . D(s)] [r1/x]t2, s00, d00 + r2, s000, d000
+
+^s = s000[r1 7! oe I D(s)] ^d = (d000 - {oe0}) [ {oe}
+
+expose x = t1 in t2, s, d + r2, ^s, ^d (
+
+B-Exp)
+
+Fig. 6. Operational Semantics
+
+8r 2 dom(\Gamma  ). \Gamma  ` \Gamma  (r) ok
+
+\Gamma  ok (Store-Typing-WF)
+
+\Gamma  ok dom(s) = dom(\Gamma  )
+s(r) = ae . C(r) , \Gamma  (r) = ae . C
+s(r) = ae . C(r) ^ fields(C) = l : D )
+(8ri 2 r. ri 2 dom(\Gamma  ) ) \Gamma  (ri) = ae . Di)
+
+\Gamma  ` s (
+
+Store-WF)
+
+Fig. 7. Store Typing and Well-Formedness
+
+5 Operational Semantics
+In this section we discuss the dynamic aspects of our object calculus. The store
+typing rules shown in Figure 7 are standard. \Gamma  is a store typing that maps
+reference locations to their types. The Store-Typing-WF rule ensures that
+every type occurring in the store typing is well-formed. A store s maps reference
+locations to object instantiations ae ? C(r) where ? 2 {., I}. The Store-WF
+rule ensures that the store typing \Gamma  agrees with the store s on the type of
+each allocated object; furthermore, the types of objects stored in each o/eld must
+correspond to the declared o/eld type and have the same guard as the containing
+object.
+
+Figure 6 shows a big-step operational semantics that deo/nes the evaluation
+of a term t in the context of a store s and a set d of available capabilities. To
+simplify the presentation we do not include evaluation rules corresponding to the
+(T-Exp2) and (T-Assign2) type rules of Section 4.5. The rules for o/eld selec-
+tion, assignment, instance creation and method invocation are mostly standard,
+except that they provide additional information about type guards and available
+capabilities. We use this information subsequently to show a number of invari-
+ances that our type system guarantees by relating the operational semantics to
+the type rules.
+
+Two of the standard expression forms operate on guards and capabilities:
+
+1. In the rule for o/eld selection (B-Sel) the guard of the object that the o/eld
+
+points to is updated to the guard of the selector object. This behavior reAEects
+the corresponding type rule (T-Sel).
+2. In the rule for instance creation (B-New) a fresh capability oe is created that
+
+is used to track the allocated object; oe is added to the capabilities that are
+available after the evaluation.
+
+Reducing a localize expression consumes the capability that is used to track
+the object r that t reduces to; the type of r is changed such that it is guarded
+by the same capability that guards the object denoted by t0.
+
+In the rule for expose we o/rst determine the capability oe that tracks the
+object r1 that is the result of reducing t1. While reducing t2 oe is not available;
+instead, r1 is guarded by a fresh capability oe0. After t2 has been reduced, the
+
+temporary capability oe0 is replaced with oe; we also change the type of r1 such
+that it is again tracked by oe.
+
+5.1 Type Preservation
+In this section we prove a standard type preservation theorem that relates the
+above operational semantics to the type system that we presented in Section 4.
+
+Lemma 1 (Substitution) If \Gamma , x : S ; \Delta  ` t : T ; \Delta 0 and \Gamma  (r) = S, then
+\Gamma  ; \Delta  ` [r/x]t : T ; \Delta 0.
+
+Proof: By induction on the typing derivation. 2
+Lemma 2 If \Gamma  ; \Delta  ` t : T ; \Delta 0, then either \Delta 0 ` \Delta , or (T = ae I D ^ \Delta 0 =
+ae \Omega  \Delta 00 ^ \Delta 00 ` \Delta ).
+
+Proof: By induction on the typing derivation. The cases (T-Var), (T-Sel),
+(T-Ass), (T-New), (T-Loc), and (T-Exp) are simple.
+Case (T-Invk):
+By IH, 8i 2 {0..n} \Delta i+1 ` \Delta i. By (WF-Method), oe\Delta 00 ` oe\Delta 0 or oe\Delta 00 = ^\Delta  \Omega 
+ae^ ^\Delta  ` oe\Delta 0^oeC = ae I D. Moreover, \Delta n+1\Omega \Delta t ` \Delta 0\Omega (\Delta t-\Delta 0) ) oe\Delta 0\Omega \Delta r `
+\Delta 0 \Omega  (\Delta t - \Delta 0). Therefore, \Delta 000 - (\Delta t - \Delta 0) ` \Delta 0 or \Delta 000 - (\Delta t - \Delta 0) = \Delta 00 \Omega  ae
+and oeC = ae I D where \Delta 00 ` \Delta 0.
+
+2
+
+Lemma 3 (Weakening) If \Gamma  ; \Delta  ` t : T ; \Delta f , \Delta 0 ' \Delta , and \Gamma  0 is a store-
+typing such that 8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma  0 . (\Gamma  (q) = ae I C ^ ae /2 \Delta 0). Then:
+\Gamma  0 ; \Delta 0 ` t : T ; \Delta f \Omega  (\Delta 0 - \Delta ).
+
+Proof: By induction on the typing derivation with case analysis on the last
+type rule used in the derivation.
+Case (T-Sel): Immediate from the IH.
+Case (T-Ass):
+We have \Gamma  ; \Delta  ` t1.li = t2 : ae . C ; \Delta 00. By IH, \Gamma  0 ; \Delta 0 ` t1 : ae . C ; \Delta 00 \Omega (
+
+\Delta 0 - \Delta ). By Lemma 2, \Delta 00 ` \Delta  ` \Delta 0, therefore \Delta 00 \Omega  (\Delta 0 - \Delta ) ` \Delta 0. By IH,
+\Gamma  0 ; \Delta 00 \Omega  (\Delta 0 - \Delta ) ` t2 : ae . E ; \Delta f \Omega  (\Delta 0 - \Delta ). Applying (T-Ass) closes this
+case.
+Cases (T-Loc) and (T-Exp): analogous to case (T-Ass).
+Case (T-New):
+We have 8i 2 {1..n} \Gamma  ; \Delta i ` ti : aei I Ci ; \Delta i+1 \Omega  aei. By Lemma 2, 8i 2{1
+
+..n} \Delta i \Omega  (\Delta 0 - \Delta 1) ` \Delta 0. Therefore by IH, 8i 2 {1..n} \Gamma  0 ; \Delta i \Omega  (\Delta 0 - \Delta 1) `
+ti : aei I Ci ; \Delta i+1 \Omega  aei \Omega  (\Delta 0 - \Delta 1). Applying (T-New) closes this case. Case
+(T-Invk):
+By Lemma 2, 8i 2 {1..n} \Delta i+1 ` \Delta i ) 8i 2 {1..n} \Delta i ` \Delta 0 ) 8i 2 {1..n} \Delta i \Omega (
+
+\Delta 0 - \Delta 0) ` \Delta 0. By IH, 8i 2 {1..n} \Gamma  0 ; \Delta i \Omega  (\Delta 0 - \Delta 0) ` ti : Ui ; \Delta 0i+1 \Omega (
+\Delta 0 - \Delta 0). Since \Delta n+1 \Omega  \Delta t \Omega  (\Delta 0 - \Delta 0) = oe\Delta 0 \Omega  \Delta r \Omega  (\Delta 0 - \Delta 0), we can apply
+(T-Invk), which closes this case. 2
+
+We are now ready to prove a type preservation theorem. We use the notation
+\Delta  ` d for indicating that the static capabilities \Delta  correctly approximate the
+dynamic capabilities d, that is, the dynamic capabilities contain at least the
+capabilities available statically. Formally, \Delta  ` d if and only if 8ae 2 \Delta . ae 2 d.
+
+Note that in the following type preservation theorem, the store typing \Gamma  0
+that approximates the store after evaluation is not a superset of the initial store
+typing \Gamma  . The reason is that references may be localized during evaluation;
+localizing a reference changes its tracked type ae I C to a guarded type ae0 . C
+while consuming ae. Note that the underlying class type does not change.
+
+Theorem 1 (Type Preservation) If \Gamma  ; \Delta  ` t : T ; \Delta 0, \Gamma  ` s, \Delta  ` d,
+and t, s, d + r, s0, d0, then \Gamma  0(r) = T and \Delta 0 ` d0 for some \Gamma  0 ` s0 such that
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma  0 . (\Gamma  (q) = oe I E ^ oe /2 \Delta 0) (4)
+Proof: By induction on the typing derivation with case analysis on the last
+type rule used in the derivation.
+Case (T-Sel):
+We have \Gamma  ; \Delta  ` t0.li : ae.Di ; \Delta 0 for some ae. By (T-Sel), \Gamma  ; \Delta  ` t0 : ae.C ; \Delta 0
+with fields(C) = l : D. For evaluation only (B-Sel) applies. Therefore, t0, s, d +
+r0, s00, d0. By IH, \Gamma 1(r0) = ae . C and \Delta 0 ` d0 for some \Gamma 1 ` s00 such that
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma 1 . (\Gamma  (q) = oe I E ^ oe /2 \Delta 0) (5)
+By (B-Sel), s00(r0) = oe . C(r) for some oe. Since \Gamma 1 ` s00, by (Store-WF):
+oe = ae. Deo/ne \Gamma  0 := \Gamma 1[ri 7! ae . Di]. By (B-Sel), s0 = s00[ri 7! ae . Di(s)].
+We have \Gamma  0 ' \Gamma 1 ` s00. Since \Gamma  0(ri) = ae . Di, we have by (Store-WF) that
+\Gamma  0 ` s0. It remains to show:
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma  0 . (\Gamma  (q) = oe I E ^ oe /2 \Delta 0) (6)
+We show that \Gamma  0 ' \Gamma  , which implies (6).
+
+1. Case ri /2 dom(\Gamma 1). Then, \Gamma  0 oe \Gamma 1 ' \Gamma  .
+2. Case ri 2 dom(\Gamma 1). Since s00(r0) = ae . C(r) and \Gamma 1 ` s00, we have by
+
+(Store-WF) that \Gamma 1(ri) = ae . Di. Therefore, \Gamma  0 = \Gamma 1 ' \Gamma  .
+
+Case (T-Ass):
+We have \Gamma  ; \Delta  ` t.li = t0 : ae . C ; \Delta 0 for some ae. By (T-Ass), \Gamma  ; \Delta  ` t :
+ae.C ; \Delta 00 and f ields(C) = l : D. For evaluation only (B-Ass) applies. Therefore,
+t, s, d + r, s00, d00. By IH, \Gamma 1(r) = ae . C and \Delta 00 ` d00 for some \Gamma 1 ` s00 such
+that
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma 1 . (\Gamma  (q) = oe I E ^ oe /2 \Delta 00) (7)
+Weakening provides \Gamma 1 ; \Delta 00 ` t0 : ae . E ; \Delta 0. By (B-Ass), t0, s00, d00 +
+r0, s000, d0. Therefore, by IH, \Gamma  0(r0) = ae . E and \Delta 0 ` d0 for some \Gamma  0 ` s000 such
+that
+
+8q 2 dom(\Gamma 1). q : \Gamma 1(q) 2 \Gamma  0 . (\Gamma 1(q) = oe I E ^ oe /2 \Delta 0) (8)
+By (Store-WF), s000(r) = ae.C(r). By (B-Ass), s0 = s000[r 7! ae.C([r0/ri]r)].
+Since \Gamma  0 ` s000 we have \Gamma  0(r) = ae . C. Thus, \Gamma  0 ` s0. It remains to show
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma  0 . (\Gamma  (q) = oe I E ^ oe /2 \Delta 0) (9)
+Let u 2 dom(\Gamma  ).
+
+1. Case u : \Gamma  (u) 2 \Gamma 1. Then either u : \Gamma  (u) 2 \Gamma  0, or \Gamma  (u) = oe I E and
+
+oe /2 \Delta 00, in which case by Lemma 2, oe /2 \Delta 0.
+2. Case \Gamma  (u) = oe I E ^ oe /2 \Delta 00. By Lemma 2, oe /2 \Delta 0.
+
+Case (T-New):
+We have \Gamma  ; \Delta 1 ` new C(t) : ae I C ; \Delta 0. By (T-New), 8i 2 {1..n}. \Gamma  ; \Delta i `
+ti : aei I Ci ; \Delta i+1 \Omega  aei, fields(C) = l : D, and C <: D. For evaluation only
+(B-New) applies. Therefore, t1, s, d + r1, s2, d2. By IH, \Gamma 1(r1) = ae1 I C1 for
+some \Gamma 1 ` s2 and \Delta 2 \Omega  ae1 ` d2 such that
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma 1 . (\Gamma  (q) = oe I E ^ oe /2 \Delta 2 \Omega  ae1) (10)
+Weakening provides \Gamma 1 ; \Delta 2 ` t2 : ae2 I C2 ; \Delta 3 \Omega  ae2. Since \Delta 2 \Omega  ae1 ` d2,
+we have \Delta 2 ` (d2 - {ae1}). We apply the IH iteratively for all ti 2 t, and we
+obtain 8i 2 {1..n}. \Gamma i(ri) = aei I Ci for some \Gamma i ` si+1 and \Delta i+1 \Omega  aei ` di+1
+such that
+
+8q 2 dom(\Gamma i-1). q : \Gamma i-1(q) 2 \Gamma i . (\Gamma i-1(q) = oe I E ^ oe /2 \Delta i+1 \Omega  aei) (11)
+
+Deo/ne \Gamma  0 := \Gamma n[r 7! ae I C] and \Delta 0 := \Delta n+1 \Omega  ae where r /2 dom(sn+1) and
+ae /2 dn+1. By (B-New), s0 = sn+1[r 7! ae I C(r)]. Since \Gamma n ` sn+1, we have
+\Gamma  0 ` s0. We have \Delta n+1 \Omega  aen ` dn+1. Therefore, \Delta n+1 ` dn+1 - {aen}, and
+\Delta 0 ` (dn+1 - {aen}) [ {ae} = d0. It remains to show:
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma  0 . (\Gamma  (q) = oe I E ^ oe /2 \Delta 0) (12)
+Let u 2 dom(\Gamma  ) ) u 6= r (since r /2 dom(s) and \Gamma  ` s).
+1. Case u : \Gamma  (u) 2 \Gamma n ) u : \Gamma  (u) 2 \Gamma  0.
+2. Case \Gamma i-1(u) = oe I E and oe /2 \Delta i+1 \Omega  aei. Then, \Gamma  (u) = oe I E and by
+
+Lemma 2, oe /2 \Delta n+1. Since u 6= r, oe /2 \Delta 0.
+
+Case (T-Loc):
+We have \Gamma  ; \Delta  ` localize(t, t0) : ae0 . C ; \Delta 0 where \Gamma  ; \Delta  ` t : ae I C ; \Delta 00 \Omega  ae
+and \Gamma  ; \Delta 00 ` t0 : ae0 . D ; \Delta 0. For evaluation only (B-Loc) applies. Therefore,
+t, s, d + r, s00, d00. By IH, \Gamma 1(r) = ae I C for some \Gamma 1 ` s00 and \Delta 00 \Omega  ae ` d00
+such that
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma 1 . (\Gamma  (q) = oe I E ^ oe /2 \Delta 00 \Omega  ae) (13)
+
+By Weakening Lemma, \Gamma 1 ; \Delta 00 ` t0 : ae0 . D ; \Delta 0. By (Store-WF), s00(r) =
+ae I C(r). Let d000 = d00-{ae}, then \Delta 00 ` d000. By (B-Loc), t0, s00, d000 + r0, s000, d0.
+By IH, \Gamma 2(r0) = ae0 . D for some \Gamma 2 ` s000 and \Delta 0 ` d0 such that
+
+8q 2 dom(\Gamma 1). q : \Gamma 1(q) 2 \Gamma 2 . (\Gamma 1(q) = oe I E ^ oe /2 \Delta 0) (14)
+By (Store-WF), s000(r0) = ae0 . D(s). By (B-Loc), s0 = s000[r 7! ae0 . C(r)].
+Deo/ne \Gamma  0 := \Gamma 2[r 7! ae0 . C]. Then, \Gamma  0 ` s0. It remains to show:
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma  0 . (\Gamma  (q) = oe I E ^ oe /2 \Delta 0) (15)
+Let u 2 dom(\Gamma  ).
+1. Case u 6= r.
+
+(a) Subcase u : \Gamma  (u) 2 \Gamma 1. Then, either u : \Gamma 1(u) 2 \Gamma 2, and thus, u : \Gamma 1(u) 2
+
+\Gamma  0. Or, \Gamma 1(u) = oe I E ^ oe /2 \Delta 0.
+(b) Subcase \Gamma  (u) = oe I E ^ oe /2 \Delta 00 \Omega  ae. Thus, by Lemma 2, oe /2 \Delta 0.
+2. Case u = r. Then, \Gamma 1(r) = ae I C ^ ae /2 \Delta 00 ) ae /2 \Delta 0.
+
+(a) Subcase r : \Gamma  (r) 2 \Gamma 1. Then, by (13), \Gamma  (r) = ae I C ^ ae /2 \Delta 0.
+(b) Subcase \Gamma  (r) = oe I E ^ oe /2 \Delta 00 \Omega  ae. Thus, by Lemma 2, oe /2 \Delta 0.
+
+Case (T-Invk):
+We have 8i 2 {0..n} \Gamma  ; \Delta i ` ti : Ui ; \Delta 0i+1. By (B-Invk), t0, s, d + r0, s1, d1.
+Therefore, by IH, \Gamma 0(r0) = U0 for some \Gamma 0 ` s1 and \Delta 01 ` d1 such that
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma 0 . (\Gamma  (q) = o/ I E ^ o/ /2 \Delta 01) (16)
+By Weakening Lemma, \Gamma 0 ; \Delta 1 ` t1 : U1 ; \Delta 02. We apply the IH iteratively
+for all ti 2 t and obtain 8i 2 {1..n}. \Gamma i(ri) = Ui where \Gamma i ` si+1 and \Delta 0i+1 `
+di+1 such that
+
+8q 2 dom(\Gamma i-1). q : \Gamma i-1(q) 2 \Gamma i . (\Gamma i-1(q) = o/ I E ^ o/ /2 \Delta 0i+1) (17)
+By (T-Invk), mtype(m, C0) = [ae ?](\Delta 0, F ) ! (\Delta 00, C) and by (WF-Method),
+\Gamma P ; \Delta 0 ` t0 : T0 ; \Delta 00 and T0 <: C where mbody(m, C0) = (x, t0) and \Gamma P =
+x : F , this : ae ? C0. Let oe = unif y(U , F ). Then oe\Gamma P ; oe\Delta 0 ` t0 : oeT0 ; oe\Delta 00
+since oe is injective.
+
+Weakening provides \Gamma n, oe\Gamma P ; oe\Delta 0 \Omega  \Delta r ` t0 : oeT0 ; oe\Delta 00 \Omega  \Delta r. By the
+Substitution Lemma, \Gamma n ; oe\Delta 0 \Omega  \Delta r ` [r/x, r0/this]t0 : oeT0 ; oe\Delta 00 \Omega  \Delta r.
+Furthermore, we have \Delta n+1 \Omega  \Delta t ` dn+1 and \Gamma n ` sn+1. By IH, \Gamma  0(r0) = oeT0
+for some \Gamma  0 ` s0 and \Delta 0 = oe\Delta 00 \Omega  \Delta r ` d0 such that
+
+8q 2 dom(\Gamma n). q : \Gamma n(q) 2 \Gamma  0 . (\Gamma n(q) = o/ I E ^ o/ /2 oe\Delta 00 \Omega  \Delta r) (18)
+It remains to show:
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma  0 . (\Gamma  (q) = o/ I E ^ o/ /2 \Delta 0) (19)
+Let u 2 dom(\Gamma  ).
+
+1. Case u : \Gamma  (u) 2 \Gamma n. Then either u : \Gamma  (u) 2 \Gamma  0, or \Gamma  (u) = \Gamma n(u) = o/ I
+
+E ^ o/ /2 \Delta 0.
+2. Case \Gamma  (u) = \Gamma i-1(u) = o/ I E ^o/ /2 \Delta 0i+1 ) o/ /2 \Delta t. By Lemma 2, o/ /2 \Delta n+1
+
+and also o/ /2 \Delta 0.
+
+Case (T-Exp):
+We have \Gamma  ; \Delta  ` expose x = t1 in t2 : T ; \Delta 00 \Omega  o/ where \Gamma  ; \Delta  ` t1 : o/ I
+C ; \Delta 0 \Omega  o/ and \Gamma , x : oe0 . C ; \Delta 0 \Omega  oe0 ` t2 : T ; \Delta 00 \Omega  oe0 (oe0 /2 \Gamma  [ \Delta  [ \Delta 0 [ \Delta 00).
+By (B-Exp), t1, s, d + r1, s0, d0. By IH, \Gamma 1(r1) = o/ I C for some \Gamma 1 ` s0 and
+\Delta 0 \Omega  o/ ` d0 such that
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma 1 . (\Gamma  (q) = oe I E ^ oe /2 \Delta 0 \Omega  o/) (20)
+We have oe0 /2 d0, since \Delta 0 \Omega  o/ 0 oe0. By (Store-WF), s0(r1) = o/ I C(s).
+By (B-Exp), d00 = (d0 - {o/}) [ {oe0} and s00 = s0[r1 7! oe0 . C(s)]. Therefore,
+\Delta 0 \Omega  oe0 ` d00. Since \Delta 0 0 o/ , we have by Weakening Lemma, \Gamma 1, x : oe0 . C ; \Delta 0 \Omega 
+oe0 ` t2 : T ; \Delta 00 \Omega  oe0.
+
+Deo/ne \Gamma  00 := \Gamma 1[r1 7! oe0 . C]. Then, \Gamma  00 ` s00. Weakening provides \Gamma  00, x :
+oe0 . C ; \Delta 0 \Omega  oe0 ` t2 : T ; \Delta 00 \Omega  oe0. By Substitution Lemma, \Gamma  00 ; \Delta 0 \Omega  oe0 `[
+
+r1/x]t2 : T ; \Delta 00 \Omega  oe0. By (B-Exp), [r1/x]t2, s00, d00 + r2, s000, d000. By IH,
+\Gamma 2(r2) = T for some \Gamma 2 ` s000 and \Delta 00 \Omega  oe0 ` d000 such that
+
+8q 2 dom(\Gamma  00). q : \Gamma  00(q) 2 \Gamma 2 . (\Gamma  00(q) = oe I E ^ oe /2 \Delta 00 \Omega  oe0) (21)
+By (B-Exp), ^s = s000[r1 7! o/ I C(s)] and ^d = (d000 - {oe0}) [ {o/ }. Thus,
+\Delta 00 \Omega  o/ ` ^d. Deo/ne \Gamma  0 := \Gamma 2[r1 7! o/ I C]. Then, \Gamma  0 ` ^s. It remains to show:
+
+8q 2 dom(\Gamma  ). q : \Gamma  (q) 2 \Gamma  0 . (\Gamma  (q) = oe I E ^ oe /2 \Delta 00 \Omega  o/) (22)
+Let u 2 dom(\Gamma  ).
+1. Case u : \Gamma  (u) 2 \Gamma 1.
+
+(a) Subcase u 6= r1 ) u : \Gamma  (u) 2 \Gamma  00 ) u : \Gamma  (u) 2 \Gamma 2 . (\Gamma  (u) = oe I E ^oe /2
+
+\Delta 00 \Omega  oe0) ) u : \Gamma  (u) 2 \Gamma  0 . (\Gamma  (u) = oe I E ^ oe /2 \Delta 00 \Omega  o/ ).
+(b) Subcase u = r1 ) \Gamma 1(u) = o/ I C. Then, by (20), \Gamma  (u) = o/ I C =
+
+\Gamma  0(u), i.e., u : \Gamma  (u) 2 \Gamma  0.
+
+2. Case u : \Gamma  (u) /2 \Gamma 1 ) u 6= r1. By (20), \Gamma  (u) = oe I E ^ oe /2 \Delta 0 \Omega  o/ . Thus,
+
+oe /2 \Delta 0. By Lemma (2) and (21), oe /2 \Delta 00 \Omega  o/ .
+
+2
+We have not done a proof of a progress theorem, which would be needed for a
+complete soundness proof for the type system. Instead, we focus on establishing
+the alias invariant that we introduced in Section 3.3. The following section intro-
+duces a theorem that states that references of tracked type are externally-unique
+when they are accessible.
+
+6 Aliasing Guarantees
+In this section we formalize the aliasing properties that our system guarantees.
+We start by deo/ning a reachability property of object locations.
+
+Deo/nition 1 (Stack-Cono/nement) A reference location r 2 dom(s) is stack-
+cono/ned in store s if and only if(8
+
+r0, r00 2 dom(s). (reachables(r, r0)^
+
+reachables(r00, r0)) ) reachables(r, r00)) and(8
+r0. reachables(r0, r) ) reachables(r, r0))
+
+Lemma 4 Let s be a store and r, r0 2 dom(s) reference locations such that
+reachables(r, r0), guard(r, s) = ae, and r is stack-cono/ned.
+
+If \Gamma  ; \Delta  ` t : T ; \Delta 0, and t, s, d + r0, s0, d0 with \Gamma  ` s and \Delta  ` d, then
+guard(r0, s0) = ae.
+
+Proof Sketch: By induction on the typing derivation. 2
+Lemma 5 (Expose Preserves Stack-Cono/nement) Let
+\Gamma  ; \Delta  ` t1 : oe I T ; \Delta 0 \Omega  oe and t1, s, d + r, s1, d1 with \Gamma  ` s, \Delta  ` d,
+and r is stack-cono/ned in s1. If t = expose x = t1 in t2 is well-typed and
+t, s, d + rf , sf , df , then r is stack-cono/ned in sf .
+
+Proof: According to deo/nition 1 there are two ways to break stack-cono/nement
+of r. We show that establishing reachablesf (^r, r0) for some ^r such that
+reachablesf (r, r0) implies reachablesf (r, ^r) or ^r is garbage in sf . (The proof for
+the other case is analogous.) We use the simplifying assumption that
+reachablesi(r, r0) throughout all stores si 2 s . . . sf .
+
+Part 1. Let s0 be the o/rst store in the evaluation of t with reachables0(^r, r0).
+In the following we show: guard(^r, s0) = guard(r, s0)
+
+To establish reachablesf (^r, r0), the evaluation of t must contain an instance
+
+of the rule (B-Ass) such that ^t.li = t0, sa, da + ^rr, s0, d0 with
+
+^t, sa, da + ^rr, ^s, ^d (23)
+
+t0, ^s, ^d + r0, s00, d00 (24)
+where either reachables0(^r, ^rr) or ^r = ^rr. For simplicity we assume ^r = ^rr.
+By (B-Ass), s00( ^rr) = oe . C(r) and s0 = s00[ ^rr 7! oe . C([r0/ri]r)]. Since the
+assignment is well-typed, we have by type preservation that guard(^r, s0) =
+guard(r0, s0). Since reachable^s(r, r0) and r is stack-cono/ned in ^s, we have by
+Lemma 4 that guard(r0, s0) = guard(r0, s00) = guard(r, ^s). It remains to show
+that guard(r, s0) = guard(r, ^s). Assume this is not the case. The only rule that
+could change the guard of r is (B-Sel); the rules (B-Loc) and (B-Exp) are not
+applicable since r is exposed. Therefore, to change r's guard in the evaluation
+of t0, there must be an instance of rule (B-Sel) such that tb.li, sb, db + r, sc, dc
+where tb, sb, db + rb, s0b, d0b, reachablesb(rb, r), and guard(rb, s0b) 6= guard(r, s0b).
+
+Then, by stack-cono/nement, reachablesb(r, rb). By Lemma 4, guard(rb, s0b) =
+guard(r, sb). We assume that the guard of r does not change during the eval-
+uation from sb to s0b. Therefore, guard(rb, s0b) = guard(r, s0b) = guard(r, sb).
+Contradiction. Therefore, we have shown guard(^r, s0) = guard(r, s0).
+
+Part 2. We show that either reachables0(r, ^r) or ^r is garbage in sf . Con-
+sider the sequence of stores s, . . . , ^s, . . . s0 = S. If there is no si 2 S such that
+reachablesi(r, ^r), then guard(^r, s0) 6= guard(r, s0) since expose creates a fresh
+guard (B-Exp) that is only propagated through o/eld selection (B-Sel). Con-
+tradiction. Therefore, reachablesi(r, ^r) for some si 2 S. If not reachablesf (r, ^r),
+then ^r is garbage in sf since, by subject reduction, only objects reachable from
+r may refer to ^r according to the guards. 2
+
+Theorem 2 (External Uniqueness) Let
+\Gamma  ; \Delta  ` t1 : oe I T ; \Delta 0 \Omega  oe and t1, s, d + r, s1, d1 with \Gamma  ` s, \Delta  ` d, and r
+is externally-unique in s1.
+
+If t is a well-typed term, t, s, d + rf , sf , df , and ae 2 df , then r is externally-
+unique in sf .
+
+Proof Sketch: First, r remains stack-cono/ned, since the o/elds of the object o
+that r points to are only accessible when r is exposed, which preserves stack-
+cono/nement according to Lemma 5. Second, according to the evaluation rules
+(B-New) and (B-Loc) the capability ae is consumed before r can be aliased.
+Taken together, r remains the only accessible external reference to o in sf . 2
+
+7 Extensions
+In this section we address some of the issues when integrating OCT into full
+languages like Scala or Java that we ommitted from the formalization for sim-
+plicity.
+
+7.1 Closures
+A number of object-oriented languages, such as Scala, have special support for
+closures. In this section we discuss how OCT can be extended to handle clo-
+sures that capture unique references in their environment. We show that in
+certain cases, such a closure can be given a tracked type, thus providing external
+uniqueness.
+
+In the case where a unique reference is captured by a closure, we have to be
+careful not to introduce accidental aliasing, so that the unique reference could
+be accessed and consumed multiple times. Consider the following example:
+
+val r: C @unique = new C(...)
+val myClosure = (x: Int) =? -
+
+expose (r) - ... ""
+""
+consume(r)
+myClosure(5) // error!
+
+The method creates a new instance of class C with a unique reference r (of type
+ae I C for some ae) pointing to it. This unique reference is captured by the closure
+that is assigned to myClosure. Note that type checking the expose expression is
+only possible in an environment where the capability of r is available. The invo-
+cation of consume consumes r. Finally, the closure is applied to some argument.
+This application should be rejected by the type checker since the unique object
+captured by the closure has already been consumed.
+
+The following approach enables type-safe ownership transfer for closures. The
+idea is to record the information about required capabilities in the type of the
+closure. For simplicity we consider only the special case where a closure captures
+a single unique reference. Type checking proceeds according to the following
+inference rule:
+
+\Gamma , x : T1 ; \Delta  ` t : T2 ; \Delta 0
+\Delta  - (\Delta 0|dom(\Delta )) = {ae} ae I T 2 \Gamma 
+
+\Gamma  ; \Delta  ` *x : T1. t : ae I (T1 ! T2) ; \Delta 0 \Omega  ae (T-Clos)
+
+Type-checking the body of the closure yields \Delta 0 which lets us compute the set
+of capabilities that are consumed as \Delta  - (\Delta 0|dom(\Delta )). If this set contains only a
+single capability ae that is the component of a tracked type in the environment,
+then the type of the closure must also be tracked with ae. Otherwise, an applica-
+tion of the closure could violate the uniqueness of the captured reference. This
+means that the evaluation context can choose to either consume the closure or
+the variable that was captured by the closure, but not both, since no additional
+capability is created. Note that the capability ae, which is available in the initial
+capabilities \Delta , is not consumed.
+
+7.2 Nested Classes
+Nested classes can be seen as a generalization of closures; a nested class may
+deo/ne multiple methods, and it may be instantiated several times. An important
+use case are anonymous iterator deo/nitions in collection classes.
+
+For instance, the SingleLinkedList class in Scala's standard library pro-
+vides the following method for obtaining an iterator (the A type parameter is
+the collection's element type):
+
+override def elements: Iterator[A] =
+
+new Iterator[A] -
+
+var elems = SingleLinkedList.this
+def hasNext = (elems ne null)
+def next = -
+
+val res = elems.elem
+elems = elems.next
+res
+""
+""
+
+In this example, it would be erroneous to annotate the receiver as @transient.
+The nested class instance captures a reference to the receiver and stores it into
+a o/eld. Therefore, the iterator instance would have to be tracked with the same
+capability as the receiver, which is possible as we discussed above for the special
+case of closures. The elements method would then have to return a unique object
+that is tracked with the same capability as the receiver. While the type system
+that we introduced in Section 4 (which our implementation uses internally) can
+express this, our user-visible annotations cannot.
+
+Fortunately, in our type system it is easy to check for illegal aliasing: nested
+class deo/nitions are type-checked in an environment where the set of available
+capabilities is empty. This way, all capturing occurrences of unique references
+are detected as illegal.
+
+However, a more AEexible approach is to return an exposed iterator that op-
+erates on an exposed collection:
+
+@exposed override def elements:
+
+Iterator[A] @exposed = - ... ""
+
+For convenience, we can implicitly localize new instances of the nested class to
+the cluster of the captured exposed reference. It is illegal to capture a unique
+reference in addition to an exposed reference. The above annotation allows ar-
+bitrary uses of an iterator instance while its underlying unique (or transient)
+collection is exposed. Closures that capture exposed references are supported in
+an analogous way.
+
+7.3 Actor-Based Concurrency
+Figure 8 shows a concurrent variant of an example adapted from [30]. The pur-
+pose of this example is to demonstrate how our system supports the repeated
+ownership transfer of single objects. This is common in work AEow or communi-
+cation systems that process packets or tasks. Our example models a concurrent
+work AEow system for processing orders (class Order) using a pipeline of concur-
+rently running processors (abstract class Processor).
+
+A Dispatcher handles orders by iterating over its pipeline, sending the cur-
+rent order to each processor in sequence. The expression (pipeline(i) !? o)
+sends o as a message to the processor at index i of the pipeline and waits for a
+reply. The result of the expression is the received reply; its type is recovered by
+matching on it (using Scala's match). Each processor is implemented as an actor
+that waits to receive an order, processes it, and sends it back to the dispatcher. A
+processor receives each order as an externally unique object with the capability
+to consume it. To gain access to its o/elds, the order is exposed using expose.
+The processor's doWork method is then free to operate on the exposed order; the
+type system ensures that its external uniqueness is preserved. For example, the
+Pricer processor updates the order's total o/eld.
+
+class Order -
+
+var clientId: Int = 0
+var items: List[Int] = List()
+// fields to be filled by work flow stages
+var total: Int = 0
+// other fields and methods omitted
+""
+
+abstract class Processor extends Actor -
+
+def act() -
+
+react -
+
+case ord: Order =?
+
+expose (ord) - xord =?
+
+doWork(xord)
+""
+sender ! ord
+act()
+""
+""
+def doWork(current: Order @exposed)
+""
+
+class Pricer extends Processor -
+
+def doWork(current: Order @exposed) -
+
+val price: Int = /* determine price */
+current.total = price
+""
+// other fields and methods omitted
+""
+
+abstract class Dispatcher -
+
+val pipeline = new Array[Processor](5)
+def handleOrder(o: Order @unique) -
+
+var tmp: Order @unique = o
+for (i !- 0 until pipeline.length)
+
+(pipeline(i) !? tmp) match -
+
+case ord: Order @unique =? tmp = ord
+""
+""
+// other fields and methods omitted
+""
+
+Fig. 8. Example: Concurrent work AEow
+
+8 Implementation
+We have implemented a type checker for Object Capability Types as a compiler
+plug-in for the Scala compiler developed at EPFL.1 The plug-in inserts an addi-
+tional compiler phase that runs right after the normal type checker. The extended
+compiler o/rst does standard Scala type checking on the erased terms and types
+of our system. Secondly, the additional phase infers tracked and guarded types,
+and in some cases, localize and expose expressions (see Section 3), for each
+method separately. Then, types and capabilities are checked using (an extension
+of) the type rules presented in Section 4. For subsequent code generation, all
+guards, localize and expose expressions are erased.
+
+8.1 Practical Experience
+Our type system is designed to allow the use of mutable objects and contain-
+ers as part of messages in concurrent actor-based programs. Consequently, we
+annotated some of the most important mutable container classes in Scala's
+standard collection library to evaluate the type system. The annotated classes
+are DoubleLinkedList, HashMap, ListBuffer, and ArrayBuffer, including all
+classes (or traits) that these classes directly or indirectly inherit (an exception is
+the Seq trait that virtually all collection classes share). Together, these classes
+comprise around 2640 lines of source code, including comments and whitespace.
+
+We were interested to see how many of the methods of each class could be
+annotated such that the receiver and all parameters are @exposed (in this case
+we say the method is marked as exposed). As we discussed in Section 3, such an
+annotation is very AEexible, since it allows passing unique or transient references
+that have been localized or exposed, respectively, as actual parameters in a call.
+While this annotation allows the receiver and the parameters to refer to each
+other (and to objects in their cluster), it prevents the creation of references
+between the exposed cluster and other objects in the system, notably globally
+visible objects that correspond to static classes and class members in Java.
+
+In Section 3 we already reported on the most interesting issues with anno-
+tating the DoubleLinkedList class and its superclass SingleLinkedList. All
+its methods could be marked as exposed. The HashMap class inherits from 6
+additional classes (or traits), comprising 70 non-abstract methods. All of these
+methods could be marked as exposed. The ListBuffer class deo/nes or inher-
+its 41 non-abstract methods. Of those, 40 could be marked as exposed. The
+following method could not be annotated:
+
+override def ++(that: Iterable[A]): Seq[A] = -
+
+val buf = new ArrayBuffer[A]
+this.copyToBuffer(buf)
+that.copyToBuffer(buf)
+return buf
+""
+
+1 See http://lamp.epfl.ch/\Lambda phaller/uniquerefs/.
+
+The problem here is the two invocations of the copyToBuffer method; it is
+deo/ned in the Iterable trait that we did not annotate. Therefore, the checker
+must conservatively assume that the (exposed) receiver and parameters could
+be consumed, which is illegal.
+
+The ArrayBuffer class deo/nes or inherits 48 methods. Of those, 3 could not
+be marked as exposed, because of missing annotations on external classes. Addi-
+tionally, the checker reported a couple of spurious warnings, because ArrayBuffer
+uses a fast array-copy method, which did not carry annotations.
+
+In summary, our experiments show that
+
+1. in many classes that are used in Scala's standard collection libraries, all
+
+methods can be marked as exposed, suggesting the introduction of a class-
+level @exposed annotation, and that
+2. our type system enables common mutable collection classes that involve com-
+
+plex internal aliasing to be used as targets of tracked references, providing
+external uniqueness.
+
+9 Related Work
+Ownership and Uniqueness. Our approach is closely related to previous work
+on ownership types and uniqueness types. Clarke and Wrigstad's proposal for
+external uniqueness [10, 42] is based on ownership types [31, 13]; our system can
+be seen as an alternative way of providing external uniqueness based on capabili-
+ties instead of ownership. Our guard parameters are similar to owner parameters,
+but, in contrast to owner parameters, they are never explicitly written in a pro-
+gram; instead, all guard parameters are inferred by the type checker. A complete
+discussion of previous proposals for unique pointers in object-oriented languages
+is beyond the scope of this paper. An overview of type systems that do not
+provide external uniqueness can be found in [10].
+
+UTT [30] extends Universe Types [16, 15] to provide external uniqueness for
+object clusters. Clusters in UTT are declared explicitly, whereas in our type
+system, clusters are implicit. While explicit clusters require additional declara-
+tions, they enable UTT to infer many of the capture and release statements
+that correspond to our localize and expose expressions. UTT does not have a
+qualio/er that is analogous to our transient. Finally, the alias invariant of UTT
+does not guarantee race freedom, since read-only references into clusters remain
+accessible after ownership transfer.
+
+In a concurrent setting, temporary aliasing of unique references must be
+done in a way that avoids race conditions. In Eioeel* [29], Balloon Types [2],
+Capabilities for Sharing [6], Pivot Uniqueness [26], and AliasJava [1], a unique
+reference is still usable despite the existence of temporary (borrowed) aliases.
+Transferring a unique reference to another concurrent process while retaining
+a temporary alias may lead to data races. Our approach avoids this problem
+by revoking the capability to use a unique reference while temporary aliases
+exist. Several type systems based on ownership have been proposed to verify
+the safety of concurrent programs. The PRFJ language of Boyapati et al. [5]
+
+associates owners with shared-memory locks to verify correct lock acquisition
+before accessing objects. Unlike our approach, PRFJ does not provide external
+uniqueness and uses destructive reads for ownership transfer. Universe Types
+have also been used to verify race safety of shared-memory threads [14].
+
+9.1 Relationship with Minimal Ownership for Active Objects
+Among the work that is most closely related to ours is Minimal Ownership for
+Active Objects [11] (MOAO in the following); it combines a minimal notion of
+ownership, external uniqueness, and immutability into a system that provides
+race freedom for active objects [43, 8]. MOAO's immutable and safe (arg refer-
+ences in the terminology of [31]) references are orthogonal and complementary
+to our approach. In MOAO, abstracting from the fact whether a method con-
+sumes a unique parameter or not requires explicit owner parameters. For that
+purpose our system provides the @transient and @exposed qualio/ers, instead.
+Although these qualio/ers are less general than explicit owner parameters, we
+found that they are suOEcient to guarantee external uniqueness for common col-
+lection classes. Our expose expression is similar to MOAO's borrow in that it
+allows accessing the representation of a unique object while ensuring external
+uniqueness. Unlike borrow in MOAO, expose is inferred for parameters carrying
+the @transient qualio/er.
+
+Our system enforces the invariant that a unique reference is not consumed
+while it is borrowed. In contrast, in MOAO this invariant is not enforced, leading
+to a null-pointer exception in the following example.
+
+class C -
+
+var l: Object;
+def mutate() - l = new Object; ""
+def badBorrow(p: unique::C) -
+
+var x: unique::C;
+borrow p as a::C pb -
+
+x = p--;
+pb.mutate();
+""
+""
+""
+
+Method badBorrow contains a local variable x of type unique::C; unique is an
+owner that restricts x to only refer to externally unique objects. The borrow
+construct introduces an alias pb with owner a for p, so that it can be mutated
+using the mutate method (mutate is owner-polymorph wrt. the owner of the
+receiver; for brevity, the owner parameter is omitted). However, inside the body
+of borrow, p is read destructively (p--), thereby causing a null-pointer excep-
+tion at the invocation of mutate. To see why MOAO does not reject the above
+program, it is instructive to look at the typing rule for borrow as given in [12].
+
+\Gamma  ` lval : unique :: C
+\Gamma , a : *, x : a :: C ` s ok
+
+\Gamma  ` borrow lval as a :: C x {s} ok (stat-borrow)
+
+(Exact typing, and read/write eoeects have been omitted since they are irrel-
+evant for the discussion.) The environment \Gamma  binds variables to their type and
+records the owners that are currently in scope (with dummy type *). Since \Gamma 
+is immutable, it is impossible to revoke the permission to access lval inside the
+body s, and to restore the permission afterwards. In contrast, our type system
+uses an additional capability context that restricts access to unique references.
+This context may change in the course of deriving the type of an expression. In
+the above example, the capability to access p is temporarily revoked while type
+checking the body of borrow, thereby rejecting the (destructive) read of p.
+
+Linear Types In functional languages, linear types [38] have been used to imple-
+ment operations like array updating without the cost of a full copy. An object
+of linear type must be used exactly once; as a result, linear objects must be
+threaded through the computation. Wadler's let! or observers [32] can be used
+to temporarily access a linear object under a non-linear type. Linear types have
+also been combined with regions, where let! is only applicable to regions [41].
+Ennals et al. [17] have used quasi-linear types [25] for eOEcient network packet
+processing; however, unlike our clusters, their packets may not contain nested
+pointers. Our system of capabilities is inspired to a large extent by Fa"hndrich
+and DeLine's adoption and focus [19]. The second type rule for our expose
+expression corresponds to their let-focus. Our system extends adoption and
+focus with external uniqueness in an object-oriented setting. Adoption and fo-
+cus builds on Alias Types [40] that allow a precise description of the shape of
+recursive data structures in a type system. Boyland and Retert [7] generalize
+adoption to model both eoeects and uniqueness. Their type language is more ex-
+pressive, but also signio/cantly more complex than our type language. Their real-
+ized source-level annotations include data group and eoeect declarations, whereas
+our annotation system does not require those declarations. Sing# [18] allows the
+linear transfer of message records that are explicitly allocated in a special ex-
+change heap reserved for inter-process communication. Our tracked references
+are similar to Sing#'s tracked pointers. However, our notion of uniqueness is
+more AEexible since it allows arbitrary internal aliases. It should be possible to
+apply the principles of our type system to formalize the message exchange heap
+of Sing#. StreamFlex [35] is a programming model for stream-based program-
+ming in Java. It allows zero-copy message passing of so-called capsules along
+linear o/lter pipelines. Capsules are instances of classes that satisfy stringent
+constraints: o/elds of capsule classes may only have primitive types or primitive
+array types. In contrast, our system allows linear transfer of internally-aliased
+objects. Kilim [36] combines a system of type qualio/ers with an intra-procedural
+shape analysis to verify the isolation of Java-based actors. In Kilim, the shape of
+messages is restricted to trees, whereas our system allows messages with internal
+aliasing thanks to external uniqueness.
+
+Region-Based Memory Management. Object clusters in our system are related
+to regions in region-based memory management [37, 39, 22, 44]. Objects inside a
+cluster may not refer to objects inside another cluster that may be separately
+consumed; consumption of clusters corresponds to deletion of regions. The main
+dioeerence between regions and our object clusters are that (1) clusters are o/rst-
+class values that can be stored in aliased objects, and (2) clusters do not have
+to be explicitly consumed, since they are garbage-collected.
+
+10 Conclusion and Future Work
+We have presented a type system that integrates capability-checking and exter-
+nal uniqueness, striving for simplicity and AEexibility in both the formalization
+and the practical realization. We implemented our approach as a lightweight ex-
+tension to Scala, without changing the language syntax. Instead of introducing
+uniqueness-polymorphic methods through explicit parameterization, we provide
+a small set of type qualio/ers. Practical experience shows that these qualio/ers are
+suOEcient to add uniqueness information to common collection classes of Scala's
+standard library without requiring changes to their implementation.
+
+In future work, we intend to investigate ways to automatically infer unique-
+ness annotations from method implementations. Furthermore, we believe that it
+is worthwhile to explore the application of ownership transfer to shared-memory
+concurrency, where objects may be transferred between shared and unshared
+regions of memory.
+
+References
+
+1. Jonathan Aldrich, Valentin Kostadinov, and Craig Chambers. Alias annotations
+
+for program understanding. In OOPSLA, pages 311*330, 2002.
+2. Paulo Se'rgio Almeida. Balloon types: Controlling sharing of state in data types.
+
+In ECOOP, pages 32*59, 1997.
+3. Joe Armstrong, Robert Virding, Claes Wikstro"m, and Mike Williams. Concurrent
+
+Programming in Erlang, Second Edition. Prentice-Hall, 1996.
+4. Ken Arnold and James Gosling. The Java Programming Language. The Java
+
+Series. Addison-Wesley, 1996.
+5. Chandrasekhar Boyapati, Robert Lee, and Martin C. Rinard. Ownership types
+
+for safe programming: preventing data races and deadlocks. In OOPSLA, pages
+211*230, 2002.
+6. John Boyland, James Noble, and William Retert. Capabilities for sharing: A gen-
+
+eralisation of uniqueness and read-only. In ECOOP, pages 2*27. Springer, 2001.
+7. John Tang Boyland and William Retert. Connecting eoeects and uniqueness with
+
+adoption. In POPL, pages 283*295. ACM, 2005.
+8. Denis Caromel. Towards a method of object-oriented concurrent programming.
+
+Commun. ACM, 36(9):90*102, 1993.
+9. Sigmund Cherem and Radu Rugina. Uniqueness inference for compile-time object
+
+deallocation. In ISMM, pages 117*128. ACM, 2007.
+10. Dave Clarke and Tobias Wrigstad. External uniqueness is unique enough. In
+
+ECOOP, pages 176*200. Springer, 2003.
+
+11. Dave Clarke, Tobias Wrigstad, Johan O"stlund, and Einar Broch Johnsen. Minimal
+
+ownership for active objects. In APLAS, pages 139*154. Springer, 2008.
+12. Dave Clarke, Tobias Wrigstad, Johan O"stlund, and Einar Broch Johnsen. Minimal
+
+ownership for active objects. Technical Report SEN-R0803, CWI, 2008.
+13. David G. Clarke, John Potter, and James Noble. Ownership types for AEexible alias
+
+protection. In OOPSLA, pages 48*64, 1998.
+14. David Cunningham, Sophia Drossopoulou, and Susan Eisenbach. Universe Types
+
+for Race Safety. In VAMP 07, pages 20*51, August 2007.
+15. Werner Dietl, Sophia Drossopoulou, and Peter Mu"ller. Generic universe types. In
+
+ECOOP, pages 28*53. Springer, 2007.
+16. Werner Dietl and Peter Mu"ller. Universes: Lightweight ownership for JML. Journal
+
+of Object Technology, 4(8):5*32, 2005.
+17. Robert Ennals, Richard Sharp, and Alan Mycroft. Linear types for packet pro-
+
+cessing. In ESOP, pages 204*218. Springer, 2004.
+18. Manuel Fa"hndrich, Mark Aiken, Chris Hawblitzel, Orion Hodson, Galen C. Hunt,
+
+James R. Larus, and Steven Levi. Language support for fast and reliable message-
+based communication in singularity OS. In EuroSys, pages 177*190. ACM, 2006.
+19. Manuel Fa"hndrich and Robert DeLine. Adoption and focus: Practical linear types
+
+for imperative programming. In PLDI, pages 13*24, 2002.
+20. Lift Web Application Framework. http://liftweb.net/.
+21. Philipp Haller and Martin Odersky. Scala actors: Unifying thread-based and event-
+
+based programming. Theor. Comput. Sci, 410(2-3):202*220, 2009.
+22. Michael W. Hicks, J. Gregory Morrisett, Dan Grossman, and Trevor Jim. Expe-
+
+rience with safe manual memory-management in cyclone. In ISMM, pages 73*84.
+ACM, 2004.
+23. Atsushi Igarashi, Benjamin C. Pierce, and Philip Wadler. Featherweight java:
+
+a minimal core calculus for java and GJ. ACM Trans. Program. Lang. Syst,
+23(3):396*450, 2001.
+24. Twitter Kestrel. http://github.com/robey/kestrel/.
+25. Naoki Kobayashi. Quasi-linear types. In POPL, pages 29*42, 1999.
+26. K. Rustan M. Leino, Arnd Poetzsch-Heoeter, and Yunhong Zhou. Using data groups
+
+to specify and check side eoeects. In PLDI, pages 246*257, 2002.
+27. T. Lindholm and F. Yellin. The Java Virtual Machine Specio/cation. Addison-
+
+Wesley, 1996.
+28. Kin-Keung Ma and Jeoerey S. Foster. Inferring aliasing and encapsulation proper-
+
+ties for java. In OOPSLA, pages 423*440. ACM, 2007.
+29. Naftaly H. Minsky. Towards alias-free pointers. In ECOOP, pages 189*209.
+
+Springer, 1996.
+30. Peter Mu"ller and Arsenii Rudich. Ownership transfer in universe types. In OOP-
+
+SLA, pages 461*478. ACM, 2007.
+31. James Noble, Jan Vitek, and John Potter. Flexible alias protection. In ECOOP,
+
+pages 158*185. Springer, 1998.
+32. Martin Odersky. Observers for linear types. In ESOP, pages 390*407. Springer,
+
+1992.
+33. Martin Odersky. The Scala experiment: can we provide better language support
+
+for component systems? In POPL, pages 166*167. ACM, 2006.
+34. Amazon SimpleDB. http://aws.amazon.com/simpledb/.
+35. Jesper Honig Spring, Jean Privat, Rachid Guerraoui, and Jan Vitek. StreamAEex:
+
+high-throughput stream programming in java. In OOPSLA, pages 211*228. ACM,
+2007.
+
+36. Sriram Srinivasan and Alan Mycroft. Kilim: Isolation-typed actors for java. In
+
+ECOOP, pages 104*128. Springer, 2008.
+37. Mads Tofte and Jean-Pierre Talpin. Region-based memory management. Inf.
+
+Comput, 132(2):109*176, 1997.
+38. Philip Wadler. Linear types can change the world! In Programming Concepts and
+
+Methods, Sea of Galilee, Israel, April 1990. North Holland. IFIP TC 2 Working
+Conference.
+39. David Walker, Karl Crary, and J. Gregory Morrisett. Typed memory management
+
+via static capabilities. ACM Trans. Program. Lang. Syst, 22(4):701*771, 2000.
+40. David Walker and J. Gregory Morrisett. Alias types for recursive data structures.
+
+In TIC, pages 177*206. Springer, 2000.
+41. David Walker and Kevin Watkins. On regions and linear types. In ICFP, pages
+
+181*192, 2001.
+42. Tobias Wrigstad. Ownership-Based Alias Managemant. PhD thesis, KTH, Sweden,
+
+May 11 2006.
+43. Akinori Yonezawa, Jean-Pierre Briot, and Etsuya Shibayama. Object-oriented
+
+concurrent programming in ABCL/1. In OOPSLA, pages 258*268, 1986.
+44. Tian Zhao, James Noble, and Jan Vitek. Scoped types for real-time java. In RTSS,
+
+pages 241*251. IEEE Computer Society, 2004.

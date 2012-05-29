@@ -1,0 +1,807 @@
+
+
+Linear Regions Are All You Need
+
+Matthew Fluet1, Greg Morrisett2, and Amal Ahmed2
+
+1 Cornell University
+
+Ithaca, NY
+fluet@cs.cornell.edu
+
+2 Harvard University
+
+Cambridge, MA
+greg@eecs.harvard.edu, amal@eecs.harvard.edu
+
+Abstract. The type-and-effects system of the Tofte-Talpin region calculus makes it possible to safely reclaim objects without a garbage collector.
+However, it requires that regions have last-in-first-out (LIFO) lifetimes
+following the block structure of the language. We introduce *rgnUL, a core
+calculus that is powerful enough to encode Tofte-Talpin-like languages,
+and that eliminates the LIFO restriction. The target language has an
+extremely simple, substructural type system. To prove the power of the
+language, we sketch how Tofte-Talpin-style regions, as well as the firstclass dynamic regions and unique pointers of the Cyclone programming
+language can be encoded in *rgnUL.
+
+1 Introduction
+Most type-safe languages rely upon a garbage collector to reclaim storage safely.But there are domains, such as device drivers and embedded systems, where
+today's garbage collection algorithms result in unacceptable space or latencyoverheads. In these settings, programmers have been forced to use languages,
+like C, where memory management can be tailored to the application, but wherethe lack of type-safety has lead to numerous bugs. To address these concerns,
+we have been developing Cyclone [1], a type-safe dialect of C that is intended togive programmers as much control over memory management as possible while
+retaining strong, static typing.The initial design of Cyclone was based upon the region type system of
+Tofte and Talpin [2]. Data are allocated within lexically-scoped regions andall of the objects in a region are deallocated at the end of the region's scope.
+Unfortunately, the last-in-first-out (LIFO) lifetimes of lexically-scoped regionsplace severe restrictions on when data can be effectively reclaimed, and we found
+many programs that resulted in (unbounded) leaks when compared to a garbagecollected implementation.
+
+To address these concerns, we added a number of new features to Cyclone,including dynamic regions and unique pointers that provide more control over
+memory management. Dynamic regions are not restricted to LIFO lifetimes andcan be treated as first-class objects. They are particularly well suited for iterative
+
+computations, CPS-based computations, and event-based servers where lexicalregions do not suffice. Unique pointers are essentially lightweight, dynamic regions that hold exactly one object. To ensure soundness, both dynamic regionsand unique pointers depend upon a notion of linear capabilities which must be
+carefully threaded through a program. To alleviate this tedium, Cyclone pro-vides convenient mechanisms to temporarily "open" a dynamic region or unique
+pointer and treat it as if it were in a freshly allocated, lexically-scoped region.
+
+The efficacy of these new memory management features was detailed in previ-ous papers [3, 4], where we analyzed a range of applications, including a streaming media server, a space-conscious web server, and a Scheme runtime systemwith a copying garbage collector. And while the soundness of Cyclone's lexical
+regions and type-and-effects system has been established [5, 6], a model thatjustifies the soundness of the new features has eluded our grasp, due to sheer
+complexity.
+
+Therefore, the goal of this work is to provide a simple model where we caneasily encode the key features of Cyclone in a uniform target language for which
+
+type soundness may be easily established. The first step of our encoding wasdetailed in a previous paper [6], where we gave a translation from a type-andeffects, region-based language to a monadic variant of System F called FRGN. Thiscalculus is summarized in Section 2. The meat of this paper picks up where this
+translation left off by further translating FRGN to a substructural polymorphiclambda calculus where the internals of the indexed monad are exposed (Section 3). The target language and translation are extremely simple, yielding arelatively straightforward proof of soundness for lexically scoped regions. Then,
+in Section 5, we sketch how the features in the target language allow us to encodeCyclone's dynamic regions and unique pointers, as well as their interactions with
+lexically-scoped regions. Throughout, it is our intention that the target calculusserve as a compiler intermediate language and as vehicle for formal reasoning,
+not as a high-level programming language.
+
+2 Source Calculus: FRGN
+Launchbury and Peyton Jones introduced the ST monad to encapsulate statefulcomputations within the pure functional language Haskell [7]. Three key insights
+give rise to a safe and efficient implementation of stateful computations. First,a stateful computation is represented as a store transformer, a description of
+commands to be applied to an initial store to yield a final store. Second, thestore can not be duplicated, because the state type is opaque and all primitive
+store transformers use the store in a single-threaded manner; hence, a statefulcomputation can update the store in place. Third, parametric polymorphism can
+be used to safely encapsulate and run a stateful computation.
+
+All of these insights can be carried over to the region case, where we interpretstores as stacks of regions. We introduce the types and operations associated with
+
+the rgn monad:
+
+o/ ::= . . . | rgn s o/ | ref s o/ | hnd s | pf (s1 <= s2)
+
+8
+
+return : 8&. 8ff. ff ! rgn & ff
+
+then : 8&. 8ff, fi. rgn & ff ! (ff ! rgn & fi) ! rgn & fi
+
+new : 8&. 8ff. hnd & ! ff ! rgn & (ref & ff)
+read : 8&. 8ff. ref & ff ! rgn & ff
+write : 8&. 8ff. ref & ff ! ff ! rgn & 1
+runRgn : 8ff. (8&. rgn & ff) ! ff
+letRgn : 8&1. 8ff. (8&2. pf (&1 <= &2) ! hnd &2 ! rgn &2 ff) ! rgn &1 ff
+coerceRgn : 8&1, &2. 8ff. pf (&1 <= &2) ! rgn &1 ff ! rgn &2 ff
+
+reflSub : 8&. pf (& <= &)
+transSub : 8&1, &2, &3. pf (&1 <= &2) ! pf (&2 <= &3) ! pf (&1 <= &3)
+
+The type rgn s o/ is the type of computations which transform a stack indexed by
+s and deliver a value of type o/. The type ref s o/ is the type of mutable referencesallocated in the region at the top of the stack indexed by
+
+s and containing avalue of type
+o/ . The type hnd s is the type of handles for the region at the topof the stack indexed by
+
+s; we require a handle to allocate a reference in a region,but do not require a handle to read or write a reference.
+
+The operations return and then are the unit and bind operations of the rgnmonad, the former lifting a value to a computation and the latter sequencing
+computations. The next three operations are primitive stack transformers. newtakes a region handle and an initial value and yields a stack transformer, which,
+when applied to a stack of regions, allocates and initializes a fresh referencein the appropriate region, and delivers the reference and the augmented stack.
+Similarly, read and write yield computations that respectively query and updatethe mappings of references to values in the current stack of regions. Note that
+all of these operations require the stack index & of rgn and ref to be equal.
+
+Finally, the operation runRgn encapsulates a stateful computation. To doso, it takes a stack transformer as its argument, applies it to an initial empty
+
+stack of regions, and returns the result while discarding the final stack (whichshould be empty). Note that to apply
+
+runRgn, we instantiate ff with the typeof the result to be returned, and then supply a stack transformer, which is
+
+polymorphic in the stack index &. The effect of this universal quantification isthat the stack transformer makes no assumptions about the initial stack (e.g., the
+existence of pre-allocated regions or references). Furthermore, the instantiationof the type variable
+
+ff occurs outside the scope of the stack variable &; thisprevents the stack transformer from delivering a value whose type mentions
+
+&.Thus, references or computations depending on the final stack cannot escape
+
+beyond the encapsulation of runRgn.
+
+However, the above does not suffice to encode region-based languages. Thedifficulty is that, in a region-based language, it is critical to allocate variables in
+
+and read variables from an outer (older) region while in the scope of an inner(younger) region. To accommodate this essential idiom, we include a powerful
+letRgn operation that is similar to runRgn in the sense that it encapsulates astateful computation. Operationally,
+
+letRgn transforms a stack by (1) creatinga new region on the top of the stack, (2) applying a stack transformer to the
+
+augmented stack to yield a transformed stack, (3) destroying the region on the
+
+9
+
+Kinds ^ ::= STACK | ?
+Type-level Variables ", &, ff ::= TVars
+Stack Indices s ::= &
+Types o/ ::= ff | o/1 ! o/2 | 1 | o/1 * o/2 | 8":^. o/
+
+rgn s o/ | ref s o/ | hnd s | pf (s1 <= s2)
+Type-level Terms ffl ::= s | o/
+Type-level Contexts \Delta  ::= * | \Delta , ":^
+
+rgn Monad Operations ops ::= runRgn | coerceRgn | transSub |
+
+return | then | letRgn | new | read | write
+Expressions e ::= ops | x | *x:o/. e | e1 e2 | hi | let hi = e1 in e2 |h
+
+e1, e2i | let hx1, x2i = e1 in e2 | \Lambda ":^. e | e [ffl]
+Expression-level Contexts \Gamma  ::= * | \Gamma , x:o/
+
+Fig. 1. Syntax of FRGN
+
+top of the transformed stack and yielding the bottom of the transformed stack.Ignoring for the moment the argument of type
+
+pf (&1 <= &2), we see that wemay apply exactly the same reasoning as applied to
+
+runRgn: the computationmakes no assumptions about the newly augmented stack
+
+&2, nor can the newlyaugmented stack
+&2 be leaked through the return value.
+What, then, is the role of the pf (&1 <= &2)? The answer lies in the fact that thestack index
+
+&2 does not denote an arbitrary stack; rather, it should denote a stackthat is related to
+
+&1 by the addition of a newly created region (i.e., &2 j r::&1). Infact, we may consider
+
+&1 to be a subtype of &2, since every region in the stack &1 isalso in the stack
+&2; values of type pf (s1 <= s2) are witnesses of this relationship.The operation
+coerceRgn applies a subtyping witness to a stack transformerfor the substack to yield a stack transformer for the superstack; intuitively, the
+
+operation is sound as a stack transformer may simply ignore extra regions. Theoperations
+
+reflSub and transSub are combinators witnessing the reflexivity andtransitivity of the subtyping relation.
+
+Figure 1 gives the complete syntax for FRGN, which is a natural extension of
+System F. We introduce a simple kind system to support abstraction over bothtypes and stack indices. (In the text, we often omit kind annotations, using the
+
+convention that & stands for a type-level variable of STACK kind, and ff of ?.)
+
+We adopt the standard type system for System F; the only typing judgementof interest is
+
+\Delta ; \Gamma  ` e : o/ meaning that expression e has type o/ , where \Delta  recordsthe free type-level variables and their kinds and
+
+\Gamma  records the free expression-level variables and their types. The types for the
+
+rgn monad operations are asgiven in the text above.
+
+Our previous work [6] gave an operational semantics for FRGN and proved thetype soundness of
+
+FRGN. However, the operational semantics of FRGN is somewhatcumbersome, due to the intertwining of contexts for pure evaluation and monadic
+
+evaluation. Hence, in the present setting, we will define the operational behaviorof
+
+FRGN by its translation into the target language of Section 3.
+
+10
+
+3 Target Calculus: *rgnUL
+In another line of work [8], we introduced *URAL, a core substructural polymor-phic
+
+*-calculus, and then extended it to *refURAL by adding a rich collection ofmutable references. Providing four sorts of substructural qualifiers (unrestricted,
+
+relevant, affine, and linear) allowed us to encode and study the interactions ofdifferent forms of uniqueness that appear in other high-level programming languages. Notable features of *refURAL include: deallocation of references; strong(type-varying) updates; and storage of unique objects in shared references.
+
+Here, we augment *refURAL by adding region primitives, and also simplify thelanguage by removing features, such as the relevant and affine qualifiers, that do
+not play a part in the translation. We call the resulting language *rgnUL.In contrast to the
+
+letRgn operation of FRGN, which encapsulates the creationand destruction of a region, the primitives of
+
+*rgnUL include newrgn and freergnfor separately creating and destroying a region. All access to a region (for allocating, reading, and writing references) is mediated by a linear capability that isproduced by
+
+newrgn and consumed by freergn.As noted above,
+
+*rgnUL is a substructural polymorphic *-calculus. A substruc-tural type system provides the core mechanisms necessary to restrict the number
+
+and order of uses of data and operations. In our calculus, types and variablesare qualified as unrestricted (
+
+U) or linear (L). Essentially, unrestricted variablesare allowed to be used an arbitrary number of times, while linear variables are
+
+allowed to be used exactly once.Figure 2 gives the syntax for
+
+*rgnUL, excluding intermediate terms that wouldappear in an operational semantics. Many of the types and expressions are based
+
+on a traditional polymorphic *-calculus.We structure our types
+
+o/ as a qualifier q applied to a pre-type o/ , yieldingthe two sorts of types noted above. The qualifier of a type dictates the number
+
+of uses of variables of the type, while the pre-type dictates the introduction andelimination forms. The pre-types 1ffl,
+
+o/1 ffl* * *fflo/n, and o/1 ( o/2 correspond to theunit, product, and function types of the polymorphic
+
+*-calculus. Quantificationover qualifiers, region names, pre-types, and types is provided by the pre-types
+
+8":^. o/ and 9":^. o/ . (In the text, we often omit kind annotations, using the con-vention that
+
+, stands for a type-level variable of QUAL kind, % of RGN, ff of ?,and
+ff of ?.)The pre-types
+
+ref r o/ and hnd r are similar to the corresponding types in FRGN;the former is the type of mutable references allocated in the region
+
+r and thelatter is the type of handles for the region
+r. The pre-type cap r is the type ofcapabilities for accessing the region named
+
+r. We shall shortly see how linearcapabilities effectively mediate access to a region.
+
+Space precludes us from giving a detailed description of the type system for
+*rgnUL; the major features are entirely standard for a substructural setting [9, 8].First, in order to ensure the correct relationship between a data structure and
+
+its components, we extend the lattice ordering on constant qualifiers to arbitraryqualifiers (
+
+\Delta  ` q _ q0), types (\Delta  ` o/ _ q0), and contexts (\Delta  ` \Gamma  _ q0). Second,we introduce a judgement
+
+\Delta  ` \Gamma 1 ae \Gamma 2 ; \Gamma  that splits the assumptions in \Gamma 
+
+11
+
+Kinds ^ ::= QUAL | RGN | ? | ?
+Type-level Variables ", ,, %, ff, ff ::= TVars
+Constant Qualifiers q 2 Quals = {U, L} U v L
+Qualifiers q ::= , | q
+Constant Region Names r 2 RNames
+Region Names r ::= % | r
+PreTypes o/ ::= ff | o/1 ( o/2 | 1ffl |
+
+o/1 ffl * * * ffl o/n | 8":^. o/ | 9":^. o/ |
+ref r o/ | hnd r | cap r
+Types o/ ::= ff | qo/
+Type-level Terms ffl ::= q | r | o/ | o/
+Type-level Contexts \Delta  ::= * | \Delta , ":^
+
+Region Primitives prims ::= newrgn | freergn | new | read | write
+Expressions e ::= prims | x | q*x:o/. e | e1 e2 | qhi | let hi = e1 in e2 |
+
+qhe1, . . . , eni | let hx1, . . . , xni = e1 in e2 |
+
+q\Lambda ":^. e | e [ffl] | qpack(ffl:^, e) | let pack(":^, x) = e1 in e2
+
+Expression-level Contexts \Gamma  ::= * | \Gamma , x:o/
+
+Fig. 2. Syntax of *rgnUL
+
+between the contexts \Gamma 1 and \Gamma 2. Splitting the context is necessary to ensure thatvariables are used appropriately by sub-expressions. Note that ae must ensure
+that an L assumption appears in exactly one sub-context, while U assumptionsmay appear in both sub-contexts.
+
+The main typing judgement has the form \Delta ; \Gamma  ` e : o/ ; Figure 3 gives typingrules for each of the expression forms of
+
+*rgnUL.
+Finally, we assign types for each of the region primitives of *rgnUL:
+
+newrgn : U(L1ffl ( L9%. L(Lcap % ffl Uhnd %))
+freergn : U8%. U(L(Lcap % ffl Uhnd %) ( L1ffl)
+
+new : U8%. U8ff. U(L(Lcap % ffl Uhnd % ffl Uff) ( L(Lcap % ffl U(ref % Uff)))
+read : U8%. U8ff. U(L(Lcap % ffl U(ref % Uff)) ( L(Lcap % ffl Uff))
+write : U8%. U8ff. U(L(Lcap % ffl U(ref % Uff) ffl Uff) ( L(Lcap % ffl U1ffl))
+
+We have purposefully "streamlined" the type of the reference primitives in or-der to simplify the exposition. For example, note that we may only allocate,
+
+read, and write references whose contents are unrestricted. However, there isno fundamental difficulty in adopting a richer set of reference primitives (`a la
+*refURAL [8]), which would allow references to contain arbitrary values.
+
+Space again precludes us from giving a detailed description of the operationalsemantics for
+
+*rgnUL; however, it is entirely standard for a region-based language.The small-step operational semantics is defined by a relation between configurations of the form (, e), where  is a global heap mapping region names toregions and regions are mappings from pointers to values.
+
+The primitives newrgn and freergn perform the complementary actions ofcreating and destroying a region in the global heap. Note that the type of
+
+newrgn
+
+12
+
+\Delta ; \Gamma  ` e : o/
+
+\Delta ; *, x:o/ ` x : o/
+
+\Delta ; \Gamma 1 ae \Gamma 2 ; \Gamma  \Delta  ` \Gamma 1 _ U \Delta ; \Gamma 2 ` e : o/
+
+\Delta ; \Gamma  ` e : o/
+
+\Delta  ` q : QUAL
+\Delta ; * ` qhi : q1ffl
+
+\Delta  ` \Gamma 1 ae \Gamma 2 ; \Gamma  \Delta ; \Gamma 1 ` e1 : q1ffl \Delta ; \Gamma 2 ` e2 : o/
+
+\Delta ; \Gamma  ` let hi = e1 in e2 : o/
+
+\Delta  ` \Gamma 1 ae * * * ae \Gamma n ; \Gamma 
+\Delta ; \Gamma 1 ` e1 : o/1 \Delta  ` o/1 _ q . . .
+
+\Delta ; \Gamma n ` en : o/n \Delta  ` o/n _ q
+
+\Delta ; \Gamma  ` qhe1, . . . , eni : q(o/1 ffl * * * ffl o/n)
+
+\Delta  ` \Gamma 1 ae \Gamma 2 ; \Gamma 
+\Delta ; \Gamma 1 ` e1 : q(o/1 ffl * * * ffl o/n)
+\Delta ; \Gamma 2, x1:o/1, . . . , xn:o/n ` e2 : o/
+
+\Delta ; \Gamma  ` let hx1, . . . , xni = e1 in e2 : o/
+
+\Delta  ` \Gamma  _ q
+\Delta ; \Gamma , x:o/x ` e : o/
+
+\Delta ; \Gamma  ` q*x:o/x. e : q(o/x ( o/)
+
+\Delta  ` \Gamma 1 ae \Gamma 2 ; \Gamma 
+\Delta ; \Gamma 1 ` e1 : q(o/x ( o/) \Delta ; \Gamma 2 ` e2 : o/x
+
+\Delta ; \Gamma  ` e1 e2 : o/
+
+\Delta  ` \Gamma  _ q \Delta , ":^; \Gamma  ` e : o/
+
+\Delta ; \Gamma  ` q\Lambda ":^. e : q(8":^. o/)
+
+\Delta ; \Gamma  ` e1 : q(8":^. o/) \Delta  ` ffl2 : ^
+
+\Delta ; \Gamma  ` e1 [ffl2] : o/[ffl2/"]
+
+\Delta  ` ffl1 : ^ \Delta ; \Gamma  ` e2 : o/[ffl1/"]
+
+\Delta  ` o/[ffl1/"] _ q
+
+\Delta ; \Gamma  ; \Sigma  ` qpack(ffl1:^, e2) : q(9":^. o/)
+
+\Delta  ` \Gamma 1 ae \Gamma 2 ; \Gamma  \Delta  ` o/0 : ?
+
+\Delta ; \Gamma 1 ` e1 : q(9":^. o/)
+\Delta , ":^; \Gamma 2, x:o/ ` e2 : o/0
+
+\Delta ; \Gamma  ` let pack(":^, x) = e1 in e2 : o/0
+
+Fig. 3. Static Semantics of *rgnUL
+
+specifies that it returns an existential package, hiding the name of the fresh re-gion. The primitives
+
+new, read, and write behave precisely as their counterpartsin any region-based language. Additionally, their types specify that they thread
+
+Lcap % values through the evaluation; the capability is simply presented at each
+access of a region and returned to allow future access. In the semantics, thecapability is represented as a dummy token, which has no run-time significance.
+
+As expected, the type system for *rgnUL is sound with respect to its opera-tional semantics:
+
+Theorem 1 (*rgnUL Safety). If *; * ` e1 : o/ and ({}, e1) 7-!* (2, e2), then either
+there exists v such that e2 j v or there exists 3 and e3 such that (2, e2) 7-! (3, e3).
+
+We have formally verified this result (for a rich superset of *rgnUL) in the Twelfsystem [10] using its metatheorem checker [11]. The mechanized proof can be obtained at http://www.cs.cornell.edu/People/fluet/research/substruct-regions/.
+
+13
+
+4 Translation: FRGN to *rgnUL
+Having introduced both our source and target calculi, we are in a position toconsider a (type-preserving) translation from
+
+FRGN to *rgnUL. Before giving thedetails, we discuss a few of the high-level issues.
+
+First, we note that FRGN has no notion of linearity in the syntax or typesystem. Rather, all variables and types are implicitly considered unrestricted.
+Hence, we can expect that the translation of all FRGN expressions will yield
+*rgnUL expressions with a U qualified type.On the other hand, we claimed that a stateful region computation could be
+
+interpreted as a stack transformer. Recall that the type rgn s o/ is the type ofcomputations which transform a stack indexed by
+
+s and deliver a value of type
+o/. A key characteristic of FRGN is that all primitive stack transformers are meantto use the stack in a single-threaded manner; hence, a stateful computation can
+
+update the stack in place. This single-threaded behavior is precisely the sortof resource management that may be captured by a substructural type system.
+Hence, we can expect that the representation of a stack of regions in *rgnUL willbe a value with
+
+L qualified type. In particular, we will represent a stack of regionsas a sequence of linear capabilities, formed out of nested linear tuples.
+
+Third, we must be mindful of a slight mismatch between the hnd and reftypes in
+
+FRGN and the corresponding types in *rgnUL. Recall that, in FRGN, hnd sand
+ref s o/ are handles for and references allocated in the region at the top ofthe stack indexed by
+
+s. Whereas, in *rgnUL, hnd r and ref r o/ explicitly name theregion of the handle or reference. This subtle distinction (whether the region is
+
+implicit or explicit) will need to be handled by the translation.Bearing these issues in mind, we turn our attention to the translation of
+
+FRGNtype-level terms given in Figure 4. S
+
+? JsK translates a FRGN term of STACK kindto a
+*rgnUL term of ? kind. As the STACK kind of FRGN is inhabited only byvariables, the translation is trivial: in
+
+*rgnUL, & is considered a variable of ? kind.T
+
+? Jo/ K and T? Jo/ K translate a FRGN term of ? kind to *rgnUL terms of ? and ?kinds, respectively. As we observed above, when we translate a
+
+FRGN type to a
+
+*rgnUL type, we ensure that the result is a U qualified type. The T? Jo/ K translationis straightforward on the functional types. (However, note that a
+
+FRGN variable
+ff of ? kind is translated to a *rgnUL variable ff of ? kind; this ensures that everytype corresponding to a
+
+FRGN type is manifestly qualified with U.)More interesting are the translations of the types associated with the
+
+rgnmonad. In the translation of the
+rgn s o/ type, we see the familiar store (stack)passing interpretation of computations. Since the representation of a stack of
+
+regions is linear, the resulting store/value pair is qualified with L. Next, considerthe translation of the
+
+pf (s1 <= s2) type. Recall that it is the type of witnessesto the fact that the stack indexed by
+
+s1 is a subtype of the stack indexed by s2.Hence, we translate to a type that expresses the isomorphism between S
+
+? Js2K andL(S
+? Js1Kfflfi), for some "slack" fi. Note that while the types S? Js2K, S? Js1K, and
+fi may be linear, the pair of functions witnessing the isomorphism is unrestricted.This corresponds to the fact that the proof that
+
+s1 is a subtype of s2 is persistent,while the existence of the stacks
+s1 and s2 are ephemeral.
+
+14
+
+FRGN STACK to *rgnUL ?S
+
+? J&K = &
+
+FRGN ? to *rgnUL ?T
+
+? Jo/K = UT? Jo/K
+
+FRGN ? to *rgnUL ? (functional types)T
+
+? JffK = ffT
+? Jo/1 ! o/2K = T? Jo/1K ( T? Jo/2KT
+
+? J1K = 1fflT
+? Jo/1 * o/2K = T? Jo/1K ffl T? Jo/2KT
+? J8ff: ? . o/K = 8ff:?. T? Jo/KT
+? J8&:STACK. o/K = 8&: ? . T? Jo/K
+
+FRGN ? to *rgnUL ? (rgn monad types)T
+
+? Jrgn s o/K = S? JsK ( L(S? JsK ffl T? Jo/K)T
+? Jpf (s1 <= s2)K = 9fi: ? . Iso(S? Js2K , L(S? Js1K ffl fi))T
+
+? Jhnd sK = 9%:RGN. U(U9fi: ? . Iso(S? JsK , L(fi ffl L(cap %))) ffl U(hnd %))T
+? Jref s o/K = 9%:RGN. U(U9fi: ? . Iso(S? JsK , L(fi ffl L(cap %))) ffl U(ref % T? Jo/K))
+
+*rgnUL Type-level Macros
+Iso(o/1, o/2) = U(U(o/1 ( o/2) ffl U(o/2 ( o/1))
+
+Fig. 4. Type-level Translation
+
+The translation of the hnd s and ref s o/ types are similar. An existentiallybound region name
+
+% fixes the region for the *rgnUL handle or reference, whilean isomorphism witnesses the fact that
+
+% may be found within the stack S? JsK.
+
+With the translation of FRGN type-level terms in place, the translation of
+FRGN expressions follows almost directly. We elide the translation of the intro-duction and elimination forms for the functional types in
+
+FRGN (it is simply thehomomorphic mapping of the given expression translations) and focus on the
+
+translation of the rgn monad operations. For readability, we give translations forfully applied region primitives only, assuming that partially applied primitives
+have been eta-expanded. The translation of return and then follow directlyfrom our store (stack) passing interpretation of
+
+rgn s o/ types:
+
+E Jreturn [s] [o/ff] eK =
+
+let res:T? Jo/ffK = E JeK in
+U*stk:S? JsK . Lhstk, resi
+
+E Jthen [s] [o/ff] [o/fi] e1 e2K =
+
+let f:T? Jrgn s o/ffK = E Je1K in
+let g:T? Jo/ff ! rgn s o/fiK = E Je2K in
+U*stk:S? JsK . let hstk, resi = f stk in
+
+g res stk
+
+The translation of letRgn is the most complicated, but breaks down intoconceptually simple components. We bracket the execution of the inner computation with a newrgn/freergn pair, creating and destroying a new region.We construct the representation of the new stack stk
+
+2 for the inner computa-tion by pairing the old stack stk
+1 with the new region capability cap. Finally,we construct isomorphisms witnessing the relationships between the new region
+
+capability and the new stack and between the old stack and the new stack. Wecarefully chose the isomorphism types so that the identity function suffices as a
+witness. Putting all of these pieces together, we have the following:
+
+15
+
+E JletRgn [s1] [o/ff] eK =
+
+let f:T? J8&2:STACK. pf (s1 <= &2) ! hnd &2 ! rgn &2 o/ffK = E JeK in
+U*stk1:S? Js1K . let pack(%:RGN, hcap, hndi) = newrgn Lhi in
+
+let id = U*stk:L(S? Js1K ffl Lcap %). stk in
+let ppf = Upack(L(cap %):?, Uhid, idi) in
+let phnd = Upack(%:RGN, UhUpack(S? Js1K :?, Uhid, idi), hndi) in
+let stk2 = Lhstk1, capi in
+let hstk2, resi = f [L(S? Js1K ffl L(cap %))] ppf phnd stk2 in
+let hstk1, capi = stk2 in
+let hi = freergn [%] Lhcap, hndi in
+Lhstk1, resi
+
+We can see the isomorphisms in action in the translation of coerceRgn:E J
+
+coerceRgn [s1] [s2] [o/ff] e1 e2K =
+
+let ppf :T? Jpf (s1 <= s2)K = E Je1K in
+let f:T? Jrgn s1 o/ffK = E Je2K in
+U*stk2:S? Js2K . let pack(fi:?, hspl, cmbi) = ppf in
+
+let hstk1, stkfii = spl stk2 in
+let hstk1, resi = f stk1 in
+let stk2 = cmb Lhstk1, stkfii in
+Lhstk2, resi
+
+Note how the the stack "slack" stkfi is split out and then combined in, bracketingthe execution of the
+
+rgn s1 o/ff computation.As a final example, we can see an "empty" stack (represented by a
+
+L1ffl value)
+
+being provided as the initial stack in the translation of runRgn:E J
+
+runRgn [o/ff] eK =
+
+let f:T? J8&:STACK. rgn & o/ffK = E JeK in
+let hhi, resi = f [L1ffl] Lhi in res
+
+The translations of the remaining rgn monad primitives are given in Figure 5.We strongly believe, but have not mechanically verified, that the translation is
+
+type preserving.
+
+5 Extensions
+The primary advantage of working at the target level is that we can expose thecapabilities for regions as first-class objects instead of indirectly manipulating
+a stack of regions. In turn, this allows us to avoid the last-in-first-out lifetimesdictated by a lexically-scoped
+
+letRgn. For example, we can now explain thesemantics for Cyclone's dynamic regions and unique pointers using the concepts
+
+in the target language.
+Dynamic Regions In Cyclone, a dynamic region r is represented by a key(
+
+key r) which is treated linearly by the type system. At the target level, a keycan be represented by a pair of the capability for the region and its handle:
+
+key r = L(Lcap r ffl Uhnd r)
+Then creating a new key is accomplished by calling newrgn, and destroying thekey is accomplished by calling
+
+freergn.
+
+16
+
+E Jnew [s] [o/ff] e1 e2K =
+
+let phnd:T? Jhnd sK = E Je1K in
+let x:T? Jo/ffK = E Je2K in
+U*stk:S? JsK . let pack(%:RGN, hpack(fi:?, hprj , inj i), hndi) = phnd in
+
+let hstkfi, capi = prj stk in
+let hcap, ref i = new [%] [T? Jo/ffK] Lhcap, hnd, xi in
+let pref = Upack(ae:RGN, UhUpack(fi:?, Uhprj , inj i), ref i) in
+let stk = inj Lhstkfi, capi in
+Lhstk, pref i
+
+E Jread [s] [o/ff] eK =
+
+let pref :T? Jref s o/ffK = E JeK in
+U*stk:S? JsK . let pack(%:RGN, hpack(fi:?, hprj , inj i), ref i) = pref in
+
+let hstkfi, capi = prj stk in
+let hcap, resi = read [%] [T? Jo/ffK] Lhcap, ref i in
+let stk = inj Lhstkfi, capi in
+Lhstk, resi
+
+E Jwrite [s] [o/ff] e1 e2K =
+
+let pref :T? Jref s o/ffK = E Je1K in
+let x:T? Jo/ffK = E Je2K in
+U*stk:S? JsK . let pack(%:RGN, hpack(fi:?, hprj , inj i), ref i) = pref in
+
+let hstkfi, capi = prj stk in
+let hcap, resi = write [%] [T? Jo/ffK] Lhcap, ref , xi in
+let stk = inj Lhstkfi, capi in
+Lhstk, resi
+
+E JreflSub [s]K =
+
+let spl = U*stk:S? JsK . let su = Lhstk, Lhii in su in
+let cmb = U*su:L(S? JsK ffl L1ffl). let hstk, hii = su in stk in
+Upack(L1ffl:?, Uhspl, cmbi)
+
+E JtransSub [s1] [s2] [s3] e1;2 e2;3K =
+
+let ppf 1;2:T? Jpf (s1 <= s2)K = E Je1;2K in
+let ppf 2;3:T? Jpf (s2 <= s3)K = E Je2;3K in
+let pack(ff:?, hspl2;1fflff, cmp1fflff;2i) = ppf 1;2 in
+let pack(fi:?, hspl3;2fflfi, cmp2fflfi;3i) = ppf 2;3 in
+let spl = U*stk3:S? Js3K . let hstk2, stkfii = spl3;2fflfi stk3 in
+
+let hstk1, stkffi = spl2;1fflff stk2 in
+let sss = Lhstk1, Lhstkfi, stkffii in
+sss in
+let cmb = U*sss:L(S? Js1K ffl L(fi ffl ff)). let hstk1, hstkfi, stkffii = sss in
+
+let stk2 = cmb1fflff;2 Lhstk1, stkffi in
+let stk3 = cmb2fflfi;3 Lhstk2, stkfii in
+stk3 in
+Upack(L(fi ffl ff):?, Uhspl, cmbi)
+
+Fig. 5. Translation of rgn Monad Operations
+
+17
+
+To access a value allocated in a dynamic region, or to allocate a value in adynamic region, Cyclone requires that the region be opened by presenting its
+key. The openDRgn is similar to a letRgn in that it conceptually pushes thedynamic region onto the stack of regions, executes the body, and then pops the
+region off the stack. During execution of the openDRgn's body, the key becomesinaccessible, ensuring that the region cannot be deallocated. At the end of the
+openDRgn scope, the key is given back. The programmer is then able to destroythe region or later re-open it.
+
+The openDRgn primitive can be implemented as a higher-order function witha signature like this (eliding the
+
+L and U qualifiers, and using source-level rgn toabbreviate the store passing translation):
+
+openDRgn : 8%, &, ff.key % ( (hnd % ( rgn (& ffl cap %) ff) ( rgn & (ff ffl key %)
+The function takes the key for % and a computation, which, when given thehandle for
+
+%, expects to run on a stack of the form & ffl cap % for some &. Onceapplied,
+openDRgn returns a computation, which, when run on a stack &, opensup the key to get the capability and handle, pushes the capability for
+
+% on thestack, passes the handle to the computation and runs it in the extended stack
+
+to produce an ff value. Then, it pops the capability, and returns a (linear) pairof the result and the re-packaged key. (We leave the definition of
+
+openDRgn asan exercise for the reader.)
+
+Furthermore, since keys are first-class objects, they can be placed in datastructures. For example, in our space-conscious web server [3], we use a list of
+dynamic regions, each of which holds data corresponding to a particular con-nection. When we receive data from a connection, we find the corresponding
+key, open it up, and then place the data in the region. When a connection isterminated, we pull the corresponding key out of the queue, perform
+
+freeDRgnon it, and thus deallocate all of the data associated with the connection. The
+
+price paid for this flexibility is that the list of keys must be treated linearly toavoid creating multiple aliases to the keys.
+
+Unique Pointers Cyclone's unique pointers are anonymous dynamic regions,without the handle. Like the keys of dynamic regions, they can be destroyed at
+any time and the type system treats them linearly. At the target level, a uniquepointer to a
+
+o/ object can be represented as a term with type:
+
+L9%. L(Lcap % ffl U(Lcap % ( U1ffl) ffl U(ref % o/))
+
+Note that the actual reference is unrestricted, whereas the capability is linear; thehandle is not available for further allocations, but is caught up in the function
+
+closure, which may be applied to free the region. This encoding allows us to"open" a unique pointer, just as we do dynamic regions, and for a limited scope,
+freely access (and duplicate) the underlying reference. Of course, during thescope of the open, we temporarily lose the capability to deallocate the object,
+but regain the capability upon exit from the scope.In practice, the ability to open dynamic regions and unique pointers has
+proven crucial for integrating these facilities into the language. They make itrelatively easy to access a data structure and mitigate some of the pain of threading linear resources through the program. Furthermore, they make it possible
+
+18
+
+to write re-usable libraries that manipulate data allocated in lexically-scopedregions, dynamic regions, or as unique objects.
+Phase-Splitting In our target language, we represented capabilities and proofwitnesses as explicit terms. But we have also crafted the language and translation so that these values are never actually needed at run-time. For instance,our witnesses only manipulate (products of) capabilities, which are themselves
+operationally irrelevant. These objects are only used to make the desired safetyproperties easy to check statically. So in principle, we should be able to erase
+the capabilities and witnesses before running a program.To realize this goal, we should introduce a phase distinction via another
+modality, where we treat capabilities and proof witnesses as static objects, andall other terms as dynamic. The modality would demand that, as usual, static
+computations cannot depend upon dynamic values. Furthermore, we must besure that witness functions (i.e., proof objects) are in fact total, effect-free functions so that they and their applications to capabilities may be safely erased.This sort of phase-splitting is effectively used in other settings that mix programming languages and logics, such as Xi et al.'s Applied Type System [12]and Sheard's Omega [13]. Perhaps the most promising approach is suggested by
+Mandelbaum, Walker, and Harper's work [14], where they developed a two-levellanguage for reasoning about effectful programs.
+
+The primary reason we did not introduce phase splitting here is that it com-plicates the translation and the target language, and thus obscures what is actually a relatively simple and straightforward encoding. A secondary reason is that,as demonstrated by the cited work above, there are many domains that would
+benefit from a general solution to the problem of type relevant, but operationallyirrelevant, values.
+
+6 Related Work and Open Issues
+There has been much prior work aimed at relaxing the stack discipline imposedon region lifetimes by the Tofte-Talpin (TT) approach. The ML Kit [15] uses a
+storage-mode analysis to determine when it is safe to deallocate data in a region(known as region resetting) prior to the deallocation of the region itself. The
+safety of the storage-mode analysis has not been established formally.Aiken et al. [16] eliminate the requirement that region allocation and deallocation should coincide with the beginning and end of the scope of region variablesintroduced by the
+
+letregion construct. They use a late allocation/early deallo-cation approach that delays the allocation of a region until just before its first
+
+access, and deallocates the region just after its last access. We believe that theresults of their analysis can be encoded explicitly in our target language.
+
+Unlike the previous two approaches which build on TT, Henglein et al. [17]present a region system that (like ours) replaces the
+
+letregion primitive withexplicit commands to create and free a region. To ensure safety, they use a Hoarelogic-based region type system and consequently have no support for higher-order
+
+19
+
+functions. While they provide an inference algorithm to annotate programs withregion manipulation commands, we intend for our system to serve as a target
+language for programs annotated using TT region inference, or those written inlanguages like Cyclone. The Calculus of Capabilities [18] is also intended as a
+target for TT-annotated programs, but unlike *rgnUL, it is defined in terms of acontinuation-passing style language and does not support first-class regions.
+
+The region system presented by Walker and Watkins [19] is perhaps themost closely related work. Like our target, they require a linear capability to be
+presented upon each access to a region. However, they provide a primitive, similarto
+
+letregion, that allows a capability to be temporarily treated as unrestrictedfor convenience's sake. We have shown that no such primitive is needed. Rather,
+
+we use a combination of monadic encapsulation (to thread capabilities) coupledwith unrestricted witnesses to achieve the same flexibility. In particular, our open
+construct for dynamic regions (and unique pointers) achieves the same effect asthe Walker-Watkin's primitive.
+
+A related body of work has used regions as a low-level primitive on whichto build type-safe garbage collectors [20-22]. Each of these approaches requires
+non-lexical regions, since, in a copying collector, the from- and to-spaces havenon-nested lifetimes. Hawblitzel et al. [22] introduce a very low-level language
+in which they begin with a single linear array of words, construct lists andarrays out of the basic linear memory primitives, introduce type sequences for
+building regions of nonlinear data. Such a foundational approach is admirable,but there is a large semantic gap between a high-level language and such a target.
+Hence, *rgnUL serves as a useful intermediate point, and we may envision furthertranslation from
+
+*rgnUL to such a low-level language.
+The Vault language [23, 24] includes many of the features described in ourtarget, including linear capabilities for accessing resources and a mechanism,
+
+called adoption, for temporarily transferring ownership of a capability to anothercapability, for a limited scope. But Vault also includes support for strong (i.e.,
+type-changing) updates on linear resources, as well as features for temporarilytreating an unrestricted resource as if it were linear. On the other hand, to the
+best of our knowledge, there exists no formal model that justifies the soundnessof all of these mechanisms. We believe that it may be possible to combine
+
+*rgnULwith our previous work on strong updates [25, 26] to achieve this.
+
+References
+
+1. Cyclone, version 0.9. (2005) http://www.eecs.harvard.edu/ greg/cyclone/.
+2. Tofte, M., Talpin, J.P.: Region-based memory management. Information and
+
+Computation 132(2) (1997) 109-176
+3. Hicks, M., Morrisett, G., Grossman, D., Jim, T.: Experience with safe manual
+
+memory-management in Cyclone. In: Proc. International Symposium on Memory
+Management. (2004) 73-84
+4. Fluet, M., Wang, D.: Implementation and performance evaluation of a safe runtime
+
+system in Cyclone. In: Proc. SPACE Workshop. (2004)
+
+20
+
+5. Grossman, D., Morrisett, G., Jim, T., Hicks, M., Wang, Y., Cheney, J.: Regionbased memory management in Cyclone. In: Proc. Programming Language Design
+and Implementation. (2002) 282-293
+6. Fluet, M., Morrisett, G.: Monadic regions. In: Proc. International Conference on
+
+Functional Programming. (2004) 103-114
+7. Launchbury, J., Peyton Jones, S.: State in Haskell. Lisp and Symbolic Computation
+
+8(4) (1995) 293-341
+8. Ahmed, A., Fluet, M., Morrisett, G.: A step-indexed model of substructural state.
+
+In: Proc. International Conference on Functional Programming. (2005) 78-91
+9. Walker, D.: Substructural type systems. In Pierce, B., ed.: Advanced Topics in
+
+Types and Programming Languages. MIT Press, Cambridge, MA (2005) 3-43
+10. Pfenning, F., Sch"urmann, C.: Twelf - a meta-logic framework for deductive systems. In: Proc. Conference on Automated Deduction. (1999) 202-206
+11. Sch"urmann, C., Pfenning, F.: A coverage checking algorithm for LF. In: Proc.
+
+Theorem Proving in Higher Order Logics. (2003) 120-135 LNCS 2758.
+12. Chen, C., Xi, H.: Combining programming with theorem proving. In: Proc. International Conference on Functional Programming. (2005) 66-77
+13. Sheard, T., Pasalic, E.: Meta-programming with built-in type equality (extended abstract). In: International Workshop on Logical Frameworks and MetaLanguages. (2004)
+14. Mandelbaum, Y., Walker, D., Harper, R.: An effective theory of type refinements.
+
+In: Proc. International Conference on Functional Programming. (2003) 213-225
+15. Tofte, M., Birkedal, L., Elsman, M., Hallenberg, N., Olesen, T.H., Sestoft, P.:
+
+Programming with regions in the ML Kit (for version 4). Technical report, IT
+University of Copenhagen (2002)
+16. Aiken, A., F"ahndrich, M., Levien, R.: Better static memory management: Improving region-based analysis of higher-order languages. In: Proc. Programming
+Language Design and Implementation. (1995) 174-185
+17. Henglein, F., Makholm, H., Niss, H.: A direct approach to control-flow sensitive
+
+region-based memory management. In: Proc. Principles and Practice of Declarative
+Programming. (2001) 175-186
+18. Walker, D., Crary, K., Morrisett, G.: Typed memory management in a calculus of
+
+capabilities. ACM Transactions on Programming Languages and Systems 24(4)
+(2000) 701-771
+19. Walker, D., Watkins, K.: On regions and linear types. In: Proc. International
+
+Conference on Functional Programming. (2001) 181-192
+20. Wang, D., Appel, A.: Type-preserving garbage collectors. In: Proc. Principles of
+
+Programming Languages. (2001) 166-178
+21. Monnier, S., Saha, B., Shao, Z.: Principled scavenging. In: Proc. Programming
+
+Language Design and Implementation. (2001) 81-91
+22. Hawblitzel, C., Wei, E., Huang, H., Krupski, E., Wittie, L.: Low-level linear memory management. In: Proc. SPACE Workshop. (2004)
+23. DeLine, R., F"ahndrich, M.: Enforcing high-level protocols in low-level software.
+
+In: Proc. Programming Language Design and Implementation. (2001) 59-69
+24. F"ahndrich, M., DeLine, R.: Adoption and focus: Practical linear types for imperative programming. In: Proc. Programming Language Design and Implementation.
+(2002) 13-24
+25. Morrisett, G., Ahmed, A., Fluet, M.: L3: A linear language with locations. In:
+
+Proc. Typed Lambda Calculi and Applications. (2005) 293-307
+26. Ahmed, A., Fluet, M., Morrisett, G.: L3: A linear language with locations. Technical Report TR-24-04, Harvard University (2004)
+
+21

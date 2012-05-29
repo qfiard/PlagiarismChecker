@@ -1,0 +1,1855 @@
+
+
+Compiling with Continuations, Continued
+
+Andrew Kennedy
+Microsoft Research Cambridge
+
+akenn@microsoft.com
+
+Abstract
+We present a series of CPS-based intermediate languages suitablefor functional language compilation, arguing that they have practical benefits over direct-style languages based on A-normal form(ANF) or monads. Inlining of functions demonstrates the benefits most clearly: in ANF-based languages, inlining involves a re-normalization step that rearranges let expressions and possibly introduces a new `join point' function, and in monadic languages,commuting conversions must be applied; in contrast, inlining in our
+CPS language is a simple substitution of variables for variables.We present a contification transformation implemented by simple rewrites on the intermediate language. Exceptions are modelledusing so-called `double-barrelled' CPS. Subtyping on exception
+constructors then gives a very straightforward effect analysis for ex-ceptions. We also show how a graph-based representation of CPS
+terms can be implemented extremely efficiently, with linear-timeterm simplification.
+
+Categories and Subject Descriptors D.3.4 [Programming Languages]: Processors - Compilers
+
+General Terms Languages
+Keywords Continuations, continuation passing style, monads, op-timizing compilation, functional programming languages
+
+1. Introduction
+Compiling with continuations is out of fashion. So report the au-thors of two classic papers on Continuation-Passing Style in recent
+
+retrospectives:
+
+"In 2002, then, CPS would appear to be a lesson aban-doned." (McKinley 2004; Shivers 1988)
+
+"Yet, compiler writers abandoned CPS over the ten yearsfollowing our paper anyway." (McKinley 2004; Flanagan
+et al. 1993)
+This paper argues for a reprieve for CPS: "Compiler writers, givecontinuations a second chance."
+
+This conclusion is borne of practical experience. In the MLjand SML.NET whole-program compilers for Standard ML, coimplemented by the current author, we adopted a direct-style,monadic intermediate language (Benton et al. 1998, 2004b). In
+part, we were interested in effect-based program transformations,
+
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+
+ICFP'07, October 1-3, 2007, Freiburg, Germany.
+Copyright c\Theta  2007 ACM 978-1-59593-815-2/07/0010. . . $5.00
+
+so monads were a natural choice for separating computations fromvalues in both terms and types. But, given the history of CPS, probably there was also a feeling that "CPS is for call/cc", somethingthat is not a feature of Standard ML.
+
+Recently, the author has re-implemented all stages of theSML.NET compiler pipeline to use a CPS-based intermediate language. Such a change was not undertaken lightly, amounting toroughly 25,000 lines of replaced or new code. There are many
+benefits: the language is smaller and more uniform, simplifica-tion of terms is more straightforward and extremely efficient, and
+advanced optimizations such as contification are more easily ex-pressed. We use CPS only because it is a
+
+good place to do optimization; we are not interested in first-class control in the sourcelanguage (call/cc), or as a means of implementing other features
+
+such as concurrency. Indeed, as SML.NET targets .NET IL, a call-stack-based intermediate language with support for structured exception handling, the compilation process can be summarized as"transform direct style (SML) into CPS; optimize CPS; transform
+CPS back to direct style (.NET IL)".
+1.1 Some history
+CPS. What's special about CPS? As Appel (1992, p2) put it,"Continuation-passing style is a program notation that makes every aspect of control flow and data flow explicit". An importantconsequence is that full
+
+\Theta -reduction (function inlining) is sound.In contrast, for call-by-value languages based on the lambda calculus, only the weaker \Theta -value rule is sound. For example, \Theta -reduction cannot be applied to
+
+(\Lambda x.0) (f y) because f y mayhave a side-effect or fail to terminate; but its CPS transform,
+
+f y (\Lambda z.(\Lambda x.\Lambda k.k 0) z k) can be reduced without prejudice.There are obvious drawbacks: the complexity of CPS terms; the
+need to eliminate administrative redexes introduced by the CPStransformation; and the cost of allocating closures for lambdas introduced by the CPS transformation, unless some static anlysis isfirst applied. In fact, these drawbacks are more apparent than real:
+the complexity of CPS terms is really a benefit, assigning use-ful names to all intermediate computations and control points; the
+CPS transformation can be combined with administrative reduc-tion; and by employing a syntactic separation of continuation- and
+source-lambdas it is possible to generate good code directly fromCPS terms.
+
+ANF. In their influential paper "The Essence of Compiling withContinuations", Flanagan et al. (1993) observed that "fully developed CPS compilers do not need to employ the CPS transformation
+but can achieve the same results with a simple source-level transfor-mation". They proposed a direct-style intermediate language based
+
+on A-normal forms, in which a let construct assigns names to everyintermediate computation. For example, the term above is represented as let z = f y in (\Lambda x.0) z, to which \Theta -reduction can be ap-plied, obtaining the semantically equivalent
+
+let z = f y in 0. Thisstyle of language has become commonplace, not only in compilers,
+
+177
+
+but also to simplify the study of semantics for impure functionallanguages (Pitts 2005, g*7.4).
+Monads. Very similar to ANF are so-called monadic languagesbased on Moggi's computational lambda calculus (Moggi 1991).
+Monads also make sequencing of computations explicit through a
+let x \Theta  M in N binding construct, the main difference from ANFbeing that
+
+let constructs can themselves be let-bound. The sepa-ration of computations from values also provides a place to hang
+
+effect annotations (Wadler and Thiemann 1998) which compilerscan use to perform effect-based optimizing transformations (Benton et al. 1998).
+1.2 The problem
+A-Normal Form is put forward as a compiler intermediate languagewith all the benefits of CPS (Flanagan et al. 1993, g*6). Unfortunately, the normal form is not preserved under useful compilertransformations such as function inlining (
+
+\Theta -reduction). Considerthe ANF term
+
+M \Lambda  let x = (\Lambda y.let z = a b in c) d in e.
+Now naive \Theta -reduction produces
+
+let x = (let z = a b in c) in e
+which is not in normal form. The `fix' is to define a more complexnotion of
+
+\Theta -reduction that re-normalizes let constructs (Sabry andWadler 1997), in this case producing the normal form
+
+let z = a b in (let x = c in e).
+In contrast, the CPS transform of M, namely
+
+(\Lambda y.\Lambda k.ab(\Lambda z.k c)) d (\Lambda x.k e),
+simplifies by simple \Theta -reduction to
+
+a b (\Lambda z.(\Lambda x.k e) c).
+As Sabry and Wadler explain in their study of the relationship be-tween CPS and monadic languages, "the CPS language achieves
+
+this normalization using the metaoperation of substitution whichtraverses the CPS term to locate
+
+k and replace it by the contin-uation thus effectively `pushing' the continuation deep inside the
+
+term" (Sabry and Wadler 1997, g* 8).Monadic languages permit
+
+let expressions to be nested, butincorporate so-called commuting conversions (cc's) such as
+
+let y \Theta  (let x \Theta  M in N) in P\Xi 
+
+let x \Theta  M in (let y \Theta  N in P ).
+
+ANF can be seen as a monadic language in which \Theta -reduction iscombined with cc-normalization ensuring that terms remain in ccnormal form.All of the above seems quite benign; except for two things:
+
+1. Commuting conversions increase the complexity of simplifyingintermediate language terms. Reductions that strictly decrease
+
+the size of the term can be applied exhaustively on CPS terms,the number of reductions applied being linear in the size of the
+term. The equivalent ANF or monadic reductions must necessarily involve commuting conversions, which leads to O(n2)reductions in the worst case. Moreover, as Appel and Jim (1997)
+
+have shown, given a suitable term representation, shrinking re-ductions on CPS can be applied in time
+
+O(n); it is far from clearhow to amortize the cost of commuting conversions to obtain a
+
+similar measure for ANF or monadic simplification.
+2. Real programming languages include conditional expressions,or, more generally, case analysis on datatype constructors.
+
+These add considerable complexity to reductions on ANF or
+
+monadic terms. Consider the term
+
+let z = (\Lambda x.if x then a else b) c in M
+This is in ANF, but \Theta -reduction produces
+
+let z = (if c then a else b) in M,
+which is not in normal form because it contains a let-boundconditional expression. To reduce it to normal form, one must
+
+either apply a standard commuting conversion that duplicatesthe term
+
+M, producing
+
+if c then let z = a in M else let z = b in M,
+or introduce a `join-point' function for term M, to give
+
+let k z = M
+in if c then let z = a in k z else let z = b in k z.
+
+Observe that k is simply a continuation! In our CPS language,
+k is already available in the original term, being the (named)continuation that is passed to the function to be inlined. The desire to share subterms almost forces some kind of continuationconstruct into the language. Better to start off with a language
+that makes continuations explicit.
+1.3 Contribution
+Much of the above has been said before by others, though not al-ways in the context of compilation; in this author's opinion, the
+
+most illuminating works are Appel (1992); Danvy and Filinski(1992); Hatcliff and Danvy (1994); Sabry and Wadler (1997). One
+contribution of this paper, then, is to draw together these observa-tions in a form accessible to implementers of functional languages.
+
+As is often the case, the devil is in the details, and so anotherpurpose of this paper is to advocate a certain style of CPS that
+works very smoothly for compilation. Continuations are named and
+mandatory (just as every intermediate value is named, so is everycontrol point), are second-class (they're not general lambdas), can
+
+represent basic blocks and loops, can be shared (typically, throughcommon continuations of branches), represent exceptional control
+flow (using double-barrelled CPS), and are typeable (but can beused in untyped form too). By refining the types of exception
+values in the double-barrelled variant we get an effect system forexceptions `for free'.
+
+We make two additional contributions. Following Appel andJim (1997), we describe a graph-based representation of CPS terms
+that supports the application of shrinking \Theta -reductions in time lin-ear in the size of the term. We improve on Appel and Jim's selective use of back pointers for accessing variable binders, and em-ploy the union-find data structure to give amortized near-constanttime access to binders for all variable occurrences. This leads to ef-ficient implementation of
+
+\Xi -reductions and other transformations.We present benchmark results comparing our graph-CPS representation with (a) an earlier graphical representation of the originalmonadic language used in our compiler, and (b) the original functional representation of that language.Lastly, we show how to transform functions into local continuations using simple term rewriting rules. This approach to contif-ication avoids the need for a global dominator analysis (Fluet and
+Weeks 2001), and furthermore supports nested and first-class func-tions.
+
+2. Untyped CPS
+We start by defining an untyped continuation-passing language
+\Lambda UCPS that supports non-recursive functions, the unit value, pairs,and tagged values. Even for such a simple language, we can cover
+
+many of the issues and demonstrate advantages over alternative,direct-style languages.
+
+178
+
+Grammar(terms)
+
+CTm \Pi  K, L ::= letval x = V in K--
+
+let x = \Pi i x in K--
+letcont k x = K in L--
+k x--
+f k x--
+case x of k1 \Theta  k2
+
+(values) CVal \Pi  V, W ::= () -- (x, y) -- ini x -- \Lambda k x.K
+
+Well-formed terms
+(let) \Theta  \Sigma  V ok \Theta , x; \Lambda  \Sigma  K ok\Theta ; \Lambda  \Sigma  letval x = V in K ok
+
+(letc) \Theta , x; \Lambda  \Sigma  K ok \Theta ; \Lambda , k \Sigma  L ok\Theta ; \Lambda  \Sigma  letcont k x = K in L ok
+(proj) x \Upsilon  \Theta  \Theta , y; \Lambda  \Sigma  K ok\Theta ; \Lambda  \Sigma  let y = \Pi 
+
+i x in K ok i \Upsilon  1, 2
+
+(appc) k \Upsilon  \Lambda , x \Upsilon  \Theta \Theta ; \Lambda  \Sigma  k x ok (app) k \Upsilon  \Lambda , f, x \Upsilon  \Theta \Theta ; \Lambda  \Sigma  f k x ok
+
+(case) x \Upsilon  \Theta , k1, k2 \Upsilon  \Lambda \Theta ; \Lambda  \Sigma  case x of k
+
+1 \Theta  k2 ok
+
+Well-formed values
+
+(pair) x, y \Upsilon  \Theta \Theta  \Sigma  (x, y) ok (tag) x \Upsilon  \Theta \Theta  \Sigma  in
+
+i x ok i \Upsilon  1, 2
+
+(unit) \Theta  \Sigma  () ok (abs) \Theta , x; k \Sigma  K ok\Theta  \Sigma  \Lambda k x.K ok
+Well-formed programs
+(prog) -""; halt \Sigma  K ok
+
+Figure 1. Syntax and scoping rules for untyped language \Lambda UCPS
+
+In Section 3, we add recursive functions, types, polymorphism,exceptions, and effect annotations. At that point, the language resembles a practical CPS-based intermediate language of the sortthat could form the core of a compiler for SML, Caml, or Scheme.
+
+Figure 1 presents the syntax of the untyped language. Here or-dinary variables are ranged over by
+
+x, y, f, and g, and continuationvariables are ranged over by
+k and j. Indices i range over 1,2. Wespecify scoping of variables using well-formedness rules for values
+
+and terms. Here \Theta  \Sigma  V ok means that value V is well-formed inthe scope of a list of ordinary variables
+
+\Theta , and \Theta ; \Lambda  \Sigma  K ok meansthat term
+K is well-formed in the scope of a list of continuationvariables
+\Lambda  and a list of ordinary variables \Theta . Complete programsare well-formed in the context of a distinguished top-level continuation halt. (For the typed variant of our language there will betyping rules with
+
+\Theta  and \Lambda  generalized to typing contexts.)We describe the constructs of the language in turn.
+
+A, The expression letval x = V in K binds a value V to a
+
+variable x in the term K. This is the only way a value Vcan be used in a term; arguments to functions, case scrutinees,
+
+components of pairs, and so on, must all be simple variables.Even the unit value
+
+() must be bound to a variable before beingused (in the full language, the same holds even for constants
+
+such as 42). This means that there is no need for a generalnotion of substitution: we only substitute variables for variables.
+Notice also that there is no notion of redundant binding such as
+let x \Theta  y in K.
+
+A, The expression let x = \Pi i y in K projects the i'th component
+
+of a pair y and binds it to variable x in K.A,
+
+The expression letcont k x = K in L introduces a localcontinuation
+
+k whose single argument is x and whose bodyis
+K, to be used in term L. It corresponds to a labelled block intraditional lower-level representations. In Section 3 we extend
+
+local continuations with support for recursion, and so representloops directly.
+
+A, A continuation application k x corresponds to a jump (if k is a
+
+local continuation) or a return (if k is the return continuationof a function value). As with values, continuations must be
+
+named: function application expressions and case constructsdo not have subterms, but instead mention continuations by
+name. We need only ever substitute continuation variables forcontinuation variables.
+
+Local continuations can be applied more than once, as in
+
+letcont j y = K in
+
+letcont k1 x1 = (letval x = V1 in j x) in
+
+letcont k2 x2 = (letval x = V2 in j x) in
+
+case z of k1 \Theta  k2
+
+.
+
+Here j is the common continuation, or `join point' for branches
+k1 and k2.A,
+
+The expression f k x is the application of a function f to anargument
+
+x and a continuation k whose parameter receives theresult of applying the function. If
+
+k is the return continuationfor the nearest enclosing
+\Lambda , then the application is a `tail call'.
+For example, consider the function value
+
+\Lambda k x.(letcont j y = g k y in f j x).
+Here g is in tail position, and f is not. In effect, we are defining
+\Lambda x.g(f(x)).A,
+
+The construct case x of k1 \Theta  k2 expects x to be bound toa tagged value
+
+ini y and then dispatches to the appropriatecontinuation
+ki, passing y as argument.A,
+
+Values include the unit value (), pairs (x, y) and tagged values
+ini x. Function values \Lambda k x.K include a return continuation kand argument
+
+x. Note carefully the well-formedness rule (abs):its continuation context includes only the return continuation
+
+k,thus enforcing locality of continuations introduced by
+letcont.
+
+The semantics is given by environment-style evaluation rules,presented in Figure 2. As is conventional, we define a syntax of
+run-time values, ranged over by r, supporting the unit value, pairs,constructor applications, and closures. Environments map variables
+to run-time values, and continuation variables to continuation val-ues. Continuation values are represented in a closure form, which
+gives the impression that they are first-class. An alternative wouldbe to model stack frames more directly and thereby demonstrate
+that continuations are in fact just code pointers. For the purposeof simply defining the meaning of programs we prefer the closurebased semantics.The function \Lambda u*\Xi 
+
+\Sigma  interprets a value expression in an environ-ment
+\Sigma . Terms are evaluated in an environment \Sigma ; the only obser-vations that we can make of programs are termination,
+
+i.e. the ap-plication of the top-level continuation
+halt to a unit value.
+
+2.1 CPS transformation
+To illustrate how the CPS-based language can be used for func-tional language compilation, consider a fragment of Standard ML
+
+179
+
+Runtime values: r ::= () -- (r1, r2) -- ini r -- \Phi \Sigma , \Lambda k x.K\Psi Continuation values:
+
+c ::= \Phi \Sigma , \Lambda x.K\Psi Environments:
+\Sigma  ::= * -- \Sigma , x \Omega \Xi  r -- \Sigma , k \Omega \Xi  c
+
+Interpretation of values:\Lambda 
+
+()\Xi  \Sigma  = () \Lambda (x, y)\Xi  \Sigma  = (\Sigma (x), \Sigma (y))\Lambda 
+ini V \Xi  \Sigma  = ini (\Sigma (x)) \Lambda \Lambda k x.K\Xi  \Sigma  = \Phi \Sigma , \Lambda k x.K\Psi 
+
+Evaluation Rules:
+
+(e-let) \Sigma , x \Omega \Xi  \Lambda V \Xi  \Sigma  \Sigma  K ff\Sigma  \Sigma  letval x = V in K ff
+(e-letc) \Sigma , k \Omega \Xi  \Phi \Sigma , \Lambda x.K\Psi  \Sigma  L ff\Sigma  \Sigma  letcont k x = K in L ff
+(e-proj) \Sigma , y \Omega \Xi  ri \Sigma  K ff\Sigma  \Sigma  let y = \Pi 
+
+i x in K ff \Sigma (x) = (r1, r2)
+
+(e-appc) \Sigma \Theta , y \Omega \Xi  \Sigma (x) \Sigma  K ff\Sigma  \Sigma  k x ff \Sigma (k) = \Phi \Sigma \Theta , \Lambda y.K\Psi 
+
+(e-case) \Sigma \Theta , y \Omega \Xi  r \Sigma  K ff\Sigma  \Sigma  case x of k
+
+1 \Theta  k2 ff
+
+\Sigma (x) = ini r
+\Sigma (ki) = \Phi \Sigma \Theta , \Lambda y.K\Psi 
+
+(e-app) \Sigma \Theta , j \Omega \Xi  \Sigma (k), y \Omega \Xi  \Sigma (x) \Sigma  K ff\Sigma  \Sigma  f k x ff \Sigma (f) = \Phi \Sigma \Theta , \Lambda j y.K\Psi 
+
+(e-halt) \Sigma  \Sigma  halt x ff
+
+Figure 2. Evaluation rules for \Lambda UCPS
+
+\Lambda u*\Xi  : ML \Xi  (Var \Xi  CTm) \Xi  CTm\Lambda 
+x\Xi  \Upsilon  = \Upsilon (x)\Lambda 
+()\Xi  \Upsilon  = letval x = () in \Upsilon (x)\Lambda 
+e1 e2\Xi  \Upsilon  = \Lambda e1\Xi  (\Gamma z1.\Lambda 
+
+e2\Xi  (\Gamma z2.
+
+letcont k x = \Upsilon (x) in z1 k z2))\Lambda 
+(e1,e2)\Xi  \Upsilon  = \Lambda e1\Xi  (\Gamma z1.\Lambda 
+
+e2\Xi  (\Gamma z2.
+
+letval x = (z1, z2) in \Upsilon (x)))\Lambda 
+ini e\Xi  \Upsilon  = \Lambda e\Xi  (\Gamma z.letval x = ini z in \Upsilon (x))\Lambda 
+
+#i e\Xi  \Upsilon  = \Lambda e\Xi  (\Gamma z.let x = \Pi i z in \Upsilon (x))\Lambda 
+fn x => e\Xi  \Upsilon  = letval f = \Lambda k x.\Lambda e\Xi  (\Gamma z.k z) in \Upsilon (f)\Lambda 
+let val x = e1 in e2 end\Xi  \Upsilon  =
+
+letcont j x = \Lambda e2\Xi  \Upsilon  in \Lambda e1\Xi  (\Gamma z.j z)\Lambda 
+
+case e of in1 x1 => e1| in2 x2 => e2\Xi  \Upsilon  =\Lambda 
+
+e\Xi  (\Gamma z.letcont k1 x1 = \Lambda e1\Xi  \Upsilon  in
+
+letcont k2 x2 = \Lambda e2\Xi  \Upsilon  in
+
+case z of k1 \Theta  k2)
+
+Figure 3. Naive CPS transformation of toy ML into \Lambda UCPS
+
+whose expressions (ranged over by e) have the following syntax:
+
+ML \Pi  e ::= x -- e e\Theta  -- fn x => e -- (e,e\Theta ) -- #i e -- ()--
+
+ini e -- let val x = e in e\Theta  end--
+case e of in1 x1 => e1| in2 x2 => e2
+
+We assume a datatype declared by
+
+datatype ('a,'b) sum = in1 of 'a | in2 of 'b
+Expressions in this language can be translated into untyped CPSterms using the function shown in Figure 3. This is an adaptation of the standard higher-order one-pass call-by-value transfor-mation (Danvy and Filinski 1992). An alternative, first-order, transformation is described by Danvy and Nielsen (2003).The transformation works by taking a translation-time function \Upsilon  as argument, representing the `context' into which the trans-lation of the source term is embedded. For our language, the context's argument is a variable, as all intermediate results are named.Note some conventions used in Figure 3: translation-time lambda
+abstraction is written using \Gamma  and translation-time application iswritten
+
+\Upsilon (. . .), to distinguish from \Lambda  and juxtaposition used to de-note lambda abstraction and application in the target language. Also
+
+note that any object variables present in the target terms but not inthe source are assumed fresh with respect to all other bound variables.The translation is one-pass in the sense that it introduces no
+`administrative reductions' (here, \Theta -redexes for continuations) thatmust be removed in a separate phase,
+
+except for let constructs (toavoid these also would require analysis of the
+
+let expression; weprefer to apply simplifying rewrites on the output of the transformation). However, the translation is naive in two ways. First, it in-troduces
+
+\Xi -redexes for continuations when translating tail functionapplications. For example, \Lambda 
+
+fn x => f (x,y)\Xi  \Upsilon  produces
+
+letval g = \Lambda k x.(letval p = (x, y) in letcont j z = k z in f j p)
+in \Upsilon (g)
+
+whose \Xi -redex (highlighted) can be eliminated to obtain the morecompact
+
+letval g = (\Lambda k x.letval p = (x, y) in f k p) in \Upsilon (g).
+Second, the translation of case duplicates the context; consider,for example,
+
+f(case x of in1 x1 => e1| in2 x2 => e2) whosetranslation involves two calls to
+
+f.The more sophisticated translation scheme of Figure 4 avoids
+
+both these problems; again, this is based on Danvy and Filinski(1992). The translation function \Lambda u*\Xi  is as before, except (a) it introduces a join point continuation to avoid context duplication for
+case, and (b) for terms in tail position it uses an alternative trans-lation function \Pi u*\Sigma  that takes an explicit continuation variable as
+
+argument instead of a context.
+2.2 Rewrites
+After translating from source language to intermediate language,most functional language compilers perform a number of optimization phases that are implemented as transformations on intermedi-ate language terms. Some phases are specific (for example, arityraising of functions, or hoisting expressions out of loops) but usu-ally there is some set of general rewrites based on standard reductions in the lambda-calculus. Figure 5 presents some generalrewrites for our CPS-based language. The rewrites look more complicated than the equivalent reductions in the lambda-calculus be-cause the naming of intermediate values forces introduction and
+elimination forms apart. For example, \Theta -reduction on pairs, whichin the lambda calculus is simply
+
+\Pi i (e1, e2) \Xi  ei, has to supportan intervening context C. In practice, the rewrites are not hard to implement. In functional style, value bindings (e.g. pairs) are stored inan environment which is accessed at the reduction site (e.g. a projection). In imperative style, bindings are accessed directly through
+pointers, as we shall see in Section 4.1.The payoff from this style of rewrite is the
+
+selective use of \Theta rules. For example, in a lambda-calculus extended with a
+
+let con-struct, one might perform the reduction
+let p = (x, y) in M \Xi 
+M[(x, y)/p] but this would be undesirable unless every substi-tution of
+
+(x, y) for p in M produced a redex. In our language,
+letval p = (x, y) in . . . k p . . . let z = \Pi 1 p in K reduces to
+
+180
+
+\Lambda u*\Xi  : ML \Xi  (Var \Xi  CTm) \Xi  CTm\Lambda 
+fn x => e\Xi  \Upsilon  = letval f = \Lambda k x. \Pi e\Sigma  k in \Upsilon (f)\Lambda 
+
+let val x = e1 in e2 end\Xi  \Upsilon  = letcont j x = \Lambda e2\Xi  \Upsilon  in \Pi e1\Sigma  j\Lambda 
+case e of in1 x1 => e1| in2 x2 => e2\Xi  \Upsilon 
+
+= \Lambda e\Xi  (\Gamma z. letcont j x = \Upsilon (x) in letcont k1 x1 = \Pi e1\Sigma  j in letcont k2 x2 = \Pi e2\Sigma  j in case z of k1 \Theta  k2)\Pi 
+
+u*\Sigma  : ML \Xi  CVar \Xi  CTm\Pi 
+x\Sigma  k = k x\Pi 
+e1 e2\Sigma  k = \Lambda e1\Xi  (\Gamma x1.\Lambda e2\Xi  (\Gamma x2.x1 k x2))\Pi 
+fn x => e\Sigma  k = letval f = \Lambda j x.\Pi e\Sigma  j in k f\Pi 
+
+(e1,e2)\Sigma  k = \Lambda e1\Xi  (\Gamma x1.\Lambda e2\Xi  (\Gamma x2.letval x = (x1, x2) in k x))\Pi 
+
+ini e\Sigma  k = \Lambda e\Xi  (\Gamma z.letval x = ini z in k x)\Pi 
+
+()\Sigma  k = letval x = () in k x\Pi 
+#i e\Sigma  k = \Lambda e\Xi  (\Gamma z.let x \Theta  \Pi i z in k x)\Pi 
+let val x = e1 in e2 end\Sigma  k = letcont j x = \Pi e2\Sigma  k in \Pi e1\Sigma  j\Pi 
+case e of in1 x1 => e1| in2 x2 => e2\Sigma  k = \Lambda e\Xi  (\Gamma z.letcont k1 x1 = \Pi e1\Sigma  k in letcont k2 x2 = \Pi e2\Sigma  k in case z of k1 \Theta  k2)
+
+Figure 4. Tail CPS transformation (changes and additions only shown)
+
+C ::= [] -- letval x = V in C -- let x = \Pi i y in C --
+
+letval x = \Lambda k x.C in K -- letcont k x = C in K --
+letcont k x = K in C
+
+DEAD-CONT letcont k x = L in K \Xi  L (k not free in K)D
+
+EAD-VAL letval x = V in K \Xi  K (x not free in K)
+
+\Theta -CONT letcont k x = K in C[k y]\Xi 
+
+letcont k x = K in C[K[y/x]]
+\Theta -FUN letval f = \Lambda k x.K in C[f j y]\Xi 
+
+letval f = \Lambda k x.K in C[K[y/x, j/k]]
+\Theta -CASE letval x = ini y in C[case x of k1 \Theta  k2]\Xi 
+
+letval x = ini y in C[ki y]
+\Theta -PAIR letval x = (x1, x2) in C[let y = \Pi i x in K]\Xi 
+
+letval x = (x1, x2) in C[K[xi/y]]
+
+\Theta -CONT-LIN letcont k x = K in C[k y]\Xi  C
+
+[K[y/x]] (if k not free in C)
+\Theta -FUN-LIN letval f = \Lambda k x.K in C[f j y]\Xi  C
+
+[K[y/x, j/k]] (f fi= y, f not free in C)
+
+\Xi -CONT letcont k x = j x in K \Xi  K[j/k]
+\Xi -FUN letval f = \Lambda k x.g k x in K \Xi  K[g/f]
+\Xi -PAIR let xi = \Pi i x in C[let xj = \Pi j x
+
+in C\Theta [letval y = (x1, x2) in K]]\Xi 
+
+let xi = \Pi i x in C[let xj = \Pi j x
+in C\Theta [K[x/y]]] (-i, j"" = -1, 2"")
+
+\Xi -CASE letcont ki x1 = (letval y1 = ini x1 in k y1) inC
+
+[letcont kj x2 = (letval y2 = inj x2 in k y2) inC\Theta 
+
+[case x of k1 \Theta  k2]]\Xi 
+
+letcont ki x1 = (letval y1 = ini x1 in k y1) inC
+[letcont kj x2 = (letval y2 = inj x2 in k y2) inC\Theta 
+
+[k x]] (-i, j"" = -1, 2"")
+
+Figure 5. General rewrites for \Lambda UCPS
+
+letval p = (x, y) in . . . k p . . . K[x/z] which applies the \Theta -PAIRrule to
+
+\Pi 1 p but preserves other occurrences of p.It is easy to show that all rewrites preserve well-formedness of
+
+terms. In particular, the scoping of local continuations is respected.The
+
+\Theta -FUN and \Theta -CONT reductions are inlining transforma-tions for functions and continuations. The remainder of the reductions we call shrinking reductions, as they strictly decrease the sizeof terms (Appel and Jim 1997). The
+
+\Theta -CONT-LIN and \Theta -FUN-LINreductions are special cases of
+\Theta -reduction for linear uses of a vari-able, in effect combining D
+EAD- and \Theta - reductions. Shrinking re-ductions can be applied exhaustively on a term, and are typically
+
+used to `clean up' a term after some special-purpose global trans-formation such as arity-raising or monomorphisation. Clearly the
+number of such reductions will be linear in the size of the term;moreover, using the representation of terms described in Section 4
+it is possible to perform such reductions in linear time.
+2.3 Comparison with a monadic language
+The original implementations of the MLj and SML.NET compil-ers used monadic languages inspired by Moggi's computational
+
+lambda calculus (Moggi 1991). Figure 6 presents syntax for amonadic language
+
+\Lambda mon and selected reduction rules.The defining feature of monadic languages is that sequencing
+
+of computations is made explicit through the let construct; val-ues are converted into trivial computations using the
+
+val construct.Monadic languages share with CPS languages the property that familiar \Theta -reduction on functions is sound, as evaluation of the func-tion argument is made explicit through
+
+let. But there are drawbacks,as we outlined in the Introduction. (An orthogonal issue - as for
+
+CPS based languages - is whether values can appear anywhere ex-cept inside
+
+val. In \Lambda mon, for ease of presentation, we permit values
+to be embedded in applications, pairs, and so on, whereas for \Lambda UCPSwe insist that they are named. The difference shows up in the reduction rules, which in \Lambda UCPS make use of contexts. It should benoted that the drawbacks of monadic languages that we are about
+to discuss are unaffected by this choice.)
+Problem 1: need for let/let commuting conversion. The basicreductions listed in Figure 5 have corresponding reductions in CPS.
+The let construct itself has \Theta  and \Xi  rules which correspond to
+\Theta -CONT and \Xi -CONT for \Lambda UCPS (consider the CPS transforms ofthe terms). In contrast to CPS-based languages, though, monadic
+
+181
+
+Grammar
+
+MTm \Pi  M, N ::= val v -- let x \Theta  M in N -- v w -- \Pi i v--
+
+case v of in1 x1.M1 \Theta  in2 x2.M2
+MVal \Pi  v, w ::= x -- \Lambda x.M -- (v, w) -- ini v -- ()
+
+Reductions
+
+\Theta -LET let x \Theta  val v in M \Xi  M[v/x]
+\Xi -LET let x \Theta  M in val x \Xi  MCC-L
+
+ET let x2 \Theta  (let x1 \Theta  M1 in M2) in N\Xi 
+
+let x1 \Theta  M1 in (let x2 \Theta  M2 in N)CC-C
+ASE let x \Theta  (case v of in1 x1.M1 \Theta  in2 x2.M2) in N\Xi 
+
+let f \Theta  val \Lambda x.N
+
+in case v of in1 x1.let x \Theta  M1 in f x\Theta 
+
+in2 x2.let x \Theta  M2 in f x
+
+\Theta -PAIR \Pi i (v1, v2) \Xi  vi
+\Theta -FUN (\Lambda x.M) v \Xi  M[v/x]
+\Theta -CASE case ini v of in1 x1.M1 \Theta  in2 x2.M2 \Xi  Mi[v/xi]
+
+Figure 6. Syntax and selected rewrites for monadic language \Lambda mon
+
+languages include a so-called commuting conversion, expressingassociativity for
+
+let:
+
+CC-LET let x2 \Theta  (let x1 \Theta  M1 in M2) in N\Xi 
+
+let x1 \Theta  M1 in (let x2 \Theta  M2 in N)
+
+This reduction plays a vital role in exposing further reductions.Consider the source expression
+
+#1 ((fn x => (g x,x)) y)
+Its translation into \Lambda mon is
+
+let z2 \Theta  (\Lambda x.let z1 \Theta  g x in val (z1, x)) y in \Pi 1 z2.
+Now suppose that we apply \Theta -FUN, to get
+
+let z2 \Theta  (let z1 \Theta  g y in val (z1, y)) in \Pi 1 z2.
+In order to make any further progress, we must use CC-LET to get
+
+let z1 \Theta  g y in let z2 \Theta  val (z1, y) in \Pi 1 z2.
+Now we can apply \Theta -LET and \Theta -PAIR to get let z1 \Theta  g y in z1which further reduces by
+
+\Xi -LET to g y.
+
+Solution 1: Use CPS. Now take the original source expressionand translate it into our CPS-based language, with
+
+k representingthe enclosing continuation.
+
+let f = \Lambda j1 x.
+
+(letcont j2 z1 = (letval z2 = (z1, x) in j1 z2) in g j2 x)
+in letcont j3 z3 = (let z4 = \Pi 1 z3 in k z4)
+in f j3 y
+
+Applying \Theta -FUN-LIN gives the following, with substitutions high-lighted:
+
+letcont j3 z3 = (let z4 = \Pi 1 z3 in k z4)
+in letcont j2 z1 = (letval z2 = (z1, y ) in j3 z2) in g j2 y
+
+and by \Theta -CONT-LIN on j3 we get
+
+letcont j2 z1 =
+
+(letval z2 = (z1, y) in let z4 = \Pi 1 z2 in k z4)
+in g j2 y.
+
+Finally, use of \Theta -PAIR and DEAD-VAL produces letcont j2 z1 =
+k z1 in g j2 y which reduces by \Xi -CONT to g k y. All reductionswere simple uses of
+
+\Theta  and \Xi  rules, without the need for the addi-tional `administrative' reduction CC-L
+
+ET.
+
+Problem 2: quadratic blowup. The CC-LET reduction seems in-nocent enough. But observe that it is not a shrinking reduction - so
+it's not immediately clear whether reduction will terminate. Fortu-nately, the combination of CC-L
+
+ET and shrinking \Theta /\Xi -reductionsof Figure 6
+does terminate (Lindley 2005), and moreover there isa formal correspondence between the reductions of the monadic
+
+language and CPS (Hatcliff and Danvy 1994). Unfortunately, theorder in which conversions are applied is critical to the efficiency
+of simplification by reduction. Consider the following term in \Lambda mon:
+
+let fn \Theta  val (\Lambda xn.let yn \Theta  g xn in g yn) in
+let fnL/1 \Theta  val (\Lambda xnL/1.let ynL/1 \Theta  fn xnL/1 in g ynL/1) in.
+
+..
+let f1 \Theta  val (\Lambda x1.let y1 \Theta  f2 x1 in g y1) inf1 a
+
+If (linear) \Theta -FUN is applied to all functions in this term, followedby a sequence of CC-L
+
+ET reductions, then no redexes remainafter
+O(n) reductions. If, however, the commuting conversions
+are interleaved with \Theta -FUN, then O(n2) reductions are required.(There are other examples where it is better to apply commuting
+
+conversions first.) Although this is a pathological example, the`simplifier' was a major bottleneck in the MLj and SML.NET
+compilers (Benton et al. 2004a), in part (we believe) because ofthe need to perform commuting conversions.
+
+Solution 2: Use CPS. It is interesting to note that monadic termscan be translated into CPS in linear-time; shrinking reductions can
+be applied exhaustively there in linear-time (see Section 4); and theterm can be translated back into CPS in linear-time. Therefore the
+quadratic blowup we saw above is not fundamental, and there maybe some means of amortizing the cost of commuting conversions
+so that exhaustive reductions can be peformed in linear time. Nev-ertheless, it is surely better to have the term in CPS from the start,
+and enjoy the benefit of linear-time simplification.
+Problem 3: need for let/case commuting conversion. Mattersbecome more complicated with conditionals or case constructs.
+Consider the source expression
+g\Theta (g((fn x => case x of in1 x1 => (x1,x3)| in2 x2 => g\Theta \Theta  x) y))
+Its translation into \Lambda mon is
+
+let z \Theta  (\Lambda x.case x of in1 x1.val (x1, x3) \Theta  in2 x2.g\Theta \Theta  x) y in
+let z\Theta  \Theta  g z in g\Theta  z\Theta .
+
+This reduces by \Theta -FUN to
+
+let z \Theta  (case y of in1 x1.val (x1, x3) \Theta  in2 x2.g\Theta \Theta  y) in
+let z\Theta  \Theta  g z in g\Theta  z\Theta .
+
+At this point, we want to `float' the case expression out of the let.The proof-theoretic commuting conversion that expresses this
+
+rewrite is
+
+let x \Theta  (case v of in1 x1.M1 \Theta  in2 x2.M2) in N\Xi 
+
+case v of in1 x1.(let x \Theta  M1 in N) \Theta  in2 x2.(let x \Theta  M2 in N)
+This can have the effect of exposing more redexes; unfortunately,it also duplicates
+
+N which is not so desirable. So instead, compil-ers typically adopt a variation of this commuting conversion that
+
+shares M between the branches, creating a so-called join pointfunction:
+
+CC-CASE let x \Theta  (case v of in1 x1.M1 \Theta  in2 x2.M2) in N\Xi 
+
+let f \Theta  val \Lambda x.N
+
+in case v of in1 x1.let x \Theta  M1 in f x\Theta 
+
+in2 x2.let x \Theta  M2 in f x
+
+182
+
+Applying this to our example produces the result
+
+let f \Theta  val (\Lambda z.let z\Theta  \Theta  g z in g\Theta  z\Theta ) in
+
+case x of
+
+in1 x1.(let z \Theta  val (x1, x3) in f z)\Theta 
+
+in1 x2.(let z \Theta  g\Theta \Theta  x in f z).
+
+As observed earlier, join points such as f are just continuations.
+
+Solution 3: Use CPS. Consider the CPS transformation of theoriginal source expression, with
+
+k being the enclosing return con-tinuation.
+
+letcont j\Theta  z\Theta  = g\Theta  k z\Theta  in
+letcont j z = g j\Theta  z in
+letval f = \Lambda j\Theta \Theta  x.
+
+(letcont k1 x1 = (letval z\Theta \Theta  = (x1, x3) in j\Theta \Theta  z\Theta \Theta ) in
+letcont k2 x2 = g\Theta \Theta  j\Theta \Theta  x in
+
+case x of k1 \Theta  k2)
+in f j y
+
+Applying \Theta -FUN-LIN immediately produces the following term,with substitutions highlighted:
+
+letcont j\Theta  z\Theta  = g\Theta  k z\Theta  in
+letcont j z = g j\Theta  z in
+
+letcont k1 x1 = (letval z\Theta \Theta  = (x1, x3) in j z\Theta \Theta ) in
+
+letcont k2 x2 = g\Theta \Theta  j y in
+
+case y of k1 \Theta  k2
+
+There is no need to apply anything analogous to CC-CASE, or tointroduce a join point: the original term already had one, namely
+
+j,which was substituted for the return continuation
+j\Theta \Theta  of the function.
+The absence of explicit join points in monadic languages isan annoyance in itself. By representing join points as ordinary
+
+functions, it is necessary to perform a separate static analysis todetermine that such functions can be compiled efficiently as basic
+blocks.Explicitly named local continuations in CPS have the advantage
+that locality is immediate from the syntax, and preserved undertransformation; furthermore traditional intra-procedural compiler
+optimizations (such as those performed on SSA representations)can be adapted to operate on functions in CPS form.
+
+2.4 Comparison with ANF
+Flanagan et al. (1993) propose an alternative to CPS which they call
+A-Normal Form, or ANF for short. This is defined as the imageof the composition of the CPS, administrative normalization and
+
+inverse CPS transformations.
+
+CS * CPS \Theta \Theta 
+
+A \Lambda \Lambda 
+
+*
+
+\Theta -normalization\Lambda \Lambda 
+A(CS) * *un-CPS\Xi \Xi 
+
+The source language CS is Core Scheme (corresponding to our
+fragment of ML), and their CPS transformation composed with \Theta -normalization is equivalent to our one-pass transformation \Lambda u*\Xi  of
+
+Figure 4.The language
+
+A(CS) corresponds precisely to CC-LET/CC-C
+ASE normal forms in \Lambda mon. We can express these normal formsby a grammar:
+
+ATm \Pi  A, B ::= R -- let x \Theta  R in A--
+
+case v of in1 x1.A1 \Theta  in2 x2.A2
+ACmp \Pi  R ::= v w -- \Pi i v -- v
+AVal \Pi  v, w ::= x -- \Lambda x.A -- (v, w) -- ini v -- ()
+
+Instead of going via a CPS language, the transformation into ANFcan be performed in one pass, as suggested by the dotted line
+
+A in
+the diagram above.1 A similar transformation has been studied byDanvy (2003).
+
+As Flanagan et al. (1993) suggest, the "back end of an A-normalform compiler can employ the same code generation techniques
+that a CPS compiler uses". However, as we mentioned in the In-troduction, it is not so apparent whether ANF is ideally suited to
+optimization. After all, it is not even closed under the usual rulefor
+
+\Theta  reduction (\Lambda x.A) v \Xi  A[v/x]. As Sabry and Wadler(1997) later explained, it is necessary to combine substitution with
+
+re-normalization to get a sound rule for \Theta -reduction: essentially therepeated application of CC-L
+
+ET. They do not consider conditionalsor case constructs, but presumably to maintain terms in ANF in it
+
+is necessary to normalize with respect to CC-LET and CC-CASEfollowing function inlining.
+
+It is clear, then, that ANF suffers all the same problems that af-fect monadic languages: the need for (non-shrinking) commuting
+conversions, quadratic blowup of `linear' reductions, and the ab-sence of explicit join points.
+
+3. Typed CPS with exceptions
+We now add types and other features to the language of Section 2.In the untyped world, we can model recursion using a call-by-value
+
+fixed-point combinator. For a typed language, we must add explicit support for recursive functions - which, in any case, is morepractical. Moreover, we would like to express recursive
+
+continu-ations too, in order to represent loops. Finally, to support exceptions, functions in the extended language take two continuations:an exception-handler continuation, and a return continuation. This
+is the so-called double-barrelled continuation-passing style (Thi-elecke 2002).
+
+Figure 7 presents the syntax and typing rules for the extended
+language \Lambda TCPS. Types of values are ranged over by \Phi , \Psi  and include
+unit, a type of exceptions, products, sums and functions. (To savespace, we omit constructs for manipulating exception values.) Continuation types have the form n^\Phi  which is interpreted as `continua-tions accepting values of type
+
+\Phi  '. Note that for simplicity of presen-tation we do not annotate terms with types; it is an easy exercise to
+
+add sufficient annotations to determine unique typing derivations.Typing judgments for values have the form
+
+\Theta  \Sigma  V : \Phi  in which \Theta maps variables to value types. Judgments for terms have the form
+
+\Theta ; \Lambda  \Sigma  K ok in which the additional context \Lambda  maps continua-tion variables to continuation types. Complete programs are typed
+in the context of a single top-level continuation halt accepting unitvalues.
+
+We consider each construct in turn.
+A, The letval construct is as before, with the obvious typing rule
+
+and associated value typing rules. Likewise for projections.A,
+
+The letcont construct is generalized to support mutually recur-sive continuations. These represent loops directly. Local continuations are also used for exception handlers.A,
+The letfun construct introduces a set of mutually recursivefunctions; each function takes a return continuation
+
+k, an excep-tion handler continuation
+h, and an argument x. As a languageconstruct, there is nothing special about the handler continuation except that its type is fixed to be n^exn, and so a functiontype
+
+\Phi  \Xi  \Psi  is constructed from the argument type \Phi  and thetype n^
+
+\Psi  of the return continuation. What really distinguishes
+
+1 Though, curiously, the `A-normalization algorithm' in (Flanagan et al.
+1993, Fig. 9) does not actually normalize terms, as it leaves let-bound
+conditionals alone.
+
+183
+
+Grammar(value types)
+
+\Phi , \Psi  ::= unit -- exn -- \Phi  * \Psi  -- \Phi  + \Psi  -- \Phi  \Xi  \Psi (values)
+CVal \Pi  V, W ::= () -- (x, y) -- ini x
+(terms) CTm \Pi  K, L ::= letval x = V in K -- let x = \Pi i x in K -- letcont C in K -- letfun F in K--
+
+k x -- f k h x -- case x of k1 \Theta  k2(function def.)
+FunDef \Pi  F ::= f k h x = K(cont. def.)
+ContDef \Pi  C ::= k x = K
+
+Variables
+(var) x:\Phi  \Upsilon  \Theta \Theta  \Sigma  x : \Phi  (contvar) k:n^\Phi  \Upsilon  \Lambda \Lambda  \Sigma  k : n^\Phi 
+
+Well-typed terms
+(letc) -\Theta , xi:\Phi i; \Lambda , k1:n^\Phi 1, . . . , kn:n^\Phi n \Sigma  Ki ok""1\Theta i\Theta n \Theta ; \Lambda , k1:n^\Phi 1, . . . , kn:n^\Phi n \Sigma  L ok\Theta ; \Lambda  \Sigma  letcont k
+
+1 x1 = K1, . . . , kn xn = Kn in L ok
+
+(letrec) -\Theta , xi:\Phi i, f1:\Phi 1 \Xi  \Psi 1, . . . , fn:\Phi n \Xi  \Psi n; ki:n^\Psi i, hi:n^exn \Sigma  Ki ok""1\Theta i\Theta n \Theta , f1:\Phi 1 \Xi  \Psi 1, . . . , fn:\Phi n \Xi  \Psi n; \Lambda  \Sigma  L ok\Theta ; \Lambda  \Sigma  letfun f
+
+1 k1 h1 x1 = K1, . . . , fn kn hn xn = Kn in L ok
+
+(letv) \Theta  \Sigma  V : \Phi  \Theta , x:\Phi ; \Lambda  \Sigma  K ok\Theta ; \Lambda  \Sigma  letval x = V in K ok (appc) \Theta  \Sigma  x : \Phi  \Lambda  \Sigma  k : n^\Phi \Theta ; \Lambda  \Sigma  k x ok (proj) \Theta  \Sigma  x : \Phi 1 * \Phi 2 \Theta , y:\Phi i; \Lambda  \Sigma  K ok\Theta ; \Lambda  \Sigma  let y \Theta  \Pi 
+
+i x in K ok i \Upsilon  1, 2
+
+(case) \Theta  \Sigma  x : \Phi 1 + \Phi 2 \Lambda  \Sigma  k1 : n^\Phi 1 \Lambda  \Sigma  k2 : n^\Phi 2\Theta ; \Lambda  \Sigma  case x of k
+
+1 \Theta  k2 ok (app)
+
+\Theta  \Sigma  f : \Phi  \Xi  \Psi  \Lambda  \Sigma  k : n^\Psi  \Lambda  \Sigma  h : n^exn \Theta  \Sigma  x : \Phi 
+
+\Theta ; \Lambda  \Sigma  f k h x ok
+
+Well-typed values Well-typed programs
+(pair) \Theta  \Sigma  x : \Phi  \Theta  \Sigma  y : \Psi \Theta  \Sigma  (x, y) : \Phi  * \Psi  (tag) \Theta  \Sigma  x : \Phi i\Theta  \Sigma  in
+
+i x : \Phi 1 + \Phi 2 i \Upsilon  1, 2 (unit) \Theta  \Sigma  () : unit (prog) -""; halt:n^unit \Sigma  K ok
+
+Figure 7. Syntax and typing rules for typed language \Lambda TCPS
+
+exceptions is (a) their role in the translation from source lan-guage into CPS, and (b) typical strategies for generating code.
+A, Continuation application k x is as before. Now there are four
+
+possibilities for k: it may be a recursive or non-recursive occur-rence of a
+
+letcont-bound continuation, compiled as a jump, itmay be the return continuation, or it may be a handler continuation, which is interpreted as raising an exception.A,
+Function application f k h x includes a handler continua-tion argument
+
+h. If k is the return continuation for the near-est enclosing function, and
+
+h is its handler continuation, thenthe application is a tail call. If
+
+k is a local continuation and his the handler continuation for the enclosing function, then
+
+the application is a non-tail call without an explicit excep-tion handler - so exceptions are propagated to the context.
+Otherwise, h is an explicit handler for exceptions raised bythe function. (Other combinations are possible; for example in
+letfun f k h x = C[g h h y] in K the function application isessentially
+
+raise (g y) in a tail position.)A,
+
+Branching using case is as before.
+
+3.1 CPS transformation
+We can extend the fragment of ML described in Section 2.1 withexceptions and recursive functions:
+
+ML \Pi  e ::= . . . -- raise e -- e1 handle x => e2--
+
+let fun d in e end
+MLDef \Pi  d ::= f x = e
+
+The revised CPS transformation is shown in Figure 8 (see (Kimet al. 1998) for the
+
+selective use of a double-barrelled CPS trans-formation). Both \Lambda u*\Xi  and \Pi u*\Sigma  take an additional argument: a continuation h for the exception handler in scope. Then raise e is trans-lated as an application of
+
+h. For e1 handle x => e2 a local handler
+
+continuation h\Theta  is declared whose body is the translation of e2; thisis then used as the handler passed to the translation function for
+
+e1.
+
+3.2 Rewrites
+The rewrites of Figure 5 can be adapted easily to \Lambda TCPS, and extendedwith transformations such as `loop unrolling':
+
+\Theta -REC letfun f1 k1 h1 x1 = C[fi k h x]
+
+f2 k2 h2 x2 = K2
+. . . fn kn hn xn = Kn
+in K\Xi 
+letfun f1 k1 h1 x1 = C[Ki[k/ki, h/hi, x/xi]]
+
+f2 k2 h2 x2 = K2
+. . . fn kn hn xn = Kn
+in K
+\Theta -RECCONT letcont k1 x1 = C[ki x]
+
+k2 x2 = K2
+. . . kn xn = Kn
+in K\Xi 
+letcont k1 x1 = C[Ki[x/xi]]
+
+k2 x2 = K2
+. . . kn xn = Kn
+in K
+
+There are no special rewrites for exception handling, e.g. corre-sponding to
+
+(raise M) handle x.N \Xi  let x \Theta  M in N. Stan-dard
+\Theta -reduction on functions and continuations gives us this forfree. For example, the CPS transform of
+
+let fun f x = raise x in f y handle z => (z,z) end
+is
+
+letfun f k\Theta  h\Theta  x = h\Theta  x
+in letcont j z = (letval z\Theta  = (z, z) in k z\Theta ) in f k j y
+
+which reduces by \Theta -FUN and \Theta -CONT to letval z\Theta  = (y, y) in k z\Theta .
+
+184
+
+\Lambda u*\Xi  : ML \Xi  CVar \Xi  (Var \Xi  CTm) \Xi  CTm\Lambda 
+x\Xi  h \Upsilon  = \Upsilon (x)\Lambda 
+e1 e2\Xi  h \Upsilon  = \Lambda e1\Xi  h (\Gamma x1.\Lambda e2\Xi  h (\Gamma x2.letcont k x = \Upsilon (x) in x1 k h x2))\Lambda 
+fn x => e\Xi  h \Upsilon  = letfun f k h\Theta  x = \Pi e\Sigma  h\Theta  k in \Upsilon (f)\Lambda 
+
+(e1,e2)\Xi  h \Upsilon  = \Lambda e1\Xi  h (\Gamma x1.\Lambda e2\Xi  h (\Gamma x2.letval x = (x1, x2) in \Upsilon (x)))\Lambda 
+
+ini e\Xi  h \Upsilon  = \Lambda e\Xi  h (\Gamma z.letval x = ini z in \Upsilon (x))\Lambda 
+
+()\Xi  h \Upsilon  = letval x = () in \Upsilon (x)\Lambda 
+#i e\Xi  h \Upsilon  = \Lambda e\Xi  h (\Gamma z.let x \Theta  \Pi i z in \Upsilon (x))\Lambda 
+let val x = e1 in e2 end\Xi  h \Upsilon  = letcont j x = \Lambda e2\Xi  h \Upsilon  in \Pi e1\Sigma  h j\Lambda 
+
+let fun d in e end\Xi  h \Upsilon  = letfun \Lambda d\Xi  in \Lambda e\Xi  h \Upsilon \Lambda 
+
+raise e\Xi  h \Upsilon  = \Lambda e\Xi  h (\Gamma z.h z)\Lambda 
+e1 handle x => e2\Xi  h \Upsilon  = letcont j x = \Upsilon (x) in letcont h\Theta  x = \Pi e2\Sigma  h j in \Pi e1\Sigma  h\Theta  j\Lambda 
+case e of in1 x1 => e1| in2 x2 => e2\Xi  \Upsilon 
+= \Lambda e\Xi  h (\Gamma z.letcont j x = \Upsilon (x) letcont k1 x1 = \Pi e1\Sigma  h j in letcont k2 x2 = \Pi e2\Sigma  h j in case z of k1 \Theta  k2)\Lambda 
+
+u*\Xi  : MLDef \Xi  FunDef\Lambda 
+f x = e\Xi  = f k h x = \Pi e\Sigma  h k\Pi 
+
+u*\Sigma  : ML \Xi  CVar \Xi  CVar \Xi  CTm\Pi 
+x\Sigma  h k = k x\Pi 
+e1 e2\Sigma  h k = \Lambda e1\Xi  h (\Gamma x1.\Lambda e2\Xi  h (\Gamma x2.x1 k h x2))\Pi 
+fn x => e\Sigma  h k = letval f = \Lambda j x.\Pi e\Sigma  h j in k f\Pi 
+
+(e1,e2)\Sigma  h k = \Lambda e1\Xi  h (\Gamma x1.\Lambda e2\Xi  h (\Gamma x2.letval x = (x1, x2) in k x))\Pi 
+
+ini e\Sigma  h k = \Lambda e\Xi  h (\Gamma z.letval x = ini z in k x)\Pi 
+
+()\Sigma  h k = letval x = () in k x\Pi 
+#i e\Sigma  h k = \Lambda e\Xi  h (\Gamma z.let x \Theta  \Pi i z in k x)\Pi 
+let val x = e1 in e2 end\Sigma  h k = letcont j x = \Pi e2\Sigma  h k in \Pi e1\Sigma  h j\Pi 
+
+let fun d in e end\Sigma  h k = letfun \Lambda d\Xi  in \Pi e\Sigma  h k\Pi 
+
+raise e\Sigma  h k = \Lambda e\Xi  h (\Gamma z.h z)\Pi 
+e1 handle x => e2\Sigma  h k = letcont h\Theta  x = \Pi e2\Sigma  h k in \Pi e1\Sigma  h\Theta  k\Pi 
+case e of in1 x1 => e1| in2 x2 => e2\Sigma  h k
+
+= \Lambda e\Xi  h (\Gamma z.letcont k1 x1 = \Pi e1\Sigma  h k in letcont k2 x2 = \Pi e2\Sigma  h k in case z of k1 \Theta  k2)
+
+Figure 8. Tail CPS transformation for \Lambda TCPS
+Likewise, commuting conversions are not required, in contrastwith monadic languages, where in order to define well-behaved
+conversions it is necessary to generalize the usual M handle x fl
+N construct to try y \Theta  M in N1 unless x fl N2, incorporating asuccess `continuation'
+
+N1 (Benton and Kennedy 2001).
+
+3.3 Other features
+It is straightforward to extend \Lambda TCPS with other features useful forcompiling full-scale programming languages such as Standard ML.
+
+A, Recursive types of the form t,\Omega .\Phi  can be supported by adding
+
+suitable introduction and elimination constructs: a value fold xand a term
+
+let x = unfold y inK.A,
+
+Binary products and sums generalize to the n-ary case. For opti-mizing representations it is common for intermediate languages
+
+to support functions with multiple arguments and results, andconstructors taking multiple arguments. This is easy: function
+definitions have the form f k h x = K, and continuations havethe form
+
+k x = K and are used for passing multiple resultsand for
+case branches where the constructor takes multiple ar-guments.
+
+A, Polymorphic types of the form ffi\Omega .\Phi  can be added. Typing contexts are extended with a set of type variables V. Then to sup-port ML-style let-polymorphism, each value binding construct
+
+(letval, letfun, and projection) must incorporate polymorphic
+
+generalization. For example:
+
+(letv) V, \Omega ; \Theta  \Sigma  V : \Phi  V; \Theta , x:ffi\Omega .\Phi ; \Lambda  \Sigma  K okV; \Theta ; \Lambda  \Sigma  letval x = V in K ok
+For elimination, we simply adapt the variable rule (var) toincorporate polymorphic specialization:
+
+(var) x:ffi\Omega .\Phi  \Upsilon  \Theta \Theta  \Sigma  x : \Phi  [\Psi /\Omega ]
+3.4 Effect analysis and transformation
+The use of continuations in an explicit `handler-passing style' lendsitself very nicely to an effect analysis for exceptions. Suppose, for
+
+simplicity, that there are a finite number of exception constructors
+ranged over by E. We make the following changes to \Lambda TCPS:
+
+A, We introduce exception set types of the form -E1, . . . , En"",
+
+representing exception values built with any of the construc-tors
+
+E1, . . . , En. Set inclusion induces a subtype ordering onexception types, with top type
+
+exn representing any exception,and bottom type -"" representing
+
+no exception.A,
+
+The type of handler continuations in function definitions arerefined to describe the exceptions that the function is permitted
+
+to throw. For example:
+
+(1) letfun f k (h:n^-"") x = K in . . .
+(2) letfun f k (h:n^exn) x = K in . . .
+(3) letfun f k (h:n^-E, E\Theta "") x = K in . . .
+
+185
+
+The type of (1) tells us that K never raises an exception, in(2) the function can raise any exception, and in (3) the function
+might raise E or E\Theta .A,
+Now that handlers are annotated with more precise types, the
+function types must reflect this too. We write \Phi  \Xi \Lambda \Theta \Psi  for thetype of functions that either return a result of type
+
+\Psi  or raise anexception of type
+\Psi \Theta  <: exn. Subtyping on function types andcontinuation types is specified by the following rules:
+
+\Phi 2 <: \Phi 1 \Psi 1 <: \Psi 2 \Psi \Theta 1 <: \Psi \Theta 2
+
+\Phi 1\Xi \Lambda \Theta 1 \Psi 1 <: \Phi 2\Xi \Lambda \Theta 2 \Psi 2
+
+\Psi 2 <: \Psi 1n^
+\Psi 1 <: n^\Psi 2
+
+Exception effects enable effect-specific transformations (Benton
+and Buchlovsky 2007). Suppose that the type of f is \Phi  \Xi -E1"" \Psi .Then we can apply a `dead-handler' rewrite on the following:
+
+letcont h:n^-E1, E2"" x = (case x of E1.k1 \Theta  E2.k2) in f k h y\Xi 
+
+letcont h:n^-E1"" x = (case x of E1.k1) in f k h y
+
+In fact, there is nothing exception-specific about this rewrite: it isjust employing refined types for constructed values. The use of
+
+continuations has given us exception effects `for free'.
+
+4. Implementing CPS
+Many compilers for functional languages represent intermediatelanguage terms in a functional style, as instances of an algebraic
+
+datatype of syntax trees, and manipulate them functionally. For example, the language \Lambda UCPS can be implemented by an SML datatype,here using integers for variables, with all bound variables distinct:
+
+type Var = int and CVar = int
+datatype CVal =
+
+Unit | Pair of Var * Var | Inj of int * Var
+| Lam of CVar * Var * CTm
+and CTm =
+
+LetVal of Var * CVal * CTm
+| LetProj of Var * int * Var * CTm
+| LetCont of CVar * Var * CTm * CTm
+| AppCont of CVar * Var
+| App of Var * CVar * Var
+| Case of Var * CVar * CVar
+
+Rewrites such as those of Figure 5 are then implemented by afunction that maps terms to terms, applying as many rewrites as
+
+possible in a single pass. Here is a typical fragment that applies the
+\Theta -PAIR and DEAD-VAL reductions:
+
+fun simp census env S K =
+
+case K of
+
+LetVal(x, V, L) =>
+if count(census,x) = 0 (* Dead-Val *)
+then simp census env S L
+else LetVal(x, simpVal census env S V,
+
+simp census (addEnv(env,x,V)) S L)
+
+| LetProj(x, 1, y, L) =>
+
+let val y' = applySubst S y
+in case lookup(env, y') of
+
+(* Beta-Pair *)
+Pair(z,_) =>
+simp census env (extendSubst S (x,z)) L
+| _ =>
+
+LetProj(x, 1, y', simp census env S L)
+end
+
+In addition to the term K itself, the simplifier function simptakes a parameter
+
+env that tracks letval bindings, a parameter Sused to substitute variables for variables and a parameter
+
+censusthat maps each variable to the number of occurrences of the variable, computed prior to applying the function.
+
+The census becomes out-of-date as reductions are applied, andthis may cause reductions to be missed until the census is recalculated and simp applied again. For example, the \Theta -PAIR reductionmay trigger a D
+
+EAD-VAL in an enclosing letval binding (consider
+letval x = (y1, y2) in . . . let z = \Pi 1 x in . . . where x occurs onlyonce). Maintaining accurate census information as rewrites are performed can increase the number of reductions performed in a singlepass (Appel and Jim 1997), but even with up-to-date census information, it is not possible to perform shrinking reductions exhaus-tively in a single pass, so a number of iterations may be required before all redexes have been eliminated. In the worst case, this leadsto
+
+O(n2) behaviour.What's more, each pass essentially copies the entire term, leaving the original term to be picked up by the garbage collector. Thiscan be expensive. (Nonetheless, the simplicity of our CPS language, with substitutions only of variables for variables, and thelack of commuting conversions as are required in ANF or monadic
+languages, leads to a very straightforward simplifier algorithm.)
+4.1 Graphical representation of terms
+An alternative is to represent the term using a graph, and to performrewrites by destructive update of the graph. Appel and Jim (1997)
+
+devised a representation for which exhaustive application of theshrinking
+
+\Theta -reductions of Figure 5 takes time linear in the size ofthe term. We improve on their representation to support efficient
+
+\Xi -reductions and other transformations. The representation has three
+
+ingredients.
+
+1. The term structure itself is a doubly-linked tree. Every subtermhas an up-link to its immediately enclosing term. This supports
+
+constant time replacement, deletion, and insertion of subterms.
+2. Each bound variable contains a link to one of its free occur-rences, or is null if the variable is dead, and the free occurrences
+
+themselves are connected together in a doubly-linked circularlist. This permits the following operations to be performed in
+constant time:A,
+
+Determining whether a bound variable has zero, one, ormore than one occurrence, and if it has only one occurrence,
+
+locating that occurrence.A,
+Determining whether a free variable is unique.A,
+Merging two occurrence lists.
+Furthermore, we separate recursive and non-recursive uses ofvariables; in essence, instead of
+
+letfun f k h x = K in L wewrite
+let f = rec g k h x.K[g/f] in L. This lets us detectD
+EAD-ff and \Theta -ff-LIN reductions.
+
+3. Free occurrences are partitioned into same-binder equivalenceclasses by using the
+
+union-find data structure (Cormen et al.
+2001)2. The representative in each equivalence class (that is, the
+root of the union-find tree) is linked to its binding occurrence.
+
+This supports amortized near-constant time access to the binder(the
+
+find operation) and merging of occurrence lists (the unionoperation).
+
+Substitution of variable x for variable y is implemented in near-constant time by (a) merging the circular lists of occurrences so
+that x now points to the merged list, and (b) applying a unionoperation so that the occurrences of
+
+y are now associated with thebinder for
+x.Consider the following value term, with doubly-linked tree
+
+structure and union-find structure implicit but with binder-to-free
+2 Readers familiar with type inference may recall that union-find underpins
+the almost-linear time algorithm for term unification (Baader and Nipkow
+1998).
+
+186
+
+pointer shown as a dotted arrow and circular occurrence lists shownas solid arrows:
+
+\Lambda  k x
+
+\Pi \Pi 
+.
+
+let p
+
+\Sigma \Sigma 
+
+= ( x \Upsilon \Upsilon  , y )
+
+in . . . p \Phi \Phi  \Pi \Pi . . . p \Psi \Psi 
+
+\Pi \Pi \Theta \Theta \Theta \Theta \Theta 
+\Theta \Theta  . . .
+
+. . . let z \Omega \Omega = \Pi 1 p ffff \Omega \Omega \Lambda \Lambda \Lambda  in
+
+. . . z \Psi \Psi  fifi. . . z\Pi \Pi \Phi \Phi  . . . pflfl
+
+ffiffi
+
+Now suppose that we wish to apply \Theta -PAIR to the projection \Pi 1p.Using the find operation on the union-find structure we can locate
+the pair (x, y) in near constant time. Now we substitute x for z bydisconnecting
+
+z's binder from its circular list and connecting x'soccurrence list in its place, and merging the two lists, in constant
+
+time. At the same time, we apply the union operation to merge thebinder equivalence classes (not shown).
+
+\Lambda  k x
+
+\Pi \Pi 
+.
+
+let p
+
+\Sigma \Sigma 
+
+= ( x , y )
+
+in . . . p \Phi \Phi  \Pi \Pi . . . p \Psi \Psi 
+
+\Pi \Pi \Theta \Theta \Theta \Theta \Theta 
+\Theta \Theta  . . .
+
+. . . let z = \Pi 1 p ffff \Omega \Omega \Lambda \Lambda \Lambda  in
+
+. . . xfflffl
+
+ii
+
+. . . xfifijj ``
+
+''\Xi \Xi \Xi 
+
+\Xi \Xi \Xi 
+
+\Xi \Xi \Xi 
+
+. . . p^^
+
+''
+
+Finally we remove the projection itself, deleting the occurrence of pfrom the circular list, again in constant time:
+
+\Lambda  k x
+
+\Pi \Pi 
+.
+
+let p
+
+\Sigma \Sigma 
+
+= ( x , y )
+
+in . . . p \Phi \Phi  \Pi \Pi . . . p **
+
+__\Pi \Pi \Pi \Pi \Pi \Pi \Pi 
+\Pi \Pi \Pi \Pi  . . .
+
+. . . x**
+
+flfl
+
+. . . xfifijj ,,
+
+ssss\Sigma \Sigma \Sigma 
+
+\Sigma \Sigma 
+
+. . . paeae
+oeoe
+
+One issue remains: the classical union-find data structure does notsupport deletion. There are recent techniques that extend union-find
+with amortized near-constant time deletion (Kaplan et al. 2002).However, the representation is non-trivial, and might add unacceptable overhead to the union and find operations, so we chose insteada simpler solution: do nothing! Deleted occurrences remain in the
+union-find data structure, possibly as root nodes, or as nodes on thepath to the root. In theory, the efficiency of rewriting is then dependent on the `peak' size of the term, not its current size, but we havenot found this to be a problem in practice.
+
+Each of the shrinking reductions of Figure 5 can be imple-mented in almost-constant time using our graph representation. To
+put these together and apply them exhaustively on a term, we fol-low Appel and Jim (1997):
+
+A, First sweep over the term, detecting redexes and collecting them
+
+in a worklist.A,
+
+Then pull items off the worklist one at a time (in any order),applying the appropriate rewrite, and adding new redexes to
+
+the worklist that are triggered by the rewrite. For example,the removal of a free occurrence (as can happen for multiple
+variables when applying DEAD-VAL) can induce a DEAD-ffreduction (if no occurrences remain) or a
+
+\Theta -ff-LIN reduction(if only a single occurrence remains).
+
+In the current implementation, the worklist is represented as aqueue, but it should be possible to thread it through the term itself.
+Shrinking reductions could then be performed with constant spaceoverhead.
+
+4.2 Comparison with Appel/Jim
+The representation of Appel and Jim (1997) did not make use ofunion-find to locate binders. Instead, (a) the circular list of variable
+
+occurrences included the bound occurrence, thus giving constanttime access to the binder in the case that the free variable is unique,
+and (b) for letval-bound variables, each free occurrence containedan additional pointer to its binder. When performing a substitution
+operation, these binder links must be updated, using time linear inthe number of occurrences; fortunately, for any particular variable
+this can happen only once during shrinking reductions, as letval-bound variables cannot become rebound. Thus the cost is amortized
+across the shrinking reductions.Unfortunately the lack of binder occurrences for nonletval-bound variables renders less efficient other optimizations such as
+
+\Xi -reduction. Take an instance of \Xi -PAIR:
+
+let x1 = \Pi 1 x in C[let x2 = \Pi 2 x in C\Theta [letval y = (x1, x2) in K]]\Xi 
+
+let x1 = \Pi 1 x in C[let x2 = \Pi 2 x in C\Theta [K[x/y]]]
+
+Just to locate the binder for x1 and x2 would take time linear in thenumber of occurrences.
+
+Our use of union-find gives us efficient implementation of allshrinking reductions, and of other transformations too; moreover,
+when analysing efficiency we need not be concerned whether vari-ables are
+
+letval-bound or not.
+
+4.3 Performance results
+We have modified the SML.NET compiler to make use of a typedCPS intermediate language only mildly more complex than that
+
+shown in Figure 7. It employs the graphical representation of termsdescribed above; in particular, the simplifier performs shrinking
+reductions exhaustively on a term representing the whole program,and it is invoked a total of 15 times during compilation.
+
+Table 1 presents some preliminary benchmark results show-ing average time spent in simplification, time spent in monomorphisation, and time spent in unit-removal (e.g. transformation of
+unit*int values to int). We compare (a) the released version ofSML.NET, implementing a monadic intermediate language (MIL)
+
+and functional-style simplification algorithm, (b) the Appel/Jim-style graph representation adapted to MIL terms implemented by
+Lindley (Benton et al. 2004a; Lindley 2005), and (c) the new graph-based CPS representation with union-find. Tests were run on a
+3Ghz Pentium 4 PC with 1GB of RAM running Windows Vista.The SML.NET compiler is implemented in Standard ML and compiled using the MLton optimizing compiler, which generates highquality code from both functional and imperative coding styles - so
+giving both techniques a fair shot.As can be seen from the figures, the graph-based simplifier for
+the monadic language is significantly faster than the functional sim-plifier - and although all times are small, bear in mind that the
+simplifier is run many times during compilation. Unit removal isroughly comparable in performance across implementations. Interestingly, the graph-based CPS implementation of monomorphisa-tion runs up to twice as slowly as the functional monadic implementation. We conjecture that this is because monomorphisationnecessarily copies (and specializes) terms, and CPS terms tend to
+be larger than MIL terms, and the graph representation is largerstill.
+
+These figures come with a caveat: the comparison is somewhat"apples and oranges". There are differences between the MIL, gMIL and g-CPS representations that are unrelated to monads or
+
+187
+
+Table 1. Optimization times (in seconds)
+Benchmark Lines Phase MIL g-MIL g-CPS
+
+raytrace 2,500 Simp 0.12 0.01 0.01
+mlyacc 6,200 Simp 0.44 0.02 0.02
+smlnet 80,000 Simp 7.29 0.29 0.15
+
+Mono 0.75 n/a 1.41
+Deunit 0.76 1.3 0.6
+hamlet 20,000 Simp 0.97 0.08 0.04
+
+Mono 0.15 n/a 0.19
+Deunit 0.12 0.16 0.14
+
+CPS. Future work is to make a fairer comparison, implementinga functional version of the CPS terms, and perhaps also a precise
+monadic analogue.
+
+5. Contification
+Our CPS languages make a syntactic distinction between functionsand local continuations. The former are typically compiled as heapallocated closures or as known functions, whilst the latter can al-ways be compiled as inline code with continuation applications
+compiled as jumps. For efficiency it is therefore desirable to trans-form functions into continuations, a process that has been termed
+contification (Fluet and Weeks 2001).Functions can be contified when they always return to the same
+place. Consider the following code written in the subset of SMLstudied in Section 2:
+
+let fun f x = ...
+in g (case d of in1 d1 => f y | in2 d2 => f d2) end
+
+If f returns at all, it must pass control to g. Here, this is obvious,but for more complex examples it is not so apparent. Now consider
+
+its CPS transform:
+
+letval f = (\Lambda k x.u* u* u* k u* u* u*) in
+letcont k0 w = g r w in
+letcont j1 d1 = f k0 y in
+letcont j2 d2 = f k0 d2 in
+case d of j1 \Theta  j2
+
+It is clear that f is always passed the same continuation k0 - andso, unless it diverges, it must return through
+
+k0 and so pass controlto
+g. We can transform f into a local continuation, as follows:
+
+letcont k0 w = g r w in
+letcont j x = u* u* u* k0 u* u* u* in
+letcont j1 d1 = j y in
+letcont j2 d2 = j d2 in
+case d of j1 \Theta  j2
+
+We have done three things: (a) we have replaced the function f bya continuation
+
+j, deleting the return continuation at both definitionand call sites, (b) we have substituted the argument
+
+k0 for theformal
+k in the body of f, and (c) we have moved j so that it isin the scope of
+
+k0.Fluet and Weeks (2001) use the dominator tree of a program's
+
+call graph to contify programs that consist of a collection ofmutually-recursive first-order functions. They show that their algorithm is optimal: no contifiable functions remain after applyingthe transformation. Their dominator-based analysis can be adapted
+to our CPS languages, and is simpler to describe in this context be-cause all function definitions and uses have a named continuation
+(Fluet and Weeks use named continuations only for non-tail calls).When applied to top-level functions, the transformation is simpler
+too, but in the presence of first-class functions and general blockstructure the transformation becomes significantly more complex
+to describe.
+
+We prefer an approach based on incremental transformation, inessence repeatedly applying the rewrite illustrated above until no
+further rewrites are possible. We consider first the case of non-recursive functions, then generalize to mutually-recursive functions, and conclude by relating our technique to dominator-basedcontification.
+
+5.1 Non-recursive functions
+In the untyped language \Lambda UCPS without recursion, it is particularlystraightforward to spot contifiable functions: they are those for
+
+which all occurrences are applications with the same continuationargument. We define the following rewrite:
+
+CONT (f not free in C, D and D minimal):
+
+letval f = \Lambda k x.K in C[D[f k0 x1, . . . , f k0 xn]]\Xi 
+
+C[letcont j x = K[k0/k] in D[j x1, . . . , j xn]]
+Here C is a single-hole context as presented in Figure 5 and D is amulti-hole context whose formalization we omit.
+
+The CONT rewrite combines three actions: (a) the function fis replaced by a continuation
+
+j, with each application replacedby a continuation application; (b) the common continuation
+
+k0 issubstituted for the formal continuation parameter
+k in the body Kof
+f; and (c) the new continuation j is pulled into the scopeof the continuation
+
+k0. The multi-hole context D is the smallestcontext enclosing all uses of
+
+f, which ensures that j is in scopeafter transformation. The analysis is trivial (just check call sites for
+
+common continuation arguments), yet iterating this transformationleads to optimal contification, in the sense of Fluet and Weeks
+(2001). Here is an example adapted from loc. cit. g*5.2,
+
+letval h = \Lambda kh xh.u* u* u* in
+letval g1 = \Lambda k1 x1.u* u* u* h k1 z1 u* u* u* k1 z8 u* u* u* in
+letval g2 = \Lambda k2 x2.u* u* u* h k2 z2 u* u* u* in
+letval f = \Lambda kf xf .u* u* u* g1 kf z3 u* u* u* g2 kf z4 u* u* u* g2 kf z5 u* u* u* in
+letval m = \Lambda km xm.u* u* u* f j1 z6 u* u* u* f j2 z7 in . . .
+
+We can immediately see that g1 and g2 (but not h) are alwayspassed the same continuation
+
+kf , and so we can apply CONT tocontify them both:
+
+letval h = \Lambda kh xh.u* u* u* in
+letval f = \Lambda kf xf .
+
+(letcont kg1 x1 = u* u* u* h kf z1 u* u* u* kf z8 u* u* u* in
+letcont kg2 x2 = u* u* u* h kf z2 u* u* u* inu* u* u*
+
+kg1 z3 u* u* u* kg2 z4 u* u* u* kg2 z5 u* u* u*) in
+letval \Lambda m km.xmu* u* u* f j1 z6 u* u* u* f j2 z7 = in . . .
+
+Now h can be contified as it is always passed kf :
+
+letval f = \Lambda kf xf .
+
+(letcont kh xh = u* u* u* in
+letcont kg1 x1 = u* u* u* kh z1 u* u* u* kf z8 in
+letcont kg2 x2 = u* u* u* kh z2 u* u* u* inu* u* u*
+
+kg1 z3 u* u* u* kg2 z4 u* u* u* kg2 z5 u* u* u*) in
+letval \Lambda m km.xmu* u* u* f j1 z6 u* u* u* f j2 z7 = in . . .
+
+5.2 Recursive functions
+Generalizing to recursive functions and continuations is a little
+trickier. Suppose we have a \Lambda TCPS term of the form
+
+letfun f1 k1 h1 x1 = K1u* u* u*
+
+fn kn hn xn = Kn
+in K.
+
+A set of functions F ffl -f1, . . . , fn"" can be contified collectively,written
+
+ContiS,able(F ), if there is some pair of continuations k0and
+h0 such that each occurrence of f \Upsilon  F is either a tail call
+
+188
+
+within F or is a call with continuation arguments k0 and h0. In-tuitively, each function (eventually) returns to the same place (
+
+k0),or throws an exception that is caught by the same handler (
+h0),though control may pass tail-recursively through other functions
+
+in F . There may be many such subsets F ; we assume that F is infact strongly-connected with respect to tail calls contained within it
+(or is a trivial singleton with no tail calls). Then for a given letfunterm there is a unique partial partition of the functions into disjoint
+subsets satisfying ContiS,able(L/).Let
+
+F = -f1, . . . , fm"". Define a translation on function appli-cations
+
+(f k h x)\Xi  = \Theta ji x if f = fi \Upsilon  Ff k h x otherwise
+and extend this to all terms. Assuming that ContiS,able(F ) holds,there are two possibilities.
+
+1. All applications of the form f k0 h0 x for f \Upsilon  F are in theterm
+
+K. Then we can apply the following rewrite, which is thedirect analogue of C
+
+ONT.
+
+RECCONT (f1, . . . , fm not free in C, and K minimal):
+
+letfun f1 k1 h1 x1 = K1u* u* u*
+
+fn kn hn xn = Kn
+in C[K]\Xi 
+
+letfun fm+1 km+1 hm+1 xm+1 = Km+1u* u* u*
+
+fn kn hn xn = Kn
+in C[letcont j1 x1 = K\Xi 1 [k0/k1, h0/h1]u* u* u*
+
+jm xm = K\Xi m[k0/km, h0/hm]
+in K\Xi ]
+
+2. Otherwise, all applications of the form f k0 h0 x for f \Upsilon  Fare in the body of one of the functions outside of
+
+F ; withoutloss of generality we assume this is
+fn.
+
+RECCONT2 (f1, . . . , fm not free in C, and Kn minimal):
+
+letfun f1 k1 h1 x1 = K1u* u* u*
+
+fnL/1 knL/1 hnL/1 xnL/1 = KnL/1
+fn kn hn xn = C[Kn]
+in K\Xi 
+
+letfun fm+1 km+1 hm+1 xm+1 = Km+1u* u* u*
+
+fnL/1 knL/1 hnL/1 xnL/1 = KnL/1
+fn kn hn xn =C
+
+[letcont j1 x1 = K\Xi 1 [k0/k1, h0/h1]u* u* u*
+
+jm xm = K\Xi m[k0/km, h0/hm]
+in Kn\Xi ]
+in K
+
+For an example of the latter, more complex, transformation,consider the following SML code:
+
+let fun unif(Ap(a,xs),Ap(b,ys)) = (unif(a,b);unifV(xs,ys))
+
+| unif(Ar(a,b),Ar(c,d)) = unifV([a,b],[c,d])
+and unifV(x::xs,y::ys) = (unif(x,y);unifV(xs,ys))
+
+| unifV([],[]) = ()
+in unif end
+
+The function unifyV can be contified into the definition of unif: ittail-calls itself, and its uses inside
+
+unif have the same continuation.
+
+5.3 Comparing dominator-based contification
+The dominator-based approach of Fluet and Weeks (2001) can berecast in our CPS language as follows. (For simplicity we do not
+
+consider exception handler continuations here). First construct a
+continuation flow graph for the whole program. Nodes consist ofcontinuation variables and a distinguished
+
+root node. Then for each
+
+function f with return continuation k, if f is passed around as afirst-class value then create an edge from
+
+root to k; otherwise, foreach application
+f j x create an edge from j to k. Finally, for eachlocal continuation
+
+k create an edge from root to k.The non-recursive C
+
+ONT rewrite has the effect of merging twonodes in the graph, as follows:
+
+o/o/\Upsilon \Upsilon \Upsilon 
+\Upsilon \Upsilon \Upsilon 
+
+\Theta \Theta \Theta \Lambda \Xi \Pi \Sigma \Upsilon \Phi \Psi k0 \Theta \Theta \Theta \Lambda \Xi \Pi \Sigma \Upsilon \Phi \Psi k \Theta \Theta 
+
+AEAE\Phi \Phi \Phi 
+\Phi \Phi \Phi 
+
+o/o/\Upsilon \Upsilon \Upsilon 
+\Upsilon \Upsilon \Upsilon AEAE\Phi \Phi \Phi \Phi \Phi 
+\Phi 
+
+=fl OEOE
+
+\Psi \Psi \Psi \Psi 
+\Psi \Psi 
+
+\Theta \Theta \Theta \Lambda \Xi \Pi \Sigma \Upsilon \Phi \Psi k0 \Theta \Theta 
+
+O/O/\Omega \Omega \Omega 
+\Omega \Omega \Omega 
+
+OEOE\Psi \Psi \Psi 
+\Psi \Psi \Psi O/O/\Omega \Omega \Omega \Omega \Omega 
+\Omega 
+
+The recursive RECCONT and RECCONT2 rewrites are similar,except that in place of
+
+k we have a strongly-connected component-
+k1, . . . , km"".
+
+OEOE\Upsilon \Upsilon \Upsilon 
+\Upsilon \Upsilon \Upsilon  \Theta \Lambda \Xi \Pi \Sigma \Upsilon \Phi \Psi k1 \Theta \Theta 
+
+\Theta \Theta \Theta \Lambda \Xi \Pi \Sigma \Upsilon \Phi \Psi k0 \Theta \Theta 
+
+flflffffff
+ffffff
+
+fififi
+fififi \Omega fffiflffifflijki
+
+\Lambda \Lambda 
+!!
+
+!!
+\Lambda \Lambda 
+
+\Theta \Theta O/O/\Phi 
+\Phi \Phi \Phi \Phi 
+\Phi  \Theta \Lambda \Xi \Pi \Sigma \Upsilon \Phi \Psi km \Theta \Theta 
+
+=fl OEOE
+
+\Psi \Psi \Psi \Psi 
+\Psi \Psi 
+
+\Theta \Theta \Theta \Lambda \Xi \Pi \Sigma \Upsilon \Phi \Psi k0 \Theta \Theta 
+
+O/O/\Omega \Omega \Omega 
+\Omega \Omega \Omega 
+
+OEOE\Psi \Psi \Psi 
+\Psi \Psi \Psi O/O/\Omega \Omega \Omega \Omega \Omega 
+\Omega 
+
+Conversely, any part of the flow graph matching the left-hand-sideof this diagram corresponds to a contifiable subset of functions in a
+letfun to which the RECCONT or RECCONT2 rules can be applied.It is immediately clear that exhaustive rewriting terminates,
+as the flow graph decreases in size with each rewrite, eventuallyproducing a graph with no occurrences of the pattern above.
+
+The algorithm described by Fluet and Weeks (2001) contifies kif it is strictly dominated by some continuation
+
+j whose immediatedominator is
+root. It can be shown that if a rooted graph containssuch a pair of nodes
+
+j and k, then some part of the graph matchesthe pattern above. Hence exhaustive rewriting has the same effect
+
+as as optimal contification based on dominator trees.
+
+6. Related work and conclusion
+The use of continuation-passing style for functional languages hasits origins in Scheme compilers (Steele 1978; Kranz et al. 1986).
+
+It later formed the basis of the Standard ML of New Jersey com-piler (Appel 1992; Shao and Appel 1995).
+
+In early compilers, lambdas originating from the CPS transfor-mation were not distinguished from lambdas present in the source,
+so some effort was expended at code generation time to determinewhich lambdas could be stack-allocated and which could be heapallocated. Later compilers made a syntactic distinction betweentrue functions and `second-class' continuations introduced by CPS;
+and sometimes transformed one into the other (Kelsey and Hudak1989), though contification was not studied formally.
+
+A number of more recent compilers use what has been called
+almost CPS. The Sequentialized Intermediate Language (SIL) em-ployed by Tolmach and Oliva (1998) is a monadic-style language in
+
+which a letcont-like feature is used to introduce join points. Some-what closer to our CPS language is the First Order Language (FOL)
+of the MLton compiler (Fluet and Weeks 2001). It goes further thanSIL in making use of named local continuations in all branch constructs and non-tail calls. However, functions are not parameterizedon return (or handler) continuations, and there is special syntax for
+tail calls and returns. This non-uniform treatment of continuationscomplicates transformations - inlining of non-tail functions must
+replace all `return points' with jumps, and the contification analy-sis and transformation must treat tail and non-tail calls differently.
+
+We have found the uniform treatment of continuations in ourCPS language to be a real benefit, not only as a simplifying force in
+implementation, but also in thinking about compiler optimizations:
+
+189
+
+contification, in particular, is difficult to characterize in the absenceof a notion of continuation passing.
+
+As far as we are aware, we are the first to implement linear-time shrinking reductions in the style of Appel and Jim (1997). An
+earlier term-graph implementation by Lindley was for a monadic
+language and had worst-case O(n2) behaviour due to commutingconversions (Benton et al. 2004a; Lindley 2005). Shivers and Wand
+
+(2005) have proposed a rather different graph representation forlambda terms, with the goal of sharing subterms after
+
+\Theta -reduction.Their representation does bear some resemblance to ours, though,
+
+with up-links from subterms to enclosing terms, and circular liststhat connect the sites where a term is substituted for a variable.
+
+This paper would not be complete without a mention of StaticSingle Assignment form (SSA), the currently fashionable intermediate representation for imperative languages. As is well known,SSA is in some sense equivalent to CPS (Kelsey 1995) and to
+ANF (Appel 1998). Its focus is intra-procedural optimization (aswith ANF, it's necessary to renormalize when inlining functions,
+in contrast to CPS) and there is a large body of work on such op-timizations. Future work is to transfer SSA-based optimizations to
+CPS. We conjecture that CPS is a good fit for both functional andimperative paradigms.
+
+Acknowledgments
+I would like to thank Nick Benton, Olivier Danvy, Sam Lindley,Simon Peyton Jones and Claudio Russo for fruitful discussions on
+
+compiler intermediate languages. Georges Gonthier suggested theuse of union-find in the graphical representation of terms.
+
+References
+Andrew W. Appel. Compiling with Continuations. Cambridge University
+
+Press, 1992.
+
+Andrew W. Appel. SSA is functional programming. SIGPLAN Notices, 33
+
+(4):17-20, 1998.
+
+Andrew W. Appel and Trevor Jim. Shrinking lambda expressions in linear
+
+time. Journal of Functional Programming, 7(5):515-540, 1997.
+
+Franz Baader and Tobias Nipkow. Term Rewriting and All That. CambridgeUniversity Press, 1998.
+
+Nick Benton and Peter Buchlovsky. Semantics of an effect analysis for
+
+exceptions. In ACM SIGPLAN International Workshop on Types in
+Language Design and Implementation (TLDI), pages 15-26, 2007.
+
+Nick Benton and Andrew Kennedy. Exceptional syntax. Journal of Functional Programming, 11(4):395-410, 2001.
+
+Nick Benton, Andrew Kennedy, and George Russell. Compiling Standard
+
+ML to Java bytecodes. In 3rd ACM SIGPLAN International Conference
+on Functional Programming. ACM Press, September 1998.
+
+Nick Benton, Andrew Kennedy, Sam Lindley, and Claudio Russo. Shrinking reductions in SML.NET. In 16th International Workshop on Implementation and Application of Functional Languages (IFL), 2004a.
+
+Nick Benton, Andrew Kennedy, and Claudio Russo. Adventures in interoperability: The SML.NET experience. In 6th International Conference on
+Principles and Practice of Declarative Programming (PPDP), 2004b.
+
+Thomas Cormen, Charles Leiserson, Ronald Rivest, and Clifford Stein.
+
+Introduction to Algorithms. MIT Press, second edition, 2001.
+
+Olivier Danvy. A new one-pass transformation into monadic normal form.
+
+In 12th International Conference on Compiler Construction (CC'03),
+2003.
+
+Olivier Danvy and Andrzej Filinski. Representing control: A study of theCPS transformation.
+
+Mathematical Structures in Computer Science, 2
+(4):361-391, 1992.
+
+Olivier Danvy and Lasse R. Nielsen. A first-order one-pass CPS transformation. Theor. Comput. Sci., 308(1-3):239-257, 2003.
+
+Cormac Flanagan, Amr Sabry, Bruce F. Duba, and Matthias Felleisen.
+
+The essence of compiling with continuations (with retrospective). In
+McKinley (2004), pages 502-514.
+
+Matthew Fluet and Stephen Weeks. Contification using dominators. In
+
+ICFP'01: Proceedings of the Sixth ACM SIGPLAN International Conference on Functional Programming, pages 2-13. ACM Press, September 2001.
+
+John Hatcliff and Olivier Danvy. A generic account of continuation-passing
+
+styles. In Principles of Programming Languages (POPL), pages 458-471, 1994.
+
+Haim Kaplan, Nira Shafrir, and Robert E. Tarjan. Union-find with deletions.
+
+In SODA '02: Proceedings of the thirteenth annual ACM-SIAM symposium on Discrete algorithms, pages 19-28, Philadelphia, PA, USA, 2002.Society for Industrial and Applied Mathematics. ISBN 0-89871-513-X.
+
+Richard Kelsey. A correspondence between continuation passing style
+
+and static single assignment form. In Intermediate Representations
+Workshop, pages 13-23, 1995.
+
+Richard A. Kelsey and Paul Hudak. Realistic compilation by programtransformation. In
+
+Principles of Programming Languages (POPL).
+ACM, January 1989.
+
+Jung-taek Kim, Kwangkeun Yi, and Olivier Danvy. Assessing the overhead
+
+of ML exceptions by selective CPS transformation. In ACM SIGPLAN
+Workshop on ML, pages 112-119, 1998. Also appears as BRICS techni-cal report RS-98-15.
+
+David A. Kranz, Richard A. Kelsey, Jonathan A. Rees, Paul Hudak, and
+
+James Philbin. ORBIT: an optimizing compiler for scheme. In Proceedings of the ACM SIGPLAN symposium on Compiler Construction, pages219-233, June 1986.
+
+Sam Lindley. Normalisation by evaluation in the compilation of typed functional programming languages. PhD thesis, University of Edinburgh,
+2005.
+
+Kathryn S. McKinley, editor. 20 Years of the ACM SIGPLAN Conference
+
+on Programming Language Design and Implementation 1979-1999, A
+Selection, 2004. ACM.
+
+Eugenio Moggi. Notions of computation and monads. Information and
+
+Computation, 93:55-92, 1991.
+
+A. M. Pitts. Typed operational reasoning. In B. C. Pierce, editor, Advanced
+
+Topics in Types and Programming Languages, chapter 7, pages 245-289.
+The MIT Press, 2005.
+
+Amr Sabry and Philip Wadler. A reflection on call-by-value. ACM Transactions on Programming Languages and Systems (TOPLAS), 19(6):916-941, November 1997. ISSN 0164-0925.
+
+Zhong Shao and Andrew W. Appel. A type-based compiler for Standard
+
+ML. In Proc. 1995 ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI), pages 116-129, La Jolla, CA,
+Jun 1995.
+
+Olin Shivers. Higher-order control-flow analysis in retrospect: lessons
+
+learned, lessons abandoned (with retrospective). In McKinley (2004),
+pages 257-269.
+
+Olin Shivers and Mitchell Wand. Bottom-up \Theta -reduction: Uplinks and \Lambda -
+
+DAGs. In European Symposium on Programming (ESOP), pages 217-232, 2005.
+
+Guy L. Steele. RABBIT: A compiler for SCHEME. Technical Report AITR-474, MIT, May 1978.
+
+Hayo Thielecke. Comparing control constructs by double-barrelled CPS.
+
+Higher-Order and Symbolic Computation, 15(2/3):141-160, 2002.
+
+Andrew P. Tolmach and Dino Oliva. From ML to Ada: Strongly-typed
+
+language interoperability via source translation. Journal of Functional
+Programming, 8(4):367-412, 1998.
+
+Philip Wadler and Peter Thiemann. The marriage of effects and monads. In
+
+ACM SIGPLAN International Conference on Functional Programming
+(ICFP), 1998.
+
+190

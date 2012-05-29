@@ -1,0 +1,1960 @@
+
+
+Resource Bound Certification
+Karl Crary
+Carnegie Mellon University
+
+Stephanie Weirich
+Cornell University
+
+Abstract
+Various code certification systems allow the certification and
+static verification of a variety of important safety properties
+such as memory safety and control-flow safety. These systems provide valuable tools for verifying that untrusted and
+potentially malicious code is safe before execution. However,
+one important safety property that is not usually included
+is that programs adhere to specific bounds on resource consumption, such as running time.
+
+We present a decidable type system capable of specifying
+and certifying bounds on resource consumption. Our system
+makes two advances over previous resource bound certification systems, both of which are necessary for a practical
+system: we allow the execution time of programs and their
+subroutines to vary, depending on their arguments, and we
+provide a fully automatic compiler generating certified executables from source-level programs. The principal device
+in our approach is a strategy for simulating dependent types
+using sum and inductive kinds.
+
+1 Introduction
+A current trend in systems software is to allow untrusted
+extensions to be installed in protected services, relying on
+language technology to protect the integrity of the service
+instead of hardware-based protection mechanisms [10, 19,
+1, 16, 14]. For example, the SPIN project [1] relies on the
+Modula-3 type system to protect an operating system kernel
+from erroneous extensions. Similarly, web browsers rely on
+the Java Virtual Machine bytecode verifier [10] to protect
+users from malicious applets. In both situations, the goal
+is to eliminate expensive inter-process communications or
+boundary crossings by allowing extensions to access directly
+the resources they require.
+
+Recently, Necula and Lee [16, 15] have proposed ProofCarrying Code (PCC) and Morrisett et al. [14] have proposed Typed Assembly Language (TAL) as language technologies that provide the security advantages of high-level
+languages, but without the overheads of interpretation or
+just-in-time compilation. In both systems, low-level machine code can be heavily optimized, by hand or by compiler, and yet be automatically verified through proof- or
+type-checking.
+
+Each of these systems (SPIN, Java, TAL, and Touchstone [18], a compiler that generates PCC) automatically
+
+To appear in the Twenty-Seventh Symposium on
+Principles of Programming Languages, Boston, Massachusetts, January 2000.
+
+certifies a large set of important security properties, such as
+type safety, memory safety, and control-flow safety. However, one important security property that none of these
+systems certifies is bounded termination; none can guarantee that an accepted program will terminate within a given
+amount of time. Such guarantees of running-time bounds
+(and, more generally, of resource-consumption bounds) are
+essential to many applications, such as active networks and
+extensible operating system kernels. To obtain such bounds
+on resource consumption, code consumers have generally
+had to rely on operating system monitoring, which can be
+costly and which works against the direct access afforded by
+language-based mechanisms.
+
+To redress this shortcoming, we present a decidable type
+system called LXres for specifying bounds on resource consumption and for certifying that programs satisfy those
+bounds. In this paper we will focus on specification and
+certification of running-time bounds; we consider at the end
+how our mechanisms can be generalized to other sorts of resources, such as space. Note that we make no effort to infer
+any bounds on resource consumption; rather we provide a
+mechanism for certifying those bounds once they have been
+discovered by the programmer or by program analysis.
+
+We have implemented our type system within the framework of the Typed Assembly Language security infrastructure [14, 13]. The implemented version of this work (called
+TALres) lowers the mechanisms we discuss in this paper
+down to the TAL level, augmenting TAL's very low-level
+safety certification with running-time guarantees. We have
+also implemented a prototype certifying compiler that generates TALres, taking as its input an impure functional language (called PopCron) derived from a safe dialect of C [13]
+and annotated with termination information. Many of the
+low-level details that are the focus of TAL are not germane
+to certification of resource bounds, so in the interest of clarity we present our results at a higher level before discussing
+TALres informally.
+
+2 Informal account
+At its core, our approach is quite simple. Following Necula
+and Lee [17], we augment the underlying computing machinery with a virtual clock that winds down as programs
+execute. The virtual clock exists only in support of the formal semantics; the machine provides no run-time operations
+that can inspect the clock, and therefore the clock need not
+be (and is not) implemented at run time. The pertinence of
+the clock is to the type system: Function types, in addition
+to specifying the types of a function's argument and result,
+also specify that function's beginning and ending clock readings. For example, a function that takes an integer at time
+
+15 and returns another integer at time 12 could be given the
+type:
+
+(int, 15) ! (int, 12)
+
+However, such a type is unduly specific. By specifying the
+starting clock to be 15, this type restricts its members so
+that they may be started only at one particular time. We
+would prefer a more flexible type the specifies that the function runs in 3 clock steps. Indeed, since there exist no operations that can inspect the clock, that is the entire import
+of the above type anyway.
+
+We can get the desired type by using polymorphism to
+abstract over the finishing time. For example, the type
+
+8n. (int, n + 3) ! (int, n)
+specifies that for any time n, when presented with an integer
+at time n + 3, its members return an integer at time n. In
+other words, its members run in 3 clock steps. The former
+type can be obtained by instantiating n with 12, but such
+functions can also be run at any other time (provided the
+clock reads at least 3) by a suitable instantiation.
+
+As a minor point, we also allow programs to waste clock
+steps on demand, so a function with the latter type could
+in fact take 1 or 2 steps and then waste the remaining steps
+as necessary to meet the specification. Also, due to some
+practical considerations that we discuss in Section 4, we only
+step the clock for function calls. However, this decision is
+only to simplify the compiler, and has no significant impact
+on the design of the language; one could just as easily use
+a tighter measure of running time such as the number of
+instructions executed.
+
+To make this concrete, consider the function map pair, a
+higher-order function that takes a function f and a pair p,
+and applies f to both components of p:
+
+\Lambda ff:Type, fi:Type, k:Nat, n:Nat.
+
+*(fp : (8m:Nat.(ff, m + k) ! (fi, m)) * (ff * ff),
+
+n + 2k + 2).
+
+let f = prj1 fp in
+let p = prj2 fp
+inh
+
+f[n + k + 1](prj1 p), f[n](prj2 p)i
+
+The function first takes four static arguments, two types and
+two natural numbers: ff and fi (the domain and codomain
+types of f), k (the running time of f), and n (the overall finishing time). After taking static arguments, map pair takes
+f and p as a pair (curried functions quickly become tedious
+when writing clock values on each end of every arrow), and
+specifies the function's starting time to be n + 2k + 2.
+
+The body typechecks as follows: The starting clock, as
+specified by the abstraction, is n + 2k + 2. The clock only
+steps for function calls, so the clock is unchanged by extraction of f and p, by the first instantiation of f, and by the
+projection from p. The first function call expects a starting
+clock of (n + k + 1) + k, which it receives once the clock is
+stepped for the function call. The function call then returns
+with the clock reading n + k + 1, as given by f's type. Stepping the clock for the second function call leaves it reading
+n + k, the expected starting clock for the second function
+call, which then returns with the clock reading n.
+
+Therefore, map pair is given the type:
+
+8ff:Type, fi:Type, k:Nat, n:Nat.
+
+((8m:Nat.(ff, m + k) ! (fi, m)) * (ff * ff), n + 2k + 2)!
+
+(fi * fi, n)
+
+Effects systems At alternative formulation that one could
+consider would use an effects type system [11] to track the
+passage of time. Such a system would allow for a simpler notation for function types (int 3! int) as opposed to8
+
+n. (int, n + 3) ! (int, n)) and would eliminate the effort
+seen in the previous example in matching up clock readings.
+
+We did not adopt an effects formulation because, although such a formulation would works quite neatly for time,
+it does not neatly generalize to resources that can be recovered, such as space. For example, if we interpret resources
+to mean space, the type 8n. (int, n + 15) ! (int, n + 12)
+specifies a function that allocates as many as 15 units of
+space but deallocates all but 3 of those, and so must be
+called with at least 15 units of space. There is no convenient way to specify such a function using a conventional
+effects system. When resources cannot be recovered, such
+a type is pointless (one would always prefer the more flexible 8n. (int, n + 3) ! (int, n)), but when they can, such
+types draw clearly important distinctions. Nevertheless, in
+this paper we will adopt the effects notation as a convenient
+shorthand:
+
+Notation 2.1 We write o/1 n! o/2 to mean 8m:Nat. (o/1, m +
+n) ! (o/2, m).
+
+For example, map pair's type may be abbreviated:
+
+8ff:Type, fi:Type, k:Nat. ((ff k! fi) * (ff * ff)) 2k+2-! (fi * fi)
+2.1 Variable-time functions
+The programming idiom seen so far is pleasantly simple,
+but it supports only constant-time functions, which renders
+it insufficient for most real programs. Even when whole
+programs run in constant time, they still very often contain variable-time subroutines. In order to support real programs, we must permit a function's running time to depend
+on its arguments. Since this involves type expressions referring to values, we require some notion of dependent type.
+
+One possible design is simply to add dependent types to
+the system directly. It is possible that a workable design
+could be constructed using such an approach (following Xi
+and Pfenning [20], for example), but we adopted another
+approach to better leverage the type structure already developed for TAL [3], and in order to keep the type system as
+simple as possible. In our approach, we take sum and inductive kinds and polymorphism as our primitive constructs,
+and use them to construct a form of synthetic dependent
+type. As a result, our programming language is simpler,
+but the programming idiom is more complex. This is reasonable in keeping with our intention for this language to be
+primarily machine manipulated; we do however include dependent types in our compiler's source language, PopCron
+(Section 4).
+
+Our approach to dependent types is based on a device
+from Crary and Weirich [3] (hereafter, CW), for the compiler
+intermediate language LX. CW showed how, using sum and
+inductive kinds, to construct run-time values that represent
+static type information. This made it possible to perform
+intensional type analysis [7] while inspecting only values.
+Here we use the same device for the opposite purpose, to
+construct static representations of run-time values. We can
+then make a function's running time depend on the static
+representation of an argument, rather than on the argument
+itself.
+
+2
+
+We begin with a representative example to illustrate how
+this works. Suppose we wish to implement a map tree function. The running time of map tree depends on the size of
+the tree: If k is the running time of the argument function
+and t is the tree argument, then map tree's running time is
+size(t) * (k + 3) (one call to the mapping function and two
+recursive calls for each node). Using an ordinary dependent
+type, we might write map tree's type as something like:
+
+8ff:Type, fi:Type, k:Nat.
+
+(ff k! fi, t : tree ff) size(t)*(k+3)- tree fi
+
+In our idiom, we add an additional static argument (s) that
+represents the argument t, and we compute the running time
+based on that static argument:
+
+8ff:Type, fi:Type, k:Nat, s:TreeRep.
+
+((ff k! fi) * tree(s)(ff))
+
+cost(s)-! tree(s)(fi)
+
+We define TreeRep using an inductive kind and cost using
+primitive recursion over that inductive kind. In this section
+we will use an informal notation for each of these; we show
+how the example is formalized in the next section:
+
+kind TreeRep = Leaf
+
+| Node of TreeRep * TreeRep
+
+fun cost(Leaf) = 0
+
+| cost(Node (s1, s2)) =
+
+cost(s1) + cost(s2) + k + 3
+
+The example is simplified by the fact that s needs only to
+represent the shape of the tree, and not its contents, allowing
+the same representation to be used for the argument and
+result trees. If the mapping function were a variable-time
+function, instead of constant-time k, the TreeRep kind would
+need to be augmented to supply information about the data
+items lying at each node. Also note that we have simplified
+the definition of cost by including the variable k free, rather
+than as an argument.
+
+The most delicate aspect is the definition of tree(s) as a
+parameterized recursive type that includes only those trees
+represented by the argument, s. A simple and naively appealing definition is:
+
+type wrong tree(s)(ff) =
+
+(case s of
+
+Leaf => unit + void
+| Node (s1, s2) =>
+
+void + (ff * wrong tree(s1)(ff)
+
+* wrong tree(s2)(ff)))
+
+Unfortunately, this definition makes map tree unimplementable, as s, the argument to tree, will nearly always be
+abstract. In such cases, wrong tree(s)(ff) will be a useless,
+irreducible type. Instead, following CW, if we implement it
+as (again using an informal notation):
+
+type tree(s)(ff) =
+
+(case s of
+
+Leaf => unit
+| Node (s1, s2) => void) +
+(case s of
+
+Leaf => void
+| Node (s1, s2) =>
+
+ff * tree(s1)(ff) * tree(s2)(ff))
+
+Given a member of t of tree(s)(ff), we can always case-split
+t. Suppose t is a left injection, inj1 t0. Then we know that
+s is necessarily Leaf, because if it were Node, then t0 would
+have type void, which is impossible. LXres permits us to
+propagate this new information back into the type system
+and refine s according to whatever we learn. In this manner, static representations can keep up with their dynamic
+counterparts.
+
+With these definitions, we can implement map tree as
+shown below. The propagation of information into the type
+system is conducted by a virtual case construct (described
+in Section 3), but for the sake of clarity in this informal
+account, we allow that propagation to be implicit in the
+example.
+
+fix map tree =
+\Lambda ff:Type, fi:Type, k:Nat, s:TreeRep, n:Nat.
+
+*(ft : (ff k! fi) * tree(s)(ff), n + cost(s)).
+
+lethf : ff k! fi, t : tree(s)(ff)i = ft in
+case t of
+
+inj1 t0 ) inj1 *
+inj2 t0 )
+
+let Node(s1, s2) = s in
+lethx : ff, t1 : tree(s1)(ff), t2 : tree(s2)(ff)i = t0 in
+let x0 = f[n + cost(s1) + cost(s2) + 2](x) in
+let t01 = map tree[ff, fi, k, s1,
+
+n + cost(s2) + 1]hf, t1i in
+let t02 = map tree[ff, fi, k, s2, n]hf, t2i
+in
+
+inj2hx0, t01, t02i
+
+The function typechecks as follows: We begin with a function f that runs in k steps, an abstract tree representation
+s, a tree t matching that representation, and n + cost(s)
+on the clock. The tree t is a member of a sum type, so we
+can case analyze it. In the first case, t is inj1 t0 and therefore, as argued above, s is Leaf. Consequently, cost(s) = 0
+and the clock reads n. The result value (inj1 *) has type
+tree(Leaf)(ff) and constructing it takes no steps off the
+clock, so the function's postcondition is satisfied.
+
+In the second case, t is inj2 t0 and therefore, since t0
+cannot have type void, we may infer that s is Node(s1, s2)
+(for some tree representations s1 and s2) and that t0 has
+type ff * tree(s1)(ff) * tree(s2)(ff). A let expression binds
+x, t1 and t2 to the respective components of the node. We
+then compute the components x0, t01 and t02 of a new node
+in three steps:
+
+1. With the clock reading n + cost(s) = n + cost(s1) +
+
+cost(s2) + k + 3, we instantiate f with the finishing
+time n + cost(s1) + cost(s2) + 2. Thus f expects a
+starting time of n + cost(s1) + cost(s2) + 2 + k, which
+is satisfied once the clock is stepped for the function
+call.
+
+2. With the clock now reading n+cost(s1)+cost(s2)+2,
+
+we instantiate map tree with a tree representation s1
+and a finishing time n + cost(s2) + 1. Thus map tree
+expects a starting time of n + cost(s2) + 1 + cost(s1),
+which is satisfied once the clock is stepped. The argument, t1 has type tree(s1)(ff), so the function call is
+well-typed.
+
+3. With the clock now reading n+cost(s2)+1, we instantiate map tree with s2 and a finishing time of n. The
+
+3
+
+starting time, n + cost(s2), is satisfied and the argument has the appropriate type, so the function call is
+again well-typed.
+
+The function concludes by assembling these components into
+a tree node with type tree(Node(s1, s2))(ff) and the clock
+reads n, so the function's postcondition is satisfied.
+
+2.2 Discussion
+The map tree example is typical of the use of our system.
+First, one identifies one or more metric arguments on which
+a function's running time depends. In this example, the
+running time depends on both the running time of f and
+the size of t, so both f and t are metric arguments.
+
+Second, one defines representations for the metric arguments that are detailed enough both to compute the cost
+function and to define enforcement types (such as tree(s))
+that contain only values that match the representative.
+The representation for the f argument was simple; all that
+needed to be known was its running time k and an enforcement type ff
+
+k! fi was easily defined. The t argument is
+
+more complicated (and often more typical). We would be
+happy to represent it by only its size, but our type system
+is incapable of constructing an enforcement type for a tree
+given only its size (more on this below), and so consequently
+we needed to specify the tree's entire shape.
+
+Finally, after defining a cost function and an enforcement
+type, the function itself is written. Two main issues arise in
+this process:
+
+* The cost must be woven through the function; this is
+
+done by correct choices of finishing times for function
+calls and by wasting extra clock cycles in order to make
+parallel branches match. (The latter was not necessary
+in the map tree example.)
+
+* Representations must be supplied for all metric arguments to inner function calls. Constructing such representations requires access to representations of all components from which those arguments are built. When
+a component is part of one of the function's own metric
+arguments, the desired representation is easily obtained
+from that argument's representation. (In this map tree
+example, the needed representations were obtained by
+decomposing s into Node(s1, s2) once it was determined
+that t was a node.)
+
+When a component is the result of another function
+call, that function's type must specify the representation of that return value. For example, map tree specified that its result had the same specification as its
+argument. More generally, the result could have a different specification given by a static function. For example, if map tree also possibly restructured the tree,
+it would need to have the type
+
+8ff:Type, fi:Type, k:Nat, s:TreeRep.
+
+((ff k! fi) * tree(s)(ff))
+
+cost(s)-! tree(newrep(s))(fi)
+
+where newrep is a static function with kind TreeRep !
+TreeRep. Such functions with specified results are more
+limited in what they can do than ordinary functions,
+because static functions are required to be primitive
+recursive and therefore the specified functions must be
+
+primitive recursive, at least as far as the structure described by the representations are concerned. This requirement, which we discuss further in the next section,
+is necessary to ensure decidability of type checking.
+
+In some cases, an argument may be a metric argument
+to an inner function call even when it does not affect
+the total running time of the outer function. For example, suppose a function broke a fixed-length array
+into two variable-sized pieces based on an integer argument, and then mapped a constant-time function over
+each piece. The total running time does not depend
+on the integer argument, but each internal call's time
+does. In such cases, the "phantom" dependency must
+be treated as a metric argument and a representation
+must be required.
+
+A similar issue arises when an inner function's result is
+a metric argument to another inner function, but that
+result does not affect the total remaining running time
+of the outer function. In this case, a representation
+must again be obtained, but since there is no need to
+link this representation back to the total cost, it can
+be existentially quantified rather than specified by a
+static function. This case is more typical than the case
+of functions that require specified results.
+
+Returning to the topic of enforcement types, the aspect
+of trees that makes it impossible to define an enforcement
+type for them given only a size is that trees have multiple
+spines. That is, given a total size, the enforcement type does
+not know how much size to place in the left subtree and how
+much to place in the right. Therefore, the representation
+must also specify how much to place in each subtree, and
+by doing so inductively it specifies the tree's entire shape.
+Multiple-spined data structures are quite common, so it is
+common to require representations of entire data structures.
+Consequently, our prototype compiler makes no effort to optimize representations, instead providing (nearly) full representations for all metric arguments (other than functions).
+However, it is important to emphasize that the static representations are not constructed at run time, so the cost of
+over-representing a metric argument is paid at verification
+time only.
+
+An alternative strategy that could permit much more
+succinct representations at the cost of a more complicated
+type system would be to use union types to enumerate the
+possible divisions of the total size. We have not explored
+the ramifications of such a design, but it seems likely that
+it would complicate typechecking.
+
+3 A Language for Resource Bound Certification
+In this section we discuss LXres and its semantics. We
+present the constructor and term levels individually, concentrating discussion on the novel features of each. The syntax
+of LXres (shown in Figures 1 and 2) is based on Girard's F!
+[6, 5] augmented mainly by a rich programming language
+at the constructor level, constructor refinement operators
+at the term level, and resource bounds in types and terms.
+LXres is very similar to CW's LX, the difference being that
+LXres includes virtual clocks and a primitive natural number kind in support of those clocks. The full static and
+operational semantics of LXres are given in Appendices A
+and B.
+
+4
+
+(kinds) k ::= Type | Nat | 1 | k1 ! k2 | k1 * k2 | k1 + k2 | j | uj.k
+(constructors) c, o/ ::= * | ff | *ff:k.c | c1c2 unit, variables and functions| h
+
+c1, c2i | prj1 c | prj2 c products|
+
+injk1+k21 c | injk1+k22 c | case(c, ff1.c1, ff2.c2) sums|
+folduj.k c | pr(j, ff:k, fi:j !k0.c) primitive recursion|
+n | c1 u c2 | prnat(ff, fi:k.c1; c2) natural numbers|
+(o/1, c1) ! (o/2, c2) | o/1 * o/2 | o/1 + o/2 types| 8
+
+ff:k.o/ | 9ff:k.o/ | unit | void | reck(c1, c2) types
+
+Figure 1: LXres kinds and constructors
+
+3.1 Kinds and constructors
+The constructor and kind levels, shown in Figure 1, contain
+both base constructors of kind Type (called types) for classifying terms, and a variety of programming constructs for
+computing types. In addition to the variables and lambda
+abstractions of F!, LXres also includes a unit kind, products, sums, and the usual introduction and elimination constructs for those kinds. LXres also includes a natural number kind discussed further in Section 3.3.
+
+We denote the simultaneous, capture-avoiding
+substitution of E1, . . . , En for X1, . . . , Xn in E by
+E[E1, . . . , En/X1, . . . , Xn]. As usual, we consider alphaequivalent expressions to be identical. A few constructs
+(inji, fold, pr, and rec) are labeled with kinds to assist in
+kind checking; we will omit such kinds when they are clear
+from context. When a constructor is intended to have kind
+Type, we often use the metavariable o/.
+
+To support computing with static representations, LXres
+includes kind variables (j) and inductive kinds (uj.k). A
+prospective inductive kind uj.k will be well-formed provided
+that j appears only positively within k. Inductive kinds
+are formed using the introductory operator folduj.k, which
+coerces constructors from kind k[uj.k/j] to kind uj.k. For
+example, consider the kind Tlist of lists of types, defined as
+uj.(1+Type*j). The constructor (inj1+Type*Tlist1 *) has kind
+(1+Type*j)[Tlist/j]. Therefore foldTlist(inj1+Type*Tlist1 *) has
+kind Tlist.
+
+Inductive kinds are eliminated using the primitive recursion operator pr. Intuitively, pr(j, ff:k, ':j ! k0.c) may
+be thought of as a recursive function with domain uj.k in
+which ff stands for the argument unfolded and ' recursively
+stands for the full function. However, in order to ensure that
+constructor expressions always terminate, we restrict pr to
+define only primitive recursive functions. Informally speaking, a function is primitive recursive if it can only call itself
+recursively on a subcomponent of its argument. Following
+Mendler [12], we ensure this using abstract kind variables.
+Since ff stands for the argument unfolded, we could consider
+it to have the kind k[uj.k/j], but instead of substituting for
+j in k, we hold j abstract. Then the recursive variable '
+is given kind j ! k0 (instead of j[uj.k/j] ! k0) thereby
+ensuring that ' is called only on a subcomponent of ff.
+
+The kind k0 in pr(j, ff:k, ':j ! k0.c) is permitted to contain (positive) free occurrences of j. In that case, the function's result kind employs the substitution for j that was
+internally eschewed. Hence, the result kind of the above
+constructor is k0[uj.k/j]. This is useful so that some part of
+the argument may be passed through without ' operating
+on it. As a particularly useful application, we can define
+the constructor unfolduj.k with kind uj.k ! k[uj.k/j] to
+
+be pr(j, ff:k, ':j !k.ff).
+
+For example, given a constructor with kind Tlist, we can
+use primitive recursion to construct the tuple type built from
+the types in the list (using an informal, expanded notation
+for case):
+
+tuple def= pr(j, ff:1+Type*j, ':j !Type.
+
+case ff of
+
+inj1 fi ) unit
+inj2 fl ) prj1 fl * '(prj2 fl))
+
+Suppose we apply tuple to the list [int] (that is, the encoding fold(inj2hint, fold(inj1 *)i). By unrolling the pr
+expression, we may show:
+
+(pr(j, ff:1+Type*j, ':j !Type.
+
+case ff of
+
+inj1 fi ) unit
+inj2 fl ) prj1 fl * '(prj2 fl))) [int]
+
+= case(inj2hint, fold(inj1 *)i) of
+
+inj1 fi ) unit
+inj2 fl ) prj1 fl * tuple(prj2 fl)
+
+= int * (tuple(fold(inj1 *)))
+
+(that is, int * tuple([]))
+
+= int * (case (inj1 *) of
+
+inj1 fi ) unit
+inj2 fl ) prj1 fl * tuple(prj2 fl))
+
+= int * unit
+The unrolling process is formalized by the following constructor equivalence rule (the relevant judgment forms are
+summarized in Figure 5):
+
+\Delta  ` c0 : k[uj.k/j] \Delta , j ` k0 kind
+\Delta , j, ff:k, ':j !k0 ` c : k0 \Delta  ` uj.k kind
+
+\Delta  ` pr(j, ff:k, ':j ! k0.c)(folduj.k c0) =
+
+c[uj.k, c0, pr(j, ff:k, ':j !k0.c)/j, ff, ']
+
+: k0[uj.k/j]
+(j only positive in k0 and j, ff, ' 62 \Delta )
+
+Notation 3.1 If k1 is of the form uj.k, then we write k1[k2]
+to mean k[k2/j]. For example, Tlist[Tlist] abbreviates 1 +
+Type * Tlist.
+
+3.2 Types and terms
+The syntax of LXres terms is given in Figure 2. Most LXres
+terms are standard, including the usual introduction and
+
+5
+
+(terms) e ::= * | x | *(x:o/, c).e | e1e2 unit, variables, functions|
+
+waste[c]e clock advance| h
+
+e1, e2i | prj1 e | prj2 e products|
+
+injo/1+o/21 e | injo/1+o/22 e | case(e, x1.e1, x2.e2) sums|
+\Lambda ff:k.v | e[c] | fix f:o/.v constructor abstractions and recursion|
+pack e as 9ff:k.o/ hiding c | unpackhff, xi = e1 in e2 existential packages|
+foldreck(c,c0) e | unfold e parameterized recursive types|
+vcaseo/.c(c, fi. e, fl. deadv) | vcaseo/.c(c, fi. dead v, fl. e) constructor refinement operations|
+leto/.c hfi, fli = c in e | leto/.c (foldfi) = c in e constructor refinement operations
+
+Figure 2: LXres terms
+
+\Delta  ` o/1 : Type \Delta  ` c1 : Nat \Delta  ` o/2 : Type \Delta  ` c2 : Nat
+
+\Delta  ` (o/1, c1) ! (o/2, c2) : Type
+
+\Delta  ` o/1 : Type \Delta  ` c1 : Nat \Delta ; (\Gamma , x:o/1); c1 ` e : o/2 . c2
+
+\Delta ; \Gamma ; c ` *(x:o/1, c1).e : (o/1, c1) ! (o/2, c2) . c
+
+(x 62 \Gamma )
+
+\Delta ; \Gamma ; c ` e1 : (o/1, c1) ! (o/2, c2) . c0
+
+\Delta ; \Gamma ; c0 ` e2 : o/1 . (c1 u 1)
+
+\Delta ; \Gamma ; c ` e1e2 : o/2 . c2
+
+\Delta ; \Gamma ; c ` e : o/ . (c1 u c2)
+\Delta ; \Gamma ; c ` waste[c1]e : o/ . c2
+
+Figure 3: Virtual clock rules
+
+elimination forms for products, sums, unit, and universal
+and existential types.
+
+Function types and lambda abstractions are written with
+virtual clock specifications, as discussed in Section 2. A
+few representative rules governing virtual clocks appear in
+Figure 3, in which the typing judgment \Delta ; \Gamma ; c ` e : o/ . c0
+states that (in constructor context \Delta  and value context \Gamma )
+the term e has type o/, and given a clock reading c it finishes
+evaluating with the clock reading c0.
+
+Constructor abstractions are limited by a value restriction to avoid unsoundness in the presence of effects. The
+value forms are given in Appendix B. Recursive functions
+are expressible using fix terms, the bodies of which are syntactically restricted to be functions (usually polymorphic)
+by their typing rule (Appendix A). As at the constructor
+level, some constructs are labeled with types or clocks to
+assist in type checking; we omit these when clear from context.
+
+Parameterized recursive types are written reck(c1, c2),
+where k is the parameter kind and c1 is a type constructor with kind (k ! Type) ! (k ! Type). Intuitively, c1
+recursively defines a type constructor with kind k ! Type,
+which is then instantiated with the parameter c2 (having
+kind k). Thus, members of reck(c1, c2) unfold into the type
+c1(*ff:k. reck(c1, ff))c2, and fold the opposite way. The special case of non-parameterized recursive types are defined
+as rec(ff.o/) = rec1(*':1 ! Type. *fi:1. o/['(*)/ff], *). Unlike inductive kinds, no positivity condition is imposed on
+recursive types.
+
+Refinement The most novel features of the LXres term
+language are the constructor refinement operations. The
+main refinement operations are the two virtual case constructs, written vcase(c, fi. e, fl. deadv) and dually. These
+operations may been thought of as branching operations
+for sum kinds: if c normalizes to inj1(c0), then the term
+vcase(c, fi. e, fl. dead v) evaluates to e[c0/fi].
+
+However, constructors are static components of the program only, and therefore may not be relied upon at run time.
+Consequently, the semantics of vcase(c, fi. e, fl. dead v) dictates that it always reduces to the first branch, and the
+second branch is dead code. To avoid unsoundness, the typing rule for vcase requires that its dead branch be a value
+with type void, and thus that branch is statically known to
+be dead code. Somewhat surprisingly, it may be shown [3]
+that this virtual case construct provides the same expressive
+power as an unrestricted case construct would.
+
+In the left branch of a virtual case, the constructor being branched on is determined to be a left injection, and
+conversely in the right branch. When that constructor is a
+variable, the vcase typing rule propagates this information
+back into the type system by substituting for that variable:
+
+\Delta , fi:k1, \Delta 0; \Gamma [inj1 fi/ff]; c1[inj1 fi/ff] `
+
+e[inj1 fi/ff] : o/[inj1 fi/ff] . c2[inj1 fi/ff]
+\Delta , fl:k2, \Delta 0; \Gamma [inj2 fl/ff]; c1[inj2 fl/ff] `
+
+v[inj2 fl/ff] : void . c02
+\Delta , ff:k1+k2, \Delta 0 ` c = ff : k1 + k2
+
+\Delta , ff:k1+k2, \Delta 0; \Gamma ; c1 ` vcaseo/.c2(c, fi. e, fl. dead v) : o/ . c2
+
+(fi, fl 62 \Delta )
+
+Within the branches, types that depend on ff can be reduced using the new information. For example, if x has
+type case(ff, fi.int, fi.void), its type can be reduced in each
+branch, allowing its use as an integer in the active branch
+and as void value in the dead branch.
+
+In order for LXres to enjoy the subject reduction property, we also require a trivialization rule [4] for vcase, for
+use when the argument is a sum introduction:
+
+\Delta  ` c = inj1 c0 : k1 + k2 \Delta ; \Gamma ; c1 ` e[c0/fi] : o/ . c2
+
+\Delta ; \Gamma ; c1 ` vcaseo/.c2(c, fi. e, fl. dead v) : o/ . c2
+
+Path refinement There may also be useful refinement to
+perform when the constructor to be branched on is not a
+variable. For example, suppose ff has kind (1+1)*Type and
+
+6
+
+TreeRep = uj.(1 + j*j)
+cost = pr(j, ff:TreeRep[j], ':j ! Nat.
+
+caseff of
+
+inj1 fi ) 0
+inj2 fi )
+
+'(prj1 fi) u '(prj2 fi) u k u 3)
+tree(s)(ff) =
+recTreeRep(*':TreeRep ! Type. *fi:TreeRep.
+
+(case unfold fi of
+
+inj1 fl ) *
+inj2 fl ) void) +
+(case unfold fi of
+
+inj1 fl ) void
+inj2 fl )
+
+ff * '(prj1 fl)(ff) * '(prj2 fl)(ff)),
+s)
+
+map tree =
+fix map tree :
+
+(8ff:Type, fi:Type, k:Nat, s:TreeRep.
+
+((ff k! fi) * tree(s)(ff))
+
+cost(s)-! tree(s)(fi)) .
+
+\Lambda ff:Type, fi:Type, k:Nat, s:TreeRep, n:Nat.
+
+*(ft : (ff k! fi) * tree(s)(ff), n u cost(s)).
+
+lethf : ff k! fi, t : tree(s)(ff)i = ft in
+case unfold t of
+
+inj1 t0 )
+
+let fold(s0) = s in
+vcase s0 of
+
+inj1 s00 ) inj1 *
+inj2 s00 ) dead t0
+inj2 t0 )
+
+let fold(s0) = s in
+vcase s0 of
+
+inj1 s00 ) dead t0
+inj2 s00 )
+
+leths1, s2i = s00 in
+lethx : ff, t1 : tree(s1)(ff), t2 : tree(s2)(ff)i = t0 in
+let x0 = f[n u cost(s1) u cost(s2) u 2](x) in
+let t01 = map tree[ff, fi, k, s1,
+
+n u cost(s2) u 1]hf, t1i in
+let t02 = map tree[ff, fi, k, s2, n]hf, t2i
+in
+
+inj2hx0, t01, t02i
+
+Figure 4: Formalized map tree example
+
+x has type case(prj1 ff, fi.int, fi.void). When branching on
+prj1 ff, we should again be able to consider x an integer or a
+void-value, but the ordinary vcase rule above no longer applies since prj1 ff is not a variable. This is solved using the
+product refinement operation, leto/.c hfi, fli = ff in e. Like
+vcase, the product refinement operation substitutes everywhere for ff:
+
+\Delta , fi:k1, fl:k2, \Delta 0; \Gamma [hfi, fli/ff] . c1[hfi, fli/ff] `
+
+e[hfi, fli/ff] : o/[hfi, fli/ff] . c2[hfi, fli/ff]
+\Delta , ff:k1 * k2, \Delta 0 ` c = ff : k1 * k2
+
+\Delta , ff:k1 * k2, \Delta 0; \Gamma ; c1 ` leto/.c2hfi, fli = c in e : o/ . c2
+
+(fi, fl 62 \Delta )
+
+A similar refinement operation exists for inductive types,
+and each operation also has a trivialization rule similar to
+those of vcase.
+
+We may use these refinement operations to turn paths
+into variables and thereby take advantage of vcase. For
+example, suppose ff has kind Tlist * Tlist and we wish to
+branch on unfold (prj1 ff). We do it using product and
+inductive kind refinement in turn:
+
+let hfi1, fi2i = ff in
+let (fold fl) = fi1 in
+
+vcase(fl, ffi. e, ffi. dead v)
+
+A formalized version of the map tree example using path
+refinement appears in Figure 4. For clarity, the example uses
+a let notation on terms as the informal version in Section 2
+did.
+
+Non-path refinement Since there is no refinement operation for functions, sometimes a constructor cannot be reduced to a path. Nevertheless, it is still possible to gain
+some of the benefits of refinement, using a device due to
+Harper and Morrisett [7]. Suppose ' has kind Nat ! (1+1),
+x has type case('(4), fi.int, fi.void), and we wish to branch
+on '(4) to learn the type of x. First we use a constructor
+abstraction to assign a variable ff to '(4), thereby enabling
+vcase, and then we use a lambda abstraction to rebind x
+with type case(ff, fi.int, fi.void):
+
+(\Lambda ff:1+1. *x: case(ff, fi.int, fi.void).
+
+vcase(ff, fi.e, fi. deadv)) ['(4)] x
+
+Within e, x will be an integer, and similarly within v. This
+device has all the expressive power of refinement, but is less
+efficient because of the need for extra beta-expansions. However, this is the best that can be done with unknown functions.
+
+3.3 Natural numbers
+LXres includes a primitive natural number kind, even
+though natural numbers could be defined as the inductive
+kind uj.(1+j) and addition could be defined using primitive recursion. This is because the inductive kind definition
+does not provide commutativity and associativity axioms,
+which are frequently necessary to prove adherence to resource bounds. The problem derives from the absence of an
+eta-equivalence rule on inductive kinds. For example, the
+
+7
+
+Judgment Meaning
+\Delta  ` k kind k is a well-formed kind
+\Delta  ` c : k c is a valid constructor of kind k
+\Delta  ` c1 = c2 : k c1 and c2 are equal constructors
+\Delta ; \Gamma ; c1 ` e : o/ . c2 e is a term of type o/, and, when
+
+starting with clock c1, evaluation
+of e finishes with clock c2
+
+Contexts
+\Delta  ::= ffl | \Delta , j | \Delta , ff:k
+\Gamma  ::= ffl | \Gamma , x:o/
+
+Figure 5: Judgments
+
+analog of ff + 0 = 0 + ff does not hold,
+
+ff 6= pr(j, fi:1+j, ':j ! uj.(1+j).
+
+case fi of
+
+inj1 fl ) fold(inj1 fl)
+inj2 fl ) fold(inj2 '(fl)))) ff
+
+because the right-hand side is irreducible, even though the
+equivalence does hold for all closed instances.
+
+By making natural numbers primitive, we can easily add
+commutativity and associativity axioms. Addition of natural numbers is written c1 u c2 to distinguish it from a sum
+type. Numerals in LXres are written n to distinguish them
+from numbers in the metatheory, but we will often omit the
+overbar when there is no possibility of confusion.
+
+Natural numbers are eliminated by primitive recursion.
+The constructor prnatk(ff, fi.c1; c2) is a function with kind
+Nat ! k. On zero it returns c2, and on n u 1 it returns
+the body c1, in which ff stands for n and fi stands for the
+recursively computed value:
+
+\Delta , ff:Nat, fi:k ` c1 : k \Delta  ` c2 : k \Delta  ` c : Nat
+
+\Delta  ` prnatk(ff, fi.c1; c2)(c u 1) =
+
+c1[c, prnatk(ff, fi.c1; c2)(c)/ff, fi] : k
+
+(ff, fi 62 \Delta )
+
+The implemented version of this type system, TALres, also
+provides a variety of other primitive operations (e.g., minimum, proper subtraction, and multiplication) and appropriate axioms for those operations.
+
+3.4 Properties of LXres
+The judgments of the static semantics of LXres appear in
+Figure 5. The important properties to show are decidable
+type checking and type safety. Due to space considerations,
+we do not present proofs of these properties here; the proofs
+are nearly identical to those for LX [3]. For typechecking,
+the challenging part is deciding equality of type constructors. We do this using a normalize, sort, and compare algorithm employing a reduction relation extracted from the
+equality rules. The reduction relation is constructed in the
+obvious manner except for commutativity and associativity,
+where it simply moves natural number literals outward. A
+second phase of the algorithm sorts addition expressions to
+account for full commutativity and associativity.
+
+Lemma 3.2 Reduction of well-formed constructors is
+strongly normalizing, confluent, preserves kinds, and is respected by equality.
+
+Strong normalization is proven using Mendler's variation on Girard's method [12]. Given Lemma 3.2, it is easy
+to show the normalize, sort, and compare algorithm to be
+terminating, sound and complete, and decidability of type
+checking follows in a straightforward manner.
+
+Theorem 3.3 (Decidability) It is decidable whether or
+not \Delta ; \Gamma ; c ` e : o/ . c0 is derivable in LXres.
+
+We say that a term (together with a clock) is stuck if
+it is not a value and if no rule of the operational semantics
+applies to it. Type safety requires that no well-typed term
+can become stuck:
+
+Theorem 3.4 (Type Safety) If ffl; ffl; n ` e : o/ . c and
+(e, n) 7!* (e0, n0) then (e0, n0) is not stuck.
+
+This is shown using the usual subject reduction and
+progress lemmas, augmented to track clocks.
+
+No rule in the operational semantics will allow a program to perform a function call when its clock reads 0, so
+any program attempting to exceed its time bounds would
+become stuck. It therefore follows from type safety that a
+well-typed program cannot exceed its time bound:
+
+Corollary 3.5 (Adherence to Resource Bounds) If
+ffl; ffl; n ` e : o/ . c then e executes in at most n clock steps.
+
+4 Implementation
+We have implemented this work within the framework of
+the Typed Assembly Language (TAL) security architecture [14, 13]. Our typechecker implements TALres, a variant of TALx86 [13] augmented to include the key features
+of LXres. An example of TALres code appears in Figure 8.
+
+The features of TAL and LXres interact pleasantly:
+LXres's virtual clocks may conveniently be considered registers, so LXres's clock-tracking mechanism is easily incorporated into TAL's existing register file mechanism. The
+kind and constructor languages of TAL are easily augmented
+to incorporate those of LXres, and the constructor refinement operations are accounted for in TAL by new pseudoinstructions similar to TAL's unpack instruction.
+
+TALres also supports a few features in addition to those
+of LXres. One often requires an enforcement type linking a run-time number to a static natural number. Such
+an enforcement type can easily be built when numbers are
+represented by Church numerals, but we wish to avoid the
+inefficiency of Church numerals and use the built-in integers of TAL. TAL includes a singleton integer type to support the compilation of tagged unions; with the addition of
+constructor-refining variants of the basic arithmetic operations, TALres allows this type to serve as an enforcement
+type. TALres also provides primitive natural number operations other than addition, in support of richer cost functions. In all, none of the enhancements to TAL to account
+for resource bounds have substantially enlarged its trusted
+computing base.
+
+Outside the trusted computing base, we implemented a
+prototype compiler generating TALres. Our compiler takes
+source programs written in PopCron (which includes cost
+function annotations) and compiles them to TALres, thereby
+certifying them for safety and for resource bounds. The
+PopCron language resembles Popcorn [13], which in turn is
+a safe dialect of C. At the level of a C source program it
+
+8
+
+is difficult to predict the exact number of instructions the
+resulting executable will use, but the number of jumps is
+more stable, and for this reason we measure running time
+in terms of backward jumps. (More precisely, we charge a
+jump when it cannot be determined to be forward.) The discrepancy between function calls in the source and chargeable
+jumps in the executable (typically two jumps per function
+call) is easily compensated for by the compiler.
+
+Each function in PopCron must be annotated with a running time expression given in terms of zero or more of the
+function's arguments using a dependent type notation. For
+example, the notation <|0|> in the following definition of an
+increment function specifies that this code makes no function calls.
+
+int add1 (int x)<|0|> { return x+1; }
+
+The compiler automatically adds representation arguments, threads the cost through the function, and provides
+representations for function calls. The PopCron language
+does not currently provide a facility for a function type to
+specify the representation of its result (recall Section 2.2),
+but we plan to add such a facility in the future.
+
+Continuing the trivial example, the generated TALres
+code for the function add1 is :
+
+_add1:
+LABELTYPE <All[k:Sint s:Ts].{CLK: 1 + k,
+
+ESP:sptr {CLK:k, EAX:B4, ESP:sptr B4::s}::B4::s}>
+
+MOV EAX,[ESP+4]
+INC EAX
+RETN
+
+The type of this label is a precondition for jumping to it.
+The precondition says that the stack (contained in register
+ESP) must contain the pointer to a return address, followed
+by a four byte value (type B4), followed by the rest of the
+stack, s, which is held abstract. Furthermore, the clock
+time, in register CLK, is also abstract, though it must be at
+least 1. This extra clock step is added by the compiler to
+account for the function's return.
+
+Example Space considerations preclude a thorough discussion of PopCron and the compiler, so we illustrate them by
+example. Figure 6 contains an example of a more substantial source program written in PopCron. This program first
+defines the tree type (specialized in this case to integers),
+using recursive unions and structs. Note that the left and
+right branches of each tree node are immutable; the PopCron
+type system does not permit any mutable data to contribute
+to a cost function. The bulk of this example is the function
+app tree that applies its argument function f to every value
+in the tree.1 The type given for f specifies that, like add1, it
+may make no function calls. This is just for simplicity, like
+TALres, PopCron does allow functions to be polymorphic
+over the time taken by a parameter function.
+
+The time annotation for app tree refers to cost tree in
+calculating the time taken for the tree t. The keyword time
+indicates that cost tree is only used in timing annotations,
+and, as it will never be executed, does not need its own time
+annotation.
+
+The compiler's TALres output appears in Figures 7
+and 8. The only changes to this code for presentation are
+
+1PopCron follows the terminology of C by using void to refer to
+the trivial type; however, TALres follows standard type-theoretic terminology in which void refers to the empty type.
+
+struct tree_node {
+
+const tree left;
+const tree right;
+int val;
+}
+union tree {
+
+void leaf;
+tree_node node;
+}
+
+time cost_tree (tree t) {
+
+switch t {
+case leaf : return 0;
+case node(n): return (cost_tree_node(n));
+}
+}
+time cost_tree_node (tree_node n) {
+
+return (cost_tree (n.left) +
+
+cost_tree (n.right) + 3);
+}
+
+void app_tree (tree t, void f (int x)<|0|>)
+
+<| cost_tree(t) |> {
+
+switch t {
+case leaf : return;
+case node(n) :
+
+f(n.val);
+app_tree(n.left,f);
+app_tree(n.right,f);
+return;
+}
+}
+
+Figure 6: Example of PopCron code
+
+some constructor simplification (in some cases they have
+been replaced with equivalent, but smaller versions) and formatting. For example, we define two common types at the
+bottom of Figure 8: ftype is the type of the function argument to app tree, and ra is the type of the return address
+of the function.
+
+Figure 7 contains the definitions of the TALres kinds
+constructors and types necessary to annotate the compiled
+code of app tree. The first two lines of this figure define
+the mutually recursive kinds representing the tree union
+and tree node struct.2 The next four lines define unfold
+for these recursive kinds, where RECCON and ANDCON provide
+a mutually recursive version of LXres's pr. The two time
+functions, cost tree and cost tree node, are also defined
+with these constructs.
+
+Lines 13 through 22 define the parameterized recursive
+types of trees and tree nodes,3 where rec creates a tuple of
+mutually recursive types, and then the individual components are projected out in lines 21 and 22. Like tree(s)(ff),
+in Figure 4, tree rep forms a tagged sum (the branches are
+discriminated by the singleton types S(1) and S(2)), and
+within each branch of the sum, a case constructor allows
+the argument to be refined with a virtual case.
+
+2Both sums and products in TALres may contain an arbitrary
+number of fields. Sums are denoted by +[ object, ... ], products by
+*[ object, ... ], and unit is the empty product *[] .3
+
+Product values must be boxed (unless they lie within an outer
+boxed object), and consequently product types are often indicated to
+be boxed by a ^ prefix. Additionally, product types contain flags
+indicating that a field is read-only (^r) or read-write (^rw) [13].
+For example, a boxed pair of mutable integers would have type
+^*[B4^rw,B4^rw]. For brevity, when each field of a sum is boxed,
+the boxing prefix may be placed on the entire sum.
+
+9
+
+1 RECKIND <tree_k = +[*[],tree_node_k]>
+2 ANDKIND <tree_node_k = *[tree_k,tree_k]>
+3 RECCON <unfold_tree : tree_k -!> +[*[],tree_node_k] = \
+4 fn a$15 : +[*[],tree_node_k] . a$15>
+5 ANDCON <unfold_tree_node : tree_node_k -!> *[tree_k,tree_k] = \
+6 fn a$13 : *[tree_k,tree_k] . a$13>
+7
+8 RECCON <cost_tree : tree_k -!> Nat = \
+9 fn t : +[*[],tree_node_k] . case (t) beta [0,cost_tree_node beta]>
+10 ANDCON <cost_tree_node : tree_node_k -!> Nat = \
+11 fn n : *[tree_k,tree_k] . 3 + (cost_tree n.0)+ (cost_tree n.1)>
+12
+13 TYPE <_reptype = rec(
+14 tree_rep:tree_k-!>T4. fn union$16:tree_k . \
+15 ^+[*[S(1)^r,case (unfold_tree union$16) b$17 [B4,void[T4]]^r], \
+16 *[S(2)^r,case (unfold_tree union$16) b$18 [void[T4], \
+17 tree_node_rep b$18]^r]], \
+18 tree_node_rep:tree_node_k-!>T4. fn struct$14:tree_node_k . \
+19 ^*[(tree_rep (unfold_tree_node struct$14).0)^r, \
+20 (tree_rep (unfold_tree_node struct$14).1)^r,B4^rw])>
+21 TYPE <tree_rep = _reptype.0>
+22 TYPE <tree_node_rep = _reptype.1>
+
+Figure 7: TALres kind and constructor definitions
+
+Figure 8 contains the TALres output of the compiler for
+app tree. Like add1, the precondition of this label expects
+that the return address and then the arguments (first the
+tree, then the function) will be passed to it on the stack.
+Furthermore, the time annotation of app tree has been compiled to the constructor in the CLK register. As function calls
+are composed of two jumps, the PopCron time annotation
+is doubled, and an extra step is added for the final jump at
+the function return.
+
+The first step of the code is to explicitly unroll the
+recursive type, and then branch on the sum tag, using
+TAL's pseudo-instruction BTAGVAR. If the tag is equal4 to
+1, the code jumps to label leaf void$21, otherwise it falls
+through. At leaf void$21, as BTAGVAR has removed all but
+one branch, EAX contains a pointer to the degenerate sum
+
+^+[*[S(1)^r,case (unfold_tree t)
+
+b$17 [B4,void[T4]]^r]]
+
+so it is explicitly coerced to remove the sum wrapping. Next,
+t is refined in the next two lines. The VCASE instruction5
+examines the type of second component of the product, verifying that it would be void if the argument to the case
+were (fold (inj 1 beta)). After refinement, t has been
+replaced by (fold (inj 0 beta)) so the clock reads
+
+1 + (cost_tree (fold (inj 0 beta)))
+
++ (cost_tree (fold (inj 0 beta))) + k
+
+which normalizes to 1+k. After the clock is stepped for the
+jump, this gives the time expected by the return address.
+
+In the other branch, node value$22 also coerces the EAX
+from a degenerate sum so that its type becomes
+
+^*[S(2)^r,case (unfold_tree t) b$18
+
+[void[T4], tree_node_rep b$18]^r]
+
+After refinement (Lines 8 and 9), this type is equivalent to
+^*[S(2)^r, (tree_node_rep n)^r], for a new variable n.
+
+4The "E" in the BTAGVAR instruction indicates a test for equality.
+5The VCASE instruction takes four arguments: the number of the
+
+live branch, a new constructor variable to bind, the constructor being
+case analyzed, and the value residing in the dead branch.
+
+In lines 10 and 11, the second component of this tuple is
+pushed onto the stack and also put into EAX. After more
+refinement in lines 12 and 13, EAX is of type tree node rep
+[left3,right4], for new variables left3 and right4. This
+recursive type is explicitly unrolled so that the third component can be extracted and placed on the stack in line 15.
+The argument f is then fetched from the stack and called
+in line 17. Before the call, the clock reads (through the
+refinements):
+
+7 + cost_tree(left3) + cost_tree(left3)
+
++ cost_tree(right4) + cost_tree(right4) + k
+
+As the call to f takes one step, and f takes one step to
+return, we expect that after the call the clock should read
+
+5 + cost_tree(left3) + cost_tree(left3)
+
++ cost_tree(right4) + cost_tree(right4) + k
+
+and so pass this constructor argument to f. The second
+constructor argument is the current state of the stack minus
+the argument to f.
+
+On return from f we pop the argument off the stack (line
+21), move the pointer for f up the stack to prepare for the
+recursive call (22), and then extract the left child of the
+tree (23-24). The call (25) requires the type application of
+the time after the call, the constructor representing the left
+child, and the stack. Lines 29-34 perform a similar call with
+the right child. At Line 36, the clock reads 1+k, allowing
+the return.
+
+5 Conclusion
+Adherence to resource bounds is an important safety property for untrusted agents in real-world situations. Our type
+system certifies programs by augmenting them with virtual
+clocks, and proving that the clocks of well-typed programs
+cannot expire. This mechanism was first suggested by Necula and Lee [17] for the PCC framework. This work extends
+theirs by allowing executions to vary in length depending
+on their input, and by providing a fully automatic compiler generating executables certified for resource bounds.
+
+10
+
+1 _app_tree:
+2 LABELTYPE <All[k:Nat t:tree_k s:Ts].{CLK: 1+(cost_tree t)+(cost_tree t)+k, \
+3 ESP: sptr ra :: (tree_rep t) :: ftype :: s}>
+4 MOV EAX,unroll([ESP+4])
+5 BTAGVAR E,[EAX+0],1,leaf_void$21
+6 node_value$22:
+7 COERCE unisum(EAX)
+8 LETFOLD alpha1,t
+9 VCASE 1,n,alpha1,[EAX+4]
+10 PUSH DWORD PTR [EAX+4]
+11 MOV EAX,[ESP+0]
+12 LETFOLD r$24,n
+13 LETPROD [left3,right4],r$24
+14 COERCE unroll(EAX)
+15 PUSH DWORD PTR [EAX+8]
+16 MOV EAX,[ESP+16]
+17 CALL tapp(EAX,<5 + (cost_tree left3) + (cost_tree right4) + \
+18 + (cost_tree left3) + (cost_tree right4) + k, \
+19 tree_node_rep [left3,right4] :: ra \
+20 :: (tree_rep t) :: ftype :: s >)
+21 ADD ESP,4
+22 PUSH DWORD PTR [ESP+12]
+23 MOV EAX,unroll([ESP+4])
+24 PUSH DWORD PTR [EAX+0]
+25 CALL tapp(_app_tree,<3 + (cost_tree right4) + (cost_tree right4) + k, \
+26 left3, tree_node_rep [left3,right4] :: ra \
+27 :: (tree_rep t) :: ftype :: s >)
+28 ADD ESP,8
+29 PUSH DWORD PTR [ESP+12]
+30 MOV EAX,unroll([ESP+4])
+31 PUSH DWORD PTR [EAX+4]
+32 CALL tapp(_app_tree,<1 + k, right4, \
+33 tree_node_rep [left3,right4] :: ra \
+34 :: (tree_rep t) :: ftype :: s>)
+35 ADD ESP,12
+36 RETN
+37 leaf_void$21:
+38 COERCE unisum(EAX)
+39 LETFOLD alpha1,t
+40 VCASE 0,beta2,alpha1,[EAX+4]
+41 RETN
+
+where ftype = All[k:Nat s:Ts].{CLK: 1+k, ESP: sptr { CLK: k, ESP: sptr B4::s} :: B4 :: s}
+and ra = { CLK: k, ESP: sptr (tree_rep t) :: ftype :: s }
+
+Figure 8: Compilation of the function app tree
+
+Like Necula and Lee, we make no effort to infer resource
+bounds, and instead rely on annotations supplied by the
+programmer.
+
+Some other type systems for controlling resource consumption are Hoffman's linear type system for (asymptotically) bounding time [8] and Hughes and Pareto's sized types
+for bounding space [9]. These type systems provide different
+expressive power from ours: Hoffman provides asymptotic
+bounds, and Hughes and Pareto account for heap space, but
+neither allow bounds to depend on input data, and both
+work at the level of source code, not executables.
+
+A key contribution of this work is a programming idiom for simulating dependent types using sum and inductive
+kinds. This idiom does make programs more complex than
+they would be in a language that included dependent types;
+the benefit of our approach lies in its substantially simpler
+type theory and resulting ease of type checking (i.e., verification). We prefer a simpler type theory because, aside from
+a general preference for simpler type theories, simplicity is
+key to the robustness of our system. The type checker is part
+of the trusted computing base of our security infrastructure,
+
+so any complexity there makes the system less likely to be
+secure. The compiler, on the other hand, is not part of the
+trusted computing base, so any error there merely leads to
+rejected code.
+
+The principal limitation of our approach lies in the limitations that exist on cost functions. First, cost functions
+must be primitive recursive, which rules out some resource
+bounds. Second, cost functions are limited to using a fixed
+set of built-in arithmetic operators. As discussed in Section 3.3, defined arithmetic operators often do not work as
+intended because of the lack of an eta-equivalence rule for
+inductive kinds. Third, cost functions are limited to using aspects of their metric arguments that can be statically
+represented (or, more precisely, statically represented in a
+manner admitting an enforcement type). In TALres many
+sorts of data are not easily represented, such as cyclic data
+structures. Despite these limitations, we believe that our
+approach is applicable to a wide variety of important applications.
+
+This work easily generalizes to some other sorts of resource bounds. Easiest is stack space; by replacing the
+
+11
+
+virtual clock with a record of remaining stack space, we
+may statically prevent stack overflow. Our type system already accounts for the complications involved in recovering
+resources (recall Section 2). Our approach also appears to
+generalize to heap space, but to do so we must make the
+type system aware of when heap space is reclaimed, which
+it is not when memory is reclaimed by a garbage collector. We conjecture that this can be done using elements of
+the typed memory management language of Crary et al. [2],
+which was designed to expose memory management primitives in Typed Assembly Language. Finally, we can account
+for resource consumption rates by having the program intermittently yield and by replenishing its resource allowance
+when it is next scheduled after a yield.
+
+Acknowledgements
+We thank Dan Grossman, Greg Morrisett, David Walker and
+Steve Zdancewic for helpful comments, and the TAL group at
+Cornell University for the Popcorn compiler and TALx86 verifier,
+the basis of our PopCron compiler and TALres verifier.
+
+References
+
+[1] B. Bershad, S. Savage, P. Pardyak, E. Sirer, M. Fiuczynski,
+
+D. Becker, C. Chambers, and S. Eggers. Extensibility, safety
+and performance in the SPIN operating system. In Fifteenth
+ACM Symposium on Operating Systems Principles, pages
+267-284, Copper Mountain, Dec. 1995.
+
+[2] K. Crary, D. Walker, and G. Morrisett. Typed memory management in a calculus of capabilities. In Twenty-Sixth ACM
+Symposium on Principles of Programming Languages, San
+Antonio, Texas, Jan. 1999.
+
+[3] K. Crary and S. Weirich. Flexible type analysis. In
+
+1999 ACM International Conference on Functional Programming, pages 233-248, Paris, Sept. 1999.
+
+[4] K. Crary, S. Weirich, and G. Morrisett. Intensional polymorphism in type-erasure semantics. In 1998 ACM International Conference on Functional Programming, pages 301-
+312, Baltimore, Sept. 1998. Extended version published as
+Cornell University technical report TR98-1721.
+
+[5] J.-Y. Girard. Une extension de l'interpr'etation de G"odel `a
+
+l'analyse, et son application `a l''elimination de coupures dans
+l'analyse et la th'eorie des types. In J. E. Fenstad, editor,
+Proceedings of the Second Scandinavian Logic Symposium,
+pages 63-92. North-Holland Publishing Co., 1971.
+
+[6] J.-Y. Girard. Interpr'etation fonctionelle et 'elimination des
+
+coupures de l'arithm'etique d'ordre sup'erieur. PhD thesis,
+Universit'e Paris VII, 1972.
+
+[7] R. Harper and G. Morrisett. Compiling polymorphism using
+
+intensional type analysis. In Twenty-Second ACM Symposium on Principles of Programming Languages, pages 130-
+141, San Francisco, Jan. 1995.
+
+[8] M. Hoffman. Linear types and non-size increasing polynomial time computation. In Fourteenth IEEE Symposium on
+Logic in Computer Science, Trento, Italy, July 1999.
+
+[9] J. Hughes and L. Pareto. Recursion and dynamic datastructures in bounded space: Towards embedded ML programming. In 1999 ACM International Conference on Functional Programming, pages 70-81, Paris, Sept. 1999.
+
+[10] T. Lindholm and F. Yellin. The Java Virtual Machine Specification. Addison-Wesley, 1996.
+
+[11] J. M. Lucassen, D. K. Gifford, P. Jouvelot, and M. A.
+
+Sheldon. FX-87 reference manual. Technical Report
+MIT/LCS/TR-407, MIT Laboratory for Computer Science,
+Sept. 1987.
+
+[12] N. P. Mendler. Inductive types and type constraints in the
+
+second-order lambda calculus. Annals of Pure and Applied
+Logic, 51(1-2):159-172, 1991.
+
+[13] G. Morrisett, K. Crary, N. Glew, D. Grossman, R. Samuels,
+
+F. Smith, D. Walker, S. Weirich, and S. Zdancewic. TALx86:
+A realistic typed assembly language. In Second Workshop on
+Compiler Support for System Software, Atlanta, May 1999.
+
+[14] G. Morrisett, D. Walker, K. Crary, and N. Glew. From System F to typed assembly language. ACM Transactions on
+Programming Languages and Systems, 1999. To appear. An
+earlier version appeared in the 1998 Symposium on Principles of Programming Languages.
+
+[15] G. Necula. Proof-carrying code. In Twenty-Fourth ACM
+
+Symposium on Principles of Programming Languages, pages
+106-119, Paris, Jan. 1997.
+
+[16] G. Necula and P. Lee. Safe kernel extensions without runtime checking. In Second Symposium on Operating Systems
+Design and Implementation, pages 229-243, Seattle, Oct.
+1996.
+
+[17] G. Necula and P. Lee. Safe, untrusted agents using proofcarrying code. In Special Issue on Mobile Agent Security, volume 1419 of Lecture Notes in Computer Science.
+Springer-Verlag, Oct. 1997.
+
+[18] G. Necula and P. Lee. The design and implementation of
+
+a certifying compiler. In 1998 SIGPLAN Conference on
+Programming Language Design and Implementation, pages
+333-344, Montreal, June 1998.
+
+[19] R. Wahbe, S. Lucco, T. Anderson, and S. Graham. Efficient software-based fault isolation. In Fourteenth ACM
+Symposium on Operating Systems Principles, pages 203-
+216, Asheville, Dec. 1993.
+
+[20] H. Xi and F. Pfenning. Dependent types in practical programming. In Twenty-Sixth ACM Symposium on Principles
+of Programming Languages, pages 214-227, San Antonio,
+Texas, Jan. 1999.
+
+A Static semantics
+A.1 Kind formation
+
+\Delta  ` k kind
+
+\Delta  ` Type kind \Delta  ` Nat kind \Delta  ` 1 kind
+
+\Delta  ` j kind (j 2 \Delta )
+
+\Delta , j ` k kind
+
+\Delta  ` uj.k kind `
+
+j only positive in k
+j 62 \Delta  '
+
+\Delta  ` k1 kind \Delta  ` k2 kind
+
+\Delta  ` k1 ! k2 kind
+
+\Delta  ` k1 kind \Delta  ` k2 kind
+
+\Delta  ` k1 + k2 kind
+
+\Delta  ` k1 kind \Delta  ` k2 kind
+
+\Delta  ` k1 * k2 kind
+
+A.2 Constructor Formation
+
+\Delta  ` c : k
+
+\Delta  ` * : 1 \Delta  ` ff : \Delta (ff)
+
+\Delta , ff:k0 ` c : k \Delta  ` k0 kind
+
+\Delta  ` *ff:k0.c : k0 ! k (ff 62 \Delta )
+
+\Delta  ` c1 : k0 ! k \Delta  ` c2 : k0
+
+\Delta  ` c1c2 : k
+
+\Delta  ` c1 : k1 \Delta  ` c2 : k2
+
+\Delta  ` hc1, c2i : k1 * k2
+
+12
+
+\Delta  ` c : k1 * k2
+
+\Delta  ` prj1 c : k1
+
+\Delta  ` c : k1 * k2
+
+\Delta  ` prj2 c : k2
+
+\Delta  ` c : k1 \Delta  ` k2 kind
+
+\Delta  ` injk1+k21 c : k1 + k2
+
+\Delta  ` c : k2 \Delta  ` k1 kind
+
+\Delta  ` injk1+k22 c : k1 + k2
+
+\Delta  ` c : k1 + k2
+\Delta , ff:k1 ` c1 : k
+\Delta , ff:k2 ` c2 : k
+
+\Delta  ` case(c, ff.c1, ff.c2) : k (ff 62 \Delta )
+
+\Delta  ` c : k[uj.k/j]
+\Delta  ` folduj.k c : uj.k
+
+\Delta , j, ff:k, ':j ! k0 ` c : k0
+\Delta  ` uj.k kind \Delta , j ` k0 kind
+
+\Delta  ` pr(j, ff:k, ':j !k0.c) : uj.k ! k0[uj.k/j]
+
+(j only positive in k0, and j, ff, ' 62 \Delta )
+
+\Delta  ` n : Nat
+
+\Delta  ` c1 : Nat \Delta  ` c2 : Nat
+
+\Delta  ` c1 u c2 : Nat
+
+\Delta , ff:Nat, fi:k ` c1 : k \Delta  ` c2 : k
+
+\Delta  ` prnatk(ff, fi.c1; c2) : k (ff, fi 62 \Delta )
+
+\Delta  ` o/1 : Type \Delta  ` o/2 : Type
+
+\Delta  ` c1 : Nat \Delta  ` c2 : Nat
+
+\Delta  ` (o/1, c1) ! (o/2, c2) : Type
+
+\Delta  ` o/1 : Type \Delta  ` o/2 : Type
+
+\Delta  ` o/1 * o/2 : Type
+
+\Delta  ` o/1 : Type \Delta  ` o/2 : Type
+
+\Delta  ` o/1 + o/2 : Type
+
+\Delta , ff:k ` o/ : Type \Delta  ` k kind
+
+\Delta  ` 8ff:k.o/ : Type (ff 62 \Delta )
+
+\Delta , ff:k ` o/ : Type \Delta  ` k kind
+
+\Delta  ` 9ff:k.o/ : Type (ff 62 \Delta )
+
+\Delta  ` void : Type \Delta  ` unit : Type
+
+\Delta  ` c : (k ! Type) ! k ! Type
+
+\Delta  ` k kind \Delta  ` c0 : k
+
+\Delta  ` reck(c, c0) : Type
+
+A.3 Constructor Equivalence
+
+\Delta  ` c = c0 : k
+
+\Delta  ` c0 : k[uj.k/j] \Delta , j ` k0 kind
+\Delta , j, ff:k, ':j ! k0 ` c : k0 \Delta  ` uj.k kind
+
+\Delta  ` pr(j, ff:k, ':j ! k0.c)(folduj.k c0) =
+
+c[uj.k, c0, pr(j, ff:k, ':j !k0.c)/j, ff, ']
+
+: k0[uj.k/j]
+(j only positive in k0 and j, ff, ' 62 \Delta )
+
+\Delta  ` c1 : k \Delta  ` c2 : k0
+
+\Delta  ` prj1hc1, c2i = c1 : k
+
+\Delta  ` c1 : k0 \Delta  ` c2 : k
+
+\Delta  ` prj2hc1, c2i = c2 : k
+
+\Delta  ` c : k1 * k2
+\Delta  ` hprj1 c, prj2 ci = c : k1 * k2
+
+\Delta  ` k0 kind
+\Delta , ff:k0 ` c : k \Delta  ` c0 : k
+
+\Delta  ` (*ff:k0.c)c0 = c[c0/ff] : k (ff 62 \Delta )
+
+\Delta  ` c : k0 ! k
+\Delta  ` (*ff:k0.cff) = c : k0 ! k (ff 62 F V (c))
+
+\Delta , ff:k1 ` c1 : k \Delta , ff:k2 ` c2 : k
+
+\Delta  ` c : k1 \Delta  ` k2 kind
+
+\Delta  ` case(injk1+k21 c, ff.c1, ff.c2) = c1[c/ff] : k
+
+\Delta , ff:k1 ` c1 : k \Delta , ff:k2 ` c2 : k
+
+\Delta  ` c : k2 \Delta  ` k1 kind
+
+\Delta  ` case(injk1+k22 c, ff.c1, ff.c2) = c2[c/ff] : k
+
+\Delta  ` c : k1 + k2
+\Delta  ` case(c, ff1. injk1+k21 ff1, ff2. injk1+k22 ff2) =
+
+c : k1 + k2
+
+\Delta  ` c1 : Nat \Delta  ` c2 : Nat
+\Delta  ` c1 u c2 = c2 u c1 : Nat
+
+\Delta  ` c1 : Nat \Delta  ` c2 : Nat \Delta  ` c3 : Nat
+
+\Delta  ` c1 u (c2 u c3) = (c1 u c2) u c3 : Nat
+
+\Delta  ` c : Nat
+\Delta  ` c u 0 = c : Nat
+
+\Delta  ` n1 u n2 = n1 + n2 : Nat
+\Delta , ff:Nat, fi:k ` c1 : k \Delta  ` c2 : k
+\Delta  ` prnatk(ff, fi.c1; c2) 0 = c2 : k (ff, fi 62 \Delta )
+
+\Delta , ff:Nat, fi:k ` c1 : k \Delta  ` c2 : k \Delta  ` c : Nat
+
+\Delta  ` prnatk(ff, fi.c1; c2)(c u 1) =
+
+c1[c, prnatk(ff, fi.c1; c2)(c)/ff, fi] : k
+
+(ff, fi 62 \Delta )
+
+\Delta  ` c : k
+\Delta  ` c = c : k
+
+\Delta  ` c0 = c : k
+\Delta  ` c = c0 : k
+
+\Delta  ` c1 = c2 : k \Delta  ` c2 = c3 : k
+
+\Delta  ` c1 = c3 : k
+
+\Delta , ff:k0 ` c = c0 : k \Delta  ` k0 kind
+
+\Delta  ` *ff:k0.c = *ff:k0.c0 : k0 ! k (ff 62 \Delta )
+
+\Delta  ` c1 = c01 : k0 ! k \Delta  ` c2 = c02 : k0
+
+\Delta  ` c1c2 = c01c02 : k
+
+\Delta  ` c1 = c01 : k1 \Delta  ` c2 = c02 : k2
+
+\Delta  ` hc1, c2i = hc01, c02i : k1 * c2
+
+13
+
+\Delta  ` c = c0 : k1 * k2
+\Delta  ` prj1 c = prj1 c0 : k1
+
+\Delta  ` c = c0 : k1 * k2
+\Delta  ` prj2 c = prj2 c0 : k2
+
+\Delta  ` c = c0 : k1 \Delta  ` k2 kind
+\Delta  ` injk1+k21 c = injk1+k21 c0 : k1 + k2
+
+\Delta  ` c = c0 : k2 \Delta  ` k1 kind
+\Delta  ` injk1+k22 c = injk1+k22 c0 : k1 + k2
+
+\Delta  ` c = c0 : k1 + k2
+\Delta , ff:k1 ` c1 = c01 : k
+\Delta , ff:k2 ` c2 = c02 : k
+
+\Delta  ` case(c, ff.c1, ff.c2) =
+
+case(c0, ff.c01, ff.c02) : k
+
+(ff 62 \Delta )
+
+\Delta  ` c = c0 : k[uj.k/j]
+\Delta  ` folduj.k c = folduj.k c0 : uj.k
+
+\Delta , j, ff:k, ':j ! k0 ` c1 = c2 : k0
+
+\Delta  ` uj.k kind \Delta , j ` k0 kind
+
+\Delta  ` pr(j, ff:k, ':j !k0.c1) = pr(j, ff:k, ':j !k0.c2)
+
+: uj.k ! k0[uj.k/j]
+
+(j only positive in k0 and j, ff, ' 62 \Delta )
+
+\Delta  ` c1 = c01 : Nat \Delta  ` c2 = c02 : Nat
+
+\Delta  ` c1 u c2 = c01 u c02 : Nat
+
+\Delta , ff:Nat, fi:k ` c1 = c01 : k \Delta  ` c2 = c02 : k
+\Delta  ` prnatk(ff, fi.c1; c2) = prnatk(ff, fi.c01; c02) : k (ff, fi 62 \Delta )
+
+\Delta  ` o/1 = o/01 : Type \Delta  ` o/2 = o/02 : Type
+
+\Delta  ` c1 = c01 : Nat \Delta  ` c2 = c02 : Nat
+
+\Delta  ` (o/1, c1) ! (o/2, c2) = (o/01, c01) ! (o/02, c02) : Type
+
+\Delta  ` o/1 = o/01 : Type \Delta  ` o/2 = o/02 : Type
+
+\Delta  ` o/1 * o/2 = o/01 * o/02 : Type
+
+\Delta  ` o/1 = o/01 : Type \Delta  ` o/2 = o/02 : Type
+
+\Delta  ` o/1 + o/2 = o/01 + o/02 : Type
+
+\Delta , ff:k ` o/ = o/0 : Type \Delta  ` k kind
+
+\Delta  ` 8ff:k.o/ = 8ff:k.o/0 : Type (ff 62 \Delta )
+
+\Delta , ff:k ` o/ = o/0 : Type \Delta  ` k kind
+
+\Delta  ` 9ff:k.o/ = 9ff:k.o/0 : Type (ff 62 \Delta )
+
+\Delta  ` k kind \Delta  ` c2 = c02 : k
+\Delta  ` c1 = c01 : (k ! Type) ! k ! Type
+
+\Delta  ` reck(c1, c2) = reck(c01, c02) : Type
+
+A.4 Term Formation
+
+\Delta ; \Gamma ; c ` e : o/
+
+\Delta ; \Gamma ; c ` * : unit . c \Delta ; \Gamma ; c ` x : \Gamma (x) . c
+
+\Delta ; (\Gamma , x:o/1); c1 ` e : o/2 . c2
+\Delta  ` o/1 : Type \Delta  ` c1 : Nat
+
+\Delta ; \Gamma ; c ` *(x:o/1, c1).e : (o/1, c1) ! (o/2, c2) . c (x 62 \Gamma )
+
+\Delta ; \Gamma ; c ` e1 : (o/1, c1) ! (o/2, c2) . c0
+
+\Delta ; \Gamma ; c0 ` e2 : o/1 . (c1 u 1)
+
+\Delta ; \Gamma ; c ` e1e2 : o/2 . c2
+
+\Delta ; \Gamma ; c ` e : o/ . (c1 u c2)
+\Delta ; \Gamma ; c ` waste[c1]e : o/ . c2
+
+\Delta ; \Gamma ; c ` e1 : o/1 . c1 \Delta ; \Gamma ; c1 ` e2 : o/2 . c2
+
+\Delta ; \Gamma ; c ` he1, e2i : o/1 * o/2 . c2
+
+\Delta ; \Gamma ; c ` e : o/1 * o/2 . c0
+\Delta ; \Gamma ; c ` prj1 e : o/1 . c0
+
+\Delta ; \Gamma ; c ` e : o/1 * o/2 . c0
+\Delta ; \Gamma ; c ` prj2 e : o/2 . c0
+
+\Delta ; \Gamma ; c ` e : o/1 . c0 \Delta  ` o/2 : Type
+
+\Delta ; \Gamma ; c ` injo/1+o/21 e : o/1 + o/2 . c0
+
+\Delta ; \Gamma ; c ` e : o/2 . c0 \Delta  ` o/1 : Type
+
+\Delta ; \Gamma ; c ` injo/1+o/22 e : o/1 + o/2 . c0
+
+\Delta ; \Gamma ; c ` e : o/1 + o/2 . c0
+\Delta ; (\Gamma , x:o/1); c0 ` e1 : o/ . c00
+\Delta ; (\Gamma , x:o/2); c0 ` e2 : o/ . c00
+
+\Delta ; \Gamma ; c ` case(e, x.e1, x.e2) : o/ . c00 (x 62 \Gamma )
+
+(\Delta , ff:k); \Gamma ; c ` v : o/ . c \Delta  ` k kind
+
+\Delta ; \Gamma ; c ` \Lambda ff:k.v : 8ff:k.o/ . c (ff 62 \Delta )
+
+\Delta ; \Gamma ; c1 ` e : 8ff:k.o/ . c2 \Delta  ` c : k
+
+\Delta ; \Gamma ; c1 ` e[c] : o/[c0/ff] . c2
+
+\Delta ; (\Gamma , f:o/); c ` v : o/ . c \Delta  ` o/ : Type
+
+\Delta ; \Gamma ; c ` fixf:o/.v : o/ . c
+(f 62 \Gamma  and v = \Lambda ff1:k1 . . . \Lambda ffn:kn.*(x:o/0, c0).e0)
+
+\Delta , ff:k ` o/ : Type
+\Delta  ` c : k \Delta ; \Gamma ; c1 ` e : o/[c/ff] . c2
+
+\Delta ; \Gamma ; c1 ` pack e as 9ff:k.o/ hiding c : 9ff:k.o/ . c2 (ff 62 \Delta )
+
+\Delta ; \Gamma ; c ` e1 : 9ff:k.o/2 . c0
+(\Delta , ff:k); (\Gamma , x:o/2); c0 ` e2 : o/1 . c00
+
+\Delta ; \Gamma ; c ` unpackhff, xi = e1 in e2 : o/1 . c00 `
+
+ff 62 \Delta , F V (o/)
+x 62 \Gamma  '
+
+\Delta ; \Gamma ; c1 ` e : reck(c, c0) . c2
+\Delta ; \Gamma ; c1 ` unfold e : c(*ff:k. reck(c, ff))c0 . c2
+
+14
+
+\Delta ; \Gamma ; c1 ` e : c(*ff:k. reck(c, ff))c0 . c2
+
+\Delta  ` reck(c, c0) : Type
+
+\Delta ; \Gamma ; c1 ` foldreck(c,c0) e : reck(c, c0) . c2
+
+\Delta , fi:k1, \Delta 0; \Gamma [injk1+k21 fi/ff];c1[injk1+k21 fi/ff] `
+
+v[injk1+k21 fi/ff] : void . c02
+\Delta , fi:k2, \Delta 0; \Gamma [injk1+k22 fi/ff];c1[injk1+k22 fi/ff] `
+
+e[injk1+k22 fi/ff] : o/[injk1+k22 fi/ff] . c2[injk1+k22 fi/ff]
+\Delta , ff:k1 + k2, \Delta 0 ` c = ff : k1 + k2
+
+\Delta , ff:k1 + k2, \Delta 0; \Gamma ; c1 ` vcaseo/.c2 (c, fi. dead v, fi.e) : o/ . c2
+
+(fi 62 \Delta )
+
+\Delta , fi:k1, \Delta 0; \Gamma [injk1+k21 fi/ff];c1[injk1+k21 fi/ff] `
+
+e[injk1+k21 fi/ff] : o/[injk1+k21 fi/ff] . c2[injk1+k21 fi/ff]
+\Delta , fi:k2, \Delta 0; \Gamma [injk1+k22 fi/ff];c1[injk1+k22 fi/ff] `
+
+v[injk1+k22 fi/ff] : void . c02
+\Delta , ff:k1 + k2, \Delta 0 ` c = ff : k1 + k2
+
+\Delta , ff:k1 + k2, \Delta 0; \Gamma ; c1 ` vcaseo/.c2 (c, fi.e, fi. deadv) : o/ . c2
+
+(fi 62 \Delta )
+
+\Delta , fi:k1, fl:k2, \Delta 0; \Gamma [hfi, fli/ff]; c1[hfi, fli/ff] `
+
+e[hfi, fli/ff] : o/[hfi,fli/ff] . c2[hfi, fli/ff]
+\Delta , ff:k1 * k2, \Delta 0 ` c = ff : k1 * k2
+
+\Delta , ff:k1 * k2, \Delta 0; \Gamma ; c1 ` leto/.c2 hfi,fli = c in e : o/ . c2
+
+(fi, fl 62 \Delta )
+
+\Delta , fi:k[uj.k/j], \Delta 0; \Gamma [folduj.k fi/ff] ` c1[folduj.k fi/ff] `
+
+e[folduj.k fi/ff] : o/[folduj.k fi/ff] . c2[folduj.k fi/ff]
+\Delta , ff:uj.k, \Delta 0 ` c = ff : uj.k
+
+\Delta , ff, \Delta 0:uj.k; \Gamma ; c1 ` leto/.c2(folduj.k fi) = c in e : o/ . c2
+
+(fi 62 \Delta )
+
+\Delta  ` c = injk1+k21 c0 : k1 + k2 \Delta ; \Gamma ; c1 ` e1[c0/ff] : o/ . c2
+
+\Delta ; \Gamma ; c1 ` vcaseo/.c2(c, ff.e1, ff. dead v) : o/ . c2
+
+\Delta  ` c = injk1+k22 c0 : k1 + k2 \Delta ; \Gamma ; c1 ` e2[c0/ff] : o/ . c2
+
+\Delta ; \Gamma ; c1 ` vcaseo/.c2(c, ff. dead v, ff.e2) : o/ . c2
+
+\Delta  ` c = hc0, c00i : k1 * k2 \Delta ; \Gamma ; c1 ` e[c0, c00/fi, fl] : o/ . c2
+
+\Delta ; \Gamma ; c1 ` leto/.c2 hfi, fli = c in e : o/ . c2
+
+\Delta  ` c = folduj.k(c0) \Delta ; \Gamma ; c1 ` e[c0/fi] : o/ . c2
+
+\Delta ; \Gamma ; c1 ` leto/.c2 (folduj.k fi) = c in e : o/ . c2
+
+\Delta ; \Gamma ; c1 ` e : o/0 . c02 \Delta  ` o/ = o/0 : Type \Delta  ` c2 = c02 : Nat
+
+\Delta ; \Gamma ; c1 ` e : o/ . c2
+
+B Operational semantics
+Value syntax
+
+v ::= * | *(x:o/,c).e | hv1, v2i | injo/1+o/21 v | injo/1+o/22 v|
+
+\Lambda ff:k.v | (fix f:o/.v)[c1] * * * [cn] | foldreck(c,c0) v|
+packv as 9ff.c1 hiding c2|
+x | prj1 v | prj2 v
+
+Evaluation rules
+
+((*(x:o/,c).e)v, n + 1) 7! (e[v/x], n) (provided n >= 0)
+
+(e1, n) 7! (e01, n0)
+(e1e2, n) 7! (e01e2, n0)
+
+(e2, n) 7! (e02, n0)
+(ve2, n) 7! (ve02, n0)
+
+(e, n) 7! (e0, n0)
+(waste[c]e, n) 7! (waste[c]e0, n0)
+
+c normalizes to n
+(waste[c]v, n + n0) 7! (v, n0) (provided n0 >= 0)
+
+(prj1hv1, v2i, n) 7! (v1, n) (prj2hv1, v2i, n) 7! (v2, n)
+
+(e, n) 7! (e0, n0)
+(prj1 e, n) 7! (prj1 e0, n0)
+
+(e, n) 7! (e0, n0)
+(prj2 e, n) 7! (prj2 e0, n0)
+
+(e1, n) 7! (e01, n0)
+(he1, e2i, n) 7! (he01, e2i, n0)
+
+(e2, n) 7! (e02, n0)
+(hv, e2i, n) 7! (hv, e02i, n0)
+
+(case(injo/1+o/21 v, x1.e1, x2.e2), n) 7! (e1[v/x1], n)
+(case(injo/1+o/22 v, x1.e1, x2.e2), n) 7! (e2[v/x2], n)
+
+(e, n) 7! (e0, n0)
+(injo/1+o/21 e, n) 7! (injo/1+o/21 e0, n0)
+
+(e, n) 7! (e0, n0)
+(injo/1+o/22 e, n) 7! (injo/1+o/22 e0, n0)
+
+(e, n) 7! (e0, n0)
+(case(e, x1.e1, x2.e2), n) 7! (case(e0, x1.e1, x2.e2), n0)
+
+(\Lambda ff:k.v[c], n) 7! (v[c/ff], n) (e, n) 7! (e0, n0)(e[c], n) 7! (e0[c], n0)
+
+c normalizes to inj1 c0
+(vcase(c, ff1.e1, ff2. deadv), n) 7! (e1[c0/ff1], n)
+
+c normalizes to inj2 c0
+(vcase(c, ff1. deadv, ff2.e2), n) 7! (e2[c0/ff2], n)
+
+c normalizes to hc1, c2i
+(lethfi, fli = c in e, n) 7! (e[c1, c2/fi, fl], n)
+
+c normalizes to folduj.k c0
+(let(folduj.k fi) = c in e, n) 7! (e[c0/fi], n)
+
+((fixf:o/.v)[c1] * * * [cn]v0, n) 7! ((v[fixf:o/.v/f])[c1] * * * [cn]v0, n)
+
+(e, n) 7! (e0, n0)
+(packe as 9fi.c1 hiding c2, n) 7! (pack e0 as 9fi.c1 hiding c2, n0)
+
+(unpackhff, xi = (packv as o/ hiding c) in e, n) 7! (e[c, v/ff, x], n)
+
+(e, n) 7! (e0, n0)
+(unpackhff, xi = e in e2, n) 7! (unpackhff, xi = e0 in e2, n0)
+
+(unfold (foldreck(c,c0) v), n) 7! (v, n)
+
+(e, n) 7! (e0, n0)
+(foldreck(c,c0) e, n) 7! (foldreck(c,c0) e0, n0)
+
+(e, n) 7! (e0, n0)
+(unfold e, n) 7! (unfold e0, n0)
+
+15

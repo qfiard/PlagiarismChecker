@@ -1,0 +1,869 @@
+
+
+Amortised Resource Analysis with Separation
+
+Logic
+
+Robert Atkey
+LFCS, School of Informatics, University of Edinburgh
+
+bob.atkey@ed.ac.uk
+
+Abstract. Type-based amortised resource analysis following Hofmann
+and Jost--where resources are associated with individual elements of
+data structures and doled out to the programmer under a linear typing
+discipline--have been successful in providing concrete resource bounds
+for functional programs, with good support for inference. In this work we
+translate the idea of amortised resource analysis to imperative languages
+by embedding a logic of resources, based on Bunched Implications, within
+Separation Logic. The Separation Logic component allows us to assert
+the presence and shape of mutable data structures on the heap, while
+the resource component allows us to state the resources associated with
+each member of the structure.
+We present the logic on a small imperative language with procedures
+and mutable heap, based on Java bytecode. We have formalised the logic
+within the Coq proof assistant and extracted a certified verification condition generator. We demonstrate the logic on some examples, including
+proving termination of in-place list reversal on lists with cyclic tails.
+
+1 Introduction
+Tarjan, in his paper introducing the concept of amortised complexity analysis[15], noted that the statement and proof of complexity bounds for operations on
+some data structures can be simplified if we can conceptually think of the datastructure as being able to store "credits" that are used up by later operations.
+By setting aside credit inside a data structure to be used by later operations weamortise the cost of the operation over time. In this paper, we propose a way to
+merge amortised complexity analysis with Separation Logic [12, 14] to formalisesome of these complexity arguments.
+
+Separation Logic is built upon a notion of resources and their separation.The assertion
+
+A * B holds for a resource if it can be split into two resources thatmake
+A true and B true respectively. Resource separation enables local reasoningabout mutation of resources; if the program mutates the resource associated with
+
+A, then we know that B is still true on its separate resource.
+
+For the purposes of complexity analysis, we want to consider resource con-sumption as well as resource mutation, e.g. the consumption of time as a program
+
+executes. To see how Separation Logic-style reasoning about resources helps in
+
+this case, consider the standard inductively defined list predicate from Separa-tion Logic, augmented with an additional proposition
+
+R denoting the presenceof a consumable resource for every element of the list:
+
+listR(x) j x = null ^ emp. 9
+
+y, z. [x data7! y] * [x next7! z] * R * listR(z)
+
+We will introduce the assertion logic properly in Section 4 below. We can repre-sent a heap
+
+H and a consumable resource r that satisfy this predicate graphically:
+
+H
+
+r
+
+nulla
+
+R
+
+b
+R
+
+c
+R
+
+d
+R
+So we have r, H |= listR(x), assuming x points to the head of the list. Here
+r = R * R * R * R--we assume that consumable resources form a commutativemonoid--and
+
+r represents the resource that is available for the program to usein the future. We can split
+
+H and r to separate out the head of the list with itsassociated resource:
+
+H1
+
+r1
+
+H2
+
+r2
+
+nulla
+
+R
+
+b
+R
+
+c
+R
+
+d
+R
+This heap and resource satisfy r1 * r2, H1 ] H2 |= [x data7! a] * [x next7! y] * R * listR(y),where
+
+H1]H2 = H, r1*r2 = r and we assume that y points to the b element. Nowthat we have separated out the head of the list and its associated consumable
+
+resource, we are free to mutate the heap H1 and consume the resource r1 withoutit affecting the tail of the list, so the program can move to a state:
+
+H1 H2
+
+r2
+
+nullA b
+
+R
+
+c
+R
+
+d
+R
+where the head of the list has been mutated to A and the associated resourcehas been consumed; we do not need to do anything special to reason that the
+tail of the list and its associated consumable resource are unaffected.The combined assertion about heap and consumable resource describes the
+current shape and contents of the heap and also the available resource thatthe program may consume in the future. By ensuring that, for every state in
+the program's execution, the resource consumed plus the resource available forconsumption in the future is less than or equal to a predefined bound, we can
+ensure that the entire execution is resource bounded. This is the main assertionof soundness for our program logic in Section 3.4.
+
+By intermixing resource assertions with Separation Logic assertions aboutthe shapes of data structures, as we have done with the resource carrying
+
+listRpredicate above, we can specify amounts of resource that depend on the shape of
+
+data structures in memory. By the definition of listR, we know that the amountof resource available to the program is exactly equal to the length of the list,
+without having to do any arithmetic reasoning about lengths of lists.
+
+The association of resources with parts of a data structure is exactly thebanker's approach to amortised complexity analysis proposed by Tarjan [15].
+
+Our original inspiration for this work came from the work of Hofmann andJost [9] on the automatic heap-space analysis of functional programs. Their
+analysis associates with every element of a data structure a permission to use apiece of resource (in their case, heap space). This resource is made available to the
+program when the data structure is decomposed using pattern matching. Whenconstructing part of a data structure, the required resources must be available.
+A linear type system is used to ensure that data structures carrying resourcesare not duplicated: this would entail duplication of resources. This scheme was
+later extended to imperative object-oriented languages [10, 11], but still using atype-based analysis.
+
+Contributions We summarise the content and contributions of this work:
+
+- In Section 3, we define a program logic that allows mixing of assertionsabout heap shapes, in the tradition of separation logic, and assertions about
+
+future consumable resources. Tying these together allows us to easily stateresource properties in terms of the shapes of heap-based data structures,
+rather than extensional properties such as their size or contents. We havealso formalised the soundness proof of our program logic in Coq, along with
+a verified verification condition generator.
+- In Section 5, we define a restricted subset of the assertion logic that allowsus to perform effective proof search and inference of resource annotations.
+
+A particular feature of the way this is set up is that, given loop invariantsthat talk only about the the shape of data structures, we can infer necessary
+resource bounds.
+- In Sections 2 and 6, we demonstrate the logic on two small examples, showinghow a mixture of amortised resource analysis and Separation Logic can be
+
+used to simplify resource-aware specifications, and how it can be used toprove termination in the presence of cyclic structures in the heap.
+
+2 Motivating Example: Functional Queues
+Before defining our program logic, we give another example to demonstrate howamortised reasoning about data structures is easier than the traditional approach
+of keeping a global counter for consumed resources as an auxiliary "ghost" vari-able in the proof. This example is a standard one for introducing amortised
+complexity analysis, but we take a view here towards specification of operations
+
+on an imperative data structure taking into account the resource consumptionof these operations.
+
+We consider functional queues, where a queue is represented by a pair of lists:
+
+null
+a b c d
+
+e f
+
+The top list represents the head of the queue, while the bottom list repre-sents the tail of the queue in reverse; thus this structure represents the queue
+[a, b, c, d, f, e]. When we enqueue a new element, we add it to the head of thebottom list. To dequeue an element, we remove it from the head of the top list. If
+the top list is empty, then we reverse the bottom list and change the top pointerto point to it, changing the bottom pointer to point to
+
+null.When determining the complexity of these operations, it is obvious that
+
+the enqueue operation is constant time, but the dequeue operation either takesconstant time if the top list is empty, or time linear in the size of the bottom
+list, in order to perform the reversal. If we were to account for resource usageby maintaining a global counter then we would have to expose the lengths of
+the two lists in specification of the enqueue and dequeue instructions. So wewould need a predicate
+
+queue(x, h, t) to state that x points to a queue with ahead and tail lists of lengths
+
+h and t respectively. The operations would havethe specifications:
+
+{queue(x, h, t) ^ rc = r1}enqueue{queue(x, h, t + 1) ^ rc = r1 + R}
+
+{queue(x, 0, 0) ^ rc = r1}dequeue{queue(x, 0, 0) ^ rc = r1}
+{queue(x, 0, t + 1) ^ rc = r1}dequeue{queue(x, t, 0) ^ rc = r1 + (1 + t)R}
+
+{queue(x, h + 1, t) ^ rc = r1}dequeue{queue(x, h, t) ^ rc = r1 + R}
+where rc is a ghost variable counting the total amount of resource (time, in thiscase) consumed by the program, and
+
+R is the amount of resource required toperform a single list node manipulation. Note that we have had to give three
+
+specifications for dequeue for the cases when the queue is empty, when the headlist is empty and when the head list has an element. The accounting for the
+sizes of the internals of the queue datastructure is of no interest to clients of thisdatastructure, these specifications will complicate reasoning that must be done
+by clients in order to use these queues.Using amortised analysis, this specification can be drastically simplified. We
+associate a single piece of resource with each element of the tail list so that whenwe come to reverse the list we have the necessary resource available to reverse
+each list element. The queue predicate is therefore:
+
+queue(x) j 9y, z.[x head7! y] * [x tail7! y] * list(y) * listR(z)
+
+where list is the standard Separation Logic list predicate, and listR is the resource-carrying list predicate we gave above. The specifications of the operations now
+become straightforward:
+
+{queue(x) * R * R}enqueue{queue(x)} {dequeue(x) * R}dequeue{queue(x)}
+To enqueue an element, we require two resources: one to add the new elementto the tail list, and one to "store" in the list so that we may use it for a future
+reversal operation. To dequeue an element, we require a single resource to removean element from a list. If a list reversal is required then it is paid for by the
+resources required by the enqueue operation.
+
+Once we have set the specification of queues to store one element of resourcefor every node in the tail list, we can use the resource annotation inference procedure presented in Section 5 to generate the resource parts of the specificationsfor the enqueue and dequeue operations.
+
+3 A Program Logic for Heap and Resources
+We define a logic that is capable of asserting facts about both the mutable heapand the consumable resources that a program has access to. Assertions about
+resources available to a program are intimately connected to the shapes of thedata structures that it is manipulating. In this section, we introduce a simple
+programming language and a resource-aware program logic for it. We define a"shallow" program logic where we treat pre- and post-condition and program assertions as arbitrary predicates over heaps and consumable resources. In the nextsection, we will layer a "deep" assertion logic over this where these predicates
+are actually Separation Logic formulae augmented with resource assertions.
+
+3.1 Semantic Domains
+Assume an infinite set A of memory addresses. We model heaps as finite partialmaps H = (A * F)
+
+*fin V, where F ranges over field names and V = A? +Z represents the values that programs can directly manipulate: possibly null
+
+addresses and integers. We write dom(H) for the domain of a heap and H1#H2for heaps with separate domains;
+
+H1 ] H2 denotes union of heaps with disjointdomains.
+
+Consumable resources are represented as elements of an ordered monoid (R, v
+, *, e), where e is the least element. Example consumable resources include (N, <=
+, +, 0) or (Q>=0, <=, +, 0) for representing a single resource that is consumed (e.g.time or space), or multisets for representing multiple named resources that may
+
+be consumed independently. The ordering on consumable resources indicatesthat we will allow weakening in our assertion logic: we allow the asserter to assert
+that more resources are required by the program than are actually needed.
+
+To talk about separated combinations of heaps and resources, we make useof a ternary relation on pairs of heaps and consumable resources, as is standard
+
+in the semantics of substructural logics [13]:
+
+Rxyz , H1#H2 ^ H1 ] H2 = H3 ^ r1 * r2 v r3where
+
+x = (H1, r1), y = (H2, r2), z = (H3, r3)
+
+We extend the order on resources to pairs of heaps and resources by (H1, r1) v(
+
+H2, r2) iff H1 = H2 and r1 v r2.
+
+3.2 A Little Virtual Machine
+The programming language we treat is a simple stack-based virtual machine,similar to Java bytecode without objects or virtual methods, but with mutable
+
+heap and procedures. There are two types int and ref, corresponding to the twokinds of values in V. We assume a set P of procedure names, where a procedure's
+name determines its list of argument types and its return type. Programs areorganised into a finite set of procedures, indexed by their name and individually
+consisting of lists of instructions from the following collection:
+
+' ::= iconst z | ibinop op | pop | load n | store n | aconst null|
+
+binarycmp cmp offset | unarycmp cmp offset | ifnull offset | goto offset|
+new desc | getfield fnm | putfield fnm | free desc | consume r|
+return | call pname
+
+These instructions--apart from consume--are standard, so we only briefly ex-plain them. Inside each activation frame, the virtual machine maintains an
+
+operand stack and a collection of local variables, both of which contain valuesfrom the semantic domain V. Local variables are indexed by natural numbers.
+The instructions in the first two lines of the list perform the standard opera-tions with the operand stack, local variables and program counter. The third
+line includes instructions that allocate, free and manipulate structs stored in theheap. The instruction
+
+consume r consumes the resource r. The desc argumentto
+new and free describe the struct to be created on the heap by the fields andtheir types. The fourth line of instructions has the procedure call and return
+
+instructions that manipulate the stack of activation frames.Individual activation frames are tuples hcode
+
+, S, L, pci 3 Frm consisting ofthe list of instructions from the procedure being executed, the operand stack
+
+and local variables, and the program counter. The first two lines of instructionsthat we gave above only operate within a single activation frame, so we give
+
+their semantics as a small-step relation between frames: frm-! ` Frm * Frm. Thisaccounts for the bulk of instructions.
+
+The third line of instructions includes those that manipulate the heap andconsume resources. Their small-step operational semantics is modelled by a relation mut-! ` Frm * H * Frm * H * R, which relates the before and after activationframes and heaps, and states the consumable resource consumed by this step.
+
+A state of the full virtual machine is a tuple hr, H, fsi 3 State, where r isthe resource consumed to this point,
+
+h is the current heap, and fs is a list of
+
+activation frames. The small-step operational semantics of the full machine forsome program prg is given by a relation -!
+
+prg ` State*State which incorporates
+the frm-! and mut-! relations and also describes how the call and return instructionsmanipulate the stack of activation frames.
+
+Finally, we use the predicate s # H, r, v to indicate when the last activationframe is popped and the machine halts. The
+
+H, r and v are the final heap, theconsumed resources and the return value respectively.
+
+3.3 Program Logic
+We annotate every procedure pname in the program with a pre-condition Ppnameand a post-condition
+
+Qpname. Pre-conditions are predicates over V* *H*R: listsof arguments to the procedure and the heap and available resource at the start
+
+of the procedure's execution. Post-conditions are predicates over V* * H * R* V:argument lists and the heap, remaining consumable resource and return value.
+Intermediate assertions in our program logic are predicates over V* * H * R *V* * (N
+
+* V): argument lists, the heap, remaining consumable resource and thecurrent operand stack and local variable store.
+
+For our program logic, a proof that a given procedure's implementation codematches its specification (
+
+P, Q) consists of a map C from instruction offsets incode to assertions such that:
+
+1. Every instruction's assertion is suitable for that instruction: for every instruc-tion offset
+
+i in code, there exists an assertion A such that C, Q ` i:code[i] : Aand
+C[i] implies A. Figure 1 gives the definition of C, Q ` i:' : A for aselected subset of the instructions
+
+'.
+2. The precondition implies the assertion for the first instruction: for all ar-guments args, heaps
+
+H and consumable resources r, P (args, H, r) implies
+C[0](args, H, r, [], pargsq), where [] denotes the empty operand stack, andp*q maps lists of values to finite maps from naturals to values in the obvious
+
+way.
+When condition 1 holds, we write this as C ` code : Q, indicating that theprocedure implementation code has a valid proof
+
+C for the post-condition Q.
+
+3.4 Soundness
+We say that an activation frame is safe if there is a proof for the code beingexecuted in the frame such that the requirements of the next instruction to be
+
+executed are satisfied. Formally, a frame f = hcode, S, L, pci is safe for argumentsargs, heap
+
+H, resource r and post-condition Q, written safeFrame(f, H, r, args, Q)if
+1:
+
+1 In this definition, and all the later ones in this section, we have omitted necessary
+
+assertions about well-typedness of the stack, local variables and the heap because
+they would only clutter the presentation.
+
+C, Q ` i:consume rc : *(args, r, H, S, L).9r0.rc * r0 v r ^ C[i + 1](args, r0, H, S, L)
+
+C, Q ` i:ifnull n : *(args, r, H, S, L). 8a S0.S = a :: S0 )
+
+(a 6= null ) C[i + 1](args, r, H, S0, L))^
+(a = null ) C[n](args, r, H, S0, L))
+
+C, Q ` i:call pname : *(args, r, H, S, L). 8args0 S0.S = args0@S0 )9
+
+(H1, r1) (H2, r2).
+
+R(H1, r1)(H2, r2)(H, r)^
+Ppname(args0, H1, r1)^8
+
+v (H01, r01).
+
+H01#H2 )
+Qpname(args0, H01, r01, v) )
+A(args0, r01 * r2, H01 ] H2, v :: S0, L)
+
+Fig. 1. Program Logic Rules (Extract)
+
+1. There exists a certificate C such that C ` code : Q;2.
+
+C[pc] exists and C[pc](args, r, H, S, L) holds.
+
+Safety of activation frames is preserved by steps in the virtual machine:
+Lemma 1 (Intra-frame safety preservation).
+
+1. If safeFrame(f, H, r, args, Q) and f frm-! f 0, then safeFrame(f 0, H, r, args, Q).
+2. If safeFrame(f, H1, r, args, Q) and H1#H2 and H1 ] H2 = H and f, H mut-!
+
+f 0, H0, rc, then there exists H01 and r0 such that H01#H2 and H01 ] H2 = H0,
+rc * r0 v r and safeFrame(f0, H01, r0, args, Q).
+
+Remark 1. We pause for a moment to consider the relationship between ourprogram logic and traditional Separation Logic. The second part of the previous
+
+lemma effectively states that execution steps for mutating instructions are local:for any other piece of heap that is present but not mentioned in its precondition,
+the execution of a mutating instruction will not affect it. This is usually expressedin Separation Logic by the Frame rule that states if we know that {
+
+P }C{Q}holds, then {
+P * R}C{Q * R} holds for any other resource assertion R. We donot have an explicit Frame rule in our program logic; application of the rule is
+
+implicit in the rule for the call instruction (so, conflatingly, the Frame rule isapplied when we create a new activation frame). We do not have access to the
+Frame rule in order to modularly reason about the internals of each procedure,e.g. local reasoning about individual loops. This is partially a consequence of
+the unstructured nature of the bytecode that we are working with. It has notbeen a hindrance in the small examples that we have verified so far, but may
+well become so in larger procedures with multiple loops that need invariants. Insuch a case it may be useful to layer a hierarchical structure, matching the loops
+or other sub-program structure, on top of the unstructured bytecode that we
+
+have considered here in order to apply Frame rules and facilitate local reasoninginside procedures.
+
+We have now handled all the instructions except the call and return instruc-tions that create and destroy activation frames. To state soundness of our program logic for these we need to define what it means for a stack of activationframes to be safe. Intuitively, a stack of activation frames is a bridge between the
+overall arguments argstop and post-condition Qtop for the program and the ar-guments args
+
+cur and post-condition Qcur for the current activation frame, withrespect to the current heap H and available consumable resources r, such that,
+
+when the current activation frame finishes, its calling frame on the top of thestack is safe. We write this as safeStack(fs
+
+, H, r, argscur , Qcur , argstop, Qtop).Accordingly, we say that the empty frame stack is safe when
+
+r = e, H = emp,args
+
+cur = argstop and Qcur = Qtop. A frame stack fs = hcode, S, L, pci :: fs0 issafe when there exists (H
+
+1, r1), (H2, r2), args, Q and C, A such that:
+
+1. R(H1, r1)(H2, r2)(H, r);2. The code is certified:
+
+C, Q ` code;3. The next instruction has pre-condition
+
+A: C[pc] = A;4. When the callee returns, the instruction's pre-condition will be satisfied: for
+
+all v 2 V, H02, r02 such that H02#H1 and Qcur (argscur , H02, r02, v) holds, then
+A(args, r02 * r1, H02 ] H1, v :: S, L) holds.5. The rest of the frame stack fs is safe when this activation frame returns:
+
+safeStack(fs, H2, r2, args, Q, argstop, Qtop).
+Note how the safeStack predicate divides up the heap and consumable re-source between the activation frames on the call stack; each frame hands a piece
+
+of its heap and consumable resource off to its callees to use.Finally, we say that a state
+
+s = hrc, H, fsi is safe for arguments args, post-condition
+Q and maximum resource rmax , written safeState(s, args, Q, rmax ), if:
+
+1. there exists an rfuture such that rc * rfuture v rmax ; and also2.
+
+rfuture and H split into (H1, r1) and (H2, r2), i.e. R(H1, r1)(H2, r2)(H, rfuture);3. there exists at least one activation frame: fs =
+
+f :: fs0 and arguments argscurand post-condition
+Qcur ; such that4. safeFrame(
+f, H1, r1, argscur , Qcur ); and5. safeStack(
+f s, H2, r2, argscur , Qcur , args, Q).
+
+The key point in the definition of safeState is that the assertions of theprogram logic talk about the resources that will be consumed in the future of
+
+the program's execution. Safety for a state says that when we combine the futureresource requirements with resources that have been consumed in the past,
+
+rc,then the total is less than the total resources
+rmax that are allowed for theexecution.
+
+Theorem 1 (Soundness).
+
+1. Assume that all the procedures in prg match their specifications. Then ifsafeState(
+
+s, args, Q, rmax ) and s -!prg s0 then safeState(s0, args, Q, rmax ).
+
+2. If safeState(s, args, Q, rmax ) and s # H, r, v, then there exists an r0 such that
+
+Q(args, H, r0, v) and r v rmax .
+
+In the halting case in this theorem, the existentially quantified resource r0indicates the resources that the program still had available at the end of its execution. We are also guaranteed that when the program halts, the total resourcethat it has consumed will be less than the fixed maximum
+
+rmax that we haveset, and moreover, by part 1 of the theorem, this bound has been observed at
+
+every step of the computation.
+
+4 Deep Assertion Logic
+In the previous section we described a program logic but remained agnostic as tothe exact form of the assertions save that they must be predicates over certain
+domains. The shallow approach to stating makes the statement and soundnessproof easier, but inhibits discussion of actual proofs in the logic. In this section
+we show that the logic of Bunched Implications, in its Separation Logic guise,can be used as a language for assertions in the program logic.
+
+We defined three different types of assertion in the previous section: proce-dure pre- and post-conditions and intermediate assertions in methods. These all
+operate on heaps and consumable resources and the arguments to the currentprocedure, but differ in whether they talk about return values or the operand
+stack and local variables. To deal with these differences we assume that we havea set of terms in our logic that at least includes logical variables and a constant
+null for representing the null reference, and also variables for representing thecurrent procedure arguments, the return value and the operand stack and local
+variables as appropriate.Formulae are built from at least the following constructors:
+
+OE ::= t1 ./ t2 | OE1 ^ OE2 | OE1 . OE2 | OE1 ! OE2 | emp | OE1 * OE2 | OE1 -* OE2 | 8x.OE | 9x.OE
+
+| [t1 f7! t2] | Rr | . . .
+
+Where ./ 2 {=, 6=}. We can also add inductively defined predicates for lists andlist segments as needed. The only non-standard formula with respect to Separation Logic is Rr which represents the presence of some consumable resource r.The semantics of the assertion logic is given in Figure 2 as a relation |= between
+environments and heap/consumable resource pairs and formulae.As a consequence of having an ordering on consumable resources, and our
+chosen semantics of emp, * and -* , our logic contains affine Bunched Implicationsas a sub-logic for reasoning about pure consumable resources.
+
+Proposition 1. If OE is a propositional BI formula with only Rr as atoms, then
+r |=bi OE iff j, (r, h) |= OE.
+
+We have only considered a single separating connective, OE1 * OE2, which statesthat both the heap and consumable resources must be separated. Evidently,
+
+j, x |= ? iff always
+j, x |= t1 ./ t2 iff Jt1Kj ./ Jt2Kj
+j, x |= emp iff x = (h, r) and h = {}
+
+j, x |= [t1 f7! t2] iff x = (h, r) and h = {(Jt1Kj, f) 7! Jt2Kj}
+j, x |= Rri iff x = (h, r) and ri v r and h = {}
+j, x |= OE1 ^ OE2 iff j, x |= OE1 and j, x |= OE2
+j, x |= OE1 . OE2 iff j, x |= OE1 or j, x |= OE2
+j, x |= OE1 * OE2 iff exists y, z. st. Ryzx and j, y |= OE1 and j, z |= OE2
+j, x |= OE1 ! OE2 iff for all y. if x v y and j, y |= OE1 then j, y |= OE2
+j, x |= OE1 -* OE2 iff for all y, z. if Rxyz and j, y |= OE1 then j, z |= OE2
+j, x |= 8v.OE iff for all a, j[v 7! a], x |= OE
+j, x |= 9v.OE iff exists a, j[v 7! a], x |= OE
+
+Fig. 2. Semantics of assertions
+
+there are two other possible combinations that allow sharing of heap or resources.Separation of resources, but sharing of heap:
+
+j, x |= OE1 *R OE2 iff x = (H, r) and exists r1, r2. st.
+
+r1 * r2 v rand
+
+j, (H, r1) |= OE1 and j, (H, r2) |= OE2
+
+may be useful to specify that we have a single data structure in memory, buttwo resource views on it. However, we leave such investigation of alternative
+assertions to future work.
+
+5 Automated Verification
+In this section we describe an verification condition generation and proof searchprocedure for automated proving of programs against programs against specifications in our program logic, as long as procedures have been annotated withloop invariants. The restricted subset of separation logic that we use in this
+section is similar to the subset used by Berdine et al [3], though instead of per-forming a forwards analysis of the program, we generate verification conditions
+by backwards analysis and then attempt to solve them using proof search. As wedemonstrate below, the proof search procedure is mainly guided by the structure
+of the program and the shape of the data structures that it manipulates. Theresource annotations that are required can be inferred by linear programming.
+
+5.1 Restricted Assertion Logic
+Following Berdine et al, the restricted subset of the assertion logic that we usesegregates assertions into pure data, heap and consumable resource sections.
+
+Data: P := t1 = t2 | t1 6= t2 | ?
+Heap: X := [t1 f7! t2] | lseg(\Theta , t1, t2) | empResource:
+
+R := Rr | ?The terms that we allow in the data and heap assertions are either variables,
+
+or the constant null. The list segment predicate that we use here is definedinductively as:
+
+lseg(\Theta , x, y) j (x = y ^ emp) . (9z, z0. [x data7! z] * [x next7! z0] * \Theta  * lseg(\Theta , z0, y))
+We restrict the pre- and post-conditions of each procedure to be of the formW
+
+i(\Pi i ^ (\Sigma i * \Theta i)) and we use S to range over such formulae. The three com-ponents of each disjunct are lists of data, heap and resource assertions, with
+
+interpretations as in the following table.Data:
+
+\Pi  := P1, ..., Pn (P1 ^ ... ^ Pn)Heap:
+
+\Sigma  := X1, ..., Xn (X1 * ... * Xn)Resource:
+
+\Theta  := R1, ..., Rn (R1 * ... * Rn)Note that, due to the presence of resource assertions in the
+
+lseg predicate, heapassertions may also describe consumable resources, even if the resource part of
+
+a disjunct is empty.Finally, we have the set of goal formulae that the verification condition generator will produce and the proof search will solve.
+
+G := S * G | S --* G | S | G1 ^ G2 | P ! G | 8x.G | 9x.G
+Note that we only allow implications (! and -* ) to appear in positive positions.This means that we can interpret them in our proof search as adding extra
+
+information to the context.
+
+5.2 Verification Condition Generation
+Verification condition generation is performed for each procedure individually bycomputing weakest preconditions for each instruction, working backwards from
+
+the last instruction in the method. To resolve loops, we require that the targetsof all backwards jumps have been annotated with loop invariants
+
+S that are ofthe same form as the pre- and post-condition formulae from the previous section.
+
+We omit the rules that we use for weakest precondition generation since theyare very similar to the rules for the shallowly embedded logic in Figure 1. The
+verification condition generator will always produce a VC for the required entail-ment of the computed pre-condition of the first instruction and the procedure's
+pre-condition, plus a VC for each annotated instruction, being the entailmentbetween the annotation and the computed precondition. All VCs will have a
+formula of the form Wi(\Pi i ^ (\Sigma i * \Theta i)) as the antecedent and a goal formula asthe conclusion.
+
+5.3 Proof Search
+The output of the verification condition generation phase is a collection of prob-lems of the form
+
+\Pi |\Sigma |\Theta  ` G. We define a proof search procedure by a set of
+
+rules shown in Figures 3, 4, 6 and 5. The key idea here is to use the I/O modelof proof search as defined for intuitionistic linear logic by Cervesato, Hodas and
+Pfenning [5], and also the use of heuristic rules for unfolding the inductive listsegment predicate.
+
+As well as the main proof search judgement \Pi |\Sigma |\Theta  ` G, we make use ofseveral auxiliary judgements:
+
+\Pi |\Sigma |\Theta  ` \Sigma 1\\Sigma 2, \Theta 0 Heap assertion matching
+
+\Theta  ` \Theta 1\\Theta 2 Resource matching
+
+\Pi  ` ? Contradiction spotting
+\Pi  ` \Pi 0 Data entailment
+
+We do not define the data entailment or contradiction spotting judgement explic-itly here; we intend that these judgements satisfy the basic axioms of equalities
+and disequalities.
+
+The rules in Figure 3 are the goal driven search rules. There is an individualrule for each possible kind of goal formula. The first two rules are matching rules
+
+that match a formula S against the context, altering the context to remove theheap and resource assertions that
+
+S requires, as dictated by the semantics of theassertion logic. We must search for a disjunct
+
+i that matches the current context.There may be many such
+i, and in this case the search may have to backtrack.When the goal is a formula
+
+S, then we check that the left-over heap is empty,in order to detect memory leaks.
+
+exists i. \Pi |\Sigma |\Theta  ` \Sigma i\\Sigma 0, \Theta 0 \Pi  ` \Pi i \Theta 0 ` \Theta i\\Theta 00 \Pi |\Sigma 0|\Theta 00 ` G
+
+\Pi |\Sigma |\Theta  ` _
+
+i
+
+(\Pi i ^ (\Sigma i * \Theta i)) * G
+
+exists i. \Pi |\Sigma |\Theta  ` \Sigma i\emp, \Theta 0 \Pi  ` \Pi i \Theta 0 ` \Theta i\\Theta 00
+
+\Pi |\Sigma |\Theta  ` _
+
+i
+
+(\Pi i ^ (\Sigma i * \Theta i))
+
+forall i. \Pi , \Pi i|\Sigma , \Sigma i|\Theta , \Theta i ` G
+
+\Pi |\Sigma |\Theta  ` _
+
+i
+
+(\Pi i ^ (\Sigma i * \Theta i)) --* G \Pi , P |\Sigma |\Theta  ` G\Pi |\Sigma |\Theta  ` P ! G
+
+\Pi |\Sigma |\Theta  ` G1 \Pi |\Sigma |\Theta  ` G2
+
+\Pi |\Sigma |\Theta  ` G1 ^ G2
+
+\Pi |\Sigma |\Theta  ` G x 62 fv(\Pi ) [ fv(\Sigma )
+
+\Pi |\Sigma |\Theta  ` 8x.G
+
+\Pi |\Sigma |\Theta  ` G[t/x]
+
+\Pi |\Sigma |\Theta  ` 9x.G
+
+Fig. 3. Goal Driven Search Rules
+
+Heap Matching Rules:
+\Pi |\Sigma |\Theta  ` emp\\Sigma , \Theta 
+
+\Pi  ` t1 = t01 \Pi  ` t2 = t02
+\Pi |\Sigma , [t1 f7! t2]|\Theta  ` [t01 f7! t02]\\Sigma , \Theta 
+
+\Pi |\Sigma |\Theta  ` \Sigma 1\\Sigma 0, \Theta 0 \Pi |\Sigma 0|\Theta 0 ` \Sigma 2\\Sigma 00, \Theta 00
+
+\Pi |\Sigma |\Theta  ` \Sigma 1 * \Sigma 2\\Sigma 00, \Theta 00
+
+\Pi  ` t1 = t2
+\Pi |\Sigma |\Theta  ` lseg(\Theta l, t1, t2)\\Sigma , \Theta 
+
+\Pi  ` t1 = t01 \Theta  ` \Theta l\\Theta 0 \Pi |\Sigma |\Theta 0 ` lseg(\Theta l, tn, t2)\\Sigma 0, \Theta 00
+
+\Pi |\Sigma , [t1 n7! tn], [t1 d7! td]|\Theta  ` lseg(\Theta l, t01, t2)\\Sigma 0, \Theta 00
+
+\Pi  ` t01 = t1 \Pi |\Sigma |\Theta  ` lseg(\Theta l, t2, t3)\\Sigma 0, \Theta 0
+
+\Pi |\Sigma , lseg(\Theta l, t1, t2)|\Theta  ` lseg(\Theta l, t01, t3)\\Sigma 0, \Theta 0
+
+Resource Matching Rules:
+
+\Theta , Rae ` Rae\\Theta  \Theta  ` ?\\Theta 
+
+\Theta  ` \Theta 1\\Theta 0 \Theta  ` \Theta 2\\Theta 00
+
+\Theta  ` \Theta 1 * \Theta 2\\Theta 00
+
+Fig. 4. Matching Rules
+
+The matching rules make use of the heap and resource matching judgementsdefined in Figure 4. The heap matching judgements take a data, heap and resource context and attempt to match a list of heap assertions against them,returning the left over heap and resource contexts. The first three rules are
+straightforward: the empty heap assertion is always matchable, points-to rela-tions are looked up in the context directly and pairs of heap assertions are split,
+threading the contexts through. For the list segment rules, there are three cases.Either the two pointers involved in the list are equal, in which case we are immediately done; or we have a single list cell in the context that matches thestart pointer of the predicate we are trying to satisfy, and we have the required
+resources for an element of this list, so we can reduce the goal by one step; or wehave a whole list segment in the context and we can reduce the goal accordingly.
+The resource matching rules are straightforward.
+
+The final two sets of rules operate on the proof search context itself. The firstset, shown in Figure 5, describe how information flows from the heap part of the
+
+context to the data part. If we know that two variables both have a points-torelation involving a field
+
+f, then we know that these locations must not be equal.Similarly, if we know that a variable does point to something, then it cannot be
+
+null. If any contradictions are found using these rules, then the proof search canterminate immediately for the current goal. This is provided for by the first rule
+in Figure 5.
+
+The final set of rules performs heuristic unfolding of the inductive lseg pred-icate. These rules are shown in Figure 6. These rules take information from the
+
+data context and use it to unfold lseg predicates that occur in the heap context.
+
+\Pi  ` ?
+\Pi |\Sigma |\Theta  ` G
+
+\Sigma  = [t1 f7! t], [t2 f7! t0], \Sigma 0 \Pi , t1 6= t2|\Sigma |\Theta  ` G
+
+\Pi |\Sigma |\Theta  ` G
+
+\Sigma  = [t f7! t0], \Sigma 0 \Pi , t 6= null|\Sigma |\Theta  ` G
+
+\Pi |\Sigma |\Theta  ` G
+
+Fig. 5. Contradiction Flushing
+
+The first rule is triggered when the proof search learns that there is a list seg-ment where the head pointer of the list is not equal to null. In this case, two
+proof search goals are produced, one for the case that the list segment is emptyand one for when it isn't. The other rules are similar; taking information from
+the data context and using it to refine the heap context.
+
+\Pi  ` t1 6= null
+\Pi , t1 = t2|\Sigma |\Theta  ` G \Pi |\Sigma , [t1 n7! x], [t1 d7! y], lseg(R, x, t2)|\Theta , R ` G
+
+\Pi |\Sigma , lseg(R, t1, t2)|\Theta  ` G
+
+\Pi  ` t1 = null \Pi , t2 = null|\Sigma |\Theta  ` G
+
+\Pi |\Sigma , lseg(R, t1, t2)|\Theta  ` G
+
+\Pi  ` t1 = t2 \Pi |\Sigma |\Theta  ` G
+
+\Pi |\Sigma , lseg(R, t1, t2)|\Theta  ` G
+
+\Pi  ` t1 6= t2 \Pi |\Sigma , [t1 n7! x], [t1 d7! y], lseg(R, x, t2)|\Theta , R ` G
+
+\Pi |\Sigma , lseg(R, t1, t2)|\Theta  ` G
+
+Fig. 6. List Unfolding Rules
+
+The proof search strategy that we employ works by first saturating the con-text by repeatedly applying the rules in Figures 5 and 6 to move information
+from the data context into the heap context and vice versa. This process termi-nates because there are a finite number of points-to relations and list segment
+predicates to generate rule applications, and when new predicates are introducedvia list segment unfolding they either do not trigger any new inequalities or are
+over fresh variables about which nothing is yet known. Once the context is fullysaturated, the proof search reduces the goal by using the goal-driven search rules
+and the process begins again.
+
+Theorem 2. The proof search procedure is sound and terminating.
+5.4 Integration with Linear Programming
+A key feature of Hofmann and Jost's system for inference of resource boundsof functional programs [9] is the use of linear programming. In this section, we
+
+sketch how to extend the procedure of the previous section with linear constraintgeneration. Using this technique, as long as the resource bounds are linear, we
+can simply state our specifications in terms of the shapes of the data structuresthat the program manipulates and infer the necessary resource annotations.
+
+For simplicity, we assume that we are dealing with resources that are positiverational numbers, so we can replace the resource contexts
+
+\Theta  in the proof searchprocedure of the previous section with linear expressions over the rationals. The
+
+resource matching judgement is altered to take and output linear expressionsover rationals, while producing linear constraints over the variables mentioned
+in the resource expression, and we have the single rule:
+
+e1 ` e2\e1 - e2, e2 <= e1
+The proof search judgement is altered to generate a set of constraints over thevariables mentioned in the resource expression
+
+e: \Pi |\Sigma |e ` G\C. The goal drivensearch rules are then modified to accumulate the generated constraints. The heap
+
+matching rules are similarly modified.Given a collection of verification conditions and a successful proof search over
+them that has generated a set of linear constraints, we input these into a linearsolver, along with constraints that every variable is positive and an objective
+function that attempts to minimise variables appearing in the pre-condition.
+
+6 Example: Frying Pan List Reversal
+We demonstrate the use of the proof search procedure coupled with linear con-straint generation to the standard imperative in-place list reversal algorithm on
+lists with cyclic tails (also known as "frying pan" lists). This example was usedby Brotherston, Bornat and Calcagno [4] to demonstrate the use of cyclic proofs
+to prove program termination. Here we show how our amortised resource logiccan be used to infer bounds on the complexity of this procedure.
+
+a b c
+
+d
+
+e
+f
+
+We have coloured the "handle" of the structure in blue and the "pan" in green.When the in-place list-reversal procedure is run upon a structure of this shape,
+
+it will proceed up the handle, reversing it, around the pan, reversing it, and thenback down the handle, restoring it to its original order. For the purposes of this
+example, we assume that it takes one element of resource to handle the reversalof one node. Following Brotherston, Bornat and Calcagno, we can specify a cyclic
+list in Separation Logic by the following formula, where v0 points to the head ofthe list and
+
+v1 points to the join between the handle and the pan.
+
+9k.lseg(x1, v0, v1) * [v1 next7! k] * lseg(x2, k, v1) * Rx3
+We have annotated the list segments involved with resource annotation variables
+x1 and x2 that we will instantiate using linear programming. The predicate Rx3denotes any extra resource we may require. Similarly, we have annotated the
+
+required loop invariant (adapted from Brotherston et al):
+
+(9k.lseg(a1, l0, v1) * lseg(a2, l1, null) * [v1 next7! k] * lseg(a3, k, v1) * Ra4).
+
+(9k.lseg(b1, k, null) * [j next7! k] * lseg(b2, l0, v1) * lseg(b3, l1, j) * Rb4).
+(9k.lseg(c11, l0, null) * lseg(c2, l1, v1) * [v1 next7! k] * lseg(c3, k, v1) * Rc4)
+
+Each disjunct of the loop invariant corresponds to a different phase of the proce-dure's progress. Brotherston et al note that it is possible to infer the shape part
+
+of this loop invariant using current Separation Logic tools. Here, we are addingthe ability to infer resource bounds. Running our tool on this example produces
+the following instantiation of the variables:Pre-condition
+
+x1 = 2 x2 = 1 x3 = 2Loop invariant, phase 1
+a1 = 2 a2 = 1 a3 = 1 a4 = 2Loop invariant, phase 2
+b1 = 1 b2 = 1 b3 = 0 b4 = 1Loop invariant, phase 3
+c1 = 1 c2 = 0 c3 = 0 c4 = 0Post-condition
+x01 = 0 x02 = 0 x03 = 0Pictorially, the inference has associated the following amount of resource with
+
+each part of the input structure:
+
+a
+
+2
+
+b
+
+2
+
+c
+
+2 d
+
+1
+
+e
+
+1
+
+f
+
+1
+
+Each node of the handle has 2 associated elements of resource, to handle the twopasses of the handle that the procedure takes, while the pan has one element
+of resource for each node. The inferred annotations for the loop invariant trackhow the resources on each node are consumed by the procedure, gradually all
+reducing to zero. Since we have added a consume instruction to be executedevery time the procedure starts a loop, the resource inference process has also
+verified the termination of this procedure, and given us a bound on the numberof times the loop will execute in terms of the shape of the input.
+
+7 Conclusions
+The main limitation of our proof search procedure is that it only supports thestatement and inference of bounds that are linear in the size of lists that are
+mentioned in a procedure's precondition. This is a limitation shared with thework of Hofmann and Jost [9]. We note that this is not a limitation of the program
+logic that we have presented, only of the automated verification procedure thatwe have layered on top of it. We have demonstrated that the use of mixed
+shape and resource assertions can simplify the complexity of specifications thattalk about resources, and this should extend to extensions of the proof search
+procedure, or to interactive systems based on this program logic. The resourceaware program logic of Aspinall et al [2] also utilises the same layering: a general
+program logic for resources (which is proved complete in their case) is used as abase for a specialised logic for reasoning about the output of the Hofmann-Jost
+type system.A possible direction for future work is to consider different assertion logics
+and their expressiveness in terms of the magnitude of resources they can express.We conjecture that the deep assertion logic we have presented here, extended
+with the lseg predicate can express resources linear in the size of the heap. Itwould be interesting to consider more expressive logics and evaluate them from
+the point of view of implicit computational complexity; the amount of resourcethat one can express in an assertion dictates the amount of resource that is
+available for the future execution of the program.Other resource inference procedures that are able to deal with non-linear
+bounds include those of Chin et al [6, 7], Albert et al [1] and Gulwani [8]. Whendealing with heap-based datastructures, all of these techniques use a method of
+attaching size information to assertions about data structures. As we demon-strated in Section 2, this can lead to additional unwanted complexity in specifications. However, all of these techniques deal with numerically bounded loopsbetter than our current prototype automated procedure can, and we are currently investigating how to extend our approach to deal with non-linear andnumerically-driven resource bounds.
+
+References
+
+1. Elvira Albert, Puri Arenas, Samir Genaim, German Puebla, and Damiano Zanardini. Costa: Design and implementation of a cost and termination analyzer for
+java bytecode. In Frank S. de Boer, Marcello M. Bonsangue, Susanne Graf, and
+Willem P. de Roever, editors, FMCO, volume 5382 of Lecture Notes in Computer
+Science, pages 113-132. Springer, 2007.
+2. David Aspinall, Lennart Beringer, Martin Hofmann, Hans-Wolfgang Loidl, and Alberto Momigliano. A program logic for resources. Theor. Comput. Sci., 389(3):411-
+445, 2007.
+3. Josh Berdine, Cristiano Calcagno, and Peter W. O'Hearn. Symbolic execution
+
+with separation logic. In Kwangkeun Yi, editor, APLAS, volume 3780 of Lecture
+Notes in Computer Science, pages 52-68. Springer, 2005.
+
+4. James Brotherston, Richard Bornat, and Cristiano Calcagno. Cyclic proofs of
+
+program termination in separation logic. In George C. Necula and Philip Wadler,
+editors, POPL, pages 101-112. ACM, 2008.
+5. Iliano Cervesato, Joshua S. Hodas, and Frank Pfenning. Efficient resource management for linear logic proof search. Theor. Comput. Sci., 232(1-2):133-163, 2000.
+6. Wei-Ngan Chin, Huu Hai Nguyen, Corneliu Popeea, and Shengchao Qin. Analysing
+
+memory resource bounds for low-level programs. In Richard Jones and Stephen M.
+Blackburn, editors, ISMM, pages 151-160. ACM, 2008.
+7. Wei-Ngan Chin, Huu Hai Nguyen, Shengchao Qin, and Martin C. Rinard. Memory
+
+usage verification for oo programs. In Chris Hankin and Igor Siveroni, editors, SAS,
+volume 3672 of Lecture Notes in Computer Science, pages 70-86. Springer, 2005.
+8. Sumit Gulwani, Krishna K. Mehra, and Trishul M. Chilimbi. Speed: precise and
+
+efficient static estimation of program computational complexity. In Zhong Shao
+and Benjamin C. Pierce, editors, POPL, pages 127-139. ACM, 2009.
+9. Martin Hofmann and Steffen Jost. Static prediction of heap space usage for firstorder functional programs. In POPL, pages 185-197, 2003.
+10. Martin Hofmann and Steffen Jost. Type-based amortised heap-space analysis. In
+
+Peter Sestoft, editor, ESOP, volume 3924 of Lecture Notes in Computer Science,
+pages 22-37. Springer, 2006.
+11. Martin Hofmann and Dulma Rodriguez. Efficient type-checking for amortised
+
+heap-space analysis. In Erich Gr"adel and Reinhard Kahle, editors, CSL, volume
+5771 of Lecture Notes in Computer Science, pages 317-331. Springer, 2009.
+12. Samin Ishtiaq and Peter W. O'Hearn. Bi as an assertion language for mutable data
+
+structures. In Proceedings of the 28th Symposium on Principles of Programming
+Languages, pages 14-26, January 2001.
+13. Greg Restall. An Introduction to Substructural Logics. Routledge, 2000.
+14. John C. Reynolds. Separation logic: A logic for shared mutable data structures.
+
+In Proceedings of 17th Annual IEEE Symposium on Logic in Computer Science,
+2002.
+15. Robert Endre Tarjan. Amortized computational complexity. SIAM Journal on
+
+Algebraic and Discrete Methods, 6(2):306-318, 1985.

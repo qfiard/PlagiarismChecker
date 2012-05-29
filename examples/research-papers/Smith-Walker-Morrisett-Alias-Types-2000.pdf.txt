@@ -1,0 +1,776 @@
+
+
+Alias Types ?
+Frederick Smith David Walker Greg Morrisett
+
+Cornell University
+
+Abstract. Linear type systems allow destructive operations such as object deallocation and imperative updates of functional data structures.
+These operations and others, such as the ability to reuse memory at
+different types, are essential in low-level typed languages. However, traditional linear type systems are too restrictive for use in low-level code
+where it is necessary to exploit pointer aliasing. We present a new typed
+language that allows functions to specify the shape of the store that they
+expect and to track the flow of pointers through a computation. Our type
+system is expressive enough to represent pointer aliasing and yet safely
+permit destructive operations.
+
+1 Introduction
+Linear type systems [26, 25] give programmers explicit control over memory re-sources. The critical invariant of a linear type system is that every linear value
+is used exactly once. After its single use, a linear value is dead and the systemcan immediately reclaim its space or reuse it to store another value. Although
+this single-use invariant enables compile-time garbage collection and imperativeupdates to functional data structures, it also limits the use of linear values. For
+example, x is used twice in the following expression: let x = h1, 2i in let y =
+fst(x) in let z = snd(x) in y + z. Therefore, x cannot be given a linear type,and consequently, cannot be deallocated early.
+
+Several authors [26, 9, 3] have extended pure linear type systems to allowgreater flexibility. However, most of these efforts have focused on high-level user
+programming languages and as a result, they have emphasized simple typingrules that programmers can understand and/or typing rules that admit effective
+type inference techniques. These issues are less important for low-level typedlanguages designed as compiler intermediate languages [22, 18] or as secure mobile code platforms, such as the Java Virtual Machine [10], Proof-Carrying Code(PCC) [13] or Typed Assembly Language (TAL) [12]. These languages are designed for machine, not human, consumption. On the other hand, because sys-tems such as PCC and TAL make every machine operation explicit and verify
+that each is safe, the implementation of these systems requires new type-theoreticmechanisms to make efficient use of computer resources.
+
+? This material is based on work supported in part by the AFOSR grant F49620-97-
+
+1-0013 and the National Science Foundation under Grant No. EIA 97-03470. Any
+opinions, findings, and conclusions or recommendations expressed in this publication
+are those of the authors and do not reflect the views of these agencies.
+
+In existing high-level typed languages, every location is stamped with asingle type for the lifetime of the program. Failing to maintain this invariant
+has resulted in unsound type systems or misfeatures (witness the interactionbetween parametric polymorphism and references in ML [23, 27]). In low-level
+languages that aim to expose the resources of the underlying machine, this in-variant is untenable. For instance, because machines contain a limited number
+of registers, each register cannot be stamped with a single type. Also, whentwo stack-allocated objects have disjoint lifetimes, compilers naturally reuse the
+stack space, even when the two objects have different types. Finally, in a low-level language exposing initialization, even the simplest objects change type. For
+example, a pair x of type hint, inti may be created as follows:
+
+malloc x, 2 ; (* x has type hjunk, junki *)
+x[1]:=1 ; (* x has type hint, junki *)
+x[2]:=2 ; (* x has type hint, inti *).
+
+..
+
+At each step in this computation, the storage bound to x takes on a differenttype ranging from nonsense (indicated by the type junk) to a fully initialized pair
+
+of integers. In this simple example, there are no aliases of the pair and thereforewe might be able to use linear types to verify that the code is safe. However, in
+a more complex example, a compiler might generate code to compute the initialvalues of the tuple fields between allocation and the initializing assignments.
+During the computation, a register allocator may be forced to move the unini-tialized or partially initialized value
+
+x between stack slots and registers, creatingaliases:
+
+OBJECTOBJECT
+STACKSTACK R1 R1
+
+Copy To Register
+If x is a linear value, one of the pointers shown above would have to be"invalidated" in some way after each move. Unfortunately, assuming the pointer
+on the stack is invalidated, future register pressure may force x to be physicallycopied back onto the stack. Although this additional copy is unnecessary because
+the register allocator can easily remember that a pointer to the data structureremains on the stack, the limitations of a pure linear type system require it.
+
+Pointer aliasing and data sharing also occur naturally in other data structuresintroduced by a compiler. For example, compilers often use a top-of-stack pointer
+and a frame pointer, both of which point to the same data structure. Compilinga language like Pascal using displays [1] generalizes this problem to having an
+arbitrary (but statically known) number of pointers into the same data structure.In each of these examples, a flexible type system will allow aliasing but ensure
+that no inconsistencies arise. Type systems for low-level languages, therefore,should support values whose types change even when those values are aliased.
+
+We have devised a new type system that uses linear reasoning to allow mem-ory reuse at different types, object initialization, safe deallocation, and tracking
+of sharing in data structures. This paper formalizes the type system and pro-vides a theoretical foundation for safely integrating operations that depend upon
+pointer aliasing with type systems that include polymorphism and higher-orderfunctions.
+
+We have extended the TAL implementation with the features described inthis paper.
+
+1 It was quite straightforward to augment the existing F!-based type
+
+system because many of the basic mechanisms, including polymorphism andsingleton types, were already present in the type constructor language. Popcorn,
+
+an optimizing compiler for a safe C-like language, generates code for the newTAL type system and uses the alias tracking features of our type system.
+
+The Popcorn compiler and TAL implementation demonstrate that the ideaspresented in this paper can be integrated with a practical and complete programming language. However, for the sake of clarity, we only present a smallfragment of our type system and, rather than formalizing it in the context of
+TAL, we present our ideas in terms of a more familiar lambda calculus. Section 2gives an informal overview of how to use aliasing constraints, a notion which extends conventional linear type systems, to admit destructive operations suchas object deallocation in the presence of aliasing. Section 3 describes the core
+language formally, with emphasis on the rules for manipulating linear aliasingconstraints. Section 4 extends the language with non-linear aliasing constraints.
+Finally, Section 5 discusses future and related work.
+
+2 Informal Overview
+The main feature of our new type system is a collection of aliasing constraints.Aliasing constraints describe the shape of the store and every function uses them
+to specify the store that it expects. If the current store does not conform to theconstraints specified, then the type system ensures that the function cannot
+be called. To illustrate how our constraints abstract a concrete store, we willconsider the following example:
+
+R1STACKSP
+577
+TRUE 42
+
+Here, sp is a pointer to a stack frame, which has been allocated on the heap (asmight be done in the SML/NJ compiler [2], for instance). This frame contains a
+pointer to a second object, which is also pointed to by register r1.
+
+In our program model, every heap-allocated object occupies a particularmemory location. For example, the stack frame might occupy location
+
+`s and the
+
+1 See http://www.cs.cornell.edu/talc for the latest software release.
+
+second object might occupy location `o. In order to track the flow of pointers tothese locations accurately, we reflect locations into the type system: A pointer
+to a location ` is given the singleton type ptr(`). Each singleton type containsexactly one value (the pointer in question). This property allows the type system to reason about pointers in a very fine-grained way. In fact, it allows us torepresent the graph structure of our example store precisely:
+
+R1STACK
+
+BOOL
+SP
+
+PTR(lo)
+
+lo: INT
+
+INTls: PTR(lo)PTR(ls)
+
+We represent this picture in our formal syntax by declaring the program variable
+sp to have type ptr(`s) and r1 to have type ptr(`o). The store itself is describedby the constraints {
+
+`s 7! hint, bool, ptr(`o)i} \Phi  {`o 7! hinti}, where the typeh
+o/1, . . . , o/ni denotes a memory block containing values with types o/1 through o/n.
+
+Constraints of the form {` 7! o/ } are a reasonable starting point for anabstraction of the store. However, they are actually too precise to be useful
+
+for general-purpose programs. Consider, for example, the simple function deref,which retrieves an integer from a reference cell. There are two immediate problems if we demand that code call deref when the store has a shape describedby {
+
+` 7! hinti}. First, deref can only be used to derefence the location `, andnot, for example, the locations
+
+`0 or `00. This problem is easily solved by addinglocation polymorphism. The exact name of a location is usually unimportant; we
+
+need only establish a dependence between pointer type and constraint. Hencewe could specify that deref requires a store {
+
+ae 7! hinti} where ae is a locationvariable instead of some specific location
+`. Second, the constraint {` 7! hinti}specifies a store with exactly one location
+` although we may want to dereferencea single integer reference amongst a sea of other heap-allocated objects. Since
+
+deref does not use or modify any of these other references, we should be ableto abstract away the size and shape of the rest of the store. We accomplish this
+task using store polymorphism. An appropriate constraint for the function derefis
+
+ffl \Phi  {ae 7! hinti} where ffl is a constraint variable that may instantiated withany other constraint.
+
+The third main feature of our constraint language is the capability to distin-guish between linear constraints {
+
+ae 7! o/ } and non-linear constraints {ae 7! o/ }!.Linear constraints come with the additional guarantee that the location on the
+
+left-hand side of the constraint (ae) is not aliased by any other location (ae0).This invariant is maintained despite the presence of location polymorphism and
+store polymorphism. Intuitively, because ae is unaliased, we can safely deallocateits memory or change the types of the values stored there. The key property
+that makes our system more expressive than traditional linear systems is thatalthough the aliasing constraints may be linear, the pointer values that flow
+through a computation are not. Hence, there is no direct restriction on the copy-ing and reuse of pointers.
+
+The following example illustrates how the type system uses aliasing con-straints and singleton types to track the evolution of the store across a series of
+instructions that allocate, initialize, and then deallocate storage. In this exam-ple, the instruction
+
+malloc x, ae, n allocates n words of storage. The new storageis allocated at a fresh location
+
+` in the heap and ` is substituted for ae in theremaining instructions. A pointer to
+
+` is substitued for x. Both ae and x areconsidered bound by this instruction. The
+
+free instruction deallocates storage.Deallocated storage has type junk and the type system prevents any future use
+
+of that space.Instructions Constraints (Initially the constraints
+
+ffl)
+
+1. malloc sp, ae1, 2; ffl \Phi  {ae1 7! hjunk, junki} sp : ptr(ae1)2.
+
+sp[1]:=1; ffl \Phi  {ae1 7! hint, junki}3.
+malloc r1, ae2, 1; ffl \Phi  {ae1 7! hint, junki, ae2 7! hjunki} r1 : ptr(ae2)4.
+sp[2]:=r1; ffl \Phi  {ae1 7! hint, ptr(ae2)i, ae2 7! hjunki}5.
+r1[1]:=2; ffl \Phi  {ae1 7! hint, ptr(ae2)i, ae2 7! hinti}6.
+free r1; ffl \Phi  {ae1 7! hint, ptr(ae2)i, ae2 7! junk}7.
+free sp; ffl \Phi  {ae1 7! junk, ae2 7! junk}Again, we can intuitively think of
+
+sp as the stack pointer and r1 as a registerthat holds an alias of an object on the stack. Notice that on line 5, the initialization of r1 updates the type of the memory at location ae2. This has the effectof simultaneously updating the type of
+
+r1 and of sp[1]. Both of these paths aresimilarly affected when
+r1 is freed in the next instruction. Despite the presenceof the dangling pointer at
+
+sp[1], the type system will not allow that pointer tobe derefenced.
+
+By using singleton types to accurately track pointers, and aliasing constraintsto model the shape of the store, our type system can represent sharing and
+simultaneously ensure safety in the presence of destructive operations.
+
+3 The Language of Locations
+This section describes our new type-safe "language of locations" formally. Thesyntax for the language appears in Figure 1.
+
+3.1 Values, Instructions, and Programs
+A program is a pair of a store (S ) and a list of instructions ('). The store mapslocations (
+
+`) to values (v). Normally, the values held in the store are memoryblocks (h
+o/1, . . . , o/ni), but after the memory at a location has been deallocated,that location will point to the unusable value
+
+junk. Other values include integerconstants (
+i), variables (x or f), and, of course, pointers (ptr(`)).
+Figure 2 formally defines the operational semantics of the language.2 Themain instructions of interest manipulate memory blocks. The instruction
+
+malloc x, ae, n
+
+2 Here and elsewhere, the notation X[c1, . . . , cn/x1, . . . , xn] denotes capture-avoiding
+
+substitution of c1, . . . , cn for variables x1, . . . , xn in X.
+
+` 2 Locations ae 2 LocationVar ffl 2 ConstraintVar x, f 2 ValueVar
+locations j ::= ` | ae
+constraints C ::= ; | ffl | {j 7! o/} | C1 \Phi  C2
+types o/ ::= int | junk | ptr(j) | ho/1, . . . , o/ni | 8[\Delta ; C].(o/1, . . . , o/n)!0
+
+value ctxts \Gamma  ::= * | \Gamma , x:o/
+type ctxts \Delta  ::= * | \Delta , ae | \Delta , ffl
+values v ::= x | i | junk | ptr(`) | hv1, . . . , vni | fix f[\Delta ; C; \Gamma  ].' | v[j] | v[C]
+instructions ' ::= malloc x, ae, n; ' | x=v[i]; ' | v[i]:=v0; ' | free v; ' |
+
+v(v1, . . . , vn) | halt
+stores S ::= {`1 7! v1, . . . , `n 7! vn}
+programs P ::= (S , ')
+
+Fig. 1. Language of Locations: Syntax
+
+allocates an unitialized memory block (filled with junk) of size n at a new loca-tion
+
+`, and binds x to the pointer ptr(`). The location variable ae, bound by thisinstruction, is the static representation of the dynamic location
+
+`. The instruc-tion
+x=v[i] binds x to the ith component of the memory block pointed to by vin the remaining instructions. The instruction
+
+v[i]:=v0 stores v0 in the ith com-ponent of the block pointed to by
+v. The final memory management primitive,
+free v, deallocates the storage pointed to by v. If v is the pointer ptr(`) thendeallocation is modeled by updating the store (
+
+S) so that the location ` mapsto
+junk.The program ({}
+
+, malloc x, ae, 2; x[1]:=3; x[2]:=5; free x; halt ) allocates,initializes and finally deallocates a pair of integers. Its evaluation is shown below:
+
+Store Instructions{ }
+
+malloc x, ae, n (* allocate new location `, *)
+
+(* substitute ptr(`), ` for x, ae *){
+` 7! hjunk, junki} ptr(`)[1]:=3 (* initialize field 1 *){
+` 7! h3, junki} ptr(`)[2]:=5 (* initialize field 2 *){
+` 7! h3, 5i} free ptr(`) (* free storage *){
+` 7! junk}
+
+A sequence of instructions (') ends in either a halt instruction, which stopscomputation immediately, or a function application (
+
+v(v1, . . . , vn)). In order tosimplify the language and its typing constructs, our functions never return. However, a higher-level language that contains call and return statements can be com-piled into our language of locations by performing a continuation-passing style
+(CPS) transformation [14, 15]. It is possible to define a direct-style language, butdoing so would force us to adopt an awkward syntax that allows functions to
+return portions of the store. In a CPS style, all control-flow transfers are handledsymmetrically by calling a continuation.
+
+Functions are defined using the form fix f[\Delta ; C; \Gamma  ].'. These functions arerecursive (
+
+f may appear in '). The context (\Delta ; C; \Gamma  ) specifies a pre-condition
+
+that must be satisfied before the function can be invoked. The type context \Delta binds the set of type variables that can occur free in the term;
+
+C is a collectionof aliasing constraints that statically approximates a portion of the store; and
+
+\Gamma assigns types to free variables in
+'.
+To call a polymorphic function, code must first instantiate the type variablesin
+\Delta  using the value form: v[j] or v[C]. These forms are treated as values becausetype application has no computational effect (types and constraints are only used
+
+for compile-time checking; they can be erased before executing a program).
+
+(S, malloc x, ae, n; ') 7-! (S{` 7! hjunk1, . . . , junkni}, '[`/ae][ptr(`)/x])
+
+where ` 62 S
+(S{` 7! v}, free ptr(`); ') 7-! (S{` 7! junk}, ')
+
+if v = hv1, . . . , vni
+(S{` 7! v}, ptr(`)[i]:=v0; ') 7-! (S{` 7! hv1, . . . , vi-1, v0, vi+1, . . . , vni}, ')
+
+if v = hv1, . . . , vni and 1 <= i <= n
+(S{` 7! v}, x=ptr(`)[i]; ') 7-! (S{` 7! v}, '[vi/x])
+
+if v = hv1, . . . , vni and 1 <= i <= n
+(S, v(v1, . . . , vn)) 7-! (S, '[c1, . . . , cm/fi1, . . . , fim][v0, v1, . . . , vn/f, x1, . . . , xn])
+
+if v = v0[c1, . . . , cm]
+and v0 = fix f [\Delta ; C; x1:o/1, . . . , xn:o/n].'
+and Dom(\Delta ) = fi1, . . . , fim (where fi ranges over ae and ffl)
+
+Fig. 2. Language of Locations: Operational Semantics
+
+3.2 Type Constructors
+There are three kinds of type constructors: locations3 (j), types (o/ ), and aliasingconstraints (
+
+C). The simplest types are the base types, which we have chosento be integers (
+
+int). A pointer to a location j is given the singleton type ptr(j).The only value in the type ptr(
+
+j) is the pointer ptr(j), so if v1 and v2 both havetype ptr(
+j), then they must be aliases. Memory blocks have types (ho/1, . . . , o/ni)that describe their contents.
+
+A collection of constraints, C, establishes the connection between pointers oftype ptr(
+
+j) and the contents of the memory blocks they point to. The main formof constraint, written {
+
+j 7! o/ }, models a store with a single location j containinga value of type
+o/ . Collections of constraints are constructed from more primitiveconstraints using the join operator (\Phi ). The empty constraint is denoted by ;.
+
+We often abbreviate {j 7! o/ } \Phi  {j0 7! o/ 0} with {j 7! o/, j0 7! o/ 0}.
+
+3 We use the meta-variable ` to denote concrete locations, ae to denote location variables, and j to denote either.
+
+3.3 Static Semantics
+Store Typing The central invariant maintained by the type system is that thecurrent constraints
+
+C are a faithful description of the current store S. We writethis store-typing invariant as the judgement `
+
+S : C. Intuitively, whenever alocation
+` contains a value v of type o/ , the constraints should specify that location
+` maps to o/ (or an equivalent type o/ 0). Formally:
+
+*; * `v v1 : o/1 * * * *; * `v vn : o/n` {
+`1 7! v1, . . . , `n 7! vn} : {`1 7! o/1, . . . , `n 7! o/n}
+
+where for 1 <= i <= n, the locations `i are all distinct. And,
+
+` S : C0 * ` C0 = C`
+
+S : C
+
+Instruction Typing Instructions are type checked in a context \Delta ; C; \Gamma  . Thejudgement
+
+\Delta ; C; \Gamma  `' ' states that the instruction sequence is well-formed. Arelated judgement,
+
+\Delta ; \Gamma  `v v : o/ , ensures that the value v is well-formed andhas type
+o/ . 4Our presentation of the typing rules for instructions focuses on how each rule
+
+maintains the store-typing invariant. With this invariant in mind, consider therule for projection:
+
+\Delta ; \Gamma  `v v : ptr(j)
+\Delta  ` C = C0 \Phi  {j 7! ho/1, . . . , o/ni} \Delta ; C; \Gamma , x:o/i `' '
+
+\Delta ; C; \Gamma  `' x=v[i]; ' `
+
+x 62 \Gamma 1 <=
+
+i <= n'
+
+The first pre-condition ensures that v is a pointer. The second uses C to deter-mine the contents of the location pointed to by
+
+v. More precisely, it requires that
+C equal a store description C0 \Phi  {j 7! ho/1, . . . , o/ni}. (Constraint equality uses \Delta to denote the free type variables that may appear on the right-hand side.) The
+
+store is unchanged by the operation so the final pre-condition requires that therest of the instructions be well-formed under the same constraints
+
+C.Next, examine the rule for the assignment operation:
+
+\Delta ; \Gamma  `v v : ptr(j) \Delta ; \Gamma  `v v0 : o/ 0
+\Delta  ` C = C0 \Phi  {j 7! ho/1, . . . , o/ni} \Delta ; C0 \Phi  {j 7! o/after}; \Gamma  `' '
+
+\Delta ; C; \Gamma  `' v[i]:=v0; ' (1 <= i <= n)
+
+where o/after is ho/1, . . . , o/i-1, o/ 0, o/i+1, . . . , o/niOnce again, the value
+
+v must be a pointer to some location j. The type of thecontents of
+j are given in C and must be a block with type ho/1, . . . , o/ni. Thistime the store has changed, and the remaining instructions are checked under
+
+the appropriately modified constraint C0 \Phi  {j 7! o/after}.
+
+4 The subscripts on `v and `' are used to distinguish judgement forms and for no
+
+other purpose.
+
+How can the type system ensure that the new constraints C0 \Phi  {j 7! o/after}correctly describe the store? If
+
+v0 has type o/ 0 and the contents of the location
+j originally has type ho/1, . . . , o/ni, then {j 7! o/after} describes the contents ofthe location
+
+j after the update accurately. However, we must avoid a situationin which
+C0 continues to hold an outdated type for the contents of the location
+j. This task may appear trivial: Search C0 for all occurrences of a constraint{
+
+j 7! o/ } and update all of the mappings appropriately. Unfortunately, in thepresence of location polymorphism, this approach will fail. Suppose a value is
+
+stored in location ae1 and the current constraints are {ae1 7! o/, ae2 7! o/ }. Wecannot determine whether or not
+
+ae1 and ae2 are aliases and therefore whetherthe final constraint set should be {
+
+ae1 7! o/ 0, ae2 7! o/ 0} or {ae1 7! o/ 0, ae2 7! o/ }.Our solution uses a technique from the literature on linear type systems.
+
+Linear type systems prevent duplication of assumptions by disallowing uses ofthe contraction rule. We use an analogous restriction in the definition of constraint equality: The join operator \Phi  is associative, and commutative, but notidempotent. By ensuring that linear constraints cannot be duplicated, we can
+prove that ae1 and ae2 from the example above cannot be aliases. The other equal-ity rules are unsurprising. The empty constraint collection is the identity for \Phi 
+and equality on types o/ is syntactic up to ff-conversion of bound variables andmodulo equality on constraints. Therefore:
+
+\Delta  ` {ae1 7! hinti} \Phi  {ae2 7! hbooli} = {ae2 7! hbooli} \Phi  {ae1 7! hinti}
+but,
+\Delta  6` {ae1 7! hinti}\Phi {ae2 7! hbooli} = {ae1 7! hinti}\Phi {ae1 7! hinti}\Phi {ae2 7! hbooli}
+
+Given these equality rules, we can prove that after an update of the storewith a value with a new type, the store typing invariant is preserved:
+
+Lemma 1 (Store Update). If ` S{` 7! v} : C \Phi  {` 7! o/ } and *; * `v v0 : o/ 0then `
+
+S{` 7! v0} : C \Phi  {` 7! o/ 0} .
+
+where S{` 7! v} denotes the store S extended with the mapping ` 7! v (provided
+` does not already appear on the left-hand side of any elements in S).
+
+Function Typing The rule for function application v(v1, . . . , vn) is the rule onewould expect. In general,
+
+v will be a value of the form v0[c1] * * * [cn] where v0is a function polymorphic in locations and constraints and the type constructors c1 through cn instantiate its polymorphic variables. After substituting c1through
+
+cn for the polymorphic variables, the current constraints must equalthe constraints expected by the function
+
+v. This check guarantees that the no-duplication property is preserved across function calls. To see why, consider the
+
+polymorphic function foo where the type context \Delta  is (ae1, ae2, ffl) and the con-straints
+
+C are ffl \Phi  {ae1 7! hinti, ae2 7! hinti}:
+fix foo[\Delta ; C; x:ptr(ae1), y:ptr(ae2), cont:8[*; ffl].(int)!0].
+
+free x; (* constraints = ffl \Phi  {ae2 7! hinti} *)
+z=y[0]; (* ok because y : ptr(ae2) and {ae2 7! hinti} *)
+free y; (* constraints = ffl *)
+cont(z) (* return/continue *)
+
+This function deallocates its two arguments, x and y, before calling its continu-ation with the contents of
+
+y. It is easy to check that this function type-checks,but should it? If foo is called in a state where
+
+ae1 and ae2 are aliases, a run-timeerror will result when the second instruction is executed because the location
+
+pointed to by y will already have been deallocated. Fortunately, our type systemguarantees that foo can never be called from such a state.
+
+Suppose that the store currently contains a single integer reference: {` 7!h3i}. This store can be described by the constraints {
+
+` 7! hinti}. If the program-mer attempts to instantiate both
+ae1 and ae2 with the same label `, the functioncall foo[
+`, `, ;](ptr(`)) will fail to type check because the constraints {` 7! hinti}do not equal the pre-condition ; \Phi  {
+
+` 7! hinti, ` 7! hinti}.Figure 3 contains the typing rules for values and instructions. Note that the
+
+judgement \Delta  `wf o/ indicates that \Delta  contains the free type variables in o/ .
+3.4 Soundness
+Our typing rules enforce the property that well-typed programs cannot enterstuck states. A state (
+
+S, ') is stuck when no reductions of the operational seman-tics apply and
+' 6= halt . The following theorem captures this idea formally:
+
+Theorem 1 (Soundness) If ` S : C and *; C; * `' ' and (S, ') 7-! . . . 7-!(
+
+S0, '0) then (S0, '0) is not a stuck state.
+
+We prove soundness syntactically in the style of Wright and Felleisen [28].The proof appears in the companion technical report [19].
+
+4 Non-linear Constraints
+Most linear type systems contain a class of non-linear values that can be usedin a completely unrestricted fashion. Our system is similar in that it admits
+
+non-linear constraints, written {j 7! o/ }!. They are characterized by the axiom:
+
+\Delta  ` {j 7! o/ }! = {j 7! o/ }! \Phi  {j 7! o/ }!
+Unlike the constraints of the previous section, non-linear constraints may beduplicated. Therefore, it is not sound to deallocate memory described by nonlinear constraints or to use it at different types. Because there are strictly feweroperations on non-linear constraints than linear constraints, there is a natural
+subtyping relation between the two: {j 7! o/ } <= {j 7! o/ }!. We extend thesubtyping relationship on single constraints to collections of constraints with
+rules for reflexivity, transitivity, and congruence. For example, assume add hastype 8[
+
+ae1, ae2, ffl; {ae1 7! hinti}! \Phi  {ae2 7! hinti}! \Phi  ffl].(ptr(ae1), ptr(ae2))!0 andconsider this code:
+
+Instructions Constraints (Initially ;)
+malloc x, ae, 1; C1 = {ae 7! hjunki}, x : ptr(ae)
+x[0]:=3; C2 = {ae 7! hinti}add[
+
+ae, ae, ;](x, x) C2 <= {ae 7! hinti}! = {ae 7! hinti}! \Phi  {ae 7! hinti}! \Phi  ;
+
+Typing rules for non-linear constraints are presented in Figure 4.
+
+\Delta ; \Gamma  `v v : o/
+
+\Delta ; \Gamma  `v i : int \Delta ; \Gamma  `v x : \Gamma  (x) \Delta ; \Gamma  `v junk : junk
+
+\Delta  `wf j
+\Delta ; \Gamma  `v ptr(j) : ptr(j)
+
+\Delta ; \Gamma  `v v1 : o/1 * * * \Delta ; \Gamma  `v vn : o/n
+
+\Delta ; \Gamma  `v hv1, . . . , vni : ho/1, . . . , o/ni
+
+\Delta  `wf 8[\Delta 0; C].(o/1, . . . , o/n)!0
+\Delta , \Delta 0; C; \Gamma , f:8[\Delta 0; C].(o/1, . . . , o/n)!0, x1:o/1, . . . , xn:o/n `' '
+
+\Delta ; \Gamma  `v fix f [\Delta 0; C; x1:o/1, . . . , xn:o/n].' : 8[\Delta 0; C].(o/1, . . . , o/n)!0 (f, x1, . . . , xn 62 \Gamma  )
+
+\Delta  `wf j \Delta ; \Gamma  `v v : 8[ae, \Delta 0; C].(o/1, . . . , o/n)!0
+
+\Delta ; \Gamma  `v v[j] : 8[\Delta 0; C].(o/1, . . . , o/n)!0[j/ae]
+
+\Delta  `wf C \Delta ; \Gamma  `v v : 8[ffl, \Delta ; C0].(o/1, . . . , o/n)!0
+
+\Delta ; \Gamma  `v v[C] : 8[\Delta ; C0].(o/1, . . . , o/n)!0[C/ffl]
+
+\Delta ; \Gamma  `v v : o/0 \Delta  ` o/0 = o/
+
+\Delta ; \Gamma  `v v : o/
+
+\Delta ; C; \Gamma  `' '
+
+\Delta , ae; C \Phi  {ae 7! hjunk1, . . . , junkni}; \Gamma , x:ptr(ae) `' '
+
+\Delta ; C; \Gamma  `' malloc x, ae, n; ' (x 62 \Gamma , ae 62 \Delta )
+
+\Delta ; \Gamma  `v v : ptr(j)
+\Delta  ` C = C0 \Phi  {j 7! ho/1, . . . , o/ni} \Delta ; C0 \Phi  {j 7! junk}; \Gamma  `' '
+
+\Delta ; C; \Gamma  `' free v; '
+
+\Delta ; \Gamma  `v v : ptr(j) \Delta  ` C = C0 \Phi  {j 7! ho/1, . . . , o/ni}
+\Delta ; \Gamma  `v v0 : o/0 \Delta ; C0 \Phi  {j 7! ho/1, . . . , o/i-1, o/0, o/i+1, . . . , o/ni}; \Gamma  `' '
+
+\Delta ; C; \Gamma  `' v[i]:=v0; ' (1 <= i <= n)
+
+\Delta ; \Gamma  `v v : ptr(j0)
+\Delta  ` C = C0 \Phi  {j0 7! ho/1, . . . , o/ni} \Delta ; C; \Gamma , x:o/i `' '
+
+\Delta ; C; \Gamma  `' x=v[i]; ' `
+
+x 62 \Gamma 
+1 <= i <= n'
+
+\Delta ; \Gamma  `v v : 8[*; C0].(o/1, . . . , o/n)!0 \Delta  ` C = C0
+
+\Delta ; \Gamma  `v v1 : o/1 * * * \Delta ; \Gamma  `v vn : o/n
+
+\Delta ; C; \Gamma  `' v(v1, . . . , vn) \Delta ; C; \Gamma  `' halt
+
+Fig. 3. Language of Locations: Value and Instruction Typing
+
+\Delta ; \Gamma  `v v : ptr(j)
+\Delta  ` C = C0 \Phi  {j 7! ho/1, . . . , o/ni}! \Delta ; C; \Gamma , x:o/i `' '
+
+\Delta ; C; \Gamma  `' x=v[i]; ' `
+
+x 62 \Gamma 
+1 <= i <= n'
+
+\Delta ; \Gamma  `v v : ptr(j) \Delta ; \Gamma  `v v0 : o/0
+\Delta  ` C = C0 \Phi  {j 7! ho/1, . . . , o/ni}! \Delta  ` o/0 = o/i \Delta ; C; \Gamma  `' '
+
+\Delta ; C; \Gamma  `' v[i]:=v0; ' (1 <= i <= n)
+
+\Delta ; \Gamma  `v v : 8[*; C0].(o/1, . . . , o/n)!0 \Delta  ` C <= C0
+
+\Delta ; \Gamma  `v v1 : o/1 * * * \Delta ; \Gamma  `v vn : o/n
+
+\Delta ; C; \Gamma  `' v(v1, . . . , vn) `
+
+S : C0 ` C0 <= C`
+
+S : C
+
+Fig. 4. Language of Locations: Non-linear Constraints
+4.1 Non-linear Constraints and Dynamic Type Tests
+Although data structures described by non-linear constraints cannot be deal-located or used to store objects of varying types, we can still take advantage
+
+of the sharing implied by singleton pointer types. More specifically, code canuse weak constraints to perform a dynamic type test on a particular object and
+simultaneously refine the types of many aliases of that object.To demonstrate this application, we extend the language discussed in the
+previous section with a simple form of option type ?ho/1, . . . , o/ni (see Figure 5).Options may be
+
+null or a memory block ho/1, . . . , o/ni. The mknull operationassociates the name
+
+ae with null and the tosum v, o/ instruction injects the value v(a location containing null or a memory block) into a location for the option type
+
+?ho/1, . . . , o/ni. In the typing rules for tosum and ifnull, the annotation OE mayeither be
+
+!, which indicates a non-linear constraint or *, the empty annotation,which indicates a linear constraint.
+
+The ifnull v then '1 else '2 construct tests an option to determine whetherit is
+
+null or not. Assuming v has type ptr(j), we check the first branch ('1)with the constraint {
+
+j 7! null }OE and the second branch with the constraint{
+j 7! ho/1, . . . , o/ni}OE where ho/1, . . . , o/ni is the appropriate non-null variant. Asbefore, imagine that
+
+sp is the stack pointer, which contains an integer option.
+
+(* constraints = {j 7! hptr(j0)i, j0 7! ?hinti}, sp:ptr(j) *)
+r1=sp[1]; (* r1:ptr(j0) *)
+ifnull r1 then halt (* null check *)
+else * * * (* constraints = {j 7! hptr(j0)i}\Phi {j0 7! hinti}! *)
+
+Notice that a single null test refines the type of multiple aliases; both r1 andits alias on the stack
+
+sp[1] can be used as integer references in the else clause.Future loads of
+r1 or its alias will not have to perform a null-check.
+
+These additional features of our language are also proven sound in the com-panion technical report [19].
+Syntax:
+
+types o/ ::= . . . | ?ho/1, . . . , o/ni | null
+values v ::= . . . | null
+instructions ' ::= . . . | mknull x, ae; ' | tosum v, ?ho/1, . . . , o/ni |
+
+ifnull v then '1 else '2
+
+Operational semantics:
+
+(S, mknull x, ae; ') 7-! (S{` 7! null}, '[`/ae][ptr(`)/x])
+
+where ` 62 S
+(S, tosum v, ?ho/1, . . . , o/ni; ') 7-! (S, ')
+(S{` 7! null},
+
+ifnull ptr(`) then '1 else '2) 7-! (S{` 7! null}, '1)
+(S{` 7! hv1, . . . , vni},
+
+ifnull ptr(`) then '1 else '2) 7-! (S{` 7! hv1, . . . , vni}, '2)
+
+Static Semantics:
+
+\Delta ; \Gamma  `v null : null
+
+\Delta , ae; C \Phi  {ae 7! null}; \Gamma , x:ptr(ae) `' '
+
+\Delta ; C; \Gamma  `' mknull x, ae; ' (x 62 \Gamma , ae 62 \Delta )
+
+\Delta ; \Gamma  `v v : ptr(j) \Delta  ` C = C0 \Phi  {j 7! null}OE
+\Delta  `wf ?ho/1, . . . , o/ni \Delta ; C0 \Phi  {j 7! ?ho/1, . . . , o/ni}OE; \Gamma  `' '
+
+\Delta ; C; \Gamma  `' tosum v, ?ho/1, . . . , o/ni; '
+
+\Delta ; \Gamma  `v v : ptr(j)
+\Delta  ` C = C0 \Phi  {j 7! ho/1, . . . , o/ni}OE \Delta ; C0 \Phi  {j 7! ?ho/1, . . . , o/ni}OE; \Gamma  `' '
+
+\Delta ; C; \Gamma  `' tosum v, ?ho/1, . . . , o/ni; '
+
+\Delta ; \Gamma  `v v : ptr(j) \Delta  ` C = C0 \Phi  {j 7! ?ho/1, . . . , o/ni}OE
+\Delta ; C0 \Phi  {j 7! null}OE; \Gamma  `' '1 \Delta ; C0 \Phi  {j 7! ho/1, . . . , o/ni}OE; \Gamma  `' '2
+
+\Delta ; C; \Gamma  `' ifnull v then '1 else '2
+
+Fig. 5. Language of Locations: Extensions for option types
+
+5 Related and Future Work
+Our research extends previous work on linear type systems [26] and syntacticcontrol of interference [16] by allowing both aliasing and safe deallocation. Several authors [26, 3, 9] have explored alternatives to pure linear type systems to
+
+allow greater flexibility. Wadler [26], for example, introduced a new let-form
+let ! (x) y = e1 in e2 that permits the variable x to be used as a non-linearvalue in
+
+e1 (i.e. it can be used many times, albeit in a restricted fashion) andthen later used as a linear value in
+
+e2. We believe we can encode similar behaviorby extending our simple subtyping with bounded quantification. For instance, if
+
+a function f requires some collection of aliasing constraints ffl that are boundedabove by {
+
+ae1 7! hinti}! \Phi  {ae2 7! hinti}!, then f may be called with a singlelinear constraint {
+
+ae 7! hinti} (instantiating both ae1 and ae2 with ae and ffl with{
+ae 7! hinti}). The constraints may now be used non-linearly within the bodyof
+
+f. Provided f expects a continuation with constraints ffl, its continuation willretain the knowledge that {
+
+ae 7! hinti} is linear and will be able to deallocatethe storage associated with
+ae when it is called. However, we have not yet imple-mented this feature.
+
+Because our type system is constructed from standard type-theoretic buildingblocks, including linear and singleton types, it is relatively straightforward to
+implement these ideas in a modern type-directed compiler. In some ways, our newmechanisms simplify previous work. Previous versions of TAL [12, 11] possessed
+two separate mechanisms for initializing data structures. Uninitialized heap-allocated data structures were stamped with the type at which they would be
+used. On the other hand, stack slots could be overwritten with values of arbitrarytypes. Our new system allows us to treat memory more uniformly. In fact, our
+new language can encode stack types similar to those described by Morrisettet al. [11] except that activation records are allocated on the heap rather than
+using a conventional call stack. The companion technical report [19] shows howto compile a simple imperative language in such a way that it allocates and
+deletes its own stack frames.
+
+This research is also related to other work on type systems for low-levellanguages. Work on Java bytecode verification [20, 8] also develops type systems
+
+that allows locations to hold values of different types. However, the Java bytecodetype system is not strong enough to represent aliasing as we do here.
+
+The development of our language was inspired by the Calculus of Capa-bilities (CC) [4]. CC provides an alternative to the region-based type system
+developed by Tofte and Talpin [24]. Because safe region deallocation requiresthat no aliases be used in the future, CC tracks region aliases. In our new language we adapt CC's techniques to track both object aliases and object typeinformation.
+
+Our work also has close connections with research on alias analyses [5, 21,17]. Much of that work aims to facilitate program optimizations that require
+aliasing information in order to be correct. However, these optimizations do notnecessarily make it harder to check the safety of the resulting program. Other
+work [7, 6] attempts to determine when programs written in unsafe languages,such as C, perform potentially unsafe operations. Our goals are closer to the
+latter application but differ because we are most interested in compiling safelanguages and producing low-level code that can be proven safe in a single pass
+over the program. Moreover, our main result is not a new analysis technique,
+
+but rather a sound system for representing and checking the results of analysis,and, in particular, for representing aliasing in low-level compiler-introduced data
+structures rather than for representing aliasing in source-level data.
+
+The language of locations is a flexible framework for reasoning about sharingand destructive operations in a type-safe manner. However, our work to date is
+
+only a first step in this area and we are investigating a number of extensions. Inparticular, we are working on integrating recursive types into the type system as
+they would allow us to capture regular repeating structure in the store. Whenwe have completed this task, we believe our aliasing constraints will provide us
+with a safe, but rich and reusable, set of memory abstractions.
+
+Acknowledgements
+This work arose in the context of implementing the Typed Assembly Languagecompiler. We are grateful for the many stimulating discussions that we have
+had on this topic with Karl Crary, Neal Glew, Dan Grossman, Dexter Kozen,Stephanie Weirich, and Steve Zdancewic. Sophia Drossopoulou, Kathleen Fisher,
+Andrew Myers, and Anne Rogers gave helpful comments on a previous draft ofthis work.
+
+References
+
+1. Alfred V. Aho, Ravi Sethi, and Jeffrey D. Ullman. Compilers: Principles, Techniques, and Tools. Addison-Wesley, 1986.
+2. Andrew W. Appel and David B. MacQueen. Standard ML of New Jersey. In Martin
+
+Wirsing, editor, Third International Symposium on Programming Language Implementation and Logic Programming, pages 1-13, New York, August 1991. SpringerVerlag. Volume 528 of Lecture Notes in Computer Science.
+3. Erik Barendsen and Sjaak Smetsers. Conventional and uniqueness typing in graph
+
+rewrite systems (extended abstract). In Thirteenth Conference on the Foundations
+of Software Technology and Theoretical Computer Science, pages 41-51, Bombay,
+1993. In Shyamasundar, ed., Springer-Verlag, LNCS 761.
+4. Karl Crary, David Walker, and Greg Morrisett. Typed memory management in a
+
+calculus of capabilities. In Twenty-Sixth ACM Symposium on Principles of Programming Languages, pages 262-275, San Antonio, January 1999.
+5. Alain Deutsch. Interprocedural may-alias analysis for pointers: Beyond k-limiting.
+
+In ACM Conference on Programming Language Design and Implementation, pages
+230-241, Orlando, June 1994.
+6. Nurit Dor, Michael Rodeh, and Mooly Sagiv. Detecting memory errors via static
+
+pointer analysis (preliminary experience). In ACM Workshop on Program Analysis
+for Software Tools and Engineering (PASTE'98), Montreal, June 1998.
+7. David Evans. Static detection of dynamic memory errors. In ACM Conference on
+
+Programming Language Design and Implementation, Philadelphia, May 1996.
+8. Stephen N. Freund and John C. Mitchell. A formal framework for the Java bytecode
+
+language and verifier. In Conference on Object-Oriented Programming, Systems,
+Languages, and Applications, pages 147-166, Denver, November 1999.
+
+9. Naoki Kobayashi. Quasi-linear types. In Twenty-Sixth ACM Symposium on Principles of Programming Languages, pages 29-42, San Antonio, January 1999.
+10. Tim Lindholm and Frank Yellin. The Java Virtual Machine Specification. AddisonWesley, 1996.
+11. Greg Morrisett, Karl Crary, Neal Glew, and David Walker. Stack-based Typed
+
+Assembly Language. In Second International Workshop on Types in Compilation,
+pages 95-117, Kyoto, March 1998. Published in Xavier Leroy and Atsushi Ohori,
+editors, Lecture Notes in Computer Science, volume 1473, pages 28-52. SpringerVerlag, 1998.
+12. Greg Morrisett, David Walker, Karl Crary, and Neal Glew. From System F to
+
+Typed Assembly Language. ACM Transactions on Programming Languages and
+Systems, 3(21):528-569, May 1999.
+13. George Necula. Proof-carrying code. In Twenty-Fourth ACM Symposium on Principles of Programming Languages, pages 106-119, Paris, 1997.
+14. G. D. Plotkin. Call-by-name, call-by-value, and the lambda calculus. Theoretical
+
+Computer Science, 1:125-159, 1975.
+15. John C. Reynolds. Definitional interpreters for higher-order programming languages. In Conference Record of the 25th National ACM Conference, pages 717-
+740, Boston, August 1972.
+16. John C. Reynolds. Syntactic control of interference. In Fifth ACM Symposium on
+
+Principles of Programming Languages, pages 39-46, Tucson, 1978.
+17. M. Sagiv, T. Reps, and R. Wilhelm. Solving shape-analysis problems in languages
+
+with destructive updating. ACM Transactions on Programming Languages and
+Systems, 20(1):1-50, January 1996.
+18. Z. Shao. An overview of the FLINT/ML compiler. In Workshop on Types in Compilation, Amsterdam, June 1997. ACM. Published as Boston College Computer
+Science Dept. Technical Report BCCS-97-03.
+19. Frederick Smith, David Walker, and Greg Morrisett. Alias types. Technical Report
+
+TR99-1773, Cornell University, October 1999.
+20. Raymie Stata and Mart'in Abadi. A type system for Java bytecode subroutines.
+
+In Twenty-Fifth ACM Symposium on Principles of Programming Languages, San
+Diego, January 1998.
+21. B. Steensgaard. Points-to analysis in linear time. In Twenty-Third ACM Symposium on Principles of Programming Languages, January 1996.
+22. D. Tarditi, G. Morrisett, P. Cheng, C. Stone, R. Harper, and P. Lee. TIL: A
+
+type-directed optimizing compiler for ML. In ACM Conference on Programming
+Language Design and Implementation, pages 181-192, Philadelphia, May 1996.
+23. Mads Tofte. Type inference for polymorphic references. Information and Computation, 89:1-34, November 1990.
+24. Mads Tofte and Jean-Pierre Talpin. Region-based memory management. Information and Computation, 132(2):109-176, 1997.
+25. David N. Turner, Philip Wadler, and Christian Mossin. Once upon a type. In ACM
+
+International Conference on Functional Programming and Computer Architecture,
+San Diego, CA, June 1995.
+26. Philip Wadler. Linear types can change the world! In M. Broy and C. Jones,
+
+editors, Programming Concepts and Methods, Sea of Galilee, Israel, April 1990.
+North Holland. IFIP TC 2 Working Conference.
+27. A. K. Wright. Simple imperative polymorphism. LISP and Symbolic Computation,
+
+8(4), December 1995.
+28. Andrew K. Wright and Matthias Felleisen. A syntactic approach to type soundness.
+
+Information and Computation, 115(1):38-94, 1994.

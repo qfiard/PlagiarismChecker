@@ -1,0 +1,1856 @@
+
+
+Modular Typestate Checking of Aliased Objects
+
+Kevin Bierhoff Jonathan Aldrich
+Institute for Software Research, School of Computer ScienceCarnegie Mellon University, 5000 Forbes Avenue, Pittsburgh, PA 15213, USA
+
+-kevin.bierhooe,jonathan.aldrich"" @ cs.cmu.edu
+
+Abstract
+Objects often define usage protocols that clients must followin order for these objects to work properly. Aliasing makes
+
+it notoriously difficult to check whether clients and imple-mentations are compliant with such protocols. Accordingly,
+existing approaches either operate globally or severely re-strict aliasing.
+
+We have developed a sound modular protocol checkingapproach, based on typestates, that allows a great deal of
+flexibility in aliasing while guaranteeing the absence of pro-tocol violations at runtime. The main technical contribution
+is a novel abstraction, access permissions, that combinestypestate and object aliasing information. In our methodology, developers express their protocol design intent throughannotations based on access permissions. Our checking approach then tracks permissions through method implemen-tations. For each object reference the checker keeps track
+of the degree of possible aliasing and is appropriately con-servative in reasoning about that reference. This helps developers account for object manipulations that may occurthrough aliases. The checking approach handles inheritance
+in a novel way, giving subclasses more flexibility in methodoverriding. Case studies on Java iterators and streams provide evidence that access permissions can model realisticprotocols, and protocol checking based on access permissions can be used to reason precisely about the protocols thatarise in practice.
+
+Categories and Subject Descriptors D.2.4 [Software Engi-neering]: Software/Program Verification; F.3.1 [Logics and
+Meanings of Programs]: Specifying and Verifying and Rea-soning about Programs
+
+General Terms Languages, Verification.
+Keywords Typestates, aliasing, permissions, linear logic,behavioral subtyping.
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+OOPSLA'07, October 21-25, 2007, Montre'al, Que'bec, Canada.Copyright cfl 2007 ACM 978-1-59593-786-5/07/0010.. . $5.00
+
+1. Introduction
+In object-oriented software, objects often define usage pro-tocols that clients must follow in order for these objects to
+
+work properly. Protocols essentially define legal sequencesof method calls. In conventional object-oriented languages,
+developers have three ways of finding out about protocols:reading informal documentation, receiving runtime exceptions that indicate protocol violations, or observing incorrectprogram behavior as a result of protocol violations that broke
+internal invariants.It is the goal of this work to help developers follow protocols while they write code as well as to allow them to cor-rectly and concisely document protocols for their code. We
+build on our previous work on leveraging typestates [34] forlightweight object protocol specification [4]. Our protocols
+are state machines that are reminiscent of Statecharts [20].Aliasing, i.e. the existence of multiple references to
+the same object, is a significant complication in checkingwhether clients observe a protocol: a client does not necessarily know whether its reference to an object is the onlyreference that is active at a particular execution point. This
+also makes it difficult to check whether a class implementsits specified protocol because reentrant callbacks through
+aliases can again lead to unexpected state changes.Existing protocol checking approaches fall into two categories. They either operate globally, i.e. check an entire codebase at once, or severely restrict aliasing. Global analyses
+typically account for aliasing but they are not suitable forinteractive use during development. Moreover, they do not
+check whether a declared protocol is implemented correctly,a crucial requirement in object-oriented software where any
+class might have a protocol of its own.Modular protocol checkers, like Fugue [12], the first
+sound modular typestate checker for an object-oriented lan-guage, better support developers while they write code: like
+a typechecker, they check each method separately for pro-tocol violations while assuming the rest of the system to
+behave as specified. The trade-off, unfortunately, has beenthat modular checkers require code to follow pre-defined
+patterns of aliasing. Once a program leaves the realm ofsupported aliasing, any further state changes are forbidden.
+Generally speaking, state changes are only allowed wherethe checker is aware of all references to the changing object.
+
+This approach has serious drawbacks. First, many exam-ples of realistic code might be excluded. Moreover, from a
+developer's point of view, the boundaries of what a checkersupports are hard to predict and they might not fit with the
+best implementation strategy for a particular problem. Fi-nally, aliasing restrictions arguably leave developers alone
+just when they have the most trouble in reasoning about theircode, namely, in the presence of subtle aliasing.
+
+This paper proposes a sound modular typestate check-ing approach for Java-like object-oriented languages that
+allows a great deal of flexibility in aliasing. For each ref-erence, it tracks the degree of possible aliasing, and is
+appropriately conservative in reasoning about that refer-ence. This helps developers account for object manipulations that may occur through aliases. High precision intracking effects of possible aliases together with systematic support for dynamic state tests, i.e. runtime tests onthe state of objects, make this approach feasible. Our approach helped expose a way of breaking an internal invari-ant that causes a commonly used Java standard library class,
+java.io.BufferedInputStream, to access an array out-side its bounds. Contributions of this paper include the following.
+
+* Our main technical contribution is a novel abstraction,
+
+called access permissions, that combines typestate withaliasing information about objects. Developers use access
+
+permissions to express the design intent of their proto-cols in annotations on methods and classes. Our modular
+checking approach verifies that implementations followthis design intent.
+
+Access permissions systematically capture different pat-terns of aliasing (figure 1). A permission tracks (a) how a
+reference is allowed to read and/or modify the referencedobject, (b) how the object might be accessed through
+other references, and (c) what is currently known aboutthe object's typestate.
+
+* In particular, our full and pure permissions [3] capture the
+
+situation where one reference has exclusive write accessto an object (a
+
+full permission) while other referencesare only allowed to read from the same object (using
+
+pure permissions). Read-only access through pure per-missions is intuitively harmless but has to our knowledge
+not been exploited in existing modular protocol checkers.*
+In order to increase precision of access permissions, weinclude two additional novel features, which make weak
+
+permissions more useful than in existing work. We callpermissions "weak" if the referenced object can potentially be modified through other permissions.
+
+Temporary state information can be associated withweak permissions. Our checking approach makes sure
+
+that temporary state information is "forgotten" whenit becomes outdated.
+
+Permissions can be confined to a particular part ofthe referenced object's state. This allows separate permissions to independent parts of the same object. It
+
+Access through Current permission has . . .other permissions Read/write access Read-only access
+
+None unique [6] -Read-only
+
+full [3] immutable [6]Read/write
+share [12] pure [3]
+
+Figure 1. Access permission taxonomy
+
+also implies a state guarantee even for weak permis-sions, i.e. a guarantee that the referenced object will
+not leave a certain state.
+
+* We handle inheritance in a novel way, giving subclasses
+
+more flexibility in method overriding. This is necessaryfor handling realistic examples of inheritance such as
+
+Java's BufferedInputStream (details in section 3.2).*
+We validated our approach with two case studies, itera-tors (section 2) and streams (section 3) from Sun's Java
+
+standard library implementation. These case studies pro-vide evidence that access permissions can model realistic
+protocols, and protocol checking based on access permis-sions can be used to reason precisely about the protocols
+that arise in practice.
+A more complete evaluation of our approach is beyondthe scope of this paper, which focuses on fully presenting
+
+our checking technique. The evaluation does establish thatour--compared to full-fledged program verification systems
+[26, 2]--relatively simple approach can verify code idiomsand find errors that no other decidable modular system can.
+The case studies reflect actual Java standard library protocolsand, as far as we can tell, cannot be handled by any existing
+modular protocol verification system.The following two sections introduce access permissions
+and verification approach with examples from our case stud-ies before sections 4 and 5 give a formal account of our approach. Section 6 compares our approach to related work.
+2. Read-Only Iterators
+This section illustrates basic protocol specification and ver-ification using our approach based on a previous case study
+
+on Java iterators [3]. Iterators follow a straightforward pro-tocol but define complicated aliasing restrictions that are easily violated by developers. They are therefore a good vehicleto introduce our approach to handling aliasing in protocol
+verification. Iterators as presented here cannot be handledby existing modular typestate checkers due to their aliasing
+restrictions.
+2.1 Specification Goals
+The specification presented in this section models the Iteratorinterface defined in the Java standard library. For the sake of
+
+brevity we focus on read-only iterators, i.e. iterators thatcannot modify the collection on which they iterate. We will
+refer to read-only iterators simply as "iterators" and qualifyfull Java iterators as "modifying iterators". In earlier work
+we showed how to capture full Java iterators [3]. Goals ofthe presented specification include the following.
+
+Figure 2. Read-only iterator state machine protocol
+
+* Capture the usage protocol of Java iterators.*
+
+Allow creating an arbitrary number of iterators over col-lections.
+
+* Invalidate iterators before modification of the iterated
+
+collection.
+
+2.2 State Machine Protocol
+An iterator returns all elements of an underlying collectionone by one. Collections in the Java standard library are
+
+lists or sets of objects. Their interface includes methods toadd objects, remove objects, and test whether an object is
+part of the collection. The interface also defines a method
+iterator that creates a new iterator over the collection.Repeatedly calling
+
+next on an iterator returns each objectcontained in the iterated collection exactly once. The method
+
+hasNext determines whether another object is available orthe iteration reached its
+
+end. It is illegal to call next once
+hasNext returns false. Figure 2 illustrates this protocol asa simple state machine.
+
+Notice that hasNext is legal in both states but does notchange state. We call
+
+hasNext a dynamic state test: its returnvalue indicates what state the iterator is currently in. The
+
+next section will show how this protocol can be specified.
+2.3 Iterator Interface Specification
+States Through Refinement. We call the set of possiblestates of an object its state space and define it as part of
+
+the object's interface. As suggested above, we can modelthe iterator state space with two states,
+
+available and end.In our approach, states are introduced by refinement of an
+
+existing state. State refinement corresponds to OR-states inStatecharts [20] and puts states into a tree hierarchy.
+
+State refinement allows interfaces to, at the same time, in-herit their supertypes' state spaces, define additional (more
+fine-grained) states, and be properly substitutable as sub-types of extended interfaces [4]. Refinement guarantees that
+all new states defined in a subtype correspond to a state in-herited from the supertype. States form a hierarchy rooted in
+a state alive defined in the root type Object. Iterators there-fore define their state space as follows.
+
+states available, end refine alive;
+Typestates do not correspond to fields in a class. Theydescribe an object's state of execution abstractly and information about fields can be tied to typestates using state in-variants (see section 3.1).
+
+Access Permissions Capture Design Intent. Iterators haveonly two methods, but these have very different behavior.
+While next can change the iterator's state, hasNext onlytests the iterator's state. And even when a call to
+
+next doesnot change the iterator's state, it still advances the iterator to
+
+the next object in the sequence. hasNext, on the other hand,is pure: it does not modify the iterator at all.
+
+We use a novel abstraction, access permissions ("permis-sions" for short), to capture this design intent as part of the iterator's protocol. Permissions are associated with object ref-erences and govern how objects can be accessed through a
+given reference [7]. For next and hasNext we only needtwo kinds of permissions; more kinds of permissions will be
+introduced later.
+
+* full permissions grant read/write access to the referenced object and guarantee that no other reference hasread/write access to the same object.
+
+* pure permissions grant read-only access the the referenced object but assume that other permissions couldmodify the object.
+
+A distinguished full permission can co-exist with an ar-bitrary number of
+
+pure permissions to the same object. Thisproperty will be enforced when verifying protocol compliance. In a specification we write perm(x) for a permission toan object referenced by
+
+x, where perm is one of the permis-sion kinds. Access permissions carry state information about
+
+the referenced object. For example, "full(this) in available"represents a
+
+full permission for an object (this) that is in the
+available state.
+
+Linear Logic Specifications. Methods can be specifiedwith a state transition that describes how method parameters change state during method execution. We previouslyargued that existing typestate verification approaches are
+limited in their ability to express realistic state transitions[4] and proposed to capture method behavior more precisely
+with logical expressions.Access permissions represent resources that have to be
+consumed upon usage--otherwise permissions could befreely duplicated, possibly violating other permissions' assumptions. Therefore, we base our specifications on linearlogic [18]. Pre- and post-conditions are separated with a
+linear implication (() and use conjunction (\Omega ) and disjunc-tion (\Phi ).1 In certain cases, internal choice (&, also called
+additive conjunction) has been useful [3]. These connectivesrepresent the decidable multiplicative-additive fragment of
+linear logic (MALL).Iterators illustrate that state transitions are often nondeterministic. For next, we can use an imprecise post-condition and specify
+
+next so that it requires a full permis-sion in state
+available and returns the full permission in the
+
+1 "Tensor" (\Omega ) corresponds to conjunction, "alternative" (\Phi ) to disjunction,
+and "lollie" (() to implication in conventional logic. The key difference isthat linear logic treats known facts as resources that are consumed when
+
+proving another fact. This fits well with our intuition of permissions asresources that give access to objects.
+
+alive state. In a Statechart, this corresponds to transitioningto a state that contains substates (figure 2).
+
+full(this) in available ( full(this) in alive
+Dynamic state tests (like hasNext) require relating the(Boolean) method result to the state of the tested object (usually the receiver). A disjunction of conjunctions expressesthe two possible outcomes of
+
+hasNext (figure 4) where eachconjunction relates a possible method result to the corresponding receiver state. (We adopt the convention that (binds weaker than \Omega  and \Phi .)
+
+pure(this) ( (result = true \Omega  pure(this) in available)\Phi  (result =
+
+false \Omega  pure(this) in end)
+
+These specifications enforce the characteristic hasNext /
+next call pairing: hasNext determines the iterator's currentstate. If it returns
+
+true then it is legal to call next. The it-erator is in an unknown state after
+
+next returns, and another
+hasNext call determines the iterator's new state.
+
+2.4 Creating and Disposing Iterators
+Multiple (independent) iterators are permitted for a singlecollection at the same time. However, the collection must not
+
+be modified while iteration is in progress. Standard imple-mentations try to detect such situations of concurrent modification on a best-effort basis. But, ultimately, Java program-mers have to make sure on their own that collections are not
+modified while iterated. (Note that "concurrent" modifica-tions often occur in single-threaded programs [32].)
+
+This section shows how the aliasing constraints betweeniterators and its collection can be handled. As we will see,
+this problem is largely orthogonal to specifying the rela-tively simple protocol for for individual iterators that was
+discussed in the previous section.
+Immutable Access Prevents Concurrent Modification. Ac-cess permissions can guarantee the absence of concurrent
+
+modification. The key observation is that when an iterator iscreated it stores a reference to the iterated collection in one
+of its fields. This reference should be associated with a per-mission that guarantees the collection's immutability while
+iteration is in progress. We include two previously proposedpermissions [6] into our system in order to properly specify
+collections.
+
+* immutable permissions grant read-only access to the
+
+referenced object and guarantee that no reference hasread/write access to the same object.
+
+* unique permissions grant read/write access and guarantee that no other reference has any access to the object.
+
+Thus immutable permissions cannot co-exist with fullpermissions to the same object. We can specify the collection's iterator method using these permissions as follows.Notice how it consumes or captures the incoming receiver
+permission and returns an initial unique permission to a fresh
+
+Collection c = new ...
+Iterator it = c.iterator(); // legal
+while(it.hasNext() && ...) - // legal
+
+Object o = it.next(); // legal
+Iterator it2 = c.iterator(); // legal
+while(it2.hasNext()) - // legal
+
+Object o2 = it2.next(); // legal
+... ""
+""
+if(it.hasNext() && c.size() == 3) - // legal
+
+c.remove(it.next()); // legal
+if(it.hasNext()) ... "" // ILLEGAL
+Iterator it3 = c.iterator(); // legal
+
+Figure 3. A simple Iterator client
+iterator object.
+
+public class Collection -
+
+Iterator iterator() : immutable(this) ( unique(result)
+""
+
+It turns out that this specification precisely captures Sun'sJava standard library implementation of iterators: Iterators
+
+are realized as inner classes that implicitly reference thecollection they iterate.
+
+Permission Splitting. How can we track permissions?Consider a client such as the one in figure 3. It gets a
+unique permission when first creating a collection. Thenit creates an iterator which captures an
+
+immutable permis-sion to the collection. However, the client later needs more
+
+immutable permissions to create additional iterators. Thuswhile a
+
+unique permission is intuitively stronger than an
+immutable permission we cannot just coerce the client's
+unique permission to an immutable permission and pass itto
+
+iterator: it would get captured by the newly created it-erator, leaving the client with no permission to the collection
+
+at all.In order to avoid this problem we use permission splitting
+in our verification approach. Before method calls we split theoriginal permission into two, one of which is retained by the
+caller. Permissions are split so that their assumptions are notviolated. In particular, we never duplicate a
+
+full or uniquepermission and make sure that no
+full permission co-existswith an
+immutable permission to the same object. Some ofthe legal splits are the following.
+
+unique(x) V full(x) \Omega  pure(x)
+
+full(x) V immutable(x) \Omega  immutable(x)
+immutable(x) V immutable(x) \Omega  immutable(x)
+immutable(x) V immutable(x) \Omega  pure(x)
+
+They allow the example client in figure 3 to retain an
+immutable permission when creating iterators, permittingmultiple iterators and reading the collection directly at the
+
+same time.
+Permission Joining Recovers Modifying Access. Whensplitting a
+
+full permission to a collection into immutable
+
+interface Iterator!c : Collection, k : Fract? -
+
+states available, end refine alive
+
+boolean hasNext() :
+
+pure(this) ( (result = true \Omega  pure(this) in available))\Phi 
+
+(result = false \Omega  pure(this) in end)
+Object next() :
+
+full(this) in available ( full(this)
+void finalize() :
+
+unique(this) ( immutable(c, k)
+""
+
+interface Collection -
+
+void add(Object o) : full(this) ( full(this)
+int size() : pure(this) ( result >= 0 \Omega  pure(this)
+// remove(), contains() etc. similar
+
+Iterator!this, k ? iterator() :
+
+immutable(this, k) ( unique(result)
+""
+
+Figure 4. Read-only Iterator and partial Collectioninterface specification
+
+permissions we lose the ability to modify the collection.Intuitively, we would like to reverse permission splits to
+regain the ability to modify the collection.Such permission joining can be allowed if we introduce
+the notion of fractions [6]. Essentially, fractions keep trackof how often a permission was split. This later allows joining permissions (with known fractions) by putting togethertheir fractions. A
+
+unique permission by definition holds afull fraction that is represented by one (1). We will capture
+
+fractions as part of our permissions and write (perm)(x, k)for a given permission with fraction
+
+k. We usually do notcare about the exact fraction and therefore implicitly quantify over all fractions. If a fraction does not change we oftenwill omit it. Fractions allow us to define splitting and joining
+rules as follows.
+
+unique(x, 1) WV full(x, 1/2) \Omega  pure(x, 1/2)
+
+full(x, k) WV immutable(x, k/2) \Omega  immutable(x, k/2)
+immutable(x, k) WV immutable(x, k/2) \Omega  immutable(x, k/2)
+immutable(x, k) WV immutable(x, k/2) \Omega  pure(x, k/2)
+
+For example, we can split full(it, 1/2) into full(it, 1/4) \Omega 
+pure(it, 1/4) and recombine them. Such reasoning lets ouriterator client recover a
+
+unique iterator permission after eachcall into the iterator.
+
+Recovering Collection Permissions. Iterators are createdby trading a collection permission for a
+
+unique iterator per-mission. We essentially allow the opposite trade as well in
+
+order to modify a previously iterated collection again: Wecan safely consume a
+
+unique iterator permission and recoverthe permissions to its fields because no reference will be able
+
+to access the iterator anymore. A simple live variable analy-sis can identify when variables with
+
+unique permissions areno longer used. (As a side effect, a permission-based approach therefore allows identifying dead objects.)
+
+Collection c = new ... unique(c)
+Iterator it!c, 1/2? = c.iterator();
+
+immutable(c, 1/2) \Omega  unique(it)
+while(it.hasNext() && ...) -
+
+immutable(c, 1/2) \Omega  unique(it) in available
+Object o = it.next();
+
+immutable(c, 1/2) \Omega  unique(it)
+Iterator it2!c, 1/4? = c.iterator();
+
+immutable(c, 1/4) \Omega  unique(it) \Omega  unique(it2)
+while(it2.hasNext()) -
+
+immutable(c, 1/4) \Omega  unique(it) \Omega  unique(it2) in available
+
+Object o2 = it2.next();
+
+immutable(c, 1/4) \Omega  unique(it) \Omega  unique(it2)
+... "" // it2 dies
+"" immutable(c, 1/2) \Omega  unique(it)
+if(it.hasNext() && c.size() == 3) -
+
+immutable(c, 1/2) \Omega  unique(it) in available
+c.remove(it.next()); // it dies after next()
+
+unique(c) and no permission for it
+if(it.hasNext()) ... "" // ILLEGAL
+// it definitely dead unique(c)
+Iterator it3!c, 1/2? = c.iterator();
+
+immutable(c, 1/2) \Omega  unique(it3)
+
+Figure 5. Verifying a simple Iterator client
+
+For lack of a more suitable location, we annotate the
+finalize method to indicate what happens when an iter-ator is no longer usable. And in order to re-establish exactly
+
+the permission that was originally passed to the iterator weparameterize
+
+Iterator objects with the collection permis-sion's fraction. The
+
+finalize specification can then releasethe captured collection permission from dead iterators. The
+
+complete specification for iterators and a partial collectionspecification are summarized in figure 4.
+
+2.5 Client Verification
+Figure 5 illustrates how our client from figure 3 can beverified by tracking permissions and splitting/joining them
+
+as necessary. After each line of code we show the currentset of permissions on the right-hand side of the figure. We
+recover collection permissions from dead iterators as soonas possible. This lets us verify the entire example client. We
+correctly identify the seeded protocol violation.
+2.6 Summary
+We presented a specification of read-only iterators that pre-vents concurrent collection modification. To this end it associates collections and iterators with access permissions, de-fines a simple state machine to capture the iterator usage protocol, and tracks permission information using a decidablefragment of linear logic. Our logic-based specifications can
+relate objects to precisely specify method behavior in termsof typestates and support reasoning about dynamic tests.
+
+3. Java Stream Implementations
+I/O protocols are common examples for typestate-based pro-tocol enforcement approaches [11, 12, 4]. This section sumFigure 6. PipedInputStream's state space (inside open)
+marizes a case study in applying our approach to Java char-acter streams and in particular stream pipes and buffered input streams. The section focuses on implementation verifica-tion of stream classes, which--to our knowledge--has not
+been attempted with typestates before. Implementation veri-fication generalizes techniques shown in the previous section
+for client verification.
+3.1 Stream Pipes
+Pipes are commonly used in operating system shells to for-ward output from one process to another process. Pipes carry
+
+alphanumeric characters for a source to a sink. The JavaI/O library includes a pair of classes,
+
+PipedOutputStreamand
+PipedInputStream, that offers this functionality insideJava applications. This section provides a specification for
+
+Java pipes and shows how the classes implementing pipes inthe Java standard library can be checked using our approach.
+
+Informal Pipe Contract. In a nutshell, Java pipes work asfollows: A character-producing "writer"
+
+writes charactersinto a
+PipedOutputStream (the "source") that forwardsthem to a connected
+
+PipedInputStream (the "sink") fromwhich a "reader" can
+
+read them. The source forwards char-acters to the sink using the internal method
+
+receive. Thewriter calls
+close on the source when it is done, causing thesource to call
+
+receivedLast on the sink (figure 7).The sink caches received characters in a circular buffer.
+
+Calling read on the sink removes a character from the buffer(figure 8). Eventually the sink will indicate, using an end
+of file token (EOF, -1 in Java), that no more characters canbe read. At this point the reader can safely close the sink.
+Closing the sink before EOF was read is unsafe because thewriter may still be active.
+
+The pipe classes in Sun's standard library implementationhave built-in runtime checks that throw exceptions in the
+following error cases: (1) closing the sink before the source,(2) writing to a closed source or pushing characters to the
+sink after the source was closed, and (3) reading from aclosed sink. The specification we present here makes these
+error cases impossible.
+State Space with Dimensions. The source protocol canbe modeled with three states
+
+raw, open, and closed. rawindicates that the source is not connected to a sink yet.
+
+For technical reasons that are discussed below, we refine
+
+open into ready and sending. The writer will always find thesource in state
+
+ready.For the sink protocol we again distinguish
+
+open and
+closed. A refinement of open helps capturing read's pro-tocol: The sink is
+
+within as long as read returns characters;the
+eof state is reached when read returns the EOF token.While
+
+within, we keep track of the sink's buffer being emptyor
+nonEmpty. We further refine nonEmpty into partial and
+o/lled, the latter corresponding to a full buffer.At the same time, however, we would like to track
+
+whether the source was closed, i.e., whether receivedLastwas called. We previously proposed state dimensions to address such separate concerns (here, the buffer filling and thesource state) [4] with states that are independent from each
+other. State dimensions correspond to AND-states in State-charts [20].
+
+We can simply refine nonEmpty twice, along differentdimensions. We call the states for the second dimension
+sourceOpen and sourceClosed with the obvious semantics.Note that we only need the additional
+
+source dimensionwhile the buffer is
+nonEmpty; the source is by definitionopen (closed) in the
+
+empty (eof) state.2 To better visualizethe sink's state space, figure 6 summarizes it as a Statechart.
+
+Shared Modifying Access. Protocols for source and sinkare formalized in figures 7 and 8 with specifications that
+work similar to the iterator example in the last section. How-ever, the sink is conceptually modified through two distinct
+references, one held by the source and one held by the reader.In order to capture this, we introduce our last permission.
+
+* share permissions grant read/write access to the referenced object but assume that other permissions haveread/write access as well.
+
+Conventional programming languages effectively alwaysuse
+
+share permissions for mutable state. Interestingly, sharepermissions are split and joined exactly like
+
+immutable per-missions. Since
+share and immutable permissions cannot co-exist, our rules force a commitment to either one when initially splitting a full permission.
+
+full(x, k) WV share(x, k/2) \Omega  share(x, k/2)
+share(x, k) WV share(x, k/2) \Omega  share(x, k/2)
+share(x, k) WV share(x, k/2) \Omega  pure(x, k/2)
+
+State Guarantees. We notice that most modifying methodscannot change a stream's state arbitrarily. For example,
+
+readand
+receive will never leave the open state and they cannottolerate other permission to leave
+
+open.We make this idea part of our access permissions. We
+
+include another parameter into permissions that specifies astate guarantee, i.e. a state that cannot be left even by modifying permissions. Thus a state guarantee (also called thepermission's root) corresponds to an "area" in a Statechart
+that cannot be left. As an example, we can write the permis2 This is only one way of specifying the sink. It has the advantage that readers need not concern themselves with the internal communication betweensource and sink.
+
+public class PipedOutputStream -
+
+states raw, open, closed refine alive;
+states ready, sending refine open;
+
+raw := sink = null
+ready := half(sink, open)
+sending := sink 6= null
+closed := sink 6= null
+
+private PipedInputStream sink;
+public PipedOutputStream() :1 (
+
+unique(this) in raw - ""
+
+void connect(PipedInputStream snk) :
+
+full(this) in raw \Omega  half(snk, open) (
+
+full(this) in ready
+- sink = snk; store permission in field
+"" full(this) in open
+
+public void write(int b) :
+
+full(this, open) in ready \Omega  b >= 0 ( full(this, open) in ready
+- half(sink, open) from invariant
+
+sink.receive(b); returns half(sink, open)
+"" full(this, open) in ready
+
+public void close() :
+
+full(this) in ready ( full(this) in closed
+- half(sink, open) from invariant
+
+sink.receivedLast(); consumes half(sink, open)
+"" full(this) in closed}
+
+Figure 7. Java PipedOutputStream (simplified)
+sion needed for read as share(this, open). Without an ex-plicit state guarantee, only
+
+alive is guaranteed (this is whatwe did for iterators).
+
+State guarantees turn out to be crucial in making shareand
+
+pure permissions useful because they guarantee a stateeven in the face of possible changes to the referenced object
+
+through other permissions. Moreover, if we combine themwith state dimensions we get independent permissions for
+orthogonal object aspects that, e.g., let us elegantly modelmodifying iterators [3].
+
+Explicit Fractions for Temporary Heap Sharing. Whenspecifying the sink methods used by the source (
+
+receiveand
+receivedLast) we have to ensure that the source canno longer call the sink after
+
+receivedLast so the sink canbe safely closed. Moreover, in order to close the sink, we
+
+need to restore a permission rooted in alive. Thus the two
+share permissions for the sink have to be joined in such away that there are definitely no other permissions relying on
+
+open (such permissions, e.g., could have been split off of oneof the
+
+share permissions).We extend the notion of fractions to accomplish this task.
+
+We use fractions to track, for each state separately, howmany permissions rely on it. What we get is a fraction
+function that maps guaranteed states (i.e. the permission's
+
+class PipedInputStream -
+
+stream = open, closed refines alive;
+position = within, eof refines open;
+buffer = empty, nonEmpty refines within;
+filling = partial, filled refines nonEmpty;
+source = sourceOpen, sourceClosed refines nonEmpty;
+
+empty := in <= 0 \Omega  closedByWriter = false
+partial := in >= 0 \Omega  in 6= out
+o/lled := in = out
+sourceOpen := closedByWriter = false
+sourceClosed := closedByWriter \Omega  half(this, open)
+eof := in <= 0 \Omega  closedByWriter \Omega  half(this, open)
+
+private boolean closedByWriter = false;
+private volatile boolean closedByReader = false;
+private byte buffer[] = new byte[1024];
+private int in = -1, out = 0;
+
+public PipedInputStream(PipedOutputStream src) :
+
+full(src) in raw ( half(this, open) \Omega  full(src) in open
+- unique(this) in open V half(this, open) \Omega  half(this, open)
+
+src.connect(this); consumes one half(this, open)
+"" half(this, open) \Omega  full(src) in open
+
+synchronized void receive(int b) :
+
+half(this, open) \Omega  b >= 0 ( half(this, open) in nonEmpty
+- // standard implementation checks if pipe intact
+
+while(in == out) half(this, open) in o/lled
+
+... // wait a second
+
+half(this, open) in empty \Phi  partial
+if(in ! 0) - in = 0; out = 0; ""
+buffer[in++] (byte)(b & 0xFF);
+if(in ?= buffer.length) in = 0;
+"" half(this, open) in partial
+
+synchronized void receivedLast() :
+
+half(this, open) ( 1
+- closedByWriter = true; "" this is now sourceClosed
+
+public synchronized int read() :
+
+share(this, open) ( (result >= 0 \Omega  share(this, open))\Phi 
+
+(result = -1 \Omega  share(this, open) in eof)
+- ... "" // analogous to receive()
+
+public synchronized void close() :
+
+half(this, open) in eof ( unique(this) in closed
+- half(this, open) from eof invariant V unique(this, open)
+
+closedByReader = true;
+in = -1;
+""
+""
+
+Figure 8. Java PipedInputStream (simplified)
+
+root and its super-states) to fractions. For example, if wesplit an initial
+
+unique permission for a PipedInputStreaminto two
+share permissions guaranteeing open then thesepermissions rely on
+
+open and alive with a 1/2 fraction each.(Iterator permissions root in
+
+alive and their fraction functionsmap
+alive to the given fraction.)
+
+In order to close the sink, we have to make sure that thereare exactly two
+
+share permissions relying on open. Fractionfunctions make this requirement precise. For readability,
+
+we use the abbreviation half in figure 8 that stands for thefollowing permission.
+
+half(x, open) j share(x, open, {alive 7! 1/2, open 7! 1/2})
+
+By adding fractions and moving the state guarantee upin the state hierarchy, the initial permission for the sink,
+unique(this, alive, {alive 7! 1}), can be regained from two
+half(this, open) permissions. half is the only permissionwith an explicit fraction function. All other specifications
+
+implicitly quantify over all fraction functions and leave themunchanged.
+
+State Invariants Map Typestates to Fields. We now havea sufficient specification for both sides of the pipe. In order
+to verify their implementations we need to know what types-tates correspond to in implementations. Our implementation
+verification extends Fugue's approach of using state invari-ants to map states to predicates that describe the fields of
+an object in a given state [12]. We leverage our hierarchi-cal state spaces and allow state invariants for states with refinements to capture invariants common to all substates of astate.
+
+Figure 7 shows that the source's state invariants describeits three states in the obvious way based on the field
+
+snkpointing to the sink. Notice that the invariant does not only
+
+talk about the sink's state (as in Fugue) but uses permissionsto control access through fields just as through local variables.The sink's state invariants are much more involved (figure 8) and define, e.g., what the difference between an emptybuffer (in
+
+< 0) and a o/lled circular buffer (in = out)is. Interestingly, these invariants are all meticulously documented in the original Java standard library implementationfor
+
+PipedInputStream [4]. The half permission to itselfthat the sink temporarily holds for the time between calls to
+
+receivedLast and close lets us verify that close is al-lowed to close the sink.
+
+Verification with Invariants. Implementation checking as-sumes state invariants implied by incoming permissions and
+tracks changes to fields. Objects have to be in a state when-ever they yield control to another object, including during
+method calls. For example, the source transitions to sendingbefore calling the sink. However, the writer never finds the
+source in the sending state but always ready--sending neveroccurs in a method specification. We call states that are not
+observed by a client intermediate states. They help us dealwith re-entrant calls (details in section 5.2). A practical syntax could make such intermediate states implicit.Figures 7 and 8 show how implementation checking proceeds for most of the source's and sink's methods. We showin detail how field assignments change the sink's state. The
+sink's state information is frequently a disjunction of possi-ble states. Dynamic tests essentially rule out states based on
+incompatible invariants. All of these tests are present in the
+
+Figure 9. Frames of a BufferedInputStream instance instate
+
+filled. The blue virtual frame is in a different statethan its super-frame.
+
+original Java implementation; we removed additional non-null and state tests that are obviated by our approach. This
+not only shows how our approach forces necessary state testsbut also suggests that our specifications could be used to generate such tests automatically.
+3.2 Buffered Input Streams
+A BufferedInputStream (or "buffer", for short) wraps an-other "underlying" stream and provides buffering of characters for more efficient retrieval. We will use this example toillustrate our approach to handling inheritance. Compared to
+the original implementation, we made fields "private" in or-der to illustrate calls to overridden methods using
+
+super. Weomit intermediate states in this specification.
+
+Class Hierarchy. BufferedInputStream is a subclassof
+
+FilterInputStream, which in turn is a subclass of
+InputStream. InputStream is the abstract base class of allinput streams and defines their protocol with informal documentation that we formalize in figure 10. It implements con-venience methods such as
+
+read(int[]) in terms of other--abstract--methods.
+FilterInputStream holds an underly-ing stream in a field
+
+s and simply forwards all calls to thatstream (figure 10).
+BufferedInputStream overrides thesemethods to implement buffering.
+
+Frames. The buffer occasionally calls overridden meth-ods to read from the underlying stream. How can we reason
+about these internal calls? Our approach is based on Fugue'sframes for reasoning about inheritance [12]. Objects are broken into frames, one for each class in the object's class hi-erarchy. A frame holds the fields defined in the corresponding class. We call the frame corresponding to the object'sruntime type the virtual frame, referred to with normal references (including this). Relative to a method, we call thecurrent frame--corresponding to the class that the method
+is defined in--with thisfr, and the frame corresponding to
+
+public abstract class InputStream -
+
+states open, closed refine alive;
+states within, eof refine open;
+
+public abstract int read() :
+
+share(thisfr, open) ( (result >= 0 \Omega  share(thisfr, open))\Phi 
+
+(result = -1 \Omega  share(thisfr, open) in eof)
+public abstract void close() :
+
+full(thisfr, alive) in open ( full(thisfr, alive) in closed
+
+public int read(byte[] buf) :
+
+share(this, open) \Omega  buf 6= null (
+
+(result = -1 \Omega  share(this, open) in eof) \Phi 
+(result >= 0 \Omega  share(this, open))
+- ... for(...)
+
+... int c = this.read() ... ""
+""
+
+public class FilterInputStream extends InputStream -
+
+within := unique(s) in within
+eof := unique(s) in eof
+closed := unique(s) in closed
+
+private volatile InputStream s;
+protected FilerInputStream(InputStream s)
+
+unique(s, alive) in open ( unique(thisfr, alive) in open
+- this.s = s; ""
+... // read() and close() forward to s
+""
+
+Figure 10. Java FilterInputStream forwards all calls tounderlying
+
+InputStream (simplified)
+
+the immediate superclass is called super frame. Figure 9shows a sample
+
+BufferedInputStream instance with itsthree frames.
+
+Frame Permissions. In our approach, a permission actu-ally grants access to a particular frame. The permissions we
+have seen so far give a client access to the referenced ob-ject's virtual frame. Permissions for other frames are only
+accessible from inside a subclass through super.Figure 9 illustrates that a
+
+BufferedInputStream's statecan differ from the state its filter frame is in: the filter's
+
+state might be eof (when the underlying stream reaches eof)while the buffer's is still
+
+within (because the buffer arraystill holds unread characters). The state invariants in figure
+
+11 formalize this. They let us verify that super calls in thebuffer implementation respect the filter's protocol.
+
+Because the states of frames can differ it is important toenforce that a permission is only ever used to access fields
+in the frame it grants permission to. In specifications wespecifically mark permissions that will actually access fields
+(and not just call other methods) of the receiver with thisfr.We require all methods that use these permissions to be
+overridden. On the other hand, convenience methods suchas
+
+read(int[]) can operate with permissions to the virtualframe and need not be overridden (figure 10).
+
+public class BufferedInputStream
+
+extends FilterInputStream -
+states depleted, filled refine within;
+
+closed := unique(super) in closed \Omega  buf = null
+open := unique(buf)
+o/lled := pos < count \Omega  unique(super) in open
+depleted := pos >= count \Omega  unique(super) in within
+eof := pos >= count \Omega  unique(super) in in eof
+
+private byte buf[] = new byte[8192];
+private int count = 0, pos = 0;
+
+public BufferedInputStream(InputStream s)
+
+unique(s) in open ( unique(thisfr) in open
+- count = pos = 0 \Omega  unique(buf)
+
+super(s); unique(super) in open
+"" unique(thisfr, alive) in open
+
+public synchronized int read() -
+
+if(pos ?= count)
+- share(thisfr, open) in depleted \Phi  eof
+
+fill(); share(thisfr, open) in o/lled \Phi  eof
+if(pos ?= count)
+
+return -1; returns share(thisfr, open) in eof
+"" any path: share(thisfr, open) in o/lled
+return buf[pos++] & 0xFF;
+"" share(thisfr, open) in o/lled \Phi  eof
+
+private void fill()
+
+share(thisfr, open) in depleted \Phi  eof (
+
+share(thisfr, open) in o/lled \Phi  eof
+- invariant: unique(super) in within \Phi  eof
+
+count = pos = 0; note: assumes buffer was fully read
+int b = super.read(); unique(super) in within \Phi  eof
+while(b ?= 0) - unique(super) in within
+
+buf[count++] = (byte) (b & 0xFF);
+
+share(thisfr, open) in o/lled
+if(count ?= buf.length) break;
+b = super.read(); unique(super) in within \Phi  eof
+"" if loop never taken, share(thisfr, open) in eof
+"" share(this, open) in o/lled \Phi  eof
+
+public synchronized void close() -
+
+buf = null; invariant: unique(super) in open
+super.close(); unique(super) in closed
+"" full(thisfr, alive) in closed
+
+Figure 11. BufferedInputStream caches characters from
+FilterInputStream base class
+
+This distinction implies that fill (figure 11) cannot call
+read(int[]) (because it does not have a suitable virtualframe permission) but only
+
+super.read(). This is impera-tive for the correctness of
+fill because a dynamically dis-patched call would lead back into the--still
+
+empty--buffer,causing an infinite loop. (One can trigger exactly this effect
+
+in the Java 6 implementation of BufferedInputStream.)
+
+3.3 Summary
+This section showed how our approach can be used to ver-ify realistic Java pipe and buffered input stream implementations. The notion of access permissions is central toour approach. Overall, we introduced five different kinds
+of permissions (figure 1). While three kinds are adaptedfrom existing work [7, 12] we recently proposed
+
+full and
+pure permissions [3]. State guarantees and temporary stateinformation increase the usefulness of "weak" (
+
+share and
+pure) permissions. Permission splitting and joining is flexi-ble enough to model temporary aliasing on the stack (during
+
+method calls) and in the heap (e.g., in pipes and iterators).Permission-based state invariants enable reasoning about
+protocol implementations. We handle inheritance based onframes [12] and permit dynamic dispatch within objects for
+convenience methods.
+
+4. Formal Language
+This section formalizes an object-oriented language withprotocol specifications. We briefly introduce expression and
+
+class declaration syntax before defining state spaces, accesspermissions, and permission-based specifications. Finally,
+we discuss handling of inheritance and enforcement of be-havioral subtyping.
+
+4.1 Syntax
+Figure 12 shows the syntax of a simple class-based object-oriented language. The language is inspired by Featherweight Java (FJ, [24]); we will extend it to include type-state protocols in the following subsections. We identify
+classes (C), methods (m), and fields (f) with their names.As usual,
+
+x ranges over variables including the distin-guished variable this for the receiver object. We use an overbar notation to abbreviate a list of elements. For example,
+x : T = x1:T1, . . . , xn:Tn. Types (T ) in our system in-clude Booleans (
+
+bool) and classes.Programs are defined with a list of class declarations and
+
+a main expression. A class declaration CL gives the class aunique name
+
+C and defines its fields, methods, typestates,and state invariants. A constructor is implicitly defined with
+
+the class's own and inherited fields. Fields (F ) are declaredwith their name and type. Each field is mapped into a part
+of the state space n that can depend on the field (details insection 5.2). A method (
+
+M ) declares its result type, formalparameters, specification and a body expression. State refinements R will be explained in the next section; methodspecifications
+
+M S and state invariants N are deferred to sec-tion 4.4.
+
+We syntactically distinguish pure terms t and possibly ef-fectful expressions
+
+e. Arguments to method calls and objectconstruction are restricted to terms. This simplifies reasoning about effects [30, 9] by making execution order explicit.Notice that we syntactically restricts field access and assignments to fields of the receiver class. Explicit "getter" and"setter" methods can be defined to give other objects access
+to fields. Assignments evaluate to the previous field value.
+
+programs PR ::= hCL, eiclass decl. CL ::=
+
+class C extends C0 { F R I N M }field decl.
+F ::= f : T in n
+meth. decl. M ::= T m(T x) : MS = estate decl.
+
+R ::= d = s refines s0terms
+
+t ::= x | o | true | false|
+
+t1 and t2 | t1 or t2 | not texpressions
+e ::= t | f | assign f := t|
+
+new C(t) | t0.m(t) | super.m(t)|
+if(t, e1, e2) | let x = e1 in e2values
+v ::= o | true | falsereferences
+
+r ::= x | f | otypes
+T ::= C | boolnodes
+
+n ::= s | d
+
+classes C fields f variables x objects omethods
+
+m states s dimensions d
+
+Figure 12. Core language syntax. Specifications (I, N, MS)in figure 14.
+
+4.2 State Spaces
+State spaces are formally defined as a list of state refinements(see figure 12). A state refinement (
+
+R) refines an existingstate in a new dimension with a set of mutually exclusive
+
+sub-states. We use s and d to range over state and dimensionnames, respectively. A node
+
+n in a state space can be a stateor dimension. State refinements are inherited by subclasses.
+
+We assume a root state alive that is defined in the root class
+Object.We define a variety of helper judgments for state spaces
+
+in figure 13. reo/nements(C) determines the list of staterefinements available in class
+
+C. C ` A wf defines well-formed state assumptions. Assumptions
+
+A combine statesand are defined in figure 14. Conjunctive assumptions have
+
+to cover orthogonal parts of the state space. C ` n <= n0defines the substate relation for a class.
+
+C ` A # A0 definesorthogonality of state assumptions.
+A and A0 are orthogonalif they refer to different (orthogonal) state dimensions.
+
+C `
+A OE n defines that a state assumption A only refers to statesunderneath a root node
+
+n. C ` A o/ n finds the tightest such
+n.
+
+4.3 Access Permissions
+Access permissions p give references permission to accessan object. Permissions to objects are written
+
+access(r, n, g, k, A)(figure 14). (We wrote perm(
+r, n, g) in A before.) The ad-ditional parameter
+k allows us to uniformly represent allpermissions as explained below.
+
+* Permissions are granted to references r. References can
+
+be variables, locations, and fields.*
+
+Permissions apply to a particular subtree in the spacespace of
+
+r that is identified by its root node n. It repreo/nements(Object) = *
+
+class C extends C0 { F R . . . } reo/nements(C0) = R0
+
+reo/nements(C) = R0, R
+
+n in reo/nements(C)
+
+C ` n wf
+
+C ` A1 wf C ` A2 wf
+
+C ` A1 \Phi  A2 wf
+
+C ` A1 wf A1 # A2 C ` A2 wf
+
+C ` A1 \Omega  A2 wf
+
+d = s refines s 2 reo/nements(C)
+
+C ` si <= d C ` d <= s
+
+C ` n wf
+C ` n <= n
+
+C ` n <= n00 C ` n00 <= n0
+
+C ` n <= n0
+
+d = s refines s* 2 reo/nements(C) d0 = s0 refines s* 2 reo/nements(C) d 6= d0
+
+C ` d # d0
+
+C ` n1 <= n01 C ` n01 # n02 C ` n2 <= n02
+
+C ` n1 # n2
+
+C ` A0 # A
+C ` A # A0
+
+C ` A1,2 # A
+C ` A1 \Omega  A2 # A
+
+C ` A1,2 # A
+C ` A1 \Phi  A2 # A
+
+C ` n0 <= n
+C ` n0 OE n
+
+C ` A1,2 OE n C ` A1 \Omega  A2 wf
+
+C ` A1 \Omega  A2 OE n
+
+C ` A1,2 OE n C ` A1 \Phi  A2 wf
+
+C ` A1 \Phi  A2 OE n
+
+C ` A OE n 8n0 : C ` A OE n0 implies n <= n0
+
+C ` A o/ n
+
+Figure 13. State space judgments (assumptions A defined in figure 14)
+resents a state guarantee (section 3). Other parts of thestate space are unaffected by the permission.
+
+* The fraction function g tracks for each node on the path
+
+from n to alive a symbolic fraction [6]. The fraction func-tion keeps track of how often permissions were split at
+
+different nodes in the state space so they can be coalescedlater (see section 5.5).
+
+* The subtree fraction k encodes the level of access granted
+
+by the permission. k > 0 grants modifying access. k <1 implies that other potentially modifying permissions
+
+exist. Fraction variables z are conservatively treated asa value between 0 and 1, i.e., 0
+
+< z < 1.*
+
+An state assumption A expresses state knowledge withinthe permission's subtree. Only
+
+full permissions can per-manently make state assumptions until they modify the
+
+object's state themselves. For weak permissions, the stateassumption is temporary, i.e. lost after any effectful expression (because the object's state may change withoutthe knowledge of
+
+r).
+
+We can encode unique, full, share, and pure permissionsas follows. In our formal treatment we omit
+
+immutable per-missions, but it is straightforward to encode them with an
+
+additional "bit" that distinguishes immutable and share per-missions.
+
+unique(r, n, g) in A j access(r, n, {g, n 7! 1}, 1, A)
+
+full(r, n, g) in A j access(r, n, g, 1, A)
+share(r, n, g, k) in A j access(r, n, g, k, A) (0 < k < 1)
+
+pure(n, n, g) in A j access(r, n, g, 0, A)
+
+4.4 Permission-Based Specifications
+We combine atomic permissions (p) and facts about Booleanvalues (
+
+q) using linear logic connectives (figure 14). We alsoinclude existential (9
+
+z : H.P ) and universal quantificationof fractions (8
+z : H.P ) to alleviate programmers fromwriting concrete fraction functions in most cases. We type
+
+all expressions as an existential type (E).
+
+permissions p ::= access(r, n, g, k, A)facts
+
+q ::= t = true | t = falseassumptions
+A ::= n | A1 \Omega  A2 | A1 \Phi  A2fraction fct.
+
+g ::= z | n 7! v|
+
+g/2 | g1, g2fractions
+k ::= 1 | 0 | z | k/2predicates
+P ::= p | q|
+
+P1 \Omega  P2 | 1|
+P1 & P2 | ?|
+P1 \Phi  P2 | 0| 9
+
+z : H.P | 8z : H.Pmethod specs MS ::=
+P ( Eexpr. types
+E ::= 9x : T.Pstate inv.
+N ::= n = P
+initial state I ::= initially h9f : T .P, Siprecise state
+
+S ::= s1 \Omega  . . . \Omega  snfract. terms
+
+h ::= g | kfract. types
+H ::= Fract | n ! Fractfract. vars.
+
+z
+
+Figure 14. Permission-based specifications
+Method specifications. Methods are specified with a linearimplication (() of predicates (
+
+MS). The left-hand side ofthe implication (method pre-condition) may refer to method
+
+receiver and formal parameters. The right-hand side (post-condition) existentially quantifies the method result (a similar technique is used in Vault [11]). We refer to the receiverwith this and usually call the return value result.
+
+State invariants. We decided to use linear logic predicatesfor state invariants as well (
+
+N ). In general, several of thedefined state invariants will have to be satisfied at the same
+
+time. This is due to our hierarchical state spaces. Each classdeclares an initialization predicate and a start state (
+
+I) thatare used for object construction (instead of an explicit constructor).
+
+4.5 Handling Inheritance
+Permissions give access to a particular frame, usually the vir-tual frame (see section 3.2) of an object. Permissions to the
+
+virtual frame are called object permissions. Because of sub-typing, the precise frame referenced by an object permission
+is statically unknown.
+
+references r ::= . . . | super | thisfr
+In order to handle inheritance, we distinguish referencesto the receiver's "current" frame (this
+
+fr) and its super-frame(super). Permissions for these "special" references are called
+
+frame permissions. A thisfr permission grants access to fieldsand can be used in method specifications. Permissions for
+super are needed for super-calls and are only available instate invariants. All methods requiring a this
+
+fr permissionmust be overridden because such methods rely on being
+
+defined in a particular frame to access its fields.
+4.6 Behavioral Subtyping
+Subclasses should be allowed to define their own specifi-cations, e.g. to add precision or support additional behavior [4]. However, subclasses need to be behavioral sub-types [29] of the extended class. Our system enforces behavioral subtyping in two steps. Firstly, state space inheri-tance conveniently guarantees that states of subclasses always correspond to states defined in superclasses [4]. Sec-ondly, we make sure that every overriding method's specification implies the overridden method's specification [4] us-ing the
+
+override judgment (figure 16) that is used in checkingmethod declarations. This check leads to method specifications that are contra-variant in the domain and co-variant inthe range as required by behavioral subtyping.
+
+5. Modular Typestate Verification
+This section describes a static modular typestate checkingtechnique for access permissions similar to conventional
+
+typechecking. It guarantees at compile-time that protocolspecifications will never be violated at runtime. We emphasize that our approach does not require tracking typestates atrun time.
+
+A companion technical report contains additional judg-ments and a soundness proof for a fragment of the system
+presented in this paper [5]. The fragment does not includeinheritance and only supports permissions for objects as a
+whole. State dimensions are omitted and specifications aredeterministic. The fragment does include
+
+full, share, and
+pure permissions with fractions and temporary state infor-mation.
+
+5.1 Permission Tracking
+We permission-check an expression e with the judgment\Gamma ; \Delta  `
+
+iC e : 9x : T.P \ E. This is read as, "in valid
+
+context \Gamma  and linear context \Delta , an expression e executedwithin receiver class
+
+C has type T, yields permissions P ,and affects fields E". Permissions \Delta  are consumed in the
+
+process. We omit the receiver C where it is not required for
+
+checking a particular syntactic form. The set E keeps trackof fields that were assigned to, which is important for the
+correct handling of permissions to fields. It is omitted whenempty. The marker
+
+i in the judgment can be 0 or 1 where
+i = 1 indicates that states of objects in the context maychange during evaluation of the expression. This will help us
+
+reason about temporary state assumptions. A combination ofmarkers with
+
+i . j is 1 if at least one of the markers is 1.
+
+valid contexts \Gamma  ::= * | \Gamma , x : T | \Gamma , z : H | \Gamma , qlinear contexts \Delta  ::= * | \Delta 
+
+, Peffects E ::= * | E
+, f
+
+Valid and linear contexts distinguish valid (permanent)information (\Gamma ) from resources (\Delta ). Resources are tracked
+linearly, forbidding their duplication, while facts can be usedarbitrarily often. (In logical terms, contraction is defined for
+facts only). The valid context types object variables, fractionvariables, and location types and keeps track of facts about
+terms q. Fraction variables are tracked in order to handlefraction quantification correctly. The linear context holds
+currently available resource predicates.The judgment \Gamma  `
+
+t : T types terms. It includes the usualrule for subsumption based on nominal subtyping induced
+
+by the extends relation (figure 16). Term typing is com-pletely standard and can be found in the companion report.
+The companion report also includes rules for formally typingfractions and fraction functions [5].
+
+Our expression checking rules are syntax-directed up toreasoning about permissions. Permission reasoning is deferred to a separate judgment \Gamma ; \Delta  ` P that uses the rulesof linear logic to prove the availability of permissions
+
+P ina given context. This judgment will be discussed in section
+
+5.5. Permission checking rules for most expressions appearin figure 15 and are described in turn. Packing, method calls,
+and field assignment are discussed in following subsections.Helper judgments are summarized in figure 16. The notation
+[e0/x]e substitutes e0 for occurrences of x in e.
+
+* P-TERM embeds terms. It formalizes the standard logical
+
+judgment for existential introduction and has no effect onexisting objects.
+
+* P-FIELD checks field accesses analogously.*
+
+P-NEW checks object construction. The parameters passedto the constructor have to satisfy initialization predicate
+
+P and become the object's initial field values. The newexistentially quantified object is associated with a
+
+uniquepermission to the root state that makes state assumptions
+
+according to the declared start state A. Object construc-tion has no effect on existing objects.
+
+The judgment init (figure 16) looks up initialization pred-icate and start state for a class. The start state is a conjunction of states (figure 14). The initialization predicateis the invariant needed for the start state.
+
+* P-IF introduces non-determinism into the system, reflected by the disjunction in its type. We make sure thatthe predicate is of Boolean type and then assume its truth
+
+\Gamma  ` t : T \Gamma ; \Delta  ` [t/x]P
+
+\Gamma ; \Delta  `0 t : 9x : T.P P-TERM
+
+localFields(C) = f : T \Gamma ; \Delta  ` [fi/x]P
+
+\Gamma ; \Delta  `0C fi : 9x : Ti.P P-FIELD
+
+\Gamma  ` t : T init(C) = h9f : T .P, Ai \Gamma ; \Delta  ` [t/f]P
+\Gamma ; \Delta  `0 new C(t) : 9x : C.access(x, alive, {alive 7! 1}, 1, A) P-NEW
+
+(\Gamma , t = true); \Delta  `i e1 : 9x : T.P1 \ E1\Gamma  `
+t : bool (\Gamma , t = false); \Delta  `j e2 : 9x : T.P2 \ E2
+
+\Gamma ; \Delta  `i.j if(t, e1, e2) : 9x : T.P1 \Phi  P2 \ E1 [ E2 P-IF
+
+\Gamma ; \Delta  `i e1 : 9x : T.P \ E1 (\Gamma , x : T ); (\Delta 0, P ) `j e2 : E2 \ E2
+i = 1 implies no temporary assumptions in \Delta 0 Fields in E1 do not occur in \Delta 0
+
+\Gamma ; (\Delta , \Delta 0) `i.j let x = e1 in e2 : E2 \ E1 [ E2 P-LET
+
+(x : T , this : C); P `iC e : 9result : Tr.Pr \Omega  ? \ E E = 9result : Tr.Pr override(m, C, 8x : T .P ( E)
+
+Tr m(T x) : P ( E = e ok in C P-METH
+
+. . . M ok in C M overrides all methods with thisfr permissions in C0
+
+class C extends C0 { F R I N M } ok P-CLASS
+
+CL ok *; * `i_ e : E \ Eh
+
+CL, ei : E P-PROG
+
+Figure 15. Permission checking for expressions (part 1) and declarations
+
+class C extends C0 {. . .} 2 CL
+
+C extends C0
+
+class C {. . . M . . .} 2 CL Tr m(T x) : P ( 9result : Tr.P 0 = e 2 M
+
+mtype(m, C) = 8x : T .P ( 9result : Tr.P 0
+
+C extends C0 mtype(m, C0) = 8x : T .M S0 implies (x : T , this : C); * ` M S ( MS0
+
+override(m, C, 8x : T .M S)
+
+class C . . . {F . . .} 2 CL
+
+localFields(C) = F
+
+init(Object) = (1, alive)
+
+class C extends C0 {f : T in n S initially h9f 0 : T 0, f : T .P 0 \Omega  P, Ai . . . }
+init(C0) = (9f0 : T 0.P 0, A0) *; (P, full(super, alive, {alive 7! 1}, A0)) ` invC(A) \Omega  ?
+
+init(C) = h9f0 : T 0, f : T .P 0 \Omega  P, Ai
+
+class C {. . . n = P . . .} 2 CL
+
+predC(n) = P
+
+P = Nn0<=n00<n predC(n00)
+
+predC(n0, n) = P
+
+invC(A) = P ) n0
+invC(n, A) = P \Omega  predC(n0, n) \Omega  predC(n)
+
+invC(n) = 1 ) n
+
+invC(Ai) = Pi ) ni predC(ni, n) = P 0i n1 \Omega  n2 o/ n (i = 1, 2)
+
+invC(A1 \Omega  A2) = P1 \Omega  P 01 \Omega  P2 \Omega  P 02 ) n
+
+invC(Ai) = Pi ) ni predC(ni, n) = P 0i n1 \Phi  n2 o/ n (i 2 1, 2)
+
+invC(A1 \Phi  A2) = (P1 \Omega  P 01) \Phi  (P2 \Omega  predC(n2, n)) ) n
+
+only pure permissions in P
+
+eoeectsAllowed(P ) = 0
+
+exists share or full permission in P
+
+eoeectsAllowed(P ) = 1
+
+Figure 16. Protocol verification helper judgments
+(falsehood) in checking the then (else) branch. This ap-proach lets branches make use of the tested condition.
+
+* P-LET checks a let binding. The linear context used
+
+in checking the second subexpression must not mention
+
+fields affected by the first expression. This makes surethat outdated field permissions do not "survive" assignments or packing. Moreover, temporary state informationis dropped if the first subexpression has side effects.
+
+A program consists of a list of classes and a main ex-pression (P-P
+
+ROG, figure 15). As usual, the class table CLis globally available. The main expression is checked with
+
+initially empty contexts. The judgment CL ok (P-CLASS)checks a class declaration. It checks fields, states, and invariants for syntactic correctness (omitted here) and verifiesconsistency between method specifications and implementations using the judgment M ok in C. P-METH assumes thespecified pre-condition of a method (i.e. the left-hand side
+of the linear implication) and verifies that the method's bodyexpression produces the declared post-condition (i.e. the
+right-hand side of the implication). Conjunction with ?drops excess permissions, e.g., to dead objects. The
+
+over-
+ride judgment concisely enforces behavioral subtyping (seesection 4.6). A method itself is not a linear resource since all
+
+resources it uses (including the receiver) are passed in uponinvocation.
+
+5.2 Packing and Unpacking
+We use a refined notion of unpacking [12] to gain access tofields: we unpack and pack a specific permission. The access
+
+we gain reflects the permission we unpacked. Full and sharedpermissions give modifying access, while a pure permission
+gives read-only access to underlying fields.To avoid inconsistencies, objects are always fully packed
+when methods are called. To simplify the situation, only onepermission can be unpacked at the same time. Intuitively, we
+"focus" [13] on that permission. This lets us unpack sharelike
+
+full permissions, gaining full rather than shared accessto underlying fields (if available). The syntax for packing
+
+and unpacking is as follows.
+
+expressions e ::= . . . | unpack(n, k, A) in e|
+
+pack to A in e
+
+Packing and unpacking always affects the receiver of thecurrently executed method. The
+
+unpack parameters expressthe programmer's expectations about the permission being
+
+unpacked. For simplicity, an explicit subtree fraction k ispart of
+
+unpack expressions. It could be inferred from aprogrammer-provided permission kind, e.g.
+
+share.
+
+Typechecking. In order for pack to work properly we haveto "remember" the permission we unpacked. Therefore we
+
+introduce unpacked as an additional linear predicate.
+
+permissions p ::= . . . | unpacked(n, g, k, A)
+The checking rules for packing and unpacking are givenin figure 18. Notice that packing and unpacking always affects permissions to thisfr. (We ignore substitution of thiswith an object location at runtime here.)
+
+P-UNPACK first derives the permission to be unpacked.The judgment
+
+inv determines a predicate for the receiver'sfields based on the permission being unpacked. It is used
+
+when checking the body expression. An unpacked predicateis added into the linear context. We can prevent multiple
+permissions from being unpacked at the same time using astraightforward dataflow analysis (omitted here).
+
+invC(n, g, k, A) = invC(n, A) \Omega  purify(aboveC(n))
+
+invC(n, g, 0, A) = purify (invC(n, A) \Omega  aboveC(n))
+where aboveC(n) = Nn0:n<n0<=alive predC(n0)
+
+Figure 17. Invariant construction (purify in figure 19)
+
+P-PACK does the opposite of P-UNPACK. It derives thepredicate necessary for packing the unpacked permission
+and then assumes that permission in checking the body ex-pression. The new state assumption
+
+A can differ from be-fore only if a modifying permission was unpacked. Finally,
+
+the rule ensures that permissions to fields do not "survive"packing.
+
+Invariant transformation. The judgment invC(n, g, k, A)determines what permissions to fields are implied by a permission access(thisfr, n, g, k, A) for a frame of class C. It isdefined in figure 17 and uses a
+
+purify function (figure 19) toconvert arbitrary into
+pure permissions.Unpacking a full or shared permission with root node
+
+n yields purified permissions for nodes "above" n and in-cludes invariants following from state assumptions as-is.
+Conversely, unpacking a pure permission yields completelypurified permissions.
+
+5.3 Calling Methods
+Checking a method call involves proving that the method'spre-condition is satisfied. The call can then be typed with the
+
+method's post-condition.Unfortunately, calling a method can result into reentrant
+callbacks. In order to ensure that objects are consistent whencalled we require them to be fully packed before method
+calls. This reflects that aliased objects always have to beprepared for reentrant callbacks.
+
+This rule is not a limitation because we can always packto some intermediate state although it may be inconvenient
+in practice. Notice that such intermediate packing obviatesthe need for adoption while allowing focus [13]: the intermediate state represents the situation where an adopted objectwas taken out of the adopting object. Inferring intermediate
+states as well as identifying where reentrant calls are impos-sible (intermediate packing avoidance) are important areas
+for future research.
+Virtual calls. Virtual calls are dynamically dispatched(rule P-C
+
+ALL). In virtual calls, frame and object permis-sions are identical because object permissions simply refer
+
+to the object's virtual frame. This is achieved by substitutingthe given receiver for both this and this
+
+fr.
+
+Super calls. Super calls are statically dispatched (rule P-S
+
+UPER). Recall that super is used to identify permissionsto the super-frame. We substitute
+
+super only for thisfr. Weomit a substitution of this for the receiver (this again) for
+
+clarity.
+
+\Gamma ; \Delta  `C access(thisfr, n, g, k, A) receiver packed
+k = 0 implies i = 0 \Gamma ; (\Delta 0, invC(n, g, k, A), unpacked(n, g, k, A)) `iC e : E \ E
+
+\Gamma ; (\Delta , \Delta 0) `iC unpack(n, k, A) in e : E \ E P-UNPACK
+
+\Gamma ; \Delta  `C invC(n, g, k, A) \Omega  unpacked(n, g, k, A0) k = 0 implies A = A0
+\Gamma ; (\Delta 0, access(thisfr, n, g, k, A)) `iC e : E \ E localFields(C) = f : T in n Fields do not occur in \Delta 0
+
+\Gamma ; (\Delta , \Delta 0) `iC pack n to A in e : E \ f P-PACK
+
+\Gamma  ` t0 : C0 \Gamma  ` t : T \Gamma ; \Delta  ` [t0/this][t0/thisfr][t/x]P
+mtype(m, C0) = 8x : T .P ( E i = eoeectsAllowed(P ) receiver packed
+
+\Gamma ; \Delta  `i t0.m(t) : [t0/this][t0/thisfr][t/x]E P-CALL
+
+\Gamma  ` t : T \Gamma ; \Delta  ` [super/thisfr][t/x]P C extends C0
+mtype(m, C0) = 8x : T .P ( E i = eoeectsAllowed(P ) receiver packed
+
+\Gamma ; \Delta  `iC super.m(t) : [super/thisfr][t/x]E P-SUPER
+
+\Gamma ; \Delta  ` t : 9x : Ti.P \Gamma ; \Delta 0 `C [fi/x0]P 0 \Omega  p
+localFields(C) = f : T in n ni <= n p = unpacked(n, g, k, A), k 6= 0
+
+\Gamma ; (\Delta , \Delta 0) `1C assign fi := t : 9x0 : Ti.P 0 \Omega  [fi/x]P \Omega  p \ fi P-ASSIGN
+
+Figure 18. Permission checking for expressions (part 2)
+p = access(r, n, g, k, A)
+purify(p) = pure(r, n, g, A)
+
+purify(P1) = P 01 purify(P2) = P 02 op 2 {\Omega , &, \Phi }
+
+purify(P1 op P2) = P 01 op P 02
+
+unit 2 {1, ?, 0}
+purify(unit) = unit
+
+purify(P ) = P 0
+purify(9z : H.P ) = 9z : H.P 0
+
+purify(P ) = P 0
+purify(8z : H.P ) = 8z : H.P 0
+
+Figure 19. Permission purification
+5.4 Field Assignments
+Assignments to fields change the state of the receiver's cur-rent frame. We point out that assignments to a field do not
+
+change states of objects referenced by the field. Thereforereasoning about assignments mostly has to be concerned
+with preserving invariants of the receiver. The unpackedpredicates introduced in section 5.2 help us with this task.
+
+Our intuition is that assignment to a field requires unpack-ing the surrounding object to the point where all states that
+refer to the assigned field in their invariants are revealed. No-tice that the object does not have to be unpacked completely
+in this scheme. For simplicity, each field is annotated withthe subtree that can depend on it (figure 12). Thus we interpret subtrees as data groups [27].The rule P-A
+
+SSIGN (figure 18) assigns a given object t toa field
+fi and returns the old field value as an existential x0.This preserves information about that value. The rule verifies
+
+that the new object is of the correct type and that a suitable
+full or share permission is currently unpacked. By recordingan effect on
+
+fi we ensure that information about the old fieldvalue cannot "flow around" the assignment (which would be
+
+unsound).
+
+5.5 Permission Reasoning with Splitting and Joining
+Our permission checking rules rely on proving a predicate Pgiven the current valid and linear resources, written \Gamma ; \Delta  `
+
+P . We use standard rules for the decidable multiplicative-additive fragment of linear logic (MALL) with quantifiers
+that only range over fractions [28]. Following Boyland [7]we introduce a notion of substitution into the logic that allows substituting a set of linear resources with an equivalentone.
+
+\Gamma ; \Delta  ` P 0 P 0 V P
+
+\Gamma ; \Delta  ` P SUBST
+
+The judgment P V P 0 defines legal substitutions. Weuse substitutions for splitting and joining permissions (figure 20). The symbol WV indicates that transformations areallowed in both directions. S
+
+YM and ASYM generalize therules from section 2. Most other rules are used to split permissions for larger subtrees into smaller ones and vice versa.A detailed explanation of these rules can be found in the
+companion report [5].Our splitting and joining rules maintain a consistent set
+of permissions for each object so that no permission can everviolate an assumption another permission makes. Fractions
+
+A = A0 = A00 or (A = A0 and A00 = n) or (A = A00 and A0 = n)
+access(r, n, g, k, A) WV access(r, n, g/2, k/2, A0) \Omega  access(r, n, g/2, k/2, A00) SYM
+
+A = A0 = A00 or (A = A0 and A00 = n) or (A = A00 and A0 = n)
+access(r, n, g, k, A) WV access(r, n, g/2, k, A0) \Omega  pure(r, n, g/2, A00) ASYM
+
+n1 # n2 A1 OE n1 <= n A2 OE n2 <= n
+pi = full(r, ni, {g, nodes(ni, n) 7! 1}/2, Ai)
+
+full(r, n, g, A1 \Omega  A2) V p1 \Omega  p2 F-SPLIT-\Omega 
+n1 # n2 A1 OE n1 <= n A2 OE n2 <= n
+pi = full(r, ni, {g, n 7! 1, nodes(ni, n) 7! 1}/2, Ai)
+
+p1 \Omega  p2 V full(r, n, {g, n 7! 1}, A1 \Omega  A2) F-JOIN-\Omega 
+
+A1 # A2
+full(r, n, g, A1 \Phi  A2) WV full(r, n, g, A1) \Phi  full(r, n, g, A2) F-\Phi 
+
+A OE n0 <= n
+full(r, n, g, A) V full(r, n0, {g, nodes(n0, n) 7! 1}, A) F-DOWN
+
+A OE n0 <= n
+full(r, n0, {g, n 7! 1, nodes(n0, n) 7! 1}, A) V full(r, n, {g, n 7! 1}, A) F-UP
+
+n0 <= n
+pure(r, n, {g, nodes(n0, n) 7! k}, A) V pure(r, n0, g, A) P-UP
+
+access(r, n, g, k, A) V access(r, n, g, k, n) FORGET
+Figure 20. Splitting and joining of access permissions
+of all permissions to an object sum up to (at most) 1 for everynode in the object's state space.
+5.6 Example
+To illustrate how verification proceeds, figure 21 showsthe
+
+fill method from BufferedInputStream (figure 11)written in our core language. As can be seen we need an
+
+intermediate state reads and a marker field reading thatindicate an ongoing call to the underlying stream. We also
+need an additional state refinement to specify an internalmethod replacing the
+
+while loop in the original implemen-tation. (We assume that this
+
+fr permissions can be used forcalls to
+private methods.)Maybe surprisingly, we have to reassign field values after super.read() returns. The reason is that when calling
+super we lose temporary state information for this. Assign-ment re-establishes this information and lets us pack properly before calling doFill recursively or terminating in thecases of a full buffer or a depleted underlying stream.
+
+It turns out that these re-assignments are not just an in-convenience caused by our method but point to a real problem in the Java standard library implementation. We couldimplement a malicious underlying stream that calls back into
+the "surrounding" BufferedInputStream object. This callchanges a field, which causes the buffer's invariant on count
+to permanently break, later on resulting in an undocumentedarray bounds exception when trying to read behind the end
+of the buffer array.
+
+Because fill operates on a share permission our veri-fication approach forces taking into account possible field
+changes through reentrant calls with other share permis-sions. (This is precisely what our malicious stream does.)
+We could avoid field re-assignments by having read requirea
+
+full permission, thereby documenting that reentrant (mod-ifying) calls are not permitted for this method.
+
+6. Related Work
+In previous work we proposed more expressive typestatespecifications [4] that can be verified with the approach presented in this paper. We also recently proposed full and purepermissions and applied our approach to specifying full Java
+iterators [3]. Verification of protocol compliance has beenstudied from many different angles including type systems,
+abstract interpretation, model checking, and verification ofgeneral program behavior. Aliasing is a challenge for all of
+these approaches.The system that is closest to our work is Fugue [12],
+the first modular typestate verification system for object-oriented software. Methods are specified with a deterministic state transition of the receiver and pre-conditions on argu-ments. Fugue's type system tracks objects as "not aliased" or
+"maybe aliased". Leveraging research on "alias types" [33](see below), objects typically remain "not aliased" as long
+as they are only referenced on the stack. Only "not aliased"objects can change state; once an object becomes "maybe
+
+class BufferedInputStream extends FilterInputStream -
+states ready, reads refine open; ...
+states partial, complete refine filled;
+
+reads := reading; ready := reading = false; . . .
+private boolean reading; ...
+public int read() : 8k : Fract. . . . =
+unpack(open, k) in
+
+let r = reading in if(r == false, ... fill() ... )
+
+private bool fill() : 8k : Fract.
+
+share(thisfr, open) in depleted \Phi  eof (
+
+share(thisfr, open) in available \Phi  eof =
+unpack(open, k, depleted \Phi  eof) in
+
+assign count = 0 in assign pos = 0 in
+assign reading = true in
+pack to reads in
+
+let b = super.read() in
+unpack(open, k, open) in
+
+let r = reading in assign reading = false in
+assign count = 0 in assign pos = 0 in
+if(r, if(b = -1, pack to eof in false,
+
+pack to depleted in doFill(b)),
+pack to eof in false)
+
+private bool doFill(int b) : 8k : Fract.
+
+share(thisfr, open) in depleted \Phi  partial (
+
+share(thisfr, open) in partial \Phi  complete =
+unpack(open, k, depleted \Phi  partial) in
+
+let c = count in let buffer = buf in
+assign buffer[c] = b in assign count = c + 1 in
+let l = buffer.length in
+if(c + 1 ?= l, pack to complete in true,
+
+assign reading = true in pack to reads in
+
+let b = super.read() in unpack(open, k) in
+
+let r = reading in assign reading = false in
+assign count = c + 1 in assign pos = 0 in
+pack to partial in
+
+if(r == false ---- b == -1, true, doFill(b))
+
+Figure 21. Fragment of BufferedInputStream from fig-ure 11 in core language
+
+aliased" its state is permanently fixed although fields can beassigned to if the object's abstract typestate is preserved.
+
+Our work is greatly inspired by Fugue's abilities. Ourapproach supports more expressive method specifications
+based on linear logic [18]. Our verification approach is basedon "access permissions" that permit state changes even in
+the presence of aliases. We extend several ideas from Fugueto work with access permissions including state invariants,
+packing, and frames. Fugue's specifications are expressiblewith our system [4]. Fugue's "not aliased" objects can be
+simulated with unique permissions for alive and "maybealiased" objects correspond to
+
+share permissions with stateguarantees. There is no equivalent for state dimensions, temporary state assumptions, full, immutable, and pure permis-sions, or permissions for object parts in Fugue.
+
+Verification of protocol compliance has also been de-scribed as "resource usage analysis" [23]. Protocol specifications have been based on very different concepts includingtypestates [34, 11, 25], type qualifiers [16], size properties
+[9], direct constraints on ordering [23, 35], and type refine-ments [30, 10]. None of the above systems can verify implementations of object-oriented protocols like our approachand only two [35, 10] target object-oriented languages. Effective type refinements [30] employ linear logic reasoningbut cannot reason about protocol implementations and do not
+support aliasing abstractions. Hob [25] verifies data struc-ture implementations for a procedural language with static
+module instantiation based on typestate-like constraints us-ing shape analyses. In Hob, data can have states, but modules
+themselves cannot. In contrast, we can verify the implemen-tation of stateful objects that are dynamically allocated and
+support aliasing with permissions instead of shape analysis.Finally, concurrent work on Java(X) proposes "activity annotations" that are comparable to full, share, and pure per-missions for whole objects that can be split but not joined.
+Similar to effective type refinements, state changes can betracked for a pre-defined set of types, but reasoning about
+the implementation of these types is not supported. To ourknowledge, none of the above systems supports temporary
+state information.Because programming with linear types [36] is very inconvenient, a variety of relaxing mechanisms were pro-posed. Uniqueness, sharing, and immutability (sometimes
+called read-only) [7] have recently been put to use in re-source usage analysis [23, 9]. Alias types [33] allow multiple
+variables to refer to the same object but require a linear tokenfor object accesses that can be borrowed [7] during function
+calls. Focusing can be used for temporary state changes ofshared objects [13, 16, 2]. Adoption prevents sharing from
+leaking through entire object graphs (as in Fugue [12]) andallows temporary sharing until a linear adopter is deallocated
+[13]. All these techniques need to be aware of all referencesto an object in order to change its state.
+
+Access permissions allow state changes even if objectsare aliased from unknown places. Moreover, access permissions give fine-grained access to individual data groups [27].States and fractions [6] let us capture alias types, borrowing, adoption, and focus with a single mechanism. Sharingof individual data groups has been proposed before [7], but
+it has not been exploited for reasoning about object behav-ior. In Boyland's work [6], a fractional permission means
+immutability (instead of sharing) in order to ensure non-interference of permissions. We use permissions to keep
+state assumptions consistent but track, split, and join per-missions in the same way as Boyland.
+
+Global approaches are very flexible in handling alias-ing. Approaches based on abstract interpretation (e.g. [1,
+19, 14]) typically verify client conformance while the pro-tocol implementation is assumed correct. Sound approaches
+rely on a global aliasing analysis [1, 14]. Likewise, most
+
+model checkers operate globally (e.g. [21]) or use assume-guarantee reasoning between coarse-grained static components [17, 22]. The Magic tool checks individual C func-tions but has to inline user-provided state machine abstractions for library code in order to accommodate aliasing [8].The above analyses typically run on the complete code base
+once a system is fully implemented and are very expensive.Our approach supports developers by checking the code at
+hand like a typechecker. Thus the benefits of our approachdiffer significantly from global analyses.
+
+Recently, there has been progress in inferring typestateprotocols in the presence of aliasing [31], which we believe
+could be fruitfully combined with our work to reduce initialannotation burden.
+
+Finally, general approaches to specifying program behav-ior [26, 15, 2] can be used to reason about protocols. The
+JML [26] is very rich and complex in its specification fea-tures; it is more capable than our system to express object
+behavior (not just protocols), but also potentially more dif-ficult to use due to its complexity. Verifying JML specifications is undecidable in the general case. Tools like ESC/Java[15] can partially check JML specifications but are unsound
+because they do not have a sound methodology for handlingaliasing. Spec# is comparable in its complexity to the JML
+and imposes similar overhead. The Boogie methodology al-lows sound verification of Spec# specifications but requires
+programs to follow an ownership discipline [2].Our system is much simpler than these approaches, focusing as it does on protocols, and it is designed to be de-cidable. Our treatment of aliasing makes our system sound,
+where ESC/Java is not. While the treatment of aliasing inour system does involve complexity, it gives the programmer more flexibility than Boogie's while remaining modularand sound. Because it is designed for protocol verification in
+particular, our system will generally impose smaller specifi-cation overhead than the JML or Spec#.
+
+7. Conclusions
+This paper proposes a sound modular protocol checking ap-proach, based on typestates, that allows a great deal of flexibility in aliasing. A novel abstraction, access permissions,combines typestate and object aliasing information. Developers express their protocol design intent using access per-missions. Our checking approach then tracks permissions
+through method implementations. For each object referencethe checker keeps track of the degree of possible aliasing and
+is appropriately conservative in reasoning about that refer-ence. A way of breaking an invariant in a frequently used
+Java standard library class was exposed in this way. Thechecking approach handles inheritance in a novel way, giving subclasses more flexibility in method overriding. Casestudies on Java iterators and streams provide evidence that
+access permissions can model realistic protocols, and pro-tocol checking based on access permissions can be used to
+reason precisely about protocols arising in practice.In future work we hope to further refine and evaluate
+our approach. We plan to develop a deterministic algorithm
+
+for reasoning about permissions. We hope to leverage ourexperiences in using our approach to increase its practicality.
+Based on the case studies presented in this paper we madethe following observations:
+
+* In this paper we chose to make the linear logic formalism underlying our approach explicit in example proto-col specifications. However, our case studies suggest that
+
+practical protocols follow certain patterns. For example,method specifications often consist of simple conjunctions that can be expressed by annotating each methodargument separately. With syntactic sugar for such patterns we believe that programmers will only rarely haveto use linear logic operators explicitly.
+
+* Specification effort lies primarily with protocol implementation developers, which better amortizes over time.Conversely, iterator, stream, and other libraries' clients
+
+have (we believe) minimal work to do unless they storeobjects in fields. (Fugue's experience suggests that loop
+invariants for typestate checking can often be inferred[12].)
+
+* Only a fraction of our system's capabilities are needed
+
+for any given example (although they all are necessaryin different situations). Developers do have to understand
+
+the general idea of access permissions.
+We believe that these observations indicate that the ap-proach can be practical, especially with the help of syntax
+
+that captures common cases concisely. A systematic eval-uation of this claim is an important part of planned future
+work.
+Acknowledgments
+We thank John Boyland, Frank Pfenning, the Plaid group,Sebastian Bossung, and Jason Reed for fruitful discussions
+
+on this topic. We also thank the anonymous reviewers fortheir helpful feedback. This work was supported in part by
+NASA cooperative agreement NNA05CS30A, NSF grantCCF-0546550, the Army Research Office grant number
+DAAD19-02-1-0389 entitled "Perpetually Available and Se-cure Information Systems", and the U.S. Department of Defense.
+References
+
+[1] T. Ball and S. K. Rajamani. Automatically validatingtemporal safety properties of interfaces. In Proc. of the
+
+Eighth SPIN Workshop, pages 101-122, May 2001.
+[2] M. Barnett, R. DeLine, M. Fa"hndrich, K. R. M. Leino, andW. Schulte. Verification of object-oriented programs with
+
+invariants. Journal of Object Technology, 3(6):27-56, June2004.
+
+[3] K. Bierhoff. Iterator specification with typestates. In 5th Int.Workshop on Specification and Verification of ComponentBased Systems, pages 79-82. ACM Press, Nov. 2006.
+[4] K. Bierhoff and J. Aldrich. Lightweight object specificationwith typestates. In Joint European Software Engineering
+
+Conference and ACM Symposium on the Foundations of
+
+Software Engineering, pages 217-226. ACM Press, Sept.2005.
+[5] K. Bierhoff and J. Aldrich. Modular typestate veri-fication of aliased objects. Technical Report CMUISRI-07-105, Carnegie Mellon University, Mar. 2007.http://reports-archive.adm.cs.cmu.edu/anon/isri2007/CMUISRI-07-105.pdf.
+[6] J. Boyland. Checking interference with fractional permis-sions. In Int. Symposium on Static Analysis, pages 55-72.
+
+Springer, 2003.
+[7] J. T. Boyland and W. Retert. Connecting effects anduniqueness with adoption. In ACM Symposium on Principles
+
+of Programming Languages, pages 283-295, Jan. 2005.
+[8] S. Chaki, E. Clarke, A. Groce, S. Jha, and H. Veith. Modularverification of software components in C. In Int. Conference
+
+on Software Engineering, pages 385-395, May 2003.
+[9] W.-N. Chin, S.-C. Khoo, S. Qin, C. Popeea, and H. H.Nguyen. Verifying safety policies with size properties and
+
+alias controls. In Int. Conference on Software Engineering,pages 186-195, May 2005.
+
+[10] M. Degen, P. Thiemann, and S. Wehr. Tracking linear andaffine resources with Java(X). In European Conference on
+
+Object-Oriented Programming. Springer, Aug. 2007.
+[11] R. DeLine and M. Fa"hndrich. Enforcing high-level protocolsin low-level software. In ACM Conference on Programming
+
+Language Design and Implementation, pages 59-69, 2001.
+[12] R. DeLine and M. Fa"hndrich. Typestates for objects. InEuropean Conference on Object-Oriented Programming,
+
+pages 465-490. Springer, 2004.
+[13] M. Fa"hndrich and R. DeLine. Adoption and focus: Practicallinear types for imperative programming. In ACM Conference
+
+on Programming Language Design and Implementation,pages 13-24, June 2002.
+
+[14] S. Fink, E. Yahav, N. Dor, G. Ramalingam, and E. Geay.Effective typestate verification in the presence of aliasing.
+
+In ACM Int. Symposium on Software Testing and Analysis,pages 133-144, July 2006.
+
+[15] C. Flanagan, K. R. M. Leino, M. Lillibridge, G. Nelson,J. Saxe, and R. Stata. Extended static checking for Java. In
+
+ACM Conference on Programming Language Design andImplementation, pages 234-245, May 2002.
+
+[16] J. Foster, T. Terauchi, and A. Aiken. Flow-sensitive typequalifiers. In ACM Conference on Programming Language
+
+Design and Implementation, pages 1-12, 2002.
+[17] D. Giannakopoulou, C. S. P*as*areanu, and J. M. Cobleigh.Assume-guarantee verification of source code with designlevel assumptions. In Int. Conference on Software Engineer-ing, pages 211-220, May 2004.
+
+[18] J.-Y. Girard. Linear logic. Theoretical Computer Science,50:1-102, 1987.
+[19] S. Hallem, B. Chelf, Y. Xie, and D. Engler. A system andlanguage for building system-specific, static analyses. In
+
+ACM Conference on Programming Language Design andImplementation, pages 69-82, 2002.
+
+[20] D. Harel. Statecharts: A visual formalism for complexsystems. Sci. Comput. Programming, 8:231-274, 1987.
+
+[21] T. A. Henzinger, R. Jhala, R. Majumdar, and G. Sutre.Lazy abstraction. In ACM Symposium on Principles of
+
+Programming Languages, pages 58-70, 2002.
+[22] G. Hughes and T. Bultan. Interface grammars for modularsoftware model checking. In ACM Int. Symposium on
+
+Software Testing and Analysis, pages 39-49. ACM Press,July 2007.
+
+[23] A. Igarashi and N. Kobayashi. Resource usage analysis. InACM Symposium on Principles of Programming Languages,
+
+pages 331-342, Jan. 2002.
+[24] A. Igarashi, B. Pierce, and P. Wadler. Featherweight Java: Aminimal core calculus for Java and GJ. In ACM Conference
+
+on Object-Oriented Programming, Systems, Languages &Applications, pages 132-146, 1999.
+
+[25] V. Kuncak, P. Lam, K. Zee, and M. Rinard. Modularpluggable analyses for data structure consistency. IEEE
+
+Transactions on Software Engineering, 32(12), Dec. 2006.
+[26] G. T. Leavens, A. L. Baker, and C. Ruby. JML: A notationfor detailed design. In H. Kilov, B. Rumpe, and I. Simmonds,
+
+editors, Behavioral Specifications of Businesses and Systems,pages 175-188. Kluwer Academic Publishers, Boston, 1999.
+
+[27] K. R. M. Leino. Data groups: Specifying the modificationof extended state. In ACM Conference on Object-Oriented
+
+Programming, Systems, Languages & Applications, pages144-153, Oct. 1998.
+
+[28] P. Lincoln and A. Scedrov. First-order linear logic withoutmodalities is NEXPTIME-hard. Theoretical Computer
+
+Science, 135:139-154, 1994.
+[29] B. H. Liskov and J. M. Wing. A behavioral notion ofsubtyping. ACM Transactions on Programming Languages
+
+and Systems, 16(6):1811-1841, Nov. 1994.
+[30] Y. Mandelbaum, D. Walker, and R. Harper. An effectivetheory of type refinements. In ACM Int. Conference on
+
+Functional Programming, pages 213-225, 2003.
+[31] M. G. Nanda, C. Grothoff, and S. Chandra. Deriving objecttypestates in the presence of inter-object references. In
+
+ACM Conference on Object-Oriented Programming, Systems,Languages & Applications, pages 77-96, 2005.
+
+[32] G. Ramalingam, A. Warshavsky, J. Field, D. Goyal, andM. Sagiv. Deriving specialized program analyses for certifying component-client conformance. In ACM Conference onProgramming Language Design and Implementation, pages
+83-94, 2002.
+[33] F. Smith, D. Walker, and G. Morrisett. Alias types. InEuropean Symposium on Programming, pages 366-381.
+
+Springer, 2000.
+[34] R. E. Strom and S. Yemini. Typestate: A programminglanguage concept for enhancing software reliability. IEEE
+
+Transactions on Software Engineering, 12:157-171, 1986.
+[35] G. Tan, X. Ou, and D. Walker. Enforcing resource usage pro-tocols via scoped methods. In Int. Workshop on Foundations
+
+of Object-Oriented Languages, 2003.
+[36] P. Wadler. Linear types can change the world! In WorkingConference on Programming Concepts and Methods, pages
+
+347-359. North Holland, 1990.

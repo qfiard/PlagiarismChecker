@@ -1,0 +1,1460 @@
+
+
+A Type-Preserving Compiler in Haskell
+
+Louis-Julien Guillemette Stefan Monnier
+
+Universit'e de Montr'eal{
+guillelj,monnier}@iro.umontreal.ca
+
+Abstract
+There has been a lot of interest of late for programming languagesthat incorporate features from dependent type systems and proof
+
+assistants, in order to capture important invariants of the programin the types. This allows type-based program verification and is
+a promising compromise between plain old types and full blownHoare logic proofs. The introduction of
+
+GADTs in GHC (and morerecently type families) made such dependent typing available in an
+
+industry-quality implementation, making it possible to consider itsuse in large scale programs.
+
+We have undertaken the construction of a complete compilerfor System
+
+F , whose main property is that the GHC type checkerverifies mechanically that each phase of the compiler properly preserves types. Our particular focus is on "types rather than proofs":reasonably few annotations that do not overwhelm the actual code.
+
+We believe it should be possible to write such a type-preservingcompiler with an amount of extra code comparable to what is necessary for typical typed intermediate languages, but with the advan-tage of static checking. We will show in this paper the remaining
+hurdles to reach this goal.
+Categories and Subject Descriptors D.3 [Software]: Program-ming languages; F.3.1 [Specifying and Verifying and Reasoning
+
+about Programs]: Mechanic al verification
+General Terms Languages, Verification
+Keywords Compilation, Typed assembly language, de Bruijn,Higher-Order Abstract Syntax
+
+1. Introduction
+Formal methods are rapidly improving and gaining ground in soft-ware, and type systems are arguably the most successful and popular formal method used to develop software. As the technology oftype systems progresses, new needs and new opportunities appear.
+One of those needs is to ensure the faithfulness of the translationfrom source code to machine code, so that the properties you prove
+about the code you write also apply to the code you run.Recent work on certified compilation makes successful use of
+proof assistants based on dependent types to establish semanticpreservation. Leroy's compiler (Leroy 2006; Blazy et al. 2006)
+proves dynamic semantic preservation for a first-order (C-like) lan-guage. Chlipala's compiler (2007) uses other techniques to provide
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+ICFP'08, September 22-24, 2008, Victoria, BC, Canada.Copyright cfl 2008 ACM 978-1-59593-919-7/08/09.. . $5.00
+
+similar guaranties for a functional language. Both are developed asCoq proofs from which a working compiler is obtained by means
+of program extraction.With the introduction of generalized algebraic data types
+(GADTs) in the Glasgow Haskell Compiler (GHC), and more re-cently type families (Schrijvers et al. 2007), a useful (if limited)
+form of dependent typing is finally available in an industry-qualityimplementation of a general-purpose programming language. Thus
+arises the possibility of establishing compiler correctness throughtype annotations in Haskell code, without the need to encode elaborate proofs as separate artifacts. In this work, we use types toenforce type preservation: our typed intermediate representation
+lets GHC's type checker manipulate and check our object types.Other than the
+
+CPS conversion over System F of Chlipala(2008) developed in parallel and presented elsewhere in these
+
+proceedings, previous work invariably restricts the input to sim-ply typed features. Ours handles the full System
+
+F extended withrecursive definitions; we are able to cover a larger set of object
+
+language features by focusing on type preservation rather thanfull correctness. Extensions like first-class existential and recursive
+types (which seem well within reach at this point) would enable theencoding of algebraic datatypes, and our compiler could serve as a
+back-end for Core ML and similar languages.By using Haskell rather than a language with full dependent
+types, we narrow down the semantic gap between the host andobject language, bringing closer the possibility of a bootstrapping
+type-preserving compiler. Our implementation relies essentially on
+
+GADTs and type families - and all these features can be encodedin a variant of System
+
+F with type equality coercions (Sulzmannet al. 2007).
+
+Typed intermediate languages have been widely used in compil-ers, often as a manner of sanity check to help catch compiler errors.
+Typically object types are represented in the form of data structureswhich have to be carefully manipulated to be kept in sync with
+the code they annotate as this code is being transformed. In com-parison, our approach enforces type preservation statically through
+type annotations in the compiler's code, with obvious advantages:it is exhaustive, unlike the conventional approach which amounts to
+testing the compiler; it gives earlier detection of errors in the com-piler; it also eliminates the overhead of manipulating and checking
+type annotations while running the compiler. Last but not least, itcan actually simplify the compiler's code, as no explicit manipulations of type information are needed.Our main contributions are the following:
+
+* We show a CPS and closure conversion over System F where
+
+type preservation is enforced by type families and type equalityconstraints. This constitutes the first mechanized argument of
+
+type preservation for these transformations over System F .*
+We extend the classical toy example of a GADT representationof an abstract syntax tree, to a full language with term-level and
+
+type-level bindings. We show both a higher-order and a firstorder encoding of System F and address subtle issues about theinteraction of bindings at the levels of types and terms.
+
+* To our knowledge, this is the first worked out example of ex-tensive use of GHC type families and type equality coercions.
+
+Thereby it feeds the current debate as to which one of type fam-ilies, associated types, or multiple-parameter type classes with
+functional dependencies, should make it to the next Haskellstandard (Peyton-Jones et al. 2007).
+
+* We argue that none of the existing representations of bindings
+
+is suitable in the sense that they either cannot be used, or theyintroduce significant extra complexity.
+
+The paper is structured as follows. After a brief overview of thecompiler and the techniques it employs (Sec. 2), we present the encoding of System F (Sec. 3) and review the implementation of theindividual compilation phases (Sec. 4 through 7). We finally discuss our experience in general terms (Sec. 8) and mention relatedwork (Sec. 9).
+
+2. Overview and background
+This section introduces the types and techniques we use to makethe compiler type-preserving, and describes the overall structure of
+
+the compiler.
+2.1 Generalized algebraic datatypes
+The program representations we use are constructed with Gen-eralized Algebraic Datatypes, or
+
+GADTs (Xi et al. 2003; Cheneyand Hinze 2003). They are a generalization of algebraic datatypes
+
+where the return types of the various data constructors for a givendatatype need not be identical - they can differ in the type arguments given to the type constructor being defined. The type argu-ments can be used to encode additional information about the value
+that is represented. For our purpose, we use these type annotationsto track the object-level type of expressions. For example, consider
+some common typing rules:
+
+\Gamma  ` n : int
+
+\Gamma  ` e1 : int \Gamma  ` e2 : int
+
+\Gamma  ` e1 + e2 : int
+
+\Gamma  ` e1 : o/1 ! o/2 \Gamma  ` e2 : o/1
+
+\Gamma  ` e1 e2 : o/2
+
+Using plain algebraic datatypes, we would represent object pro-grams with a type such as the following:
+
+data Exp whereEnum
+
+:: Int ! ExpEadd
+:: Exp ! Exp ! ExpEapp
+:: Exp ! Exp ! Exp
+
+where source types (that is, the types in the object program) of
+e1 and e2 are unconstrained. In contrast, with GADTs, we canexplicitly mention source types as type arguments to Exp to encode
+
+the three typing rules:
+
+data Exp t whereEnum
+
+:: Int ! Exp IntEadd
+:: Exp Int ! Exp Int ! Exp IntEapp
+:: Exp (t1 ! t2) ! Exp t1 ! Exp t2
+
+This type guarantees that if we can construct a Haskell term oftype Exp
+
+t, then the source expression it represents is well typed:it has some type
+
+o/, the source type for which t stands. Note thatthe use of the arrow constructor (
+
+t1 ! t2) to represent object-levelfunction types (
+o/1 ! o/2) is purely arbitrary: we could just as wellhave used any other type of our liking, say Arw
+
+t1 t2, to achieve thesame effect.
+
+2.2 Binders
+There are different possible ways to extend the GADT Exp to encodesyntactic constructs that involve binders, depending on whether
+
+variables are represented explicitly or implicitly using the hostlanguage's variables. Either representations has its advantages and
+limitations, and we use each in different parts of the compiler.Using both representations within one compiler may seem odd
+(and it is!), and reflects a course of experimentation more than anengineering decision.
+
+The representation of binders at the type level falls beyond thescope of background material, so we describe it later. We show how
+we do it in the context of a higher-order term representation whendescribing the encoding of the source language (Sec. 3), and in the
+context of a first-order one when dealing with closure conversion(Sec. 6). We discuss further alternatives in Sec. 8.
+
+HOAS. Consider the usual typing rule for let-expressions:
+
+\Gamma  ` e1 : o/1 \Gamma , x :o/1 ` e2 : o/2
+
+\Gamma  ` let x = e1 in e2 : o/2
+
+With Higher-Order Abstract Syntax, we would encode the typingrule as follows:
+
+data Exp t whereElet
+
+:: Exp t1 ! (Exp t1 ! Exp t2) ! Exp t2
+. . .
+
+that is, binders in source programs would be represented by Haskellbinders - and thus variable occurrences would not require an explicit introduction form. As long as bindings in the source languagebehave the same as bindings in Haskell, the technique amounts
+to re-using Haskell's (implicit) type contexts to impose type con-straints on source programs.
+
+De Bruijn indices. In contrast to HOAS, a first-order representa-tion introduces variables explicitly. With de Bruijn indices, as with
+
+HOAS, variables's names are irrelevant, and variables are insteadrepresented as indices. The type associated with an index is drawn
+from an explicit type argument (ts) to Exp, which represents theexpression's type context:
+
+data Exp ts t whereBnum
+
+:: Int ! Exp ts IntBadd
+:: Exp ts Int ! Exp ts Int ! Exp ts IntBapp
+:: Exp ts (t1 ! t2) ! Exp ts t1 ! Exp ts t2
+
+Bvar :: Index ts t ! Exp ts tBlet
+
+:: Exp ts s ! Exp (s, ts) t ! Exp ts t
+
+A term of type Exp ts t is an expression that may refer to variableswhose types are listed in ts. More precisely, a Haskell term being of
+
+type Exp ts t implies that the source term it represents (e) satisfies
+\Gamma  ` e : o/, where the Haskell type t stands for the source type o/,and the type ts reflects
+
+\Gamma .An index of type Index ts
+
+t represents a de Bruijn index whosetype is
+t within the type environment ts. Such indices are repre-sented with type-annotated Peano numbers:
+
+data Index ts t whereI0
+
+:: Index (t, ts) tIs
+:: Index ts t ! Index (t0, ts) t
+
+Note that individual indices are polymorphic in ts and t, and assumea particular type given a particular type context ts. (Specifically, for
+
+an index of the form Isi I0 of type Index ts t, the only relationbetween ts and
+
+t is that the ith type appearing in ts is t, which iswhy
+t0 appears free in the type of Is, and ts appears free in that ofI0.)
+
+To illustrate the two techniques, the following expression:
+
+let a = 2
+
+b = 3
+in a + b
+
+would be represented in HOAS as:
+
+Elet (Enum 2) (*a !Elet
+
+(Enum 3) (*b !Eadd
+
+a b))
+
+and with de Bruijn indices as:
+
+Blet (Bnum 2) (Blet
+
+(Bnum 3) (Badd
+
+(Bvar (Is I0)) (Bvar I0)))
+
+2.3 Type families
+Type families (Schrijvers et al. 2007) are a recent addition to GHCthat allows programmers to directly define functions over types by
+
+case analysis, in a way that resembles term-level function defini-tions with pattern matching.
+
+For example, we can define a type function Add that computes(statically) the sum of two Peano numbers:
+
+data Z; data S i -- natural numbers encoded as types
+type family Add n mtype instance Add
+
+Z m = mtype instance Add
+(S n) m = S (Add n m)
+
+We can then use this type family to express the fact that anappend function over length-annotated lists produces a list of the
+
+expected length:
+
+data List elem len whereCons
+
+:: elem ! List elem n ! List elem (S n)Nil
+:: List elem Z
+
+append :: List elem n ! List elem m ! List elem (Add n m)append Nil
+
+l = lappend
+(Cons h t) l = Cons h (append t l)
+
+Note that the definition of append follows the structure of thedefinition of the type function Add, so that the type checker can
+
+verify that every clause of append satisfies its type signature.We mention in passing that GHC's implementation of type
+families relies on the calculus of type equality coercions (Sulzmannet al. 2007), and that these coercions themselves are exposed to
+the programmer, a feature that plays an important technical rolehere. As it is not essential to understand these at this point, we will
+introduce them when needed (cf. Sec. 4.3).
+2.4 Compilation phases
+The source language we are compiling is a call-by-value functionallanguage with parametric polymorphism and recursion, similar to
+
+System F . The general compilation strategy follows that of Mor-risett et al. (1999). The overall structure of our compiler is as follows:
+
+* typecheck-----! *!
+
+CPSconvert-----!
+
+*K
+
+deBruijnconvert------!
+
+*bK
+
+closureconvert-----!
+
+*bC hoist--! *bH
+The source language and each intermediate language (*!, *K,etc.) has its own syntax and type system, so each is encoded as
+
+a separate GADT. The first phase infers types for all subterms ofthe source program, and all the subsequent ones are then careful
+to preserve them. In general, the way a transformation affects thetypes is captured by a type function.
+
+In this section we will briefly show the effect of each phase onthe code and sketch its type.
+
+Type checking: AST ! 9t.Exp t
+The type checking phase takes a simple abstract data type AST, thenit infers and checks its type
+
+t, and returns a generalized algebraicdatatype (
+GADT) of type Exp t which does not just represent thesyntax any more but a proof that the expression is properly typed,
+
+in the form of a type derivation. In order for the CPS phase tomore closely match the natural presentation, we make it work on a
+higher-order abstract syntax (HOAS) representation of the code, sothe type checking phase also converts the first order abstract syntax
+(where variables are represented by their names) to a HOAS (wherevariables are represented by meta variables) at the same time.
+
+The conversion to HOAS is implemented using Template Haskell(Sheard and Jones 2002), a compile-time meta-programming facility bundled with GHC - that is, it allows us to construct a pieceof Haskell code under program control. This piece of code gets
+type-checked by GHC, and since the program representation weconstruct is strongly typed, we get a source-level type checker
+for free. Constructing HOAS terms by meta-programming gives usan efficient representation, in contrast to a direct implementation
+which would lead to residual redexes (i.e. recursive calls to the con-version function hidden inside closures for functional arguments,
+like those for * or let.)
+
+CPS conversion: Exp t ! ExpK (cps t)
+Conversion to continuation-passing style (CPS) names all interme-diate results and makes the control structure of a program explicit.
+
+In CPS, a function does not return a value to the caller, but insteadcommunicates its result by calling a continuation, which is a function that represents the "rest of the program", that is, the contextof the computation that will consume the value produced. Additionally a special form halt is used to indicate the final "answer"produced by the program. For example:
+
+let a = 1.8
+
+b = 32
+c = 24
+c2f = *x . a * x + b
+in c2f c
+
+CPS=)
+
+let a = 1.8
+
+b = 32
+c = 24
+c2f = *hx, ki .
+
+let v0 = a * x
+
+v1 = v0 + b
+in k v1
+in c2f hc, *v . halt vi
+
+For an input expression of type Exp t the output type should beExpK
+
+(cps t) where cps is a type function that describes the waytypes are modified by this phase: mostly input types of the form
+
+o/1 ! o/2 are mapped to ho/01, o/02 ! 0i ! 0 where 0 is the void type.The type of the
+
+CPS conversion (Exp t ! ExpK (cps t)) expressesand enforces directly that the function preserves types.
+
+Conversion to de Bruijn: ExpK t ! ExpKB ts t
+While HOAS is convenient for the CPS conversion, it is (at least)impractical in the closure conversion, so we switch representation
+
+mid-course from *K to *bK where the only difference is the repre-sentation of variables, which uses de Bruijn indices. Among other
+things this forces us to make the type environment explicit in thetype of our terms. So for an input expression of type ExpK
+
+t, mean-ing the represented expression has type
+t in the current context,the return value will have type ExpKB ts
+
+t, which means it repre-sent an expression of type
+t but this time in a type environment ts.Making the type environment explicit is crucial when we need to
+
+express the fact that a particular expression is closed, which is thekey property guaranteed by the closure conversion and used by the
+hoisting phase.
+
+Closure conversion: ExpKB ts t ! ExpC (map cc ts) (cc t)
+Closure conversion makes the creation of closures explicit. Func-tions are made to take an additional argument, the environment, that
+
+captures the value of its free variables. A closure consists of thefunction itself, which is closed, along with a copy of the free variables forming its environment. At the call site, the closure must betaken apart into its function and environment components and the
+call is made by passing the environment as an additional argumentto the function. For example, the above
+
+CPS example code will betransformed by the closure conversion into the following code:
+
+let a = 1.8
+
+b = 32
+c = 24
+c2f = pack (hint, inti,h
+
+*hhx, ki, envi . let v0 = env.0 * x
+
+v1 = v0 + env.1
+(fi, hkf , kenvi) = unpack k
+in kf hv1, kenvi,h
+a, bii)
+as o/c2f
+(fi, hc2ff , c2fenvi) = unpack c2f
+in c2ff hhc, pack (hi, h*hv, envi . halt v, hii) as o/halti, c2fenvi
+
+where o/halt = 9ff.hhint, ffi ! 0, ffi
+
+o/c2f = 9fi.hhhint, o/halti, fii ! 0, fii
+
+The closure conversion takes and expression of type ExpKB ts t toand expression of type ExpC
+
+(map cc ts) (cc t). Mostly continua-tions (
+o/ ! 0) are mapped to closure types: 9fi.hho/0, fii ! 0, fiiwhere the existential variable
+
+fi abstracts the type of the environ-ment, so that two functions that are of the same type before the
+
+conversion are mapped to closures of the same type, irrespective ofthe type of their free variables. The form
+
+pack constructs an exis-tential package of a specified type, and
+unpack opens up a package,bringing in scope a type variable that stands for the abstracted type.
+
+Currently, existential types are introduced only at the point ofdoing closure conversion, but we intend to add existential types to
+our source language in the future.
+Hoisting: ExpC ts t ! ExpH ts t
+After closure conversion, *-abstractions are closed and can bemoved to the top level. The previous example after hoisting will
+
+look as follows:
+
+let `0 = *hhx, ki, envi . let v0 = env.0 * x
+
+v1 = v0 + env.1
+(fi, hkf , kenvi) = unpack k
+in kf hv1, kenvi
+`1 = *hv, envi . halt v
+a = 1.8
+b = 32
+c = 24
+c2f = pack (hint, inti, h`0, ha, bii) as o/c2f
+(fi, hc2ff , c2fenvi) = unpack c2f
+in c2ff hhc, pack (hi, h`1, hii) as o/halti, c2fenvi
+
+where o/halt and o/c2f are the same as above. This phase re-arrangesthe bindings so that all functions appear at the top level, but does
+
+not otherwise affect the types.
+3. Encoding System F
+This section describes the strongly typed representation of the vari-ant of System
+
+F that constitutes our source language (*!, whosesyntax1 is shown in Fig. 1.) An important part of the encoding is the
+
+1 We abbreviate fix f x. e as *x . e when f does not appear free in e.
+
+(types) o/ ::= o/1 ! o/2 | 8ff. o/ | ff | ho/0, ..., o/n-1i | int
+(exps) e ::= fix f x. e | let x = e1 in e2|
+
+x | e1 e2 | \Lambda ff. e | e[o/] | he0, ..., en-1i | e.i|
+n | e1 p e2 | if0 e1 e2 e3
+(primops) p ::= + | - | *
+
+Figure 1. Syntax of *!
+*! type Haskell type
+o/1 ! o/2 t1 ! t28
+
+ff. o/ All t
+ff Var ih
+
+o/0, ..., o/n-1i (t0, (..., (tn-1, ())...))
+int Int
+
+Figure 2. Encoding of *! types
+
+choice of representation to use for each binding. In a language likeSystem
+
+F there are three distinct classes of binders to consider:
+
+1. at the term level, those that bind values (such as fix and let);
+2. at the term level, those that introduce free type variables (\Lambda );
+3. those that bind types at the type level (the 8 quantifiers).
+The two different kinds of type binders can be treated uniformly,but can also (to a certain extent) be handled separately, as is done
+
+in locally nameless representations.
+3.1 Types
+Of course, encoding System F in a GADT implies that introductionand elimination of type variables take place at Haskell's type level.
+
+While HOAS would be our preferred choice to represent type-level bindings, GHC does not provide
+
+*-expressions at the levelof types, which constrains our representation of System
+
+F types tobe first-order: bound type variables are represented with type-level
+
+de Bruijn indices. The encoding of types we use is summarized inFig. 2.
+
+To illustrate, the type of the usual flip function for pairs:8
+
+ff fi. hff, fii ! hfi, ffi
+is represented as the Haskell type:
+
+All (All ((Var (S Z), Var Z) ! (Var Z, Var (S Z))))
+As usual the typing rule for type application eliminates a uni-versal quantifier by applying a substitution:
+
+\Delta , ff; \Gamma  ` e : o/
+\Delta ; \Gamma  ` \Lambda ff. e : 8ff. o/
+
+\Delta ; \Gamma  ` e : 8ff. o/1 \Delta  ` o/2
+
+\Delta ; \Gamma  ` e[o/2] : o/1[o/2/ff]
+
+where \Delta  is a component of the type context that tracks the typevariables that are in scope. If we transpose
+
+*! types in de Bruijn,and thus eliminate all type variable names, the typing rules become:
+
+\Delta  + 1; shift \Gamma  ` e : o/
+
+\Delta ; \Gamma  ` \Lambda e : 8o/
+
+\Delta ; \Gamma  ` e : 8o/1 \Delta  ` o/2
+
+\Delta ; \Gamma  ` e[o/2] : o/1[o/2/0]
+
+Here, \Delta  only tracks the number of type variables in scope.When extending the context (to
+
+\Delta  + 1), the type of the term vari-ables (in
+\Gamma ) must be adjusted: all free variables must be incre-mented to account for the intervening binder, hence the
+
+shift op-erator.
+
+The form o/[o/0/i] yields the type o/ where the type variable i hasbeen replaced by the type
+
+o/0; it is defined in Fig. 3. It is a conven-tional substitution over de Bruijn terms (as in, e.g. Kamareddine
+
+(o/1 ! o/2)[o//i] = o/1[o//i] ! o/2[o//i]
+
+(8o/0)[o//i] = 8(o/0[o//i + 1])
+
+j[o//i] = 8<:
+
+j - 1 if j > i;
+Ui0(o/) if j = i;
+j if j < i.h
+o/0, ..., o/n-1i[o//i] = ho/0[o//i], ..., o/n-1[o//i]i
+
+int[o//i] = int
+
+Uik(o/1 ! o/2) = Uik(o/1) ! Uik(o/2)
+
+Uik(8o/) = 8(Uik+1(o/))
+
+Uik(j) = j j + i if j > k;j if j <= k.
+Uik(ho/0, ..., o/n-1i) = hUik(o/0), ..., Uik(o/n-1)i
+
+Uik(int) = int
+
+Figure 3. Substitution over *! types in de Bruijn
+
+(2001)). It employs an "update" function Uik(o/) whose effect is toadjust all indices greater than
+
+k (those are the free variables) by in-crementing them by
+i. The form shift \Gamma  denotes the context where
+U10 (-) has been applied to every type in \Gamma .
+
+3.2 Terms
+Whereas type-level binders are represented with de Bruijn indices,all term-level binders are represented at first with higher-order
+
+abstract syntax, whether they abstract values (fix or let) or types(
+
+\Lambda ).
+
+data Exp t whereFix
+
+:: (Exp (s ! t) ! Exp s ! Exp t) ! Exp (s ! t)App
+
+:: Exp (s ! t) ! Exp s ! Exp t
+
+TpAbs :: (8t. Exp (Subst s t Z)) ! Exp (All s)TpApp
+
+:: Exp (All s) ! Exp (Subst s t Z)
+
+A Haskell term of type Exp t encodes a *! term satisfying atyping judgement
+
+\Delta ; \Gamma  ` e : o/, where the context \Delta ; \Gamma  is trackedimplicitly by Haskell's type context.
+
+A type abstraction \Lambda o/ is represented as a polymorphic termthat, when instantiated at a given type
+
+o/2, assumes type o/1[o/2/0].It is higher-order in the sense that the object-level type variable
+
+is represented by a Haskell type variable (bound by an implicittype abstraction.) The substitution itself is an application of a type
+function Subst, defined in the next section.To illustrate, the
+
+flip function:
+
+flip = \Lambda ff. \Lambda fi. fix f (x : hff, fii). hx.1, x.0i
+is encoded as:
+
+flip :: All (All ((Var (S Z), Var Z) ! (Var Z, Var (S Z))))flip
+
+= TpAbs (TpAbs (Fix (*f x !Pair
+
+(Snd x)(Fst x))))
+
+3.3 Substitutions
+The substitution and update functions encode directly as Haskelltype families. As their definition involve arithmetic over indices,
+
+we also need to define type functions accordingly. The completelist of type functions, with their meaning, is as follows:
+
+type family Subst t1 t2 i -- o/1[o/2/i]type family
+
+U k i t -- Uik(o/)type family Pred
+
+i -- i - 1type family Add
+i j -- i + j
+
+type family CMP i j t1 t2 t3 -- 8<:
+
+o/1 if i < j;
+o/2 if i = j;
+o/3 if i > j.
+
+(types) o/ ::= 8~ff. o/ ! 0 | ff | ho/0, ..., o/n-1i | int
+(values) v ::= fix f[~ff] x. e | x | he0, ..., en-1i | n
+(exps) e ::= let x = v in e | let x = v1 p v2 in e|
+
+let x = v.i in e | v1[~o/] v2 | if0 v e1 e2|
+halt v
+
+Figure 4. Syntax of *K
+
+Object type Haskell type8
+
+~ff. o/ ! 0 Cont k t9
+ff.o/ Exists t (*C and *H only)
+ff Var ih
+
+o/0, ..., o/n-1i (t0, (. . . , (tn-1, ()) . . . ))
+int Int
+
+Figure 5. Encoding of the types of *K, *C and *H
+
+Henceforth, the definition of individual type families is straight-forward:
+
+type instance Subst All s t i = All (Subst s t (S i))type instance Subst
+
+(Var j) t i =CMP
+i j (Var (Pred j)) (U Z i t) (Var j)
+. . .
+
+type instance U k i (All t) = All (U (S k) i t)type instance
+
+U k i (Var j) = Var (CMP j k j j (Add j i))
+. . .
+
+4. CPS conversion
+This section presents the salient features of our CPS conversion overthe encoding of
+
+*! from the last section.In particular, the amount of type annotations in this implementation is notably low, especially in the simply-typed fragment. Itis essentially limited to annotating the type of the
+
+CPS conversionfunction, as the code itself requires no further annotation. Unfortunately, in its current state the treatment of polymorphism requiresthat we annotate the constructors of type abstraction and application with type representatives, in order to instantiate a lemma thatcaptures the effect of the translation on type substitutions.
+
+4.1 Target language
+The syntax of the CPS language (*K, shown in Fig. 4) is split intotwo categories of values and expressions. Accordingly we define
+
+two types:
+
+data ValK t = . . .
+data ExpK = . . .
+
+The type ValK t encodes well-typed values of type o/ (satisfy-ing a judgment
+
+\Delta ; \Gamma  `K v : o/), and ExpK encodes well-typedexpressions (satisfying a judgment
+
+\Delta ; \Gamma  `K e). The representationis developed in the same manner as in the previous section, using
+
+a first-order encoding for types and a higher-order one for all term-level binders. For reference, the encoding of types is summarized
+in Fig. 5 (the type encoding is essentially the same for *K and thesubsequent intermediate languages, with the exception of existential types, which are introduced by closure conversion.)Whereas on paper it is simpler to have a single
+
+fix operator thatabstracts type and term variables and provides recursion, it simplifies subsequent transformations somewhat to have a monomorphic
+fix operator and a separate type abstraction (which also abstracts aterm variable, but is not recursive):
+
+KtypeJo/1 ! o/2K = hKtypeJo/1K, KtypeJo/2K ! 0i ! 0K
+
+typeJ8ff. o/K = 8ff. ((KtypeJo/K) ! 0) ! 0K
+
+typeJffK = ffK
+typeJho/1, ..., o/niK = hKtypeJo/1K, ..., KtypeJo/nKiK
+
+typeJintK = int
+
+KprogJeK = KJeK (*x . halt x)
+
+KJxK ^ = ^ xKJ
+fix f x. eK ^ = ^ (fix f hx, ci. KJeK c)KJ
+
+e1 e2K ^ = KJe1K (*x1. KJe2K (*x2. x1 hx2, ^i))KJ
+\Lambda ff. eK ^ = ^ (*[ff] c. KJeK c)KJ
+
+e[o/]K ^ = KJeK (*x . x[KtypeJo/K] (*y . ^ y))
+
+. . .
+
+Figure 6. CPS conversion
+
+Kfix :: (ValK (Cont Z s) ! ValK s ! ExpK)! ValK
+
+(Cont Z s)
+
+KtpAbs :: (8t. ValK (Subst s t Z) ! ExpK)! ValK
+
+(Cont (S Z) s)
+
+where Cont k t is the Haskell type we use for 8~ff. o/ ! 0, theparameter
+
+k reflecting the number of abstracted type variables.
+
+4.2 Translation
+The CPS conversion of types (KtypeJ-K), programs (KprogJ-K), andopen terms (KJ-K -) is shown in Fig.6. The type family that
+
+encodes KtypeJ-K is defined as:
+
+type family Ktype ttype instance Ktype
+
+(s ! t) =Cont
+Z (Ktype s, Cont Z (Ktype t))type instance Ktype
+
+(Var i) = Var itype instance Ktype
+(All t) =Cont
+(S Z) (Cont Z (Ktype t))
+. . .
+
+Type preservation is reflected in the signature of the functionsthat implement K
+
+progJ-K and KJ-K -:
+
+cpsProg :: Exp t ! ExpK
+cps :: Exp t ! (ValK (Ktype t) ! ExpK) ! ExpK
+The type of cpsProg encodes the usual type preservation the-orem, stating that the conversion takes well-typed
+
+*! programs(i.e. closed expressions) to well-typed
+*K programs:
+
+THEOREM 4.1. (CPS type preservation) If *; * ` e : o/ then*
+
+; * `K KprogJeK.
+
+Similarly the type of cps embodies the theorem which states thatKJ-K - takes well-typed expressions to well-typed expressions,
+
+provided that the supplied continuation has the expected type:2
+
+LEMMA 4.1. (*! - *K type correspondence) If \Gamma  ` e : o/ and
+
+\Delta ; KtypeJ\Gamma K `K *x . ^ x : (KtypeJo/K ! 0) ! 0
+then
+
+\Delta ; KtypeJ\Gamma K `K KJeK ^.
+
+Note that, since we use HOAS and the context \Delta ; \Gamma  is implicitin our encoding, we get preservation of the type environment "for
+
+2 In this lemma the continuation ^ lies at the meta level and must be
+wrapped into an object-level function so it can be the subject of a typingjudgment.
+
+free". The situation will be opposite when we turn to closure con-version in Sec. 6.
+4.3 Polymorphism
+While the above stated theorems cover the theory of type preserva-tion for simple types, polymorphism introduces issues of its own.
+
+The technical difficulty is to convince the type checker that we ob-tain a well-typed term when converting type applications (and abstractions), as it involves reconstructing a term whose type is de-fined by a substitution. The argument relies on the fact that our
+notion of substitution commutes with the conversion of types:
+
+LEMMA 4.2. (KtypeJ-K-subst commute) For any *! types o/1, o/2and index
+
+i,K
+
+typeJo/1[o/2/i]K = (KtypeJo/1K)[KtypeJo/2K/i].
+This means that we actually need to make coercion like:
+
+ValK (Ktype (Subst s t Z))! ValK
+
+(Subst (Ktype s) (Ktype t) Z)
+
+Currently we do not have any way of doing such coercion purelyat the type level, and we need to implement the lemma as a termlevel functions that produces a witness that the coercion is valid(see (Guillemette and Monnier 2008) for alternative solutions to
+this problem). Its type is:
+
+substCpsCommute ::TypeRep
+
+s ! TypeRep t! Equiv
+(CPS (Subst s t Z)) (Subst (CPS s) (CPS t) Z)
+
+data Equiv s t whereEquiv
+
+:: s , t ) Equiv s t
+
+The type Equiv uses another feature introduced in GHC alongwith type families, namely type equality coercions (Sulzmann et al.
+
+2007). The context (s , t) means that the types s and t, althoughpossibly syntactically different, are equivalent after applying a process of normalization (which in particular eliminates applicationsof type functions.) The lemma itself (substCpsCommute) can be
+defined by case analysis over type representatives. Alternatively, itcan do a dynamic test: it can construct a representation of the two
+types to prove equal and perform a comparison over them to supplyevidence that they match.
+
+Of course, in order to be able to apply the lemma in its currentform, we need to annotate the syntax tree with type representatives.
+For instance, the data constructor for type application from Sec. 3.2actually needs to bear representatives of the universal type and the
+type argument:
+
+TpApp :: TypeRep s ! TypeRep t! Exp
+
+(All s) ! Exp (Subst s t Z)
+
+Then, cps can call the lemma to get the required type assump-tion as needed:
+
+cps (TpApp s t e) k =case substCpsCommute
+
+s t ofEquiv ! cps
+e (*x ! KtpApp (kType s) (kType t) x
+
+(lamK k))
+
+where kType reifies Ktype at the term level:
+
+kType :: TypeRep t ! TypeRep (Ktype t)
+Type abstraction. A consequence of the higher-order encodingof type abstraction is that the function K
+
+typeJ-K must be invertible.We need to convert the functional argument of TpAbs (say f) to that
+
+of KtpAbs (say f0). The function f0 receives a representative of atype in
+
+CPS form, and constructs a representative of the originating
+
+type in direct style so as to be able to apply f, and finally convertsthe resulting term back in
+
+CPS. To achieve this, we must define theinverse of K
+
+typeJ-K as a type family (and also reify this function atthe term level to construct the representative):
+
+type family UnKtype ttype instance UnKtype
+
+(Cont (S Z) (Cont Z t)) =All
+(UnKtype u)
+. . .
+
+unKtype :: TypeRep t ! TypeRep (UnKtype t)
+unKtype = . . .
+
+4.4 Implementation
+HOAS. We actually use a concrete representation of *! and *Kthat differs from what we have shown so far, in a way that rules out
+
+exotic terms, and also makes the traversal of the syntax easier. Weessentially use a type-annotated version of the
+
+HOAS encoding ofWashburn and Weirich (2003). The absence of interaction between
+
+this aspect and type preservation allowed us to defer its discussionto this point.
+
+To illustrate the difference, consider the constructor for let:
+
+data Exp t where
+
+Let :: Exp t1 ! (Exp t1 ! Exp t2) ! Exp t2
+
+In the concrete representation, it takes the form:
+
+data ExpF ff t where
+
+Let :: ff t1 ! (ff t1 ! ff t2) ! ff t2
+
+type Exp ff t = Rec ExpF ff t
+
+where Rec plays the role of a fixed-point type operator. A term ofsource type t is represented as a Haskell term of type 8
+
+ff. Exp ff t(where the parametricity in
+ff rules out exotic terms.) The type Expcomes equipped with an elimination form (the "catamorphism"),
+
+whose type is:
+
+cata :: ! (8t. ExpF (fi t) ! fi t)
+
+(8t. (8ff. Exp ff t) ! fi t)
+
+Intuitively, the type fi stands for "the result of the computation"over the source term (indexed by source type). Here, we obtain cps
+
+by applying cata with fi t instantiated at the type:
+
+type CPS ff t = (ValK ff (Ktype t) ! ExpK ff) ! ExpK ff
+The function passed to cata visits a single node in the syntax tree,and has type:
+
+cpsAux :: ExpF (CPS ff t) ! CPS ff t
+Danvy and Filinski's CPS transform. Our compiler actuallyimplements the one-pass
+
+CPS conversion of Danvy and Filin-ski (1992), where administrative redexes are reduced on-the-fly. As
+
+shown by Washburn and Weirich (2003), it can be conveniently im-plemented by adding an extra component to the result of cps, that
+expects an object-level continuation (cpsObj) instead of a meta-level one (cpsMeta):
+
+data CPS ff t whereCPS
+
+:: !
+
+!
+
+((V alKff (Ktype t) ! ExpK ff) ! ExpK ff)
+((V alKff (Ktype t ! Z)) ! ExpK ff)
+CP S ff t
+
+cpsMeta e = case e of CP S meta ! metacpsObj
+
+e = case e of CP S obj ! obj
+
+For example, the code that handles the conversion of fix is imple-mented as follows:
+
+(types) o/ ::= 8~ff. o/ ! 0 | 9ff. o/ | ff | ho/0, ..., o/n-1i | int
+(values) v ::= fix f[~ff] x. e | x | pack (o/1, v) as 9ff. o/2|
+
+v[o/] | he0, ..., en-1i | v.i | n
+(exps) e ::= let (ff, x) = unpack v in e | let x = v in e|
+
+let x = v1 p v2 in e | v1 v2 | if0 v e1 e2|
+halt v
+
+Figure 7. Syntax of *C
+
+cpsAux (Fix f) =value
+
+(FixK (*self x !KletFst
+
+x (*arg !KletSnd
+
+x (*k !cpsObj
+
+(f (value self) (value arg)) k))))
+
+where value is a function that CPS-converts a value:
+
+value :: ValK ff (Ktype t) ! CPS ff tvalue
+
+v = CP S (*k ! k v)
+
+(*c ! Kapp c v) - cpsMeta- cpsObj
+
+5. Conversion to de Bruijn indices
+Before closure conversion takes place, the *K program is convertedto a first-order representation. The types ValK
+
+t and ExpK aremapped to types:
+
+ValKb (i, ts) t
+ExpKb (i, ts)
+where i encodes \Delta  (i.e. it reflects the number of type variables inscope) and ts encodes
+
+\Gamma  (i.e. it lists the types of the term variablesin scope.) Also for instance the data constructors Kfix and KtpAbs
+
+from Sec. 4.1 are translated to these two:
+
+KBfix :: ExpKb (i, (s, (Cont Z s, ts)))! ValKb
+
+(i, ts)(Cont Z s)
+
+KBtpAbs :: ExpKb (S i, (s, Shift ts))! ValKb
+
+(i, ts) (Cont (S Z) s)
+
+The type of KBtpAbs makes explicit that the body of the typeabstraction has an extra type variable in scope (and that its term
+
+context is adjusted accordingly.) Note that term-level type variablesare not anymore encoded in
+
+HOAS.
+
+5.1 Translation
+The conversion to de Bruijn indices constructs a representationwhose type reflects the term's context (
+
+\Delta ; \Gamma ) and replaces all vari-ables occurrences with indices. The conversion passes around a
+
+representation of the context, which gets constructed as the con-version proceeds:
+
+toBv :: ValK t ! NatRep i ! EnvRep ts ! ValKb (i, ts) t
+toBe :: ExpK ! NatRep i ! EnvRep ts ! ExpKb (i, ts)
+When converting a variable occurrence, the term variable con-text where the variable occurs (
+
+\Gamma ) is compared to the context whereit was bound (
+\Gamma 0); the difference in length between these two in-dicates which index to substitute for the variable. As the type of a
+
+variable is not related to the type variable context (\Delta ), the intro-duction of polymorphism did not influence this phase significantly.
+The original implementation (restricted to the simply typed case) isdiscussed in more detail in (Guillemette and Monnier 2007).
+
+6. Closure conversion
+The target language of closure conversion (*C, shown in Fig. 7)forces
+
+fix values to be closed and introduces existential types; it also
+
+moves type applications to the syntactic class of values, and allowstuple projections to appear as values as well, which simplifies the
+conversion slightly.De Bruijn indices are used for all binders in this representation,
+defined by the two types:
+
+dataValC (i, ts) t
+data ExpC (i, ts)
+The fix operator of *C binds a number of type variables (inaddition to the function's argument and the binder for the recursive
+
+call.) The typing rule for fix forces the function to be closed, i.e.exempt of free term or type variables:
+
+ff1, ..., ffn; x : o/, f : 8ff1, ..., ffn. o/ ! 0 `C e
+\Delta ; \Gamma  `C fix f[ff1, ..., ffn] x. e : 8ff1, ..., ffn. o/ ! 0
+
+This time the actual representation includes a single constructorthat directly encodes the typing rule for
+
+fix:
+
+Cfix :: ! ExpC (k, (t, (Cont k t, ())))ValC
+
+(i, ts) (Cont k t)
+
+This type reflects the closedness conditions: the body's termvariable context finishes with
+
+(), meaning that it cannot have freeterm variables, and since
+t appears in a context where k variablesare in scope,
+t cannot involve type variables other than those boundby the
+fix.
+
+Existentials. The language introduces existential types, whichare used to abstract the type of the environment when forming
+
+closures.
+
+Cpack :: ! ValC (i, ts) (Subst s t Z)ValC
+
+(i, ts) (Exists s)
+
+Cunpack :: !
+
+!
+
+ValC (i, ts) (Exists s)ExpC
+
+(S i, (s, Shift ts))ExpC
+(i, ts)
+
+In much the same way that we did for universal types, the typeof these constructors encode the usual typing rules for existential
+
+types:
+
+\Delta ; \Gamma  `C v : o/2[o/1/ff]
+\Delta ; \Gamma  `C pack (o/1, v) as 9ff. o/2 : 9ff. o/2
+
+\Delta ; \Gamma  `C v : 9ff. o/ ff, \Delta ; x : o/, \Gamma  `C e
+
+\Delta ; \Gamma  `C let (ff, x) = unpack v in e
+
+6.1 Translation
+The closure conversion of types (CtypeJ-K), values (CvalJ-Km), andexpressions (C
+
+expJ-Km) is shown in Fig. 8.The type translation for continuations introduces an existential
+
+variable fi that abstracts the type of the closure environment andpairs up the function (which is made to receive the environment as
+an extra argument) with the environment.
+
+type family Ctype ttype instance Ctype
+
+(Cont i t) =Exists
+(Cont i (U (S Z) i (Ctype t), Var i), Var Z)
+
+Note that the update function must be applied in order to preventfree type variables from being captured by the existential quantifier.
+
+The translation of values and expressions receives an extra pa-rameter
+
+m, which maps every variable in scope to the expressionused to access it3. In general, this expression is either a local variable or a projection of the environment.
+3 This map is necessary as a consequence of using de Bruijn indices; a
+formulation with variable names can manage without it.
+
+CtypeJ8~ff. o/ ! 0K = 9fi. h8~ff. hCtypeJo/K, fii ! 0, fiiC
+
+typeJffK = ffC
+typeJho/0, ..., o/n-1iK = hCtypeJo/0K, ..., CtypeJo/n-1KiC
+
+typeJintK = int
+
+CvalJxKm = lookup m xC
+valJ(fix f[~ff] x. e)o/ Km = pack (o/env, hvcode[~fi], venvi)as C
+
+typeJo/Kwhere ~
+fi = ftvs (fix f[~ff] x. e)
+yo/00 , ..., yo/n-1n-1 = fvs (fix f[~ff] x. e)
+o/env = hCtypeJo/0K, ..., CtypeJo/n-1Ki
+
+vcode = fix f[~fi, ~ff] x.
+
+let x0 = x.0
+
+env = x.1
+f0 = pack (o/env, hf, envi) as CtypeJo/K
+in CexpJeK(x ) x0, f ) f0,
+
+y0 ) env.0, ...,
+yn-1 ) env.(n - 1))
+venv = hlookup m y0, ..., lookup m yn-1i
+
+CexpJv1[o/1, ..., o/n] v2Km = let (ff, x) = unpack CvalJv1Km
+
+xf = x.0
+xenv = x.1
+in xf [CtypeJo/1K, ..., CtypeJo/nK]hC
+
+valJv2Km, xenvi
+
+Figure 8. Closure conversion
+
+ccV :: ValKb (i, ts) t!
+
+(8ts0. MapT (Cenv ts) (ValC (i, ts0) )! ValC
+
+(i, ts0) (Ctype t))
+
+ccE :: ExpKb (i, ts)!
+
+(8ts0. MapT (Cenv ts) (ExpC (i, ts0)))! ExpC
+
+(i, ts0)
+
+Informally, these types mean that the conversion takes a *Kvalue (or expression) in context
+
+\Delta ; \Gamma , to a *C value of the convertedtype (or an expression) in any context
+
+\Delta ; \Gamma 0, provided that thesupplied map takes every term variable in
+
+\Gamma  to a value of theconverted type in
+\Delta ; \Gamma 0. Formally:
+
+LEMMA 6.1. (CC type correspondence) If \Delta ; \Gamma  `K v : o/ and8
+
+x 2 dom(\Gamma ). \Delta ; \Gamma 0 `C lookup m x : CtypeJ\Gamma  xK
+then
+
+\Delta ; \Gamma 0 `C CvalJvKm : CtypeJo/K.
+
+The details of how the map is represented and how it is con-structed when closures are formed (in the simply typed case) are
+
+spelled out in (Guillemette and Monnier 2007), and are not repeatedhere, as they are not much affected by polymorphism.
+
+6.2 Polymorphism
+Forming closures. By the definition of CvalJ-Km, the functionstored inside a closure is closed w.r.t type variables: it is made to
+
+take an extra set of type variables ~fi that are the original function'sfree type variables. When forming the closure, the closed function
+is passed the free type variables, so as to get a closure of the ex-pected type. The way this "forwarding" of type variables preserves
+types is captured by this simple lemma:
+
+LEMMA 6.2. (forwarding) If ~fi ` \Delta  and
+
+\Delta ; \Gamma  `C v : 8~fi, ~ff. o/ ! 0
+
+then
+
+\Delta ; \Gamma  `C v[~fi] : 8~ff. o/ ! 0.
+
+In our implementation, all type variables in scope are capturedwhen forming a closure, rather that just those that actually appear
+free in the function (that is, we take ~fi = \Delta .) It would requireadditional data structures and type families to perform free type
+variable analysis, and afterward selectively abstract and apply thosevariables (and it's far from obvious that it could be done in a
+convincing way.) In contrast, capturing all the type variables can
+be done directly. Then, their application (v[~fi]) is constructed by afunction that implements the forwarding lemma:
+
+tpAppMulti :: ValC (j, ts) (Cont (Add i k) t)! ValC
+
+(j, ts) (Cont k t)
+
+It is a simple recursive function that applies the topmost indexas many times as needed, using the obvious fact that
+
+o/[0/0] = o/.
+
+Type application. When translating the application of a polymor-phic function, it takes a few manipulations to show that the function
+is of a type compatible with its supplied argument. Expectedly, weneed again that substitution commute with the type translation:
+
+LEMMA 6.3. (CtypeJ-K-subst commute) For any *K types o/1, o/2and index
+
+i,
+
+CtypeJo/1[o/2/i]K = (CtypeJo/1K)[CtypeJo/2K/i].
+
+As the type translation explicitly shifts indices, we also needsimilar lemmas showing that C
+
+typeJ-K, Uik(-), and substitutioncommute pairwise.
+
+7. Hoisting
+The hoisting phase moves functions, which are closed as a resultof closure conversion, to a top-level
+
+letrec construct. It proceedsby collecting every function into a bundle (whose type reflects the
+
+type of every function in it) and then assembles the program. Asthe collect phase encounters an individual function, an index (to be
+bound by the letrec) is substituted in place of it, and the bundleof collected functions is extended with the new one (in which
+functions have already been collected and replaced with indices.)The indices that are previously assigned are "weakened" so as to
+make sense in the context of the extended bundle.The target language of hoisting has an separate context (
+
+\Gamma 0, thetype parameter fs) for the variables bound by the
+letrec, in additionto the usual one (
+\Delta ; \Gamma ):
+
+ValH (i, ts, fs) t
+ExpH (i, ts, fs)
+
+The introduction of polymorphism has the consequence that thetype of individual functions in the bundle reflect the number of universal quantifier in each function's type. Adding recursion actuallyhad a stronger impact: as a function may refer to itself, we have
+to arrange for such references to be turned into the correspondingindex bound by the
+
+letrec. For this purpose we use a map argument(analogous to the one used for closure conversion.) It maps each
+
+term variable in scope to a variable in the target program, which isbound by the
+
+letrec in the case of recursive occurrence and locallybound for other variables. The functions that collects
+
+fix expres-sions has type:
+
+collectV :: ValC (i, ts) t! MapT ts
+
+(ValH (i, ts, hs0))! 9hs
+. (ValH (i, ts, Cat hs0 hs) t,TupleH
+
+(Cat hs0 hs) hs)
+
+collectE :: ExpC (i, ts)! MapT ts
+
+(ValH (i, ts, hs0))! 9hs
+. (ExpH (i, ts, Cat hs0 hs),TupleH
+
+(Cat hs0 hs) hs)
+
+The type variable hs0 reflects the type of the bundle prior to thecall, and hs that of the segment of the bundle to be appended as
+
+a result of visiting the current term. Here, Cat is a type family tohandle concatenation of lists of types:
+
+type family Cat ts0 tstype instance Cat
+
+() ts0 = ts0type instance Cat
+(s, ts) ts0 = (s, Cat ts ts0)
+
+which must be accompanied with an associativity lemma.Compared to
+
+CPS or closure conversion, the hoisting phase is byfar the most conceptually simple, yet its implementation is the least
+
+succint of the three, due to its existentially quantified return type.
+
+8. Experience and Future work
+Identifying the right program representations is perhaps the mostdelicate part of this work. In this section we make some remarks
+
+concerning the choices we have made, and some alternatives thatwe did consider which turned out to be inadequate. Of course,
+identifying the right types to use is also of deep consequence, sowe comment on our use of
+
+GADTs and type families, as well asother features that we used or considered using in past versions of
+
+the compiler.
+8.1 Representing variables
+When working on System F we considered many options for rep-resenting variables, both at the level of types (8, 9, etc.) and terms
+
+(*, let, \Lambda , unpack, etc.)
+Type-level type variables. For type-level type variables, given thefact that we do not need to analyze those types, the best choice
+
+would assuredly by HOAS. But since GHC does not support type-level
+
+* expressions, this is not an option.From our experience, a de Bruijn encoding of types combined
+
+with type families for type-level operations (such as substitution)provides a fairly reasonable representation. It is also a fairly common choice in compilers using a typed intermediate language.Using names would not be a good solution because it would
+be at least as complex as de Bruijn, with the added problem that
+ff-equivalence is needed.
+
+Term variables. For term variables, we started using HOAS,which is rather uncommon and is poorly supported in most languages, but served us well for the CPS transform. It is arguablymore elegant than de Bruijn indices, and requires fewer type annotations as the typing environment is treated implicitly. When putin context though, it is hard to justify the choice of
+
+HOAS froman engineering standpoint, as it forces us to convert to and from
+
+first-order representations.For the closure conversion and hoisting, on the other hand,
+
+HOAS cannot be used because of its inability to express that a termis closed.
+
+The more common representation of term variables in compilersis as names, usually represented as small integers or as pointers, so
+that would be our favorite choice, but reifying small integers assingleton types to reason about them is rarely supported and GHC
+is no exception. Even using less efficient representations of names,
+
+which lend themselves to singleton types, still suffers from the extracomplexity of having to reason about freshness.
+
+So we ended up using de Bruijn indices. As demonstrated,they do work, but they require delicate index updates at various
+places and accompanying lemmas, for example when moving codeinto or out of a scope, which phases like closure conversion and
+hoisting do all the time. The complexity we have in our currentcode is bearable, but we had to fine-tune it to get there: e.g., some
+apparently minor changes to the definition of KBtpAbs or Cfix canlead to a very significant increase of complexity. Another problem
+with de Bruijn indices is that most people find them mind-bogglingto debug, although this is more true in untyped settings.
+
+The representation of term-level variables for a compiler likeours is still a problem in search of a satisfactory solution. The most
+promising development on the horizon is probably (Pientka 2008;Pientka and Dunfield 2008).
+
+Term-level type variables. If the term encoding is in HOAS, thenthe best option for type variables is to use
+
+HOAS as well, so that iswhat we have done. Using de Bruijn for type variables would not
+
+work: in de Bruijn the representation of a given (open) type dependson where that type appears in the term (i.e. how many
+
+\Lambda 's have beentraversed) - doing type instantiation by merely replicating the type
+
+using an application in the host language will not account for that.If the term encoding is first-order, then
+
+HOAS may be a verygood choice, (if the host language's monomorphism restriction
+
+does not get in the way), but in our case, for the same reason wecould not use
+
+HOAS for term variables, we could not use HOASfor term-level type variables during closure conversion: we need to
+
+express the fact that the functions we output are also closed withrespect to types.
+
+Compilers tend to avoid de Bruijn indices in favor of names forterm-level type variables, again in order to avoid the issues linked
+with shifting indices when moving code into or out of a scope. Butwe again decided to use de Bruijn indices for the same reason as
+for term variables: names are difficult to reify efficiently as typesin GHC, and reasoning about freshness would introduce a lot of
+complexity and force us to restructure the code significantly.In other words, essentially the same arguments that led us to
+choose de Bruijn indices for the term variables, led us to usede Bruijn for term-level type variables. And again, although we
+believe this choice to be the best there is, it is not satisfactory.
+8.2 Type families
+Before type families were made available in GHC, we used GADTsto encode witnesses of type preservation (Guillemette and Monnier
+
+2006, 2007). Essentially, every time a term was produced, it wasaccompanied by a witness that the term was of the expected type.
+The drawbacks of this scheme are run-time overhead, a substantialamount of code bloat (for manipulating the existential packages),
+and the fact that our "proofs" were encoded in an unsound logic.Type families essentially solved these problems. We further compare the schemes that use only GADTs or GADTs plus type familiesin (Guillemette and Monnier 2008).
+
+The representation of System F also benefited from type fam-ilies. In the past we actually worked on a representation which relied on GADTs to encode witnesses of type applications (essentiallyencoding the type families from Sec. 3 as
+
+GADTs). Type familiesobviously make this representation much more direct.
+
+8.3 Lemmas over type families
+As seen in Sec. 4.3, we need to prove properties of the type fam-ilies we define for the
+
+CPS and closure conversion of System Fto type-check. Our current implementation implements such lemmas as term-level functions that produce a proof witness that the
+
+lemma holds at particular types. This is unsatisfactory in a num-ber of ways: it incurs run-time overhead, it forces us to carry typerepresentatives as part of the syntax trees, and it encodes the lemmain an unsound logic (due to non-termination at the term level).
+
+An alternative approach is to annotate the syntax tree withequality constraints that state the lemma holds at the given types.
+
+TpApp :: CPS (Subst s t Z) , Subst (CPS s) (CPS t) Z )
+
+Exp (All s) ! Exp (Subst s t Z)
+
+This is a purely static solution - it does not suffer from the unsound-ness issue, and has no run-time overhead. The drawback is that, as
+
+such constraints annotate the syntax tree of the source language, itmust be constructed in the compiler front-end and propagated to the
+point where it is use, thereby limiting modularity in the compiler.To address this limitation, we are investigating a language extension to directly support lemmas over type families: to have thetype-checker verify that all known instances satisfy the lemmas declared by the programmer (Guillemette and Monnier 2008). Thisway we could get the type equality coercion we need without having to encode it explicitly in the syntax tree.
+8.4 Type Classes
+Having started this work from an existing untyped compiler usingalgebraic data types for its term representation, it was only natural
+
+to use GADTs. This said, there is no indication that the same couldnot be done with multi-parameter type classes, but
+
+GADTs areprobably a more natural representation for abstract syntax trees in
+
+a functional language.Early on, we tried to use type classes to encode type-level functions as well as various proof objects. This was meant to help usby letting the type checker infer more of the type annotations and
+hence leave us with a cleaner code more focused on the actual al-gorithm than on the type preservation proof. Sadly we bumped into
+serious difficulties due to the fact that the then current version ofGHC was not yet able to properly handle tight interactions been
+
+GADTs and type classes. More specifically the internal language ofGHC had limitations that prevented some "exotic" uses of functional dependencies. Those limitations can appear without GADTs,but in our use of
+
+GADTs, we bumped into them all the time. In themean time, type families appeared and provided an alternative way
+
+to let the type system and type inference do more of the work.The shift to
+
+FC (Sulzmann et al. 2007) as the internal languagein GHC potentially improves the interaction between
+
+GADTs andtype classes. Yet, as we discussed elsewhere (Guillemette and Monnier 2008), using type classes to prove type preservation necessi-tates extra annotations (in the form of class constraints) on the syntax tree, which must be propagated from phase to phase and wouldcompromise modularity.
+
+8.5 Future work
+Our compiler is still in development. It lacks register allocation,instruction selection, and optimization phases. Also the source language still needs to be expanded with recursive types and existen-tial types, as well as some encoding of algebraic data types. The
+intention being to accept as input a language comparable to GHC'sinternal System
+
+F -like language, so as to be able to bootstrap.Regarding the part of the compiler already implemented, we
+
+hope to find some clean way to move the unsound term-levelproofs (such as the implementation of our commutativity lemmas
+as functions) to the sound (and cheaper) type-level.In the longer run, we may want to investigate how to generate
+
+PCC-style proofs. Since the types are not really propagated anymore during compilation, constructing a
+
+PCC-style proof wouldprobably need to use a technique reminiscent of (Hamid et al.
+
+2002): build them separately by combining the source-level proof
+
+of type-correctness with the verified proof of type preservationsomehow extracted from the compiler's source code.
+9. Related work
+There has been a lot of work on typed intermediate languages,beginning with TIL (Tarditi et al. 1996) and FLINT (Shao and
+
+Appel 1995; Shao 1997), originally motivated by the optimizationsopportunities offered by the extra type information. The idea of
+Proof-Carrying Code (Necula 1997) made it desirable to propagatetype information even further than the early optimization stages, as
+is done in the setting of typed assembly language (Morrisett et al.1999).
+
+Shao et al. (2002) show a low-level typed intermediate languagefor use in the later stages of a compiler, and more importantly
+for us, they show how to write a CPS translation whose type-preservation property is statically and mechanically verified, like
+ours.Pa^sali'c (2004) constructed a statically verified type-safe interpreter with staging for a language with binding structures that in-clude pattern matching. The representation he uses is based on de
+Bruijn indices and relies on type equality proofs in Haskell.Chiyan Chen et al. (2003) also show a
+
+CPS transformation wherethe type preservation property is encoded in the meta language's
+
+type system. They use GADTs in similar ways, including to ex-plicitly manipulate proofs, but they have made other design tradeoffs: their term representation is first order using de Bruijn indices,and their implementation language is more experimental. In a similar vein, Linger and Sheard (2004) show a CPS transform overa
+
+GADT-based representation with de Bruijn indices; but in con-trast to Chen's work and ours, they avoid explicit manipulation of
+
+proof terms by expressing type preservation using type-level func-tions. We showed the
+
+CPS phase of our compiler in an earlier ar-ticle (Guillemette and Monnier 2006), where the distinguishing
+
+feature is the use of a term representation based on HOAS.Chlipala's compiler (2007) developed in the Coq proof assistant
+and ran as an extracted OCaml program, has a completely formal-ized correctness proof. Like ours, it compiles a higher-order, simply typed functional language (with similar code transformations)and uses de Bruijn representations throughout all phases. He uses a
+language whose type system is much more powerful than ours, butwhose computational language is more restrictive.
+
+Similarly, Leroy's compiler (Leroy 2006) for a first-order (C-like) language, written in the Coq proof assistant, has a completely
+formalized correctness proof.A detailed proof of type preservation for an earlier formulation
+of closure conversion over System F was formulated by Minamideet al. (1996). Defunctionalization over a superset of System
+
+F inshown to be type-preserving by Pottier and Gauthier (2004).
+
+Fegaras and Sheard (1996) showed how to handle higher-orderabstract syntax, and Washburn and Weirich (2003) showed how to
+use this technique in a language such as Haskell. We use this lattertechnique and extend it to
+
+GADTs and to monadic catamorphisms.
+
+References
+Sandrine Blazy, Zaynah Dargaye, and Xavier Leroy. Formal verification ofa c compiler front-end. In International Symposium on Formal Methods,
+
+volume 4085 of Lecture Notes in Computer Science, pages 460-475, aug2006.
+
+Chiyan Chen and Hongwei Xi. Implementing typeful program transforma-tions. In PEPM '03: Proceedings of the 2003 ACM SIGPLAN workshop
+
+on Partial evaluation and semantics-based program manipulation, pages20-28, New York, NY, USA, 2003. ACM Press. ISBN 1-58113-667-6.
+
+James Cheney and Ralf Hinze. First-class phantom types. Technical ReportCUCIS TR2003-1901, Cornell University, 2003.
+
+Adam Chlipala. A certified type-preserving compiler from lambda calcu-lus to assembly language. In Symposium on Programming Languages
+
+Design and Implementation, pages 54-65. ACM Press, June 2007.
+Adam Chlipala. Parametric higher-order abstract syntax for mechanizedsemantics. In International Conference on Functional Programming.
+
+ACM Press, September 2008.
+Olivier Danvy and Andrzej Filinski. Representing control, a study of theCPS transformation. Mathematical Structures in Computer Science, 2
+
+(4):361-391, 1992.
+Leonidas Fegaras and Tim Sheard. Revisiting catamorphisms overdatatypes with embedded functions (or, programs from outer space). In
+
+Conf. Record 23rd ACM SIGPLAN/SIGACT Symp. on Principles of Pro-gramming Languages, POPL'96, St. Petersburg Beach, FL, USA, 21-24
+Jan. 1996, pages 284-294. ACM Press, New York, 1996.
+Louis-Julien Guillemette and Stefan Monnier. Type-safe code transforma-tions in Haskell. In Programming Languages meets Program Verification, volume 174(7) of Electronic Notes in Theoretical Computer Sci-ence, pages 23-39, August 2006.
+
+Louis-Julien Guillemette and Stefan Monnier. A type-preserving closureconversion in Haskell. In Haskell Workshop. ACM Press, September
+
+2007.
+Louis-Julien Guillemette and Stefan Monnier. One vote for type families inHaskell! In The 9th symposium on Trends in Functional Programming,
+
+2008.
+Nadeem Abdul Hamid, Zhong Shao, Valery Trifonov, Stefan Monnier, andZhaozhong Ni. A syntactic approach to foundational proof-carrying
+
+code. In Annual Symposium on Logic in Computer Science, pages 89-100, Copenhagen, Denmark, July 2002.
+
+Fairouz Kamareddine. Reviewing the classical and the de bruijn notation for
+
+*-calculus and pure type systems. Journal of Logic and Computation,11, 2001.
+
+Xavier Leroy. Formal certification of a compiler back-end or: programminga compiler with a proof assistant. In Symposium on Principles of
+
+Programming Languages, pages 42-54, New York, NY, USA, January2006. ACM Press. ISBN 1-59593-027-2.
+
+Nathan Linger and Tim Sheard. Programming with static invariants inOmega. Unpublished, 2004.
+Yasuhiko Minamide, Greg Morrisett, and Robert Harper. Typed closureconversion. In POPL '96: Proceedings of the 23rd ACM SIGPLANSIGACT symposium on Principles of programming languages, pages271-283, New York, NY, USA, 1996. ACM. ISBN 0-89791-769-3.
+
+Greg Morrisett, David Walker, Karl Crary, and Neal Glew. From systemF to typed assembly language. ACM Transactions on Programming
+
+Languages and Systems, 21(3):527-568, 1999.
+George C. Necula. Proof-carrying code. In Conference Record ofPOPL '97: The 24th ACM SIGPLAN-SIGACT Symposium on Principles
+
+of Programming Languages, pages 106-119, Paris, France, jan 1997.
+Emir Pasalic. The Role of Type Equality in Meta-Programming. PhD thesis,Oregon Health and Sciences University, The OGI School of Science and
+
+Engineering, 2004.
+Simon Peyton-Jones et al. The Haskell Prime Report. Working Draft, 2007.
+Brigitte Pientka. A type-theoretic foundation for programming with higher-order abstract syntax and first-class substitutions. In Symposium on
+
+Principles of Programming Languages, pages 371-382, 2008.
+Brigitte Pientka and Joshua Dunfield. Programming with proofs and explicitcontexts. In Symposium on Principles and Practice of Declarative
+
+Programming, 2008.
+Franc,ois Pottier and Nadji Gauthier. Polymorphic typed defunctionaliza-tion. SIGPLAN Not., 39(1):89-98, 2004. ISSN 0362-1340.
+
+Tom Schrijvers, Martin Sulzmann, Simon Peyton Jones, and Manuel M. T.Chakravarty. Towards open type functions for Haskell. Presented at IFL
+
+2007, 2007.
+
+Zhong Shao. An overview of the FLINT/ML compiler. In InternationalWorkshop on Types in Compilation, June 1997.
+Zhong Shao and Andrew W. Appel. A type-based compiler for StandardML. In Symposium on Programming Languages Design and Implementation, pages 116-129, La Jolla, CA, June 1995. ACM Press.
+Zhong Shao, Bratin Saha, Valery Trifonov, and Nikolaos Papaspyrou. Atype system for certified binaries. In Symposium on Principles of Programming Languages, pages 217-232, January 2002.
+Tim Sheard and Simon Peyton Jones. Template meta-programming forHaskell. In Haskell '02: Proceedings of the 2002 ACM SIGPLAN
+
+workshop on Haskell, pages 1-16, New York, NY, USA, 2002. ACMPress. ISBN 1-58113-605-6.
+
+Martin Sulzmann, Manuel M. T. Chakravarty, Simon Peyton Jones, andKevin Donnelly. System F with type equality coercions. In Types in
+
+Language Design and Implementation, January 2007.
+
+David Tarditi, Greg Morrisett, Perry Cheng, Christopher Stone, RobertHarper, and Peter Lee. TIL: A type-directed optimizing compiler for
+
+ML. In Symposium on Programming Languages Design and Implemen-tation, pages 181-192, Philadelphia, PA, May 1996. ACM Press.
+
+Geoffrey Washburn and Stephanie Weirich. Boxes go bananas: Encodinghigher-order abstract syntax with parametric polymorphism. In Proceedings of the Eighth ACM SIGPLAN International Conference on Func-tional Programming, pages 249-262, Uppsala, Sweden, August 2003.
+ACM SIGPLAN.
+Hongwei Xi, Chiyan Chen, and Gang Chen. Guarded recursive datatypeconstructors. In Symposium on Principles of Programming Languages,
+
+pages 224-235, New Orleans, LA, January 2003.

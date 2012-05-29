@@ -1,0 +1,1814 @@
+
+
+First-Class State Change in Plaid
+Joshua Sunshine# Karl Naden# Sven Stork$# Jonathan Aldrich# 'Eric Tanter## *
+
+#Carnegie Mellon University $University of Coimbra##
+
+PLEIAD Lab / Computer Science Department (DCC) / University of Chile{
+sunshine, kbn, svens, jonathan.aldrich}@cs.cmu.edu etanter@dcc.uchile.cl
+
+Abstract
+Objects model the world, and state is fundamental to a faith-ful modeling. Engineers use state machines to understand and
+
+reason about state transitions, but programming languagesprovide little support for building software based on state abstractions. We propose Plaid, a language in which objects aremodeled not just in terms of classes, but in terms of changing
+abstract states. Each state may have its own representation,as well as methods that may transition the object into a new
+state. A formal model precisely defines the semantics of corePlaid constructs such as state transition and trait-like state
+composition. We evaluate Plaid through a series of examplestaken from the Plaid compiler and the standard libraries of
+Smalltalk and Java. These examples show how Plaid can moreclosely model state-based designs, enhancing understandability, enhancing dynamic error checking, and providing reusebenefits.
+
+Categories and Subject Descriptors D.2.10 [Software Engineering]: Design--Representation; D.3.2 [ProgrammingLanguages]: Language Classifications--Object-oriented languages; D.3.3 [Programming Languages]: Language Con-structs and Features--State
+
+General Terms Design, Documentation, Languages, Relia-bility
+Keywords typestate, state-chart, plaid
+1. Introduction
+Object-oriented programming provides a rich environmentfor modeling real-world and conceptual objects within the
+
+computer. Fields capture attributes of objects, methods cap-ture their behavior, and subtyping captures specialization
+
+* Partially funded by FONDECYT Project 1110051
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+OOPSLA'11, October 22-27, 2011, Portland, Oregon, USA.Copyright cfl 2011 ACM 978-1-4503-0940-0/11/10.. . $10.00
+
+relationships among objects. A key element missing fromobject-oriented programming languages, however, is abstract
+states and conceptual state change. State change is pervasivein the natural world; as a dramatic example, consider the state
+transition from egg, to caterpillar, to pupae, to butterfly. Mod-eling systems with abstract states and transitions between
+them is also common in many engineering disciplines.In computer science, state machines are important modeling concepts in the UML. Abstract states are also a critical,though often implicit, part of many library APIs--and any
+client using that API must be aware of those states to usethe API correctly. For example, a file may be in the open or
+closed state. In the open state, one may read or write to a file,or one may close it, which causes a state transition to the
+closed state. In the closed state, the only permitted operationis to (re-)open the file.
+
+Files provide a simple example of abstract states, but thereare many more. Streams may be open or closed, iterators may
+have elements available or not, collections may be emptyor not, and even lowly exceptions can have their cause set,
+or not1. State spaces may be complex: In ResultSet fromthe Java JDBC library, we found 33 unique states dealing
+with different combinations of openness, direction, randomaccess, insertions, etc [7]. States are also common: a recent
+
+study of protocols in Java suggests that almost three timesas many types define protocols as define type parameters [3].
+They also cause significant pain: for instance, in a study ofproblems developers experienced when using the ASP.NET
+
+framework, 3/4 of the issues identified involved temporalconstraints such as the state of the framework in various
+callback functions [16]. All this raises a natural question:why not support abstract states in programming languages?
+
+We previously proposed Typestate-Oriented Programmingas a new programming paradigm in which programs are made
+up of dynamically created objects, each object has a types-tate that is changeable, and each typestate has an interface,
+representation, and behavior [1]. The term typestate refersto a static abstract state checking methodology proposed by
+Strom and Yemini [25]; this paper focuses on a dynamically1 E.g. in Java, the cause of an exception can only be set once.
+
+typed setting, and so we will use the terms (abstract) stateand protocol in place of typestate to avoid confusion.
+
+A programming language with abstract states can havemany benefits. First, in the case of stateful abstractions, the
+code will more clearly reflect the intended design. This in turnwill make state constraints more salient to developers who
+need to be aware of them. If state constraints are implicitlyenforced by the object model, there is no need to code
+up explicit checks; thus code implementing states can bemore concise. Explicit state models raise the level of error
+messages; instead of (perhaps) silently corrupting a datastructure when an inappropriate method is called, the runtime
+can signal an error that that method is unavailable in thecurrent state. Finally, explicit modeling of states also exposes
+new concepts for widespread reuse; candidates may includeopen/closed resources or positioning (beginning, middle, end)
+of streams.
+Contribution. The contribution of this paper is the concretedesign and evaluation of Plaid, an object-oriented programming language that incorporates first-class state change aswell as trait-like state composition. Plaid has been implemented, and has proven effective for writing a diverse set ofsmall and medium-sized (up to 10kLOC) programs, including
+a self-hosted compiler. For the purposes of this paper, Plaidis dynamically typed, though there are plans to add a gradual
+type system following recent work on gradual typestates [29].The most interesting aspects of Plaid's design come from
+the intersection of state change with support for a trait-likemodel of composition [12]. Central goals of the language
+design include supporting the primary state modeling con-structs from statecharts [14], as well as flexible code reuse.
+Our design includes a hierarchical state space, so that the
+open state of a stream can be refined into within and eofsubstates indicating whether there is data left to be processed.
+
+Handling real designs in a modular way requires support formulti-dimensional state spaces, as in and-states from [14]; an
+example is a separate dimension of a stream's state indicatingwhether the stream has been
+
+marked with a location or not.Modularity further requires reasoning about dimensions separately; for example, the mark() method should affect the
+marked state dimension but it should not affect whether thestream is at
+
+eof. Dimensions also delineate natural points ofreuse; we would like to specify them separately and combine
+
+them using a trait-like composition operator.We position Plaid relative to earlier work in the next
+section. Plaid's design is described by example in section 3.This section validates our design, using a number of carefully
+chosen examples to concretely illustrate how Plaid providesthe potential benefits described above. We also discuss our
+prototype implementation of Plaid, targeting the JVM.In order to be precise about Plaid's semantics, Section
+4 provides a formal model that includes the semantics ofall of Plaid's major features. Section 5 describes how the
+
+surface Plaid language is elaborated into the core formal
+
+model. The paper concludes with a discussion of ongoingwork on Plaid, together with an argument that the concrete
+benefits validated by example lead to higher-level benefits insoftware development and evolution.
+
+2. Background and Related Work
+Plaid's state constructs are inspired and guided by statemodeling approaches such as Harel's statecharts [14]. Other
+
+modeling approaches include Pernici's Objects with RolesModel [20], which models objects using a set of roles, each
+of which can be in one of several abstract states.Strom and Yemini proposed typestate as a compilercheckable abstraction of the states of a data structure [25].The Fugue system was the first to integrate typestates with
+an object-oriented programming language [10]. Bierhoff etal. later observed that the complexity of protocols such as the
+one defined by the JDBC ResultSet interface requires richstate modeling constructs like those proposed by Harel [7].
+This paper considers a dynamically-typed setting, so we donot discuss static checkers further.
+
+State-dependent behavior can be encoded using the Statedesign pattern [13]. However, this pattern is less direct than
+the language support we propose, and it does not help withensuring that a client only uses operations that are available
+in the current state.Dynamic languages such as Self [28] provide the ability
+to add and remove methods, as supported by Plaid's statechange operator. Changing a delegation slot in Self can also
+be used to simulate state change, as can the become methodin Smalltalk [18]. We believe that Plaid's more structured
+and more declarative constructs for state modeling haveadvantages in terms of error checking, succinctness, and clear
+expression of design compared to these encodings. Plaid'sprototype-based object model is also inspired by Self's.
+
+Prior State-Based Languages. The Actor model [15] treatsstates in a first-class way, using the current state of an actor
+to define the response to messages in a concurrent setting.Taivalsaari extended class-based languages with explicit
+definitions of logical states (modes), each with its own set ofoperations and corresponding implementations [27]. Plaid's
+object model differs in providing explicit state transitions(rather than implicit ones determined by fields) and in allowing different fields in different states.The Ferret language [8] provides multiple classification,
+in which objects can be classified in one of several states ineach of multiple dimensions. Ferret attaches dimensions to
+classes, not other states, so dimensions cannot come and gowith state changes (unlike in Plaid and Statecharts).
+
+A number of CAD tools such as iLogic Rhapsody orIBM/Rational Rose Real-Time support a programming model
+based even more directly on Statecharts [14]; such modelsbenefit from many rich state modeling features but lack
+the dynamism of object-oriented systems. Recently Sterkin
+
+proposed embedding the principal features of Statecharts asa library within Groovy, providing a smoother integration
+with objects [23]. Our approach focuses on adding states toobject-oriented languages, rather than libraries.
+
+Other researchers have explored adding a class changeprimitive to statically-typed languages [4, 6, 11]. These
+systems, however, do not support the richness of state models(e.g. and-states) as provided in Statecharts and in Plaid.
+
+Schaerli et al. proposed traits [12] as a composition mecha-nism that avoids some of the semantic ambiguities of multiple
+inheritance. Schaerli's traits did not have fields, but Plaid fol-lows prior designs [5] to add them. Like some other recent
+work [9, 22], Plaid does not have the flattening property, inwhich the composition structure of traits is compiled away
+
+and does not affect the semantics of the resulting program. Welose the simplicity of flattening but gain the ability to model
+structured state spaces more directly, as described below.An initial sketch of the Plaid language design was presented earlier [1] as an instance of the Typestate-OrientedProgramming paradigm. While we recap the motivation and
+concept of the language from this earlier work, that paper de-scribed an unimplemented language, and neither defined the
+language semantics nor investigated the modeling of complexstate spaces, which are the key contributions of this paper. In
+an earlier 4-page workshop paper, we explored the need for amodular state change operator that affects only one dimension
+of state change at a time [2]; this paper gives the semanticsfor a concrete solution to that problem. Other recent work has
+begun to explore a gradual, permission-based type system forPlaid [29].
+
+3. Language
+In this section we will introduce Plaid by example. Theseexamples serve the dual purpose of explaining the language
+
+and validating the concrete benefits of Plaid.
+3.1 Basics of State Change
+Object protocols are rules dictating the ordering of methodcalls on objects. The concrete state of an object with a protocol can be abstracted into a finite number of abstract statesand the object transitions dynamically between these abstract
+states. Therefore, clients must be aware of the abstract statesin order to use the object correctly.
+
+Most programming languages provide no direct supportfor protocols. Instead, protocols are encoded in the language
+using some combination of the state design pattern [13],conditional tests on fields, and other indirect mechanisms.
+In Plaid, protocols are supported directly with states, whichare like classes in Java, with the crucial distinction that an
+object's state changes as the object evolves.Consider the state space of files, the canonical protocol
+example [1], shown in Figure 1. Some files are open andsome are closed. We close an open file by calling the
+
+closemethod and open a closed file by calling the
+open method.
+
+Closed
+File
+Openread() close()
+
+open()
+Figure 1. State space of File.
+
+1 state File {
+2 val filename;
+3 }
+4 state OpenFile case of File = {
+5 val filePtr;
+6 method read() { ... }
+7 method close() { this <- ClosedFile; }
+8 }
+9 state ClosedFile case of File {
+10 method open() { this <- OpenFile; }
+11 }
+
+Listing 1. File states in Plaid
+
+One cannot open an open file so the open file state doesnot include the
+
+close method. Similarly, one cannot read aclosed file so the closed file state does not include the
+
+readmethod.
+
+The state space of files can be encoded cleanly in Plaid asshown in Listing 1. The
+
+state keyword is used to define astate. The
+File state contains the fields and methods that arecommon between open and closed files. In this case, only the
+
+filename is shared. Fields are declared with the val keyword.
+
+OpenFile and ClosedFile define the methods and fieldsthat are specific to open and closed states. Both are substates
+
+of File. Specialization is declared with the case of keyword.In addition,
+
+case of implies orthogonality: files can eitherbe open or closed, not both. Methods are defined with the
+
+method keyword. Open files have a read method, a filepointer field which is presumably used by the
+
+read methodto read the file, and a
+close method. Closed files have the
+open method.The
+
+open and close method bodies contain the mostnovel bit of syntax. An object referred to by a variable
+
+xcan be changed to state
+S by writing x <- S. In the openmethod we transition the receiver, referred to as in Java by
+
+the keyword this, to the open state by writing this <-
+OpenFile.An example file client is shown in Listing 2. The
+
+readClosedFile method takes a file as an argument, opensit, reads from it, closes it, and returns the value read from
+the file. All of the method calls are valid if a closed file ispassed to the method. If an open file is passed instead the
+open method call will fail. The library writers do not need towrite any special error handling code to handle this condition
+
+1 method readClosedFile(f) {
+2 f.open();
+3 val x = f.read();
+4 f.close();
+5 x; //return
+6 }
+
+Listing 2. File client in Plaid
+
+Egg ChrysalisCaterpillar Imagocrawl() fly ()hatch() anchor() metamorphosize()Butterfly
+
+Figure 2. Buttefly life-cycle.
+like they would in Java. This has the concrete benefit thatPlaid code for the equivalent design is smaller.
+
+In most programming languages, fields of an object areoften null in certain abstract states. For example, Java files
+might contain a null filePtr when the file is closed. Nullpointers are a frequent cause of runtime errors and their cause
+can be difficult to diagnose. For these reasons, Tony Hoarerecently called null pointers a "billion dollar mistake," and
+we have not repeated this mistake in Plaid.Plaid objects are always consistent: in other languages a
+
+programmer might forget to check the state before performingan operation and perform the operation on an object in the
+wrong state. Similarly, the operation might fail, but with a lessspecific error message. For example, if a client calls the
+
+readmethod, implemented in Java without error handling, on a
+
+closed file, Java might throw a NullPointerException fora null dereference of
+
+filePtr.
+
+3.2 State Transtions
+The file state space is a complete directed graph, every pair ofstates is connected in both directions by an edge. Other kinds
+
+of objects have incomplete state spaces. Consider the life-cycle of a butterfly, which is illustrated by the state-space in
+Figure 2. A butterfly egg hatches to a caterpillar, but it cannot`un-hatch'. Similarly, a butterfly never transitions directly
+from a caterpillar to an imago, it always transforms to achrysalis first.
+
+To preserve the integrity of incomplete protocols, only themethod receiver (
+
+this), can be the target of a state change op-eration. If Plaid did not have this restriction it would be trivial
+
+for programmers to inadvertently violate a protocol. Con-sider:
+
+val x = new Egg; x<-Caterpillar; x<-Egg. This il-legal Plaid code violates the protocol by restoring a caterpillar
+
+to an egg. Instead, in legal Plaid code, methods defined in thebutterfly states perform all of the state transitions.
+
+3.3 Dimensions of State Change
+Many objects in the real world are not as simple as files orbutterflies. Some objects are composed of multiple states, particularly when objects are built up from reusable components.These components may change their state independently, or
+orthogonally. For example, cars have both gears and brakesand when the car shifts gears it has no effect on the brakes.
+States that change independently are in different dimensions.State dimensions in programming languages were introduced
+in [7].More concretely, let us say a stream is in state
+
+unmarkedin dimension
+markable, and state within in dimensionposition. If the object changes to state
+
+marked, also indimension
+markable, it will lose all of the fields and methodsdefined in
+unmarked (such as mark), gain those in marked(such as
+reset), and keep those in within (such as read).The full power of Plaid comes when component states are
+
+themselves composed of multiple states. In such a setting thecomponent states are gained and lost along with their parents.
+Many of this kind of deep hierarchies exist in the wild [3].For example, in the Java Database Connectivity library, the
+ResultSet interface is composed from a combination of 33states, four levels of nesting, and eight dimensions. A slightly
+simplified schematic of the state space is shown in Figure 3.The features of the language just described correspond
+directly to the `hierarchical-states', `and-states' and `or-states'proposed by Harel in his seminal state-chart paper [14].
+Hierarchical-states are states that are composed of otherstates. And-states are states that both must be present in an
+object--separate dimensions that are modeled using withcomposition in Plaid. Finally, or-states are states in the same
+dimension, and therefore only one can be present in anobject--a state that is a
+
+case of another state. These featuresare the fundamental building blocks of the Harel state chart
+
+formalism (which forms the basis for UML state diagrams),and are naturally encoded in Plaid exactly in the manner we
+just described.In the
+
+ResultSet diagram (Figure 3), or-states are sep-arated by white space. For example,
+
+Open and Closed arestates in one dimension,
+ForwardOnly and Scrollable arein another. Hierarchical-states are indicated by nesting of
+
+the state rectangles. For example, Scrolling is a child of
+Open and Begin of Scrolling. The names of states withchildren, like
+
+Open appear outside the state-rectangle, andthe names of simple states without children, like
+
+Inserted,appear inside the state-rectangle. Finally, and-states are separated into orthogonal regions by dotted lines, so Directionand
+
+Status are and-states.There is a natural one-to-one correspondence between
+
+the state rectangles in the diagram and the state declarationsin Plaid code. A subset of the declarations for
+
+ResultSetstates are shown in Listing 3. The or-states are all declared
+
+to be cases of their dimensions. For example, ForwardOnlyand
+
+Scrollable are cases of the Direction dimension.
+
+Insert Inserted
+
+Begin End
+
+Read NotYetRead
+
+ForwardOnly
+
+Scrollable
+
+Updatable
+ReadOnly
+
+Direction
+
+Status
+Inserting
+
+Valid
+Scrolling
+
+Action Open Closed
+
+ResultSet
+
+Figure 3. ResultSet state-chart.
+1 state Open case of ResultSet =
+2 Direction with Status with Action;
+3 state Direction;
+4 state ForwardOnly case of Direction;
+5 state Scrollable case of Direction;
+6 state Status;
+7 state ReadOnly case of Status;
+8 state Updatable case of Status;
+9 state Action;
+10 state Scrolling case of Action;
+11 state Inserting case of Action;
+12 state Insert case of Inserting;
+13 state Inserted case of Inserting;
+14 ...
+15
+16 val myResultSet = new Open @ ForwardOnly
+17 with Updatable with Insert;
+
+Listing 3. ResultSet state declarations and instantiation
+
+The dimensions are themselves states in which case their or-states will inherit all of the dimension's fields and members.
+
+Sometimes, however the state is a pure dimension and doesnot contain members. In this case the state only serves to
+ensure that or-states do not appear together.The and-states nested with
+
+Open, are declared using withtogether into the
+myResultSet state. Any object in the Openstate is also in the
+
+Direction, Status, and Action states.Often
+ResultSet objects will be instantiated with childrenof the three dimensions
+
+Direction, Status, and Action.
+
+For example, at the end of Figure 3, myResultSet is as-signed to an open object in the ForwardOnly, Updatable and
+Insert states. This object will contain the methods and fieldsfrom
+
+Insert, Inserting, Action, Updatable, Status,
+Forwardonly, Direction, Open and ResultSet. If wewere to change the state of
+
+myResultSet to Inserted bycalling a method that does so for us the object would have
+
+all of the same states, with the exception that Insert willbe replaced with
+
+Inserted. This is because Insert and
+Inserted are or-states from the same dimension. When weclose the object, we lose not only the
+
+Open state but all ofthe states nested inside it. We are left only with
+
+Closed and
+ResultSet.The
+
+@ operator is syntactic sugar that allows an initializerto conveniently choose nested sub-states. The
+
+myResultSetinitializer in Figure 3 is desugared to the following code:
+
+1 var myResultSet = new Open;
+2 myResultSet <- ForwardOnly with Updatable
+3 with Insert;
+
+First, an Open object is created. Then the object is changedto specializations of the three dimensions using the state
+
+change operator. Notice that the left side of the state-changeoperator is not
+
+this in the de-sugared code which violatesthe restriction discussed in Section 3.2. This is okay, because
+
+the restriction only applies to Plaid source which in this caseuses the
+
+@ operator.In this example the reader can see that the Plaid code
+
+closely reflects the design embodied in the state chart. Thestateful design is salient in the state declarations. Since
+
+the mapping between the code and the state chart is soclear, a programmer reading the state declarations can easily
+understand the relationship between the states. In fact, ourgroup has built a tool to automatically extract a state chart
+from Plural2, a typestate checker for annotated Java code,and although we have not built such a tool for Plaid, the
+language design clearly enables it. A second potential benefitis that code for each state can be given separately in the
+appropriate state declaration, potentially permitting morefine-grained reuse across multiple implementations of the
+ResultSet interface.
+3.4 State members
+As we mentioned in the introduction, Plaid combines statechange with support for a trait-like model of composition [12].
+
+We now illustrate a particularly novel feature of Plaid, namely,state members. States can have other states as members, and
+
+these state members can be customized upon composition.This allows for consistent state update, in presence of composite states.We illustrate state members and their benefits through a
+Plaid version of a ReadWriteStream adapted from [12], whichis in turn adapted from the Smalltalk standard library. The
+Plaid components mirror the trait components, except in ourversion the methods of a single trait are sometimes divided
+across multiple states.The
+
+Position state represents the position of the pointerinto a stream or collection. It has a very limited interface
+
+which therefore makes it easy to reuse throughout an input-output and collection library. The code for
+
+Position isshown in Listing 4.
+Position declares two abstract methodsfor setting the position, a reference to the underlying collection (vector), constant fields for minimum and maximumposition, and a variable field for the current position3.
+
+Interestingly, Position contains two state members, onefor the end-state and one for the not-end-state. The state
+members are initialized to NotEnd and End, also definedin Listing 4. These states are sub-states of
+
+Position, asspecified by the
+case of declarations. They implement theabstract methods of
+
+Position. In addition, NotEnd has anadditional method
+nextPosition, reflecting the fact thatin that state, the position can be advanced. This method
+
+increments the current position, tests if the current positionis at or past the maximum position, and transitions the
+receiver to the end state if the position is at the end. Similarly,
+setToStart in End transitions the receiver back to the not-end state.
+
+The crucial part in this example is that the state tran-sitions do not explicitly reference a specific target state,
+but rather reference the state members of Position. Forinstance,
+
+nextPosition in NotEnd transitions this to
+
+2 http://code.google.com/p/pluralism/
+3 Abstract methods are indicated by eliding the method body; constant fields
+are declared with val, and variable fields with var.
+
+1 state Position {
+2 state notEndState = NotEnd;
+3 state endState = End;
+4 method setToEnd();
+5 method setToStart();
+6 val vector, minPos, maxPos;
+7 var currPos;
+8 }
+9
+10 state NotEnd case of Position {
+11 method setToEnd() {
+12 this.currPos = this.maxPos;
+13 this <- this.endState;
+14 }
+15 method setToStart() {
+16 this.currPos = this.minPos;
+17 }
+18 method nextPosition() {
+19 this.currPos++;
+20 if (this.currPos >= this.maxPos) {
+21 this <- this.endState;
+22 }
+23 }
+24 }
+25
+26 state End case of Position {
+27 method setToEnd() { /* no op */}
+28 method setToStart() {
+29 this.currPos = this.minPos;
+30 this <- this.notEndState;
+31 }
+32 }
+
+Listing 4. Position code.
+
+1 state Reader { }
+2
+3 state Reading case of Reader {
+4 method read() {
+5 val ret = this.vector.get(this.currPos);
+6 this.nextPosition();
+7 }
+8 }
+9
+10 state ReadEnd case of Reader { }
+11
+12 state ReadStream = Position {
+13 val notEndState = Reading with NotEnd;
+14 val endState = ReadEnd with End;
+15 } with Reader;
+
+Listing 5. ReadStream code.
+
+this.endState, not End. This allows for consistent andflexible reuse, composition, and extension of states, as illustrated hereafter.
+
+1 state ReadWriteStream = Position {
+2 val notEndState =
+3 Writing with Reading with NotEnd;
+4 val endState =
+5 WriteEnd with ReadEnd with End;
+6 } with Reader with Writer;
+
+Listing 6. ReadWriteStream code.
+
+Consider the code for a ReadStream, as shown in List-ing 5. The
+
+ReadStream definition includes a pure dimen-sion,
+Reader. This dimension has two children Reading and
+ReadEnd, which correspond to the ReadStream in the not-end-state and the end-state, respectively. In the not-end-state,
+
+the ReadStream can read, and therefore Reading definesthe
+
+read method. This method reads from the underlyingcollection at the current position and advances the position.
+
+The ReadStream is composed from the two dimensions
+Position and Reader. ReadStream specializes NotEndby overriding the two state members in
+
+Position. The statemembers in
+ReadStream are composed from two states, onefrom each dimension of
+
+ReadStream. Therefore, when themethods in
+Position and its children change state, theywill change
+both dimensions of ReadStream. For example,when
+nextPosition advances the stream to the end, the
+ReadStream object composed of Reading with NotEnd willchange to a
+
+ReadEnd with End.Initializing a
+
+ReadStream requires two-phase initializa-tion like for
+ResultSet. In particular, the code to createa ReadStream
+
+x that is not at the end is val x = new
+ReadStream; x<-this.notEndState;. Here again, tran-sitioning
+
+x to the state member notEndState ensures thatthe consistent composition of actual states is used.
+
+Since the Reader dimension has the same structure as the
+Position dimension it is natural for transitions in Positionto change
+
+Reader as well. In this example, there is no codein the
+Reader states that enacts the state change. Instead,the
+Reader dimension relies on the Position dimension toperform state changes. The state members in this example
+
+allow for this kind of dimensional reuse without extensiveglue code4. The only code required to required to reuse
+the dimension is the specialization of state members in
+ReadStream.We now illustrate a further step of consistent composition
+
+of states with the definition of ReadWriteStream in List-ing 6. The definition uses a new dimension,
+
+Writer, withtwo substates
+Writing and WriteEnd, defined in the samemanner as the
+
+Reader states.This ReadWriteStream reuses code from all three dimensions with very little effort. The ReadWriteStream is the
+4 State members also have a more traditional purposes. State members, like
+
+all states, can be used to create objects. They allow us to encode ML-stylestructures and functors. These abstraction mechanisms can be very powerful,
+
+especially in a typed version of Plaid. However, these purposes are not novelto Plaid so we do not focus on these here.
+
+natural extension of ReadStream. The state members arecomposed from all three dimensions. The state transitions in
+a ReadWriteStream object will change all three dimensionat once.
+
+The ReadWriteStream example demonstrates both thepower of a trait-like composition model and its novel extension to states. We reuse ReadStream and WriteStreamwith little effort, as we could achieve in a language with traits.
+In addition, we have a new unit of reuse, the Position di-mension, which is shared with two other dimensions. This
+reuse eliminates duplicate code, and helps avoid bugs. Boththe
+
+Reader and Writer of a ReadWriteStream are in theend-state or not-end state. Because the dimension is reused
+
+we can guarantee that no programmer will err and end upwith an object in an inconsistent state like
+
+WriteEnd with
+Reading.One important note is that the
+
+Writer and Reader containno members in common, and therefore no conflict arises.
+
+Plaid requires explicit conflict resolution at the point ofcomposition. This conflict resolution will be described in
+Section 4.2.
+3.5 Validation
+The introduction claims four concrete benefits of Plaid: codeclosely reflects design, programs are concise, error checking
+
+is implicit, and new opportunities for reuse. These benefitswere illustrated in the examples in this section and they were
+discussed while describing the examples. We summarize thecase here for emphasis. We then reflect on our experience
+writing mid-sized programs in Plaid, in diverse domains.
+
+3.5.1 Concrete benefits
+Code reflects design. Designs with stateful abstractions areclearly reflected in Plaid code. This is clear in of all three
+examples in this section. The implementation of the file,result set, and read-write streams all match their designs.
+Arbitrarily complex state-charts can be encoded in Plaid withthe simple rules described alongside the result set example.
+
+Each abstract state maps to its own state in code, so the designof the abstraction and its protocol as a whole is highly
+
+salientin the code.
+
+Concise programs. Since state constraints are implicitlyenforced by the object model, none of our examples included
+any error checking code. The implementation are thereforesmaller.
+
+Error Prevention. Plaid's explicit state models make errorchecking more consistent, because the programmer cannot
+forget to check state constraints when a method is called. Thelevel of abstraction of error messages is also thereby raised:
+when an inappropriate method is called, instead of triggeringan internal run-time exception such as a null pointer, or (what
+
+is worse) silently corrupting data, the runtime can signal an
+
+Project Lines of Code # Files
+CodeGenerator 1205 24
+AeminiumCodeGen 2610 8
+Typechecker 4196 55
+ASTtranslator 9506 107
+PlaidApps 528 21
+Standard Library 372 18
+TestCompiler 2811 96
+TestTypechecker 363 9
+Total 21591 338
+
+Table 1. Plaid code written for eight projects.
+
+error that a particular method is unavailable in the currentstate. Also, we have shown how state members can be used to
+enforce consistency of multiple dimensions of state at once.
+Reuse. Plaid provides new reuse opportunities. Some statemachines are used in many objects. For instance, the
+
+Position dimension was reused in both read and writestreams, and it could also be reused in many IO and Collection libraries. Open and closed resources like the File andResultSet are also very common.
+
+3.5.2 Applicability to diverse domains
+In order to gain practical experience with the language and ex-periment with typestate-oriented programming beyond small
+
+examples, we have written several mid-sized programs inPlaid. These programs further demonstrate the expressiveness of Plaid in a diverse set of domains including compi-lation, input-output, GUIs, and web. They are all available
+for download from the Plaid repository5. In total, we havewritten 22KLOC across 338 files. A breakdown of our implementations is in Table 1. We call out items of particularinterest here.
+
+Compiler. Plaid is self-hosting; the CodeGenerator projectcompiles Plaid code into Java source. Plaid code can easily
+use Java libraries and many of our examples are implementedthat way. In a sister project [24], we have implemented a
+separate compiler for parallel-by-default code, which is theAeminiumCodeGen project. We are currently working on a
+Plaid typechecker; the implementation is the Typecheckerproject. All these projects are supported by AST transformations performed by the ASTtranslator project.
+GUI Library. GUI libraries often impose state constraintson their clients. We implemented Plaid wrappers for a few
+
+key Java Swing classes, including Window, Pane, and Canvasabstractions. We use states to enforce proper initialization of
+these abstractions. In particular, windows should have somecontents added, otherwise they are created with size zero.
+Furthermore, windows are Hidden until show() is called,then they become
+
+Visible. Panes should also have contents
+
+5 http://code.google.com/p/plaid-lang/
+
+Obj Val ov ::= mv fifi dv fifi mv 7 ov fifi dv 7 ov
+Dim Val dv ::= tag{ov} fifi tag{ov} <: dv
+
+Mbr Val mv ::= method m(x){e} fifi
+
+val n = v
+ObjExp oe ::= me 7 oe fifi de 7 oe fifi e 7 oe fifi
+
+me fifi de fifi e
+Dim Exp de ::= dv fifi tag{oe} fifi tag{oe} <: de fifi
+
+e fifi e{to}
+Mbr Exp me ::= mv fifi val f B x = e fifi
+
+recstate{val s B x = proto sd}
+State Decl sd ::= freshtag{oe} <: de fifi
+
+freshtag{oe} fifi oe
+Trait Op to ::= \n fifi n ! n0 fifi me fifi (tagOf e).me
+
+Val v ::= ` fifi ov fifi proto oe fifi fn(x) ) e
+Exp e ::= x fifi v fifi let x = e in e fifi
+
+e(e) fifi e.m(e) fifi e.n fifi
+e  e fifi e j e fifi new e fifi
+match(e){c} fifi
+freeze e fifi recstate{mv}#l
+Case c ::= case(tagOf e) {e} fifi default {e}
+
+Figure 4. Internal Syntax
+added. Both panes and canvases must be assigned a parentwindow, and canvases should be given a preferred size. Our
+library is not comprehensive, but it is sufficient to builddemonstration applications--in our case, a Turing machine
+that uses Plaid's states to represent the finite state control, themarks on the tape, and the illusion of an infinite tape. Both
+the windowing library and Turing demonstration applicationare in the PlaidApps project.
+
+Miscellaneous The Plaidapps project includes the examplesdiscussed earlier and a small web server and workflow engine.
+The Plaid standard library includes integers, rationals, strings,options, and standard control (e.g.
+
+if) and looping (e.g. for,
+while) structures. Finally, two testing projects include anumber of smaller tests and examples.
+
+4. Semantics
+In this section we present the formal definition of the Plaidlanguage and give it a precise semantics. At its core, Plaid
+
+is an object system with first-class generators and functions.Individual generators can be combined and specialized using
+composition and operators inspired by traits [12], instantiatedto create objects, or used to specify the abstract state the
+object should change to. We start by describing the syntaxand object model of a core language, which is intended to be
+simpler than Plaid source code yet be capable of representingall of the major semantic elements of Plaid. Then we discuss
+the execution semantics of the core language.
+
+4.1 Core Syntax
+The syntax of the internal representation of Plaid is given inFigure 4. In these definitions,
+
+x ranges over bound variables,while members of objects are represented by
+
+f, m, and s,which respectively range over fields, methods, and state
+
+members. We use n to represent any kind of object memberswhen we do not distinguish between them. Abstract states are
+represented using tags which are generated as needed. Wewill introduce each syntactic category in turn, describing its
+purpose and motivations.
+4.1.1 Expression Syntax
+Plaid contains the standard expressions found in object sys-tems, including object creation through
+
+new, field selection,and method calls. Because Plaid also has first-class functions,
+
+we include standard function definition and application aswell. For sequential expressions, we include
+
+let bindings andbound variable references.
+
+The rest of the expression forms are related to Plaid'sencoding of abstract states and the transitions between them:
+
+Changing state. The Plaid core has two state change oper-ators.  represents a state update and only removes portions
+of the receiving object that are mutually exclusive with theincoming states. For completeness and flexibility, Plaid also
+includes a state replacement operator, j, which wipes the re-ceiving object clean before adding the incoming states, much
+like an in-place new operation. One could imagine using thisoperator in a situation where an object needed to be in a
+particular state and no other states. This cannot be guaran-teed by the state update operator because state update leaves
+dimensions unrelated to the updating state alone.Unlike the source language, Plaid's core does not require
+the target of a state change operator to be this. This makesthe core simpler and more flexible since the restriction can
+be enforced at the source level.
+proto values. First class instance generators are providedby
+
+proto expressions. These are values which can be storedin fields and passed as parameters. During a well-formed
+
+execution, the target of new expressions and the right-handside of state change expressions will evaluate to a
+
+protovalue. This is because they encapsulate object expressions,
+
+oe, which are uninitialized objects. The state change and
+new expressions cause the initialization steps specified bythe object expression wrapped in the
+
+proto to be evaluatedfor use in creating a new object or changing the state of an
+
+existing one.
+State expressions. To allow states to be chosen dynamicallyat runtime, we include several expression forms that can
+
+evaluate to a proto. As they are values, standard deference orbound variables could result in
+
+proto expressions. Becausemost states included in protocols must be defined with
+
+(mutual) recursion, proto values represented source-declared
+
+states are wrapped into a recstate. A particular proto can beselected from the
+
+recstate as from a standard record.The
+freeze expression is a more novel way to get a proto.It takes the object and wraps it up in a
+
+proto allowing newinstances to be generated from it. As an example of the
+
+use of freeze, consider the myResultSet value defined inListing 3. Say we wanted to do some extra initialization of
+the ResultSet before using it and that over the course of aprogram we would create the same
+
+ResultSet over and over.To avoid needing to do the same initialization repeatedly, one
+
+could freeze the object the fully initialized object and theninstantiated it each time a new
+
+ResultSet of this form wasneeded.
+freeze has already been used in the Plaid compiler tomore cleanly support certain initialization paradigms, such
+
+as the transformation to let-normal form, where strings of letbindings must be concatenated together.
+
+Matching tags. Finally, the match construct allows patternmatching based on tags. Each
+
+case tests the target objectagainst the
+tagOf another expression. This expression isexpected to evaluate to a
+
+proto value with a single outer tagwhich is grabbed by
+tagOf and compared with the tags of thetarget object. If the object contains the tag, the corresponding
+
+case is executed. Cases are evaluated in order.An example of the use of
+
+match comes from the Plaidstandard library. Plaid's syntax does not include control
+
+structures. Instead, if and while are encoded as functionsthat make use of
+
+match. The states True and False areeach defined as a
+case of Boolean. Thus, the if functiondetermines whether or not to evaluate the body based on
+
+whether the object returned by the condition matches the
+
+True tag.
+
+4.1.2 Object Value Syntax
+Plaid objects are collections of tags representing the statesthat the object is in along with fields and methods that provide
+
+the representation and operations of those states. In orderto implement the desired semantics these object must be
+organized to formally encode the relationships between tagsand members that the semantics depend on. In particular, we
+need to represent the following relationships between theabstract states that the tags represent:
+
+1. Superstates: An object in state, S, which is defined tobe a case of a superstate,
+
+T , must also be in state T . Forinstance, an object in the
+NotEnd state defined in figure 4is also in the
+Position state.
+
+2. Or-states: Distinct cases of a given state, such as the
+
+OpenFile and ClosedFile case of File, cannot existstogether in an object.
+
+3. And-states: Both objects and states can be defined as acomposite of other states. For example, the
+
+Open statefrom Listing 3 is defined in terms of states
+Direction,
+Status, and Action. Objects in the composite state areconsidered to be in each of the component states as well.
+
+4. Defining states: Members must be associated with thestate that declares them so that they can be removed from
+
+an object when their defining state is removed.
+To formalize these relationships, objects values are organizedas hierarchical collections of
+
+dimensions, which contain tagsfor the state and all of its transitive super states, and members.
+
+Object values. The basic component of an object is anobject value,
+
+ov, which is a list of dimension values, dv,and member values,
+
+mv. They are used to represent bothtop-level objects and the dimensions and members that define
+
+a given state (see dimension values below). The 7 operatorthat separates each element of the list represents composition.
+Object values encode and-states by allowing two dimensionsto coexist together inside the definition of a state. For instance,
+the object value that defines a ReadStream would have twocomposed dimensions, one for the
+
+Position dimension, andthe other for the
+Reader dimension.
+
+Dimension values. Dimension values, tag{ov}[<: dv],encode the structure of a state and its super states. They are
+
+represented by a tag, tag, which is a unique name for the mostspecialized state from the dimension. Associated with the tag
+is an object value which represents the collection of membersthat the state defines along with any other dimensions that
+make up the and-states of the state. A dimension value mayoptionally contain another dimension value encoding the
+superstate relationship.By containing the representation of a given states superstates, dimension values give us a way to encode the or-staterelationship as well. Two states that are the case of the same
+superstate would be encoded as separate dimensions with thesame state at the root of the dimension. Because the tags in
+the dimensions partially overlap, by restricting tags to ap-pear only once in a given object value, we can ensure that no
+or-states can coexist in a single object.Concretely, we would represent an instantiated
+
+Open statefrom Listing 3 as
+
+Open{Direction 7 Status 7 Action} <: ResultSet.
+Here the most specific state of the represented dimensionvalue is
+
+Open. This state is defined based on the three states
+Direction, Status, and Action (defining object valuesnot shown), and specializes the
+
+ResultSet state, which itwas defined as a
+case of.A dimension is also Plaid's version of a trait. Multiple
+
+inheritance is achieved by allowing multiple dimensions tobe composed in an object value as well as in the object values associated with the tags of a dimension. The hierarchicalnature of Plaid's dimension prevent us from using all of the
+trait mechanisms for solving the problems of multiple in-heritance. In particular, a multiple inheritance system must
+deal with the case when one class inherits from two classesthat share a (transitive) parent. This situation is challenging
+because it is non-obvious how to inherit members from the
+
+common grandparent. This problem is commonly referred toas the diamond problem [19], because of the shape of the
+inheritance hierarchy diagram. The original traits proposal[12] flattens 6 composed traits and forces any conflicts between method names to be explicitly resolved (field werenot allowed in traits). However, as Plaid's semantics depend
+on members being related to the tag they are defined in, wecannot use flattening. Instead, Plaid prevents the diamond
+problem by preventing or-states from coexisting, thereby pre-venting the same tag and member definition from appearing
+more than once (following Malayeri's no-diamonds rule [19]).Plaid's solution follows recent extensions of traits including
+[5, 9, 22]. Like Plaid, these system support traits with fieldsand work in a variety of object models including those that,
+like Plaid, add hierarchy and do not enforce the flatteningproperty. As with the original trait proposal, all name conflicts across dimensions must be explicitly resolved in Plaidvia the trait operators described below.
+
+Member values. A member value is either a method, witha set of arguments and a body, or a field,
+
+val f , bound toa value,
+v. The member is said to be defined in the staterepresented by its immediately enclosing tag. As a concrete
+
+example, an object in the ClosedFile state described in List-ing 1 would be represented formally as
+
+ClosedFile{method close(){e}}
+
+<: File{val filename = v}
+
+This indicates that the object is in both the ClosedFile andthe
+
+File states, one of which is a substate of the other, andeach of which defines a single member.
+
+4.1.3 Uninitialized Object Syntax
+Plaid has corresponding syntax for uninitialized objects or-ganized into object expressions, dimension expressions, and
+
+member expressions. When compared to their value counter-parts, they share the same structure but contain expressions
+which are not yet values. In this section, we discuss the placeswhere execution can occur in these forms and the motivation
+
+behind them.
+Object expressions. Object expressions, oe, are made up ofthe composition of dimension expressions, member expressions, as well as raw expressions. The purpose of unevaluatedexpressions in dimension and member expressions will be
+explained below. Raw expressions as components of objectexpressions allow part of an uninitialized object to be determined at the time of initialization. These expressions evaluateto
+
+proto values which are then incorporated into the initial-izing object. This provides for Plaid's implementation of
+
+dynamic trait composition by allowing portions of the objectto be selected at runtime.
+
+6 The flattening property from [12] states that members of an are treated
+equally regardless of what trait they were defined in.
+
+Dimension Expressions Dimension expression can containunexecuted expressions in the object expression associated
+with the most specific tag as well as in tags up the hierarchyif they exist. Dimension expressions may also have associated trait operations, to, which need to be evaluated. Traitoperations allow standard manipulations such as renaming,
+n ! n0, and removal, \n. Note that these operate on the
+whole dimension, renaming or removing all members of thespecified name defined directly in tags in the hierarchy (not
+
+including nested dimensions). This allows the changes to bepreserved by state change in the dimension as we will see
+below.Members can also be added or replaced7. By default, they
+are (re)placed in the most specific tag of the dimension expres-sion. However, In cases where members need to be added or
+replaced in a particular tag, they can be qualified by a particu-lar tag, specified as with tags in case statements by
+
+tagOf an-other expression. The redefinition of
+Position.EndStatefor the
+ReadStream in Listing 5 is an example of using qual-ified trait operations. This mechanism is important in Plaid
+
+because of the hierarchical nature of Plaid's object model andwhen and how member definitions are removed during state
+change.
+Member expressions. Only fields can be member expres-sions,
+
+me, as methods do not have any initialization code. Onthe other hand, fields can be defined with initialization expressions that require evaluation as a part of object creation orupdate. In order to allow fields to refer to the initialized value
+of previous fields in the same state, field expressions definean internal bound variable in addition to their external name
+(this is a standard approach from [21], chapter 8). Fields arealso generated by state declarations. Since the definitions of
+
+related states, such as the OpenFile and ClosedFile fromListing 1, are typically recursive, the initialization of state
+members occurs in a recstate binding.State members are also special in that when an uninitialized object containing state members is initialized, new tagsmay need to be generated. The
+
+proto expression encapsu-lates uninitialized objects as discussed above. Normally they
+
+contain object expressions, but when appearing in a recstate,they contain state declarations,
+
+sd which may contain the
+freshtag operations that generates a new tag when executed,resulting in an object expression. This feature means that
+
+new tags are generated for states defined inside states eachtime the outer state is instantiated. Because these tags can
+then be used to pattern match on objects, this allows Plaidto implement ML-style generative functors8. Functors have
+
+7 The semantics defined here do not allow fields and states in trait operations
+
+to refer to other trait operation members. The formalism could be extendedto support this, mirroring the case for declarations in states
+
+8 Generative functors, in contrast to applicative functors, generate new
+abstract types for each application of the functor. This impacts patternmatching when using these generated types in a similar way as pattern
+
+matching on freshly generated tags in Plaid.
+
+Heap H ::= [`  ov], H fifi *
+
+Eval E ::= [ ] fifi let x = E in e fifi E(e) fifi v(v, E, e) fifi
+
+E.m(e) fifi v.m(v, E, e) fifi E.f fifi E  e fifi
+v  E fifi v  proto E fifi E j e fifi
+v j E fifi v j proto E fifi new E fifi
+new proto E fifi match(E){c} fifi
+match(v){case(tagOf E) {e}, c} fifi
+freeze E fifi ov 7 E fifi O 7 oe fifi O
+Obj O ::= val n B x = E fifi tag{oe} <: E fifi
+
+tag{E} fifi tag{E} <: dv fifi E{to} fifi
+dv{to, val n = E, to} fifi
+dv{to, (tagOf e).(val n = E), to} fifi
+dv{to, (tagOf E).mv, to}
+
+Figure 5. Contexts
+well recognized modularity benefits that we do not discusshere.
+
+4.2 Dynamic Semantics
+We now introduce the dynamic semantics of Plaid. We for-malize the execution using a small step operational semantics.
+
+The basic evaluation judgment has the form e@H 7! e0@H0and is read "expression
+
+e with heap H evaluates to ex-pression
+e0 in heap H0". We define a similar judgment
+oe@H 7! oe0@H0 for the evaluation of object expressions.In this section, we will define the form of the heap and the
+
+invariants that we maintain on it. We will also discuss thePlaid-specific evaluation rules, in particular those that use
+ancillary judgments for implementing state change. As statechange is at the core of Plaid's design and is the most complicated we go into depth about the motivation and designof the rules that implement it. Finally, we describe object
+initialization and trait operations that may be involved.
+4.2.1 Heap
+A heap, H, is a mapping from locations, `, to object values.We place additional well-formedness requirements on all
+
+object values stored in the heap. These restrictions preventambiguities from multiple inheritance.
+
+Tag uniqueness. We require that all well-formed objectvalues have no duplicate tags. As alluded to above, this
+property ensures that an object is not in two cases of a singleor-state at the same time. This is because the tags representing
+two mutually exclusive or-states must come from the samedimension and thus must have at the least the root tag of the
+dimension in common. It also prevents the diamond problemof multiple inheritance by ensuring that a particular member
+definition does not appear multiple times in a single object.This invariant is encoded in the helper judgment
+
+uniqueTagsalso defined in Figure 10.
+
+Member uniqueness. Even though a given definition fora member cannot appear more than once, it is still possible
+
+e@H 7! e@H
+
+let x = v in e@H 7! e[v/x]@H E-LET |{
+
+x}| = |{v}|
+(fn (x) ) e)(v)@H 7! e[v/x]@H E-A
+
+PP
+
+H[`] = ov
+lookup(m, ov) = (method m(x){e})|{
+
+x}| = |{v}|
+
+`.m(v)@H 7! e[`/this][v/x]@H E-C
+
+ALL
+
+H[`] = ov
+lookup(f, ov) = (val f = v)
+
+`.f @H 7! v@H E-FIELD
+
+H[`] = ov1 uniqueTags(ov2)
+ov1  ov2 ) ov3 uniqueMembers(ov3)
+
+`  proto(ov2)@H 7! void@H[`  ov3] E-SU
+
+uniqueTags(ov) uniqueMembers(ov)
+
+` j proto(ov)@H 7! void@H[`  ov] E-REPLACE
+
+` /2 H uniqueTags(ov)
+
+uniqueMembers(ov)
+
+new (proto ov)@H 7! `@H[`  ov] E-NEW
+
+de = tag{oe}[<: de0] tag /2 tags(H[`])
+match(`){case (tagOf proto de){e}, C}@H 7! match(`){C}@H E-CASENOMATCH
+
+de = tag{oe}[<: de0] tag 2 tags(H[`])
+match(`){case (tagOf proto de){e}, C}@H 7! e@H E-CASEMATCH
+
+match(`){default{e}, C}@H 7! e@H E-CASEDEFAULT
+
+H[`] = ov
+freeze `@H 7! proto ov@H E-FREEZE
+
+l = ls oe = oels[recstate{val si = proto oei}#li/si]
+
+recstate{val si = proto oei}#l@H 7! proto oe@H E-R
+
+ECSTATESELECT
+
+Figure 6. Expression Evaluation
+that multiple tags define members with the same name. Toprevent ambiguities in this case we require that all members
+of an object are provided by exactly one dimension. Becausethe hierarchy of dimensions gives us a natural way to choose
+the visible definition (the one from the most specific tag inthe dimension) we allow a single name to be defined directly
+in multiple tags from a single dimension. Formally, two tagsare in the same dimension is one is a transitive case of the
+other. This relaxation of classical traits allows, for instance, acommon super state to define a default behavior for a
+
+methodwhich can be overridden by (some of) its substates. The
+
+judgment uniqueMembers defined in Figure 10 captures thisrequirement. It uses the judgments
+
+mv :: tag.x@ov, whichstates that member value
+mv from tag tag defines name xin object value
+ov, and tag << tag0@ov which asserts theproperty that tag
+
+tag is a transitive subtag of tag0 in objectvalue
+ov. Based on these helper judgments, an object valuehas unique members if whenever we find the same member
+
+defined in two tags, then one of these tags is a transitive subtag
+
+of the other. We prove that evaluation preserves member andtag uniqueness in the companion technical report [26].
+Member lookup. As an object can contain multiple mem-bers with the same name, we need an unambiguous way to
+choose which one is visible. The lookup function also inFigure 10 defines this logic. When multiple definitions are
+found, we know by uniqueMembers that they all come fromthe same dimension. Since the tags of a dimension form a
+total order, we know that one of tags defining the member willbe a transitive subtag of all other tags defining the member.
+The definition from this most specific tag is the one returnedby
+
+lookup.
+
+4.2.2 Expressions
+The evaluation rules for expressions in Plaid are given inFigure 6. We only list only computation rules here, defining
+
+congruence rules using evaluation contexts shown in Figure 5.In these, each expression with a subexpression that requires
+evaluation defines a hole, [ ], into which any expression can
+
+be placed. Evaluation proceeds by using the computation rulethat evaluates the expression in the hole.
+Standard rules. The computation rules for the evaluationof the expressions from general object systems and the
+lambda calculus are almost all completely standard in oursystem. These include the rules E-L
+
+ET, E-APP, E-CALL,and E-F
+IELD for let expressions, application, method callsand field dereferences respectively. One note is that member selection during calls and dereferences use the lookupjudgment described above. We also use standard record
+evaluation rules when selecting a label from a recstate (E-R
+
+ECSTATESELECT).
+
+Match. Plaid uses a first-match semantics, so that we findthe first
+
+case clause whose tag matches the target object. Wefind the tag to match against by grabbing the most specific
+
+tag (tagOf) from a dimension expression wrapped in a protovalue. Note that in this case the dimension expression is
+not evaluated since we are only interested in the tag. If thetag is found in the target object, the code for this case is
+evaluated (E-CASEMATCH); otherwise, execution proceedsto the next case (E-C
+
+ASENOTMATCH). Default cases arealways executed and terminate the match if reached (ECASEDEFAULT). Evaluation gets stuck if no matching caseis found.
+
+Freezing. To freeze a location in the heap (E-FREEZE), wesimply pull the object value from the heap and wrap it in a
+proto expression.
+Manipulating objects in the heap. The state change oper-ators and
+
+new cause objects in the heap to be changed orallocated. Because we only allow object values to appear in
+
+the heap, we must first initialize the object that will be usedto alter the heap by reducing it to an object value. Evaluation
+is mostly handled by the evaluation contexts: first the expres-sion representing the object is reduced to a
+
+proto value andthen the object expression wrapped in the
+proto is evaluateddown to an object value. An important design decision in
+
+Plaid was to run the initializers for all members of an objectexpression. This happens despite the fact that not all members may end up in the object (see the explanation of stateupdate below). In particular, any effectful initializers will always be run and update the wider context. We experimentedwith other possible semantics but decided that a clear and
+
+unambiguous rule for when initializers were run (always)was better than a flexible but complicated one. Furthermore,
+we consider it good Plaid style to avoid the use of effectfulinitializers and instead use other design techniques, such as
+
+factory methods, when effectful operations are required as apart of object initialization.
+
+Once the initialization code in the proto has been run,the resulting object value can be used to update the heap. In
+the case of new and state replacement (j) expressions it isclear what the object value that is inserted into the heap will
+be. new allocates a new location on the heap and maps it
+
+1 val rs = Open {
+2 Inserted <: Inserting <: Action,
+3 Scrollable <: Direction,
+4 Updatable <: Status }
+5 <: ResultSet
+
+Listing 7. Open, Inserted, Scrollable, Updatable ResultSet
+
+to the resulting object value. State replacement replaces themapping of the target location on the heap with the updating
+object value. Since we know the precise form of the objectvalue that is being inserted into the heap, in order to maintain
+the heap invariants on object values, we can simply checkthat
+
+uniqueTags and uniqueMembers both hold on the newobject value as done in the rules E-R
+
+EPLACE and E-NEW.On the other hand, the semantics of updating an object on the
+
+heap using state update are much more complicated, and sowe devote the next section to a discussion of its design and
+proof that they maintain the necessary invariants.
+4.2.3 State Update
+At the core of the rule E-SU which updates the heap withthe result of a state update is the state update judgment,
+
+ov  ov ) ov, which is described in Figure 7. Thejudgment takes two object values and determines the resulting
+object value when the target object on the left side of thearrow is changed to the state given by the
+
+update objectfrom the right side. The semantics of this judgement are
+
+the most complicated and important part of Plaid's dynamicsemantics. Thus, before describing the semantics given by
+the rules, we step back and give a high-level overview ofthe desired behavior. We then define some general properties
+and assumptions of the judgment before describing the rulesthemselves.
+
+Design considerations. Our goal is that the design of thestate change judgment should match the semantics of stateful
+abstractions as modeled by state charts and similar tools.Thus, a state update should transition a target object from its
+current set of abstract states to a possibly new set of abstractstates as specified by the update object. To do this, we need
+to formalize this intuition in terms of object values.
+Update dimensions. Our first task is to determine whichabstract state the update object is changing. That is, which
+
+dimensions of the target object need to be updated? Considerthe object value (without members) of an
+
+Open ResultSetin the
+Inserted, Scrollable, Updatable state, stored in
+val rs as depicted in Listing 7. What should happen if weupdate
+
+rs to the ReadOnly state?
+
+rs  ReadOnly <: Status
+While there are clearly matches between tags in the target andupdate objects, since the tags are nested inside the
+
+Open tagof the target object, it is not clear that they should be updated.
+
+ov  ov ) ov
+
+ovt  ov ) ov0 ov0  ovu ) ovo
+
+ovt  ov 7 ovu ) ovo SU-LIST ovt  mvu ) ovt 7 mvu SU-MV
+
+tags(ovt) " tags(dvu) = ; uniqueTags(dvu)
+
+ovt  dvu ) ovt 7 dvu SU-ADDH
+
+tags(dv) " outerTags(dvu) 6= ;
+
+dv  dvu ) dvr
+tags(ov) " tags(dvr) = ;
+
+ov 7 dv  dvu ) ov 7 dvr SU-MATCHDIM
+
+outerTags(dvu) " tags(ov) 6= ; ov  dvu ) ovr
+
+[tags(dvu) " tags(dv) = ;] tag 62 tags(dvu)
+
+tag{ov}[<: dv]  dvu ) tag{ovr}[<: dv] SU-MATCHINNER
+
+outerTags(dvu) " innerTags(dv) 6= ; dv  dvu ) dvr
+
+tags(tag{ov}) " tags(dvu) = ;
+
+tag{ov} <: dv  dvu ) tag{ov} <: dvr SU-MATCHSUPERINNER
+
+tag /2 outerTags(dvu) outerTags(dvu) " outerTags(dv) 6= ; dv  dvu ) dvr
+
+tag{ov} <: dv  dvu ) dvr SU-MATCHSUPER
+
+dvu = [dvsub] <: tag{ov0} <: [dvsup] [tags(dvsub) " tags(tag{ov}[<: dv]) = ;] uniqueTags(dvsub)
+
+tag{ov}[<: dv]  dvu ) [dvsub] <: tag{ov}[<: dv] SU-MATCH
+
+Figure 7. State Update
+However, if we think of the state update as an transition toa new abstract state, then we can see that the nesting in the
+target object should not matter. This state update specifiesthat the
+
+Status dimension should transition to the ReadOnlysubstate, and thus out of the
+
+Updatable state.The converse question is does nesting matter in the other
+
+direction? In other words, can a nested state trigger a changein an abstract state? Concretely, would this state update
+
+rs  Foo{ReadOnly <: Status}
+result in an object in the ReadOnly state? Based on thesemantics of state charts, the answer would be "no". Our
+definitions of object dimension indicates that the Statusdimension of the
+
+Foo state is part of the definition of Foo.Thus, it is brought along with the transition to the
+
+Foo state.The
+Status state is also a defining and-state of the Open state.Thus the resulting object cannot be consistent because two
+
+separate dimensions are claiming the Status state meaningthere would need to be duplicate tags.
+
+Therefore, we define the dimensions along which a stateupdate occurs to be only those found at the top level of
+the object value that describes the update object. All otherdimensions that are a part of the update object are considered
+definitions of these dimensions and do not induce transitionsbut are only added to the object with their enclosing state.
+
+Dimension updates. Once we know which dimensions willbe updated, we need to know what in those dimensions is
+changed. We first note that we can treat the transition in eachdimension independently as dimensions are orthogonal by
+definition. Second, recall the file example from Listing 1.In this example, we stated that the
+
+filename member wasshared between the
+OpenFile and ClosedFile states. Thus,when we transition from an
+
+ClosedFile to an OpenFile themembers of the
+File state should remain constant. This isthe semantics behind the restricted update semantics of state
+
+change described in [2]. We use and extend these semanticsin a natural way to account for our hierarchical object model.
+
+Properties of object and state update. With the intuitionwe have for the design, we can define some terminology that
+is used in the judgment itself.
+Inner and outer tags. In the informal description of statechange, we differentiated between dimensions and tags defined at the top level of the update object and those thatappear within a top-level dimension. Figure 10 defines two
+judgments, outerTags and innerTags, which capture thisdistinction. The
+
+outerTags of an object value, ov, are allthe tags which appear as the most specific tag and any of
+
+its super tags from dimensions appearing directly in ov. Forexample, using
+
+rs, the ResultSet object from Listing 7,
+outerTags(rs) = {Open, ResultSet}. Conversely, the
+innerTags of an object value are all of the tags defined in
+
+dimensions that are recursively included in the definition ofeach of the outer tags. For example,
+
+innerTags(rs) = {Inserted, Inserting, Action,
+
+Scrollable, Direction, Updatable, Status}
+
+Unique dimension property. Given a dimension withinwhich to transition the target object, we need to find the
+location of the matching dimension within the target objectvalue. To do this, we look for the part of the object that has
+tags which overlap the outer tags of the update dimension.We ignore all super-tags of the matching tag in the update
+dimension under the assumption that these supertags willmatch the tags in the target. This assumption is based on the
+the Unique Dimension Property which states that a singleunique tag can only ever appear in a single dimension. That
+is a tag is either has no super tags or always appears with thesame supertag. While this property is not guaranteed by the
+syntax and semantics of the internal language, it is enforcedby the elaboration from Plaid's source syntax so we assume
+it in our rules.
+Maintaining the uniqueTags property. Rule E-SU in Fig-ure 6 does not check whether the object returned from
+the state update judgement has unique tags. Therefore thestate update judegment must maintain this property. Formally: If uniqueTags(ov1) ^ ov1  ov2 ) ov3, then
+uniqueTags(ov3). A proof of this property is in the compan-ion technical report [26].
+
+Inference rules. With this understanding, we can describethe rules that produce the object value after a state update
+operation. The rules start by breaking apart the update object
+ov into the individual member values and dimension valuesand processing the state changes for each dimension or
+
+value individually (SU-LIST). This is allowed since eachdimension can be treated independently. We can assume that
+
+uniqueTags holds for each dimension individually since itholds for the object as a whole. For member values (SUMV) and dimension values for which there is no overlapbetween the tags of the target object and update dimension
+(SU-ADDH), we just compose the update object with thetarget object. The rest of the rules assume that there is a match
+
+between the outer tags of the update object and the tags ofthe target object. If that is not the case, then the evaluation
+gets stuck.SU-M
+
+ATCHDIM covers the case where we have founda particular dimension of the target object that contains the
+
+tags that are changing. By the unique dimension propertyexplained above, we know that the
+
+outerTags(dvu) will notappear in
+ov, so it suffices to calculate the state update onjust the matched dimension. To ensure that we maintain the
+
+unique tags property, we can assume that both the result ofthe state update and the unmatched portion of the object have
+
+unique tags, and so it suffices to check that the tags of thesetwo portions of the object do not intersect.
+
+SU-MATCHINNER handles the case where there is over-lap between the
+
+innerTags of the current tag and the
+outerTags of the update dimension. We recursively findthe state update on just this matching portion and then check
+
+that the tags from the resulting object value do not intersectwith the tags of the super tag, if it exists, to maintain the
+uniqueTags invariant.In SU-M
+
+ATCHSUPERINNER, we find that the matchingdimension is defined somewhere inside of a super tag. Thus,
+
+we run state update on just the supertags. We then verify thatthe tags of the result are distinct from the tags of the subtag
+
+and its innerTags to maintain the uniqueTags invariant.SU-M
+
+ATCHSUPER represents the case where we havefound the right dimension, but have not reached the level of
+
+the dimension where the tags overlap. The current tag of thisdimension is not in the outer tags of the update dimension,
+but there is overlap somewhere in its super tags and so wefind the updated state from that portion of the dimension. In
+this case, we know that the current tag will be removed withany of its nested tags, which means that we do not need to
+check if these tags would conflict with tags that enter theobject with the update dimension to preserve
+
+uniqueTags.The base case SU-M
+ATCH handles the actual alterationof the target dimension. The current tag matches a specific
+
+tag in the outer tags of the update dimension, which indicatesthat the state update only affects states below this point
+in the dimension. In particular the tags below this one inthe dimension in the target object are discarded, as already
+occurred through the SU-MATCHSUPER rule. In their placeare put all the subtags of the matched tag from the incoming
+dimension. To make sure that we do not have duplicate tagsanywhere, we only need to check that the tags added from
+the update dimension do not intersect with the tags that arein its new supertags.
+
+Example. To give a specific example, consider evaluatingthe following state update on the object defined in Listing 7:
+
+rs  ReadOnly <: Status
+The state updates proceeds first by finding that there istag overlap between the incoming and target objects and
+
+a match for the Status tag of the incoming state nestedinside the
+
+Open state with the SU-MATCHINNER. Next itfinds the correct dimension
+
+Updateable <: Status usingthe SU-M
+ATCHDIM rule. It discards the Updateable tagand recurses up the dimension in the SU-M
+
+ATCHSUPERrule and finally adds the
+ReadOnly tag in its place with theSU-M
+ATCH rule.
+
+Reduction rule The E-SU reduction rule uses the state up-date judgement to determine what object value to update
+
+the target object to. The state update judgement incremen-tally checked that
+
+uniqueTags was maintained. It does not
+
+oe@H; T 7! oe@H; T
+
+[oe0 = oe[v/f0]]
+val f B f 0 = v[ 7 oe]@H 7! val f = v[ 7 oe0]@H E-RECFIELD
+
+sd = freshtag{oe}[<: de] tag is fresh
+r = recstate{val sd B xd = v, val s B x = proto (tag{oe}[<: de]), val sr B xr = proto sdr}[ 7 oe]
+
+recstate{val sd B xd = v, val s B x = proto sd, val sr B xr = proto sdr}[ 7 oe]@H 7! r@H0 E-R
+
+ECSTATE1
+
+oe0i = oei[recstate{val si = proto oei}#si/xi] [oe0 = oe[recstate{val si = proto oe}#si/xi]]
+
+recstate{val si B xi = proto oei}[ 7 oe]@H 7! val si = proto oe0i[ 7 oe0]@H E-R
+
+ECSTATE2
+
+(tag{oe} <: proto de[{to}])[ 7 oe0]@H 7! (tag{oe} <: de[{to}])[ 7 oe0]@H E-DE
+
+proto[ov 7 ](proto oe[{to}])[ 7 oe0]@H 7! proto[ov 7 ](oe[{to}])[ 7 oe0]@H E-OE
+
+dv{to} ) dv0
+(dv{to})[ 7 oe]@H 7! dv0[ 7 oe]@H E-TRAITOPS
+
+Figure 8. Object Evaluation
+guarantee that uniqueMembers is satisfied and so the rulechecks that the resulting object value has unique member
+declarations.
+4.2.4 Object Evaluation
+The final class of reductions that we must model is thatof state expressions, including the initialization of object
+
+expressions within a proto. These rules are defined in Figure8. Congruence rules are again taken care of by evaluation
+contexts from Figure 5.
+
+* E-RECFIELD: When field members have been evaluated
+
+down to values, we propagate them forward into the rest ofthe declarations that need to be initialized by substituting
+
+the value in for the bound variable on the right of theB. This allows subsequent fields to use the values of
+previously declared fields during their initialization. Afterthis propagation, we do not need to keep track of the bound
+variable any longer and so do not record it in the membervalue. Note that these semantics force us to be strict about
+
+the order in which portions of the object are initialized. Inparticular member declarations are initialized from left to
+right as specified by the evaluation contexts.*
+
+E-RECSTATE1: If there are freshtag directives in thestate declarations of a
+
+recstate, new tags are generatesby picking a fresh
+tag not previously mentioned.*
+
+E-RECSTATE2: After assigning new tags to all of thestate declarations inside a
+
+recstate, we need to removethe
+recstate construct and convert it into a list of valdeclarations. This is done in a manner similar to the fix
+
+construct in the lambda calculus. Since our recstate is
+
+modeled as a record, we replace all references to theinner bound variable of each of the nested state
+
+vals withselections of the external name from the
+recstate. We dothis both inside the object expressions of each
+
+proto aswell as in subsequent declarations. Note again that after
+
+propagation we can remove the bound variable from the
+val declaration.*
+
+E-DE and E-OE: These rules state that it is possible to un-wrap a
+
+proto that is nested inside another proto. This canoccur when a
+
+proto is part of an object expression insideanother
+proto (E-OE), or when a proto is in a dimensionexpression, which only appear in
+
+proto expressions (E-D
+E). In either case, if trait operations are associated withthis
+
+proto, then they are retained. Execution will continueby evaluating the wrapped object expression if needed.
+
+* E-TRAITOPS: This rule applies only once the all of the
+
+trait operations have been fully reduced and proceedsusing the trait operations judgment defined below to
+
+produce a new dimension value.
+4.2.5 Trait Operations
+As with state change, we define a separate judgement fortrait operations that applies once all trait operations have
+
+been fully initialized, meaning that they can all be appliedatomically without reduction. The rules for initialization of
+trait operations are all congruence rules handled by evaluationcontexts (see Figure 5). Thus, the judgement,
+
+ov{sp} ) ov,does not require a heap. In general, trait operations follows
+
+previous work on traits. However, Plaid's object model,unlike traditional traits models, is hierarchical. Hence, trait
+
+ov{to} ) ov
+
+dv{to} ) dv0 dv0{to} ) dv00
+
+dv{to, to} ) dv00 T-GENERAL
+
+ov = ov0[ 7 mv0] [name(mv0) = x = name(mv)]
+
+(tag{ov}[<: dv]){mv} ) tag{ov0 7 mv}[<: dv] T-MEMBER
+
+ov{\n} ) ov0 [dv{\n} ) dv0]
+(tag{ov}[<: dv]){\n} ) tag{ov0}[<: dv0] T-REMOVEDV
+
+dv{\n} ) dv0 ov{\n} ) ov0
+
+(dv 7 ov){\n} ) dv0 7 ov0 T-REMOVEOV1
+
+name(mv) = n ov{\n} ) ov0
+
+(mv 7 ov){\n} ) ov0 T-REMOVEOV2
+
+name(mv) 6= n ov{\n} ) ov0
+
+(mv 7 ov){\n} ) mv 7 ov0 T-REMOVEOV3
+
+ov{n ! n0} ) ov0 [dv{n ! n0} ) dv0]
+
+(tag{ov}[<: dv]){\n} ) tag{ov0}[<: dv0] T-RENAMEDV
+
+dv{n ! n0} ) dv0 ov{n ! n0} ) ov0
+
+(dv 7 ov){n ! n0} ) dv0 7 ov0 T-RENAMEOV1
+
+name(mv) = n rename(n0, mv) = mv0 ov{n ! n0} ) ov0
+
+(mv 7 ov){n ! n0} ) mv0 7 ov0 T-RENAMEOV2
+
+name(mv) 6= n ov{n ! n0} ) ov0
+
+(mv 7 ov){n ! n0} ) mv 7 ov0 T-RENAMEOV3
+
+de = tag{oe}[<: de0] ov{tag.mv} ) ov0
+
+(ov){(tagOf proto de).mv} ) ov0 T-STATEMEMBER
+
+tag /2 tags(dv) ov{tag.mv} ) ov0
+
+(dv 7 ov){tag.mv} ) dv 7 ov0 T-STATEMEMBEROV1
+
+tag 2 tags(dv) dv{tag.mv} ) dv0
+
+(dv[ 7 ov]){tag.mv} ) dv0[ 7 ov] T-STATEMEMBEROV2
+
+tag 6= tag0 ov{tag0.mv} ) ov0 [dv{tag.mv} ) dv0]
+
+(tag{ov}[<: dv]){tag0.mv} ) tag{ov0}[<: dv0] T-STATEMEMBERDV1
+
+(tag{ov}[<: dv]){mv} ) dv0
+(tag{ov}[<: dv]){tag.mv} ) dv0 T-STATEMEMBERDV2
+
+Figure 9. Trait Operations
+operations other than the local member addition must takethis hierarchy into account.
+
+Local member updates are agnostic to whether the addedmember is already a member of the tag and simply add the
+new member, replacing the existing member if one exists (T-M
+
+EMBER). Updates of members in specific tags act the same,but first must recurse through the object value looking for
+
+the specified tag before performing the member update. Thecomputation will get stuck if the tag is not found. Because
+each of these trait operations, as well as member renamingdescribed below, may potentially add new members, there is
+the danger that the object value might no longer satisfy the
+uniqueMembers invariant. However, since the specializationmust be occurring as part of object instantiation, it will be
+
+checked at the point that the object is created, so we do notmake the check here.
+
+Member removal and renaming operate on the wholeobject, removing or renaming instances of members with
+the given name throughout. This is in contrast to lookup,which stops at the first declaration of the member. These
+semantics are required in order to allow trait composition,
+
+which includes the ability to remove members from a traitand instead provide them in another trait. This would result
+
+in a conflict if some members were left in the old dimension.
+5. Elaboration
+The core language defined in the previous section sharesmuch in common with the full Plaid programming language,
+
+but there are still differences. The semantics of the full Plaidlanguage are defined as an elaboration into the core language.
+Space does not permit including the full elaboration in thispaper, but we present the highlights and refer the interested
+reader to the accompanying technical report [26].For most expressions, the elaboration proceeds structurally, without changing the construct itself. For field bind-ings, we add the internal variable referred to above, and replace references to the field in later field initializers withthe fresh variable. Sequences of state declarations are transformed into recstate blocks. Each state declaration is trans-formed into a val declaration which binds to a
+
+proto repre-senting the uninitialized state, with a
+freshtag expressionfor generating the state's tag when the declaration is executed.
+
+uniqueTags(ov) uniqueMembers(ov) lookup(x, ov) = mv dv 2 ov mv :: tag.x@ov
+tag <<: tag@ov validTagMembers(ov) rename(n, mv) = mv name(mv) = n
+tags(ov) outerTags(ov) innerTags(ov)
+
+tag /2 tags(ov) [ [ tags(dv)] [tags(ov) " tags(dv) = ;]
+
+uniqueTags(ov) [uniqueTags(dv)]
+
+uniqueTags(tag{ov}[<: dv]) UNIQUETAGSDV
+
+tags(dv) " tags(ov) = ; uniqueTags(dv) uniqueTags(ov)
+
+uniqueTags(dv 7 ov) UNIQUETAGSOV1
+
+[uniqueTags(ov)]
+uniqueTags(mv[ 7 ov]) UNIQUETAGSOV2
+
+mv1 :: tag1.x@ov ... mvn :: tagn.x@ov
+tagi <<: tag1@ov ... tagi <<: tagn@ov
+
+lookup(x, ov) = mvi LOOKUP
+
+validTagMembers(ov)9
+n(9tag mv :: tag.n@ov ^ 9tag0 mv0 :: tag0.n@ov) =) (tag <<: tag0@ov . tag0 <<: tag@ov)
+
+uniqueMembers(ov) UNIQUEMEMBERS
+
+dv 2 dv LEAF1
+
+dv 2 ov0
+dv 2 mv 7 ov0 LEAF2
+
+tag 6= tag0 tag{ov}[<: dv] 2 dv0
+tag{ov}[<: dv] 2 tag0{ov0} <: dv0[ 7 ov00] LEAF3
+
+tag 6= tag0 tag{ov}[<: dv] 2 ov0
+tag{ov}[<: dv] 2 tag0{ov0} <: dv0[ 7 ov00] LEAF4
+
+tag{[ov1 7 ]mv[ 7 ov1]} <: dv 2 ov
+
+mv :: tag@ov MBRINTAG
+
+tag{ov0} <: dv 2 ov
+tag0 2 outerTags(tag{ov0} <: dv)
+
+tag <<: tag0@ov CASEOF
+
+name(mv) 62 names
+[validTagMembers(names [ name(mv), ov0)]
+
+validTagMembers(names, mv[ 7 ov0]) VTM1
+
+validTagMembers(;, ov) [validTagMembers(;, dv)] [validTagMembers(names, ov0)]
+
+validTagMembers(names, (tag{ov}[<: dv])[ 7 ov0]) VTM2
+
+n = name(val n = v) NAME1 m = name(method m(x){e}) NAME2 rename(a, val n = v) = val a = v RENAME1
+
+rename(n, method m(x){e}) = method n(x){e} RENAME2 tags(ov) = innerTags(ov) [ outerTags(ov) TAGS
+
+outerTags(tag{ov}[<: dv]) = {tag} [[ outerTags(dv)] OUTERDV
+outerTags(dv[ 7 ov]) = outerTags(dv) [[ outerTags(ov)] OUTEROV1
+
+outerTags(mv[ 7 ov]) = ; [[ outerTags(ov)] OUTEROV2
+innerTags(tag{ov}[<: dv]) = tags(ov) [[ innerTags(dv)] INNERDV
+innerTags(dv[ 7 ov]) = innerTags(dv) [[ innerTags(ov)] INNEROV1
+
+innerTags(mv[ 7 ov]) = ; [[ innerTags(ov)] INNEROV2
+
+Figure 10. Helper Judgements
+
+Declarations D ::= SD fifi method m(x){SE} fifi
+
+val f = SE
+State Decl. SD ::= val s = S fifi state s = S fifi
+
+state s case of s{T O} = S
+States S ::= freeze(SE) fifi {D} fifi s{T } fifi
+
+S with S fifi SE.s fifi s
+Trait Ops T O ::= \n fifi n ! n0 fifi
+
+val f = SE fifi val s = S fifi
+val s.f = SE fifi val s.t = S fifi
+method m(x){SE} fifi
+method s.m(x){SE}
+Expression SE ::= x fifi let x = SE in SE fifi SE.f fifi
+
+SE(SE) fifi SE.m(SE) fifi
+SE  S fifi SE j S fifi new S fifi
+match(SE){C} fifi
+Case C := case SE.s {SE} fifi
+
+case s {SE} fifi default {SE}
+Compil. Unit CU ::= D
+
+Figure 11. Source Syntax
+Our formal semantics defines all of the Plaid language ex-cept for module linking and cross language binding. Module
+linking currently follows the Java standard, including pack-ages, imports, and a classpath for loading elements. Plaid
+primitives are defined using Java classes and methods, whichcan be directly accessed in Plaid via their fully-qualified Java
+names. Details of both of these aspects of Plaid are discussedin more detail in the Plaid language definition [17].
+
+6. Discussion and Future Work
+The primary contribution of the Plaid language is providing away for programmers to express state machine abstractions
+
+directly in the source code of their programs. Plaid supportsthe major state modeling features of Statecharts, including
+state hierarchy, or-states, and and-states. The explicit rep-resentation of states makes the design more salient in the
+code, enhancing programmer understanding. For example,the separation of members into different abstract states helps
+programmers quickly learn what operations are available ineach state. In the future, visualization tools that leverage explicit state constructs to automatically generate statechartsfrom Plaid code could provide even greater benefits.
+
+Plaid has the potential to make code more reliable. Notonly do explicit states help programmers understand libraries
+better, avoiding errors in the first place; the runtime will alsoverify that the libraries are used correctly according to their
+state abstractions. Even a "method not available in this state"error is better than a silent corruption, but in future work, we
+believe we can leverage explicit states to do much better. Forexample, a state-related error message could be paired with
+a suggestion about what methods could be called in order tomove the object into a correct state.
+
+Plaid's trait-like state composition model provides a wayof reusing not just fields and methods, but state abstractions.
+This additional layer of reuse has the potential to reduceredundancy in code and specifications, while enhancing
+
+developer productivity. The confidence that comes with theerror checking in Plaid's state model may also help developers
+to evolve and refactor software with greater confidence.In future work, we plan to build more programs with
+Plaid in order to investigate the possible benefits outlinedabove. We are also developing a gradual type system that
+can complement Plaid's dynamic state checking with staticchecking, where desired by programmers [29]. We believe
+Plaid demonstrates a new kind of language, and we areexcited to explore the consequences that language may entail.
+
+Acknowledgments
+We thank Nels Beckman and Robert Bocchino for their workon the semantics of Plaid; Manuel Mohr, Mark Hahnenberg,
+
+Aparup Banerjee, Matthew Rodriguez, and Fuyao Zhao fortheir work on the Plaid compiler; and the PLAID group for
+
+their helpful feedback and suggestions. This research wassupported by DARPA grant #HR00110710019. Sven Stork is
+supported by the Portuguese Research Agency FCT, througha scholarship (SFRH/BD/33522/2008). Joshua Sunshine was
+supported by the Department of Defense (DoD) throughthe National Defense Science and Engineering Graduate
+Fellowship (NDSEG) Program.
+
+References
+
+[1] J. Aldrich, J. Sunshine, D. Saini, and Z. Sparks. Typestateoriented programming. In Proc. Onward, 2009.
+
+[2] J. Aldrich, K. Naden, and 'E. Tanter. Modular composition and
+
+state update in Plaid. In Proc. MechAnisms for SPEcialization,
+Generalization and inHerItance, MASPEGHI, 2010.
+
+[3] N. E. Beckman, D. Kim, and J. Aldrich. An empirical study
+
+of object protocols in the wild. In European Conference on
+Object-Oriented Programming 2011.
+
+[4] A. Bejleri, J. Aldrich, and K. Bierhoff. Ego: Controlling the
+
+Power of Simplicity. In Proc. Foundations of Object-Oriented
+Languages, 2006.
+
+[5] A. Bergel, S. Ducasse, O. Nierstrasz, and R. Wuyts. Stateful
+
+traits and their formalization. Journal of Computer Languages,
+Systems and Structures, 34(2):83-108, 2008.
+
+[6] L. Bettini, S. Capecchi, and F. Damiani. A Mechanism
+
+for Flexible Dynamic Trait Replacement. In Proc. Formal
+Techniques for Java-like Programs, 2009.
+
+[7] K. Bierhoff and J. Aldrich. Lightweight object specification
+
+with typestates. In Proc. Foundations of Software Engineering,
+
+2005.
+
+[8] B. Bloom, P. Keyser, I. Simmonds, and M. Wegman. Ferret:
+
+Programming language support for multiple dynamic classification. Computer Languages, Systems and Structures, 35(3):
+306 - 321, 2009.
+
+[9] T. V. Cutsem, A. Bergel, S. Ducasse, and W. D. Meuter. Adding
+
+state and visibility control to traits using lexical nesting. In
+Proc. European Conference on Object-Oriented Programming,
+
+2009.
+
+[10] R. Deline and M. Fahndrich. Typestates for Objects. In Proc.
+
+European Conference on Object-Oriented Programming, 2004.
+
+[11] S. Drossopoulou, F. Damiani, M. Dezani-Ciancaglini, and
+
+P. Giannini. Fickle: Dynamic Object Re-classification. In
+Proc. European Conference on Object-Oriented Programming,
+
+2001.
+
+[12] S. Ducasse, O. Nierstrasz, N. Sch"arli, R. Wuyts, and A. Black.
+
+Traits: A mechanism for fine-grained reuse. ACM Transactions
+
+on Programming Languages and Systems, 28(2):331-388,
+2006.
+
+[13] E. Gamma, R. Helm, R. Johnson, and J. Vlissides. Design patterns: elements of reusable object-oriented software. AddisonWesley, 1995.
+
+[14] D. Harel. Statecharts: A visual formalism for complex systems.
+
+Science of computer programming, 8(3):231-274, 1987.
+
+[15] C. Hewitt, P. Bishop, and R. Steiger. A Universal Modular Actor Formalism for Artificial Intelligence. In Proc. International
+Joint Conference on Artificial Intelligence, 1973.
+
+[16] C. Jaspan. Proper plugin protocols: Cost-effective verification
+
+of frameworks. Technical Report CMU-ISR-11-101, Institute
+for Software Research, Carnegie Mellon University, April 2011.
+Thesis Proposal, originally accepted April 2010.
+
+[17] Jonathan Aldrich. The Plaid Language: Dynamic Core Specification, 2010. http://plaid-lang.googlecode.com/hg/
+docs/spec/current/current.pdf.
+
+[18] A. C. Kay. The Early History of Smalltalk. SIGPLAN Notices,
+
+28(3), 1993.
+
+[19] D. Malayeri and J. Aldrich. CZ: multiple inheritance without
+
+diamonds. Proc. Object-Oriented Programming, Systems,
+Languages, and Applications, 2009.
+
+[20] B. Pernici. Objects with Roles. In Proc. Conference on Office
+
+Information Systems, 1990.
+
+[21] B. C. Pierce. Advanced Topics in Types and Programming
+
+Languages. MIT Press, 2005.
+
+[22] J. Reppy and A. Turon. Metaprogramming with traits. In Proc.
+
+European Conference on Object-Oriented Programming, 2007.
+
+[23] A. Sterkin. State[chart]-Oriented Programming. In Proc.
+
+Multiparadigm Programming with Object-Oriented Languages,
+
+2008.
+
+[24] S. Stork, P. Marques, and J. Aldrich. Concurrency by default:
+
+using permissions to express dataflow in stateful programs. In
+Proceeding of the 24th ACM SIGPLAN conference companion on Object oriented programming systems languages and
+applications, pages 933-940. ACM, 2009.
+
+[25] R. Strom and S. Yemini. Typestate: A programming language
+
+concept for enhancing software reliability. IEEE Transactions
+on Software Engineering, 12(1):157-171, 1986.
+
+[26] J. Sunshine, K. Naden, S. Stork, J. Aldrich, and 'E. Tanter. Firstclass state change in plaid. Technical Report CMU-ISR-11-114,
+Institute for Software Research, Carnegie Mellon University,
+October 2011.[27] A. Taivalsaari. Object-Oriented Programming with Modes.
+
+Journal of Object-Oriented Programming, 6(3):25-32, 1993.
+[28] D. Ungar and R. B. Smith. Self: The Power of Simplicity. In
+
+Proc. Object-Oriented Programming, Systems, Languages, and
+Applications, 1987.
+
+[29] R. Wolff, R. Garcia, 'E. Tanter, and J. Aldrich. Gradual typestate.
+
+In European Conference on Object-Oriented Programming
+2011.

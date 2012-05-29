@@ -1,0 +1,1540 @@
+
+
+Points-to Analysis in Almost Linear Time
+
+Bjarne Steensgaard
+Microsoft Research
+One Microsoft Way
+Redmond, WA 98052, USA
+
+rusa@research.microsoft.com
+
+Abstract
+We present an interprocedural flow-insensitive points-to analysisbased on type inference methods with an almost linear time cost
+complexity. To our knowledge, this is the asymptotically fastestnon-trivial interprocedural points-to analysis algorithm yet described.
+The algorithm is based on a non-standard type system. The typeinferred for any variable represents a set of locations and includes
+a type which in turn represents a set of locations possibly pointedto by the variable. The type inferred for a function variable represents a set of functions it may point to and includes a type signaturefor these functions. The results are equivalent to those of a flowinsensitive alias analysis (and control flow analysis) that assumesalias relations are reflexive and transitive.
+
+This work makes three contributions. The first is a type systemfor describing a universally valid storage shape graph for a program
+in linear space. The second is a constraint system which oftenleads to better results than the "obvious" constraint system for the
+given type system. The third is an almost linear time algorithm forpoints-to analysis by solving a constraint system.
+
+1 Introduction
+Modern optimizing compilers and program understanding and brows-ing tools for pointer languages such as C [KR88] are dependent
+on semantic information obtained by either an alias analysis or apoints-to analysis. Alias analyses compute pairs of expressions (or
+access paths) that may be aliased (e.g., [LR92, LRZ93]). Points-to analyses compute a store model using abstract locations (e.g.,
+[CWZ90, EGH94, WL95, Ruf95]).Most current compilers and programming tools use only intraprocedural analyses, as the polynomial time and space complex-ity of the common data-flow based analyses prevents the use of
+interprocedural analyses for large programs. Interprocedural analy-sis is becoming increasingly important, as it is necessary to support
+whole-program optimization and various program understandingtools. Previously published interprocedural analysis algorithms
+have not been reported to have been successfully applied to pro-grams around 100,000 lines of C code (the published results are
+practically all for less than 10,000 lines of C code).
+Copyright cfl 1995 by the Association for Computing Machinery, Inc. Permission tomake digital or hard copies of part or all of this work for personal or classroom use
+is granted without fee provided that copies are not made or distributed for profit orcommercial advantage and that new copies bear this notice and the full citation on the
+first page. Copyrights for components of this work owned by others than ACM mustbe honored. Abstracting with credit is permitted.
+To copy otherwise, to republish, to post on servers or to redistribute requires priorspecific permission and/or a fee. Request permissions from Publications Dept, ACM
+Inc, Fax +1 (212) 869-0481, or <permissions@acm.org>.
+
+We present a flow-insensitive interprocedural points-to analysisalgorithm that has a desirable linear space and almost linear time
+complexity and is also very fast in practice. The algorithm is easilyapplicable to programs with many hundreds of thousands of lines of
+code. The analysis results are often not as accurate as those obtainedby flow-sensitive analyses. However, the results are roughly comparable to those of, e.g., the cubic time complexity flow insensitiveanalysis of [Wei80].
+
+The algorithm, which is inspired by Henglein's binding timeanalysis by type inference [Hen91], uses a non-standard type system
+to describe the store usage at runtime by using types to constructa storage shape graph [CWZ90]. While we describe the principles
+behind the algorithm in terms of types and typing rules, we alsoprovide a detailed description of the algorithm which can be used
+almost directly to implement the algorithm in a compiler.In Section 2 we state the source language for which we describe
+the algorithm. The language captures the essential parts of a lan-guage like C. In Section 3 we define the non-standard set of types
+we use to model the storage use, and in Section 4 we state a set oftyping rules for programs. The typing rules impose constraints on
+the relationships of types of program variables. Finding a typing ofthe program that obeys these constraints amounts to performing a
+points-to analysis. In Section 5 we show how to efficiently infer theminimal typing that obeys the constraints. In Section 6 we report
+on practical experience with the algorithm in a C programming en-vironment. In Section 7 we describe related work, and in Section 8
+we present our conclusions and point out directions for future work.
+
+2 The source language
+We describe the points-to analysis for a small imperative pointerlanguage which captures the important properties of languages like
+C [KR88]. The language includes pointers to locations, pointersto functions, dynamic allocation, and computing addresses of variables. Since the analysis is flow insensitive, the control structuresof the language are irrelevant. The abstract syntax of the relevant
+statements of the language is shown in Figure 1.The syntax for computing the addresses of variables and for
+pointer indirection is borrowed from the C programming language[KR88]. All variables are assumed to have unique names. The
+op(: : : ) expression form is used to describe primitive computationssuch as arithmetic operations and computing offsets into aggregate
+objects. The allocate(y) expression dynamically allocates a blockof memory of size y.
+
+Functions are constant values described by the fun(: : : )!(: : : )S
+
+\Lambda 
+
+expression form1. The fi variables are formal parameters (some1We have generalized function definitions to allow functions with multiple return
+values; a feature not found in C.
+
+S ::= x = y
+
+j x = &y
+j x = \Lambda y
+j x = op(y1: : : yn)
+j x = allocate(y)
+j \Lambda x = y
+j x = fun(f1: : : fn)!(r1: : : rm) S
+
+\Lambda 
+
+j x1: : : xm = p(y1: : : yn)
+
+Figure 1: Abstract syntax of the relevant statements, S, of the sourcelanguage. x, y, f, r, and p range over the (unbounded) set of variable
+names and constants. op ranges over the set of primitive operatornames. S
+
+\Lambda  denotes a sequence of statements. The control structures
+
+of the language are irrelevant for the purposes of this paper.
+
+fact = fun(x)!(r)if lessthan(x 1) then
+
+r = 1else
+xminusone = subtract(x 1)nextfac = fact(xminusone)
+r = multiply(x nextfac)fi
+
+result = fact(10)
+Figure 2: A program in the source language that computes facto-rial(10).
+
+times called in parameters), and the ri variables are return pa-rameters (sometimes called out parameters). Function calls have
+call-by-value semantics [ASU86]. Both formal and return parame-ter variables may appear in left-hand-side position in statements in
+the function body. Formal and return parameter variables as wellas local variables may not occur in the body of another function;
+this is always true for C programs, which are not allowed to containnested function definitions.
+
+Figure 2 shows an implementation of the factorial function (anda call of same) in the abstract syntax of the source language.
+We assume that programs are as well-behaved as (mostly) portableC programs. The analysis tracks flow of pointer values, so the analysis algorithm may produce wrong results for programs that con-struct pointers from scratch (e.g., by bitwise duplication of pointers)
+and for non-portable programs (e.g., programs that rely on how aspecific compiler allocates variables relative to each other). However, the analysis algorithm as presented below will deal with, e.g.,exclusive-or operations on pointer values, where there is a real flow
+of values.
+
+3 Types
+For the purposes of performing the points-to analysis, we definea non-standard set of types describing the store. The types have
+nothing to do with the types normally used in typed imperativelanguages (e.g.,
+
+integer, float, pointer, struct).We use types to model how storage is used in a program at
+
+runtime (a storage model). Locations of variables and locationscreated by dynamic allocation are all described by types. Each type
+describes a set of locations as well as the possible runtime contentsof those locations.
+
+A type can be viewed as a node in a storage shape graph[CWZ90]. Each node may have edges to other nodes, which is
+
+modelled in the type system by letting types have type components.The storage shape graph may be cyclic for some programs, so the
+types may also be recursive.The set of types inferred for the variables of a program represents
+a storage shape graph which is valid at all program points. Thestorage shape graph conservatively models all the points-to relations
+that may hold at runtime. Alias relations can also be extracted fromthe storage shape graph [EGH94].
+
+Our goal is a points-to analysis with an almost linear time costcomplexity. The size of the storage shape graph represented by
+types must therefore be linear in the size of the input program.Consequently, the maximum number of graph nodes must be linear
+in the size of the input program. Additionally, each graph node maynot have more than a fixed number of out-going edges, meaning that
+each type may only have a fixed number of component types.We describe the locations pointed to by a pointer variable by a
+single type. For composite objects (such as struct objects in C),we also describe all the elements of the object by a single type.
+
+Describing each element in a composite object by separate typeswould, for most imperative languages, imply that the size of the
+storage shape graph could potentially be exponential in the size ofthe input program (e.g., by extreme use of
+
+typedef and struct inC). Describing the elements of composite objects by separate types
+
+may still be desirable, as the sum of sizes of variables is unlikely tobe exponential in the size of the input program. Extending the type
+system to do so is not addressed in the present paper.The source language allows pointers to functions. Function
+pointer values are described by signature types describing the typesof the argument and result values.
+
+Values may be (or include) pointers to locations and pointers tofunctions. The type of a value must therefore accommodate both
+types of pointers. In our type system, a value type is therefore a pairincluding a location type and a function signature type.
+
+The non-standard set of types used by our points-to analysis canbe described by the following productions:
+
+ff ::= o/ \Theta  *
+o/ ::= ? j ref(ff)
+* ::= ? j lam(ff1 : : : ffn)(ffn+1 : : : ffn+m)
+
+The ff types describe values, the o/ types describe locations (orpointers to locations), and the
+
+* types describe functions (or pointersto functions).
+
+Types may be recursive, and it may therefore be impossible towrite out the types directly. The types can be written out by using
+type variables. Two types are not equal unless they either both are
+? or are described by the same type variable. Note that this isdifferent from the usual structural equality criterion on types. We
+
+could use the structural equality criterion if we added a tag to the o/and
+
+* types.
+
+4 Typing rules
+In this section we define a set of typing rules based on the set ofnon-standard types defined in the previous section. The typing rules
+specify when a program is well-typed. A well-typed program is onefor which the static storage shape graph indicated by the types is
+a safe (conservative) description of all possible dynamic (runtime)storage configurations. Before stating the typing rules, we argue
+for using inequalities rather than equalities in the typing rules andargue for the way we have defined the typing rule for statements
+with primitive operations.Each location in the program is described by a single type. A
+pointer to a location is described by the type of the location pointedto. If several locations may contain a pointer to the same location,
+2
+
+then the types of these locations must all have the same locationtype component. This requirement must be reflected in the typing
+rules.Consider a simple assignment statement, x = y. Assume that x
+has type o/x (meaning that the location allocated to hold the valueof x has type
+
+o/x) and that y has type o/y. If a location pointervalue may be assigned to x when executing the statement, then the
+
+location component of both o/x and o/y must be o/p, where o/p is thetype describing the pointer value being assigned to x. If a function
+pointer value may be assigned, then o/x and o/y must have the samefunction signature component.
+
+The "obvious" typing rule for simple assignment statementswould be:
+
+A `x : ref(ff)
+A `y : ref(ff)
+A `welltyped(x = y)
+
+This rule states that this part of the program is well-typed under typeenvironment
+
+A if the contents of variables x and y are described bythe same type(s). Previous work has used this typing rule for simple
+
+assignment [Ste95a].The above typing rule is, however, too strict. This is illustrated
+by the following sequence of statements:
+
+a = 4x = a
+
+y = a
+Using the above rule, the content components of the types for a,x, and y must all be the same. That is not strictly necessary, as
+
+no pointer value is ever assigned. If x and y are used in otherparts of the program to hold pointers to disjoint locations, the above
+statements would unnecessarily force all the pointed-to locations tobe described by the same type. Furthermore, if x is used in another
+part of the program to hold a pointer value, the analysis results willindicate that both y and a may hold the same pointer value, even if
+they are only assigned integer values in the program.Given an assignment statement x = y, the content component
+types for x and y need only be the same if y may contain a pointer.In order to state this requirement in a typing rule, we introduce a
+partial order on types defined as follows:
+
+t1 ^ t2 , (t1 = ?) . (t1 = t2)
+(t1 \Theta  t2) ^ (t3 \Theta  t4) , (t1 ^ t3) ^ (t2 ^ t4):
+Given that non-pointers are represented by type ?, the requirementcan now by expressed by the following typing rule:
+
+A `x : ref(ff1)
+A `y : ref(ff2)
+
+ff2 ^ ff1
+A `welltyped(x = y)
+
+The rule states that each component type of ff2 must be either ? orequal to the corresponding component type of
+
+ff1.In statements of the form x = op(y
+
+1 : : : yn), the op operationmay be a comparison, a bit-wise operation, an addition, etc. Consider a subtraction of two pointer values. The result is not a pointervalue, but either of the two operand pointer values can be reconstituted from the result (given the other pointer value). The resultmust therefore be described by the same type as the two input pointer
+values.There are operations from which argument pointer values cannot
+be reconstituted from the result (e.g., comparisons: !, 6=, etc.). Forsuch operations, the result is not required to be described by the
+
+same type as any input pointer values. For the purposes of thispaper, we will treat all primitive operations identically.
+
+In Figure 3 we state the typing rules for the relevant parts of thesource language. A program is well-typed under typing environment A if all the statements of the program are well-typed under A.The typing environment
+
+A associates all variables with a type.The typing rule for dynamic allocation implies that a location
+
+type is required to describe the value stored in the variable assignedto. The type used to describe the allocated location need not be
+the type of any variable in the program. The type of the allocatedlocation is then only indirectly available through the type of the variable assigned to. All locations allocated in the same statement willhave the same type, but locations allocated by different allocation
+statements may have different types.Figure 4 contains an example program and a typing of all the
+variables occurring in the program that obeys the typing rules of Fig-ure 3. Variables
+
+x and z must be described by the same type variable,as a single type variable must represent the locations pointed to by
+
+all the pointers possible stored in the location for variable y.
+
+5 Efficient type inference
+The task of performing a points-to analysis has now been reduced tothe task of inferring a typing environment under which a program is
+well-typed. More precisely, the typing environment we seek is theminimal solution to the well-typedness problem, i.e., each location
+type variable in the typing environment describes as few locationsas possible. In this section we state how to compute such a minimal
+solution with an almost linear time complexity.The basic principle of the algorithm is that we start with the
+assumption that all variables are described by different types (typevariables) and then proceed to merge types as necessary to ensure
+well-typedness of different parts of the program. Merging two typesmeans replacing the two type variables with a single type variable
+throughout the typing environment. Joining is made fast by usingfast union/find data structures. We first describe the initialization
+and our assumptions about how the program is represented. Thenwe describe how to deal with equalities and inequalities in the
+typing rules in a manner ensuring that we only have to processeach statement in the program exactly once. Finally we argue that
+the algorithm has linear space complexity and almost linear timecomplexity.
+
+5.1 Algorithm stages
+In the first stage of the algorithm, we provide a typing environmentwhere all variables are described by different type variables. A type
+
+variable consists of a fast union/find structure (an equivalence classrepresentative (ECR)) with associated type information. The type
+of each of the type variables in the typing environment is initiallyref
+
+(? \Theta  ?). We assume that the program is represented in someprogram representation where name resolution has occurred, so we
+
+can encode the typing environment in the program representationand get constant time access to the type variable associated with a
+variable name.In the next stage of the algorithm, we process each statement
+exactly once. Type variables are joined as necessary to ensure well-typedness of each statement (as described below). When joining
+two type variables, the associated type information is unified bycomputing the least upper bound of the two types, joining component type variables as necessary. Joining two types will never makea statement that was well-typed no longer be well-typed. When
+all program statements are well-typed, the program is well-typed.
+
+3
+
+A `x : ref(ff1)
+A `y : ref(ff2)
+
+ff2 ^ ff1
+A `welltyped(x = y)
+
+A `x : ref(o/ \Theta  )
+
+A `y : o/
+A `welltyped(x = &y)
+
+A `x : ref(ff1)
+A `y : ref(ref(ff2) \Theta  )
+
+ff2 ^ ff1
+A `welltyped(x = \Lambda y)
+
+A `x : ref(ff)
+A `yi : ref(ffi)
+8i 2 [1 : : : n] : ffi ^ ff
+A `welltyped(x = op(y1 : : : yn))
+
+A `x : ref(ref( ) \Theta  )
+A `welltyped(x = allocate(y))
+
+A `x : ref(ref(ff1) \Theta  )
+
+A `y : ref(ff2)
+
+ff2 ^ ff1
+A `welltyped(\Lambda x = y)
+
+A `x : ref( \Theta  lam(ff1 : : : ffn)(ffn+1 : : : ffn+m))
+
+A `fi : ref(ffi)
+A `rj : ref(ffn+j)
+8s 2 S
+
+\Lambda  : A `welltyped(s)
+
+A `welltyped(x = fun(f1: : : fn)!(r1: : : rm) S
+
+\Lambda )
+
+A `xj : ref(ff
+
+0
+
+n+j)
+
+A `p : ref( \Theta  lam(ff1 : : : ffn)(ffn+1 : : : ffn+m))
+
+A `yi : ref(ff
+
+0
+
+i)8
+
+i 2 [1 : : : n] : ff
+
+0
+
+i ^ ffi8
+
+j 2 [1 : : : m] : ffn+j ^ ff
+
+0
+
+n+j
+
+A `welltyped(x1: : : xm = p(y1: : : yn))
+
+Figure 3: Type rules for the relevant statement types of the source language. All variables are assumed to have been associated with a typein the type environment
+
+A. (Distinct variables are assumed to have distinct names, so the type environment can describe all variables in allscopes simultaneously.) " " is a wild-card value in the rules, imposing no restrictions on the type component it represents.
+
+a = &x
+b = &y
+if p then
+
+y = &z;
+else
+
+y = &x
+fi
+c = &y
+
+a: o/1 = ref(o/4 \Theta  ?)
+b: o/2 = ref(o/5 \Theta  ?)
+c: o/3 = ref(o/5 \Theta  ?)
+x: o/4 = ref(? \Theta  ?)
+y: o/5 = ref(o/4 \Theta  ?)
+z: o/4
+p: o/6 = ref(? \Theta  ?)
+
+a H
+
+HHj
+
+b HH
+
+Hj
+
+c \Phi \Phi 
+
+\Phi *
+
+x,z
+
+y
+
+6 p
+
+Figure 4: Example program, a typing of same that obeys the typing rules, and graphical representation of the corresponding storage shapegraph. Note that variables
+
+x and z are described by the same type. Even though types o/1 and o/5 are structurally equivalent (as are o/2 and o/3,and
+o/4 and o/6), they are not considered the same types.
+
+If type variables are only joined when necessary to ensure well-typedness, the final solution will be the minimal solution we are
+seeking.
+
+5.2 Processing constraints
+If the typing rules for a statement impose the constraint that twotypes are identical, then the corresponding type variables must be
+
+joined to obey the constraint.An inequality constraint (
+
+^ ) between two types is slightly moredifficult as it may not always be possible to determine, at the time of
+
+processing a statement, whether the two types should be joined. Ifthe left hand side type variable is associated with a type other than
+?, then the two type variables must be joined to meet the constraint.Assume that the left hand side type variable is associated with the
+type ? at the time a statement is processed. At this point, there isno need to join the two type variables. The typing rule for another
+statement may subsequently force a change of the type associatedwith the type variable implying that the type variable should be
+joined with the type variable on the right hand side of the currentconstraint.
+
+To deal with this, we associate each type variable with type ?with a set of other type variables to join with, should the type ever
+
+become anything other than ?. If an inequality relation must holdbetween two type variables, then we perform a conditional join of
+the two. If the left hand side type variable has type ?, then we addthe right hand side type variable to the set associated with the left
+hand side type variable. If the left hand side type variable has a typeother than
+
+?, then a real join of the two type variables is performed.Whenever the type associated with a type variable changes from
+
+?,either because of a typing rule or because of unification, the type
+
+variable must be joined with the type variables in the associated set.The precise rules for processing each statement of the program
+are given in Figure 5. The details of the join and unification opera-tions are given in Figure 6.
+
+5.3 Complexity
+We argue that the algorithm has a linear space and almost lineartime complexity in the size of the input program.
+
+The space cost of the algorithm is determined by the total numberof ECRs created and the number of join operations performed. The
+initial number of ECRs is proportional to the number of variablesin the program. The number of ECRs created during the processing
+of a single statement is either bounded by a small constant or, inthe case of a procedure call, at worst proportional to the number
+4
+
+x = y:let ref
+
+(o/1 \Theta  *1) = type(ecr(x))ref
+(o/2 \Theta  *2) = type(ecr(y)) inif
+o/1 6= o/2 then cjoin(o/1; o/2)if
+*1 6= *2 then cjoin(*1; *2)
+
+x = &y:let ref
+
+(o/1 \Theta  ) = type(ecr(x))
+o/2 = ecr(y) inif
+
+o/1 6= o/2 then join(o/1; o/2)
+
+x = \Lambda y:let ref
+
+(o/1 \Theta  *1) = type(ecr(x))ref
+(o/2 \Theta  ) = type(ecr(y)) inif type
+
+(o/2) = ? thensettype
+
+(o/2; ref(o/1 \Theta  *1))else
+
+let ref(o/3 \Theta  *3) = type(o/2) inif
+
+o/1 6= o/3 then cjoin(o/1; o/3)if
+*1 6= *3 then cjoin(*1; *3)
+
+x = op(y1 : : : yn):for
+
+i 2 [1 : : : n] dolet ref
+
+(o/1 \Theta  *1) = type(ecr(x))ref
+(o/2 \Theta  *2) = type(ecr(yi)) inif
+o/1 6= o/2 then cjoin(o/1; o/2)if
+*1 6= *2 then cjoin(*1; *2)
+
+x = allocate(y):let ref
+
+(o/ \Theta  ) = type(ecr(x)) inif type
+
+(o/ ) = ? thenlet
+[e1; e2] = MakeECR(2) insettype
+
+(o/; ref(e1 \Theta  e2))
+
+\Lambda x = y:let ref
+
+(o/1 \Theta  ) = type(ecr(x))ref
+(o/2 \Theta  *2) = type(ecr(y))if type
+
+(o/1) = ? thensettype
+
+(o/1; ref(o/2 \Theta  *2))else
+
+let ref(o/3 \Theta  *3) = type(o/1) inif
+
+o/2 6= o/3 then cjoin(o/3; o/2)if
+*2 6= *3 then cjoin(*3; *2)
+
+x = fun(f1: : : fn)!(r1: : : rm) S
+
+\Lambda :
+
+let ref( \Theta  *) = type(ecr(x))if type
+
+(*) = ? thensettype
+
+(*; lam(ff1 : : : ffn)(ffn+1 : : : ffn+m))where
+
+ref(ffi) = type(ecr(fi)), for i ^ nref
+
+(ffi) = type(ecr(ri\Gamma n)), for i ? nelse
+
+let lam(ff1 : : : ffn)(ffn+1 : : : ffn+m) = type(*) infor
+
+i 2 [1 : : : n] dolet
+
+o/1 \Theta  *1 = ffiref
+
+(o/2 \Theta  *2) = type(ecr(fi)) inif
+o/1 6= o/2 then join(o/2; o/1)if
+*1 6= *2 then join(*2; *1)for
+i 2 [1 : : : m] dolet
+
+o/1 \Theta  *1 = ffn+iref
+
+(o/2 \Theta  *2) = type(ecr(ri)) inif
+o/1 6= o/2 then join(o/1; o/2)if
+*1 6= *2 then join(*1; *2)
+
+x1: : : xm = p(y1: : : yn):let ref
+
+( \Theta  *) = type(ecr(p)) inif type
+
+(*) = ? thensettype
+
+(*; lam(ff1 : : : ffn)(ffn+1 : : : ffn+m))where
+
+ffi = o/i \Theta  *i
+[o/i; *i] = MakeECR(2)let lam
+
+(ff1 : : : ffn)(ffn+1 : : : ffn+m) = type(*) infor
+i 2 [1 : : : n] dolet
+
+o/1 \Theta  *1 = ffiref
+
+(o/2 \Theta  *2) = type(ecr(yi)) inif
+o/1 6= o/2 then cjoin(o/1; o/2)if
+*1 6= *2 then cjoin(*1; *2)for
+i 2 [1 : : : m] dolet
+
+o/1 \Theta  *1 = ffn+iref
+
+(o/2 \Theta  *2) = type(ecr(xi)) inif
+o/1 6= o/2 then cjoin(o/2; o/1)if
+*1 6= *2 then cjoin(*2; *1)
+
+Figure 5: Inference rules corresponding to the typing rules given in Figure 3. ecr(x) is the ECR representing the type of variable x, andtype
+
+(E) is the type associated with the ECR E. cjoin(x; y) performs the conditional join of ECRs x and y, and settype(E; X) associatesECR
+
+E with type X and forces the conditional joins with E. MakeECR(x) constructs a list of x new ECRs, each associated with the bottomtype,
+
+?.
+
+5
+
+settype(e; t):type
+
+(e)  tfor
+x 2 pending(e) do join(e; x)
+
+cjoin(e1; e2):if type
+
+(e2) = ? thenpending
+
+(e2)  fe1g [ pending(e2)else
+
+join(e1; e2)
+
+unify(ref(o/1 \Theta  *1), ref(o/2 \Theta  *2)):if
+
+o/1 6= o/2 then join(o/1; o/2)if
+*1 6= *2 then join(*1; *2)
+
+unify(lam(ff1 : : : ffn)(ffn+1 : : : ffn+m),lam
+
+(ff
+
+01 : : : ff0
+
+n)(ff
+
+0
+n+1 : : : ff
+
+0
+n+m))for
+
+i 2 [1 : : : (n + m)] dolet
+
+o/1 \Theta  *1 = ffi
+o/2 \Theta  *2 = ff
+
+0
+
+i inif
+
+o/1 6= o/2 then join(o/1; o/2)if
+
+*1 6= *2 then join(*1; *2)
+
+join(e1; e2):let
+
+t1 = type(e1)
+t2 = type(e2)
+e = ecr-union(e1; e2) inif
+
+t1 = ? thentype
+
+(e)  t2if
+t2 = ? thenpending
+
+(e) pending(e1) [pending
+
+(e2)else
+
+for x 2 pending(e1) do join(e; x)else
+type(e)  t1if
+
+t2 = ? thenfor
+
+x 2 pending(e2) do join(e; x)else
+
+unify(t1; t2)
+
+Figure 6: Rules for unification of two types represented by ECRs. We assume that ecr-union performs a (fast union/find) join operation onits ECR arguments and returns the value of a subsequent find operation on one of them.
+of variables occuring in the statement. The number of ECRs isconsequently proportional to the size of the input program. The
+number of join operations is bounded by the total number of ECRs.The space cost of a join operation amounts to the (constant) cost
+of the ecr-union operation. The cost of unifying/joining componenttype ECRs can be attributed to those joins. The cost of performing
+a conditional join or a join of two type variables with type ? isconstant if we use a binary tree structure to represent the "pending"
+sets.The time cost of the algorithm is determined by the cost of
+traversing the statements of the program, the cost of creating ECRsand types, the cost of performing join operations, and the cost of
+(fast union/find) "find" operations on ECRs. The cost of traversaland creation of ECRs and types is clearly proportional to the size
+of the input program. The cost of performing join operations is aconstant plus the cost of ECR "find" operations. The average cost
+of N ECR "find" operations are O(Nff(N; N)), where ff is a (veryslowly increasing) inverse Ackermann's function [Tar83]. The time
+cost complexity of the algorithm is consequently O(Nff(N; N)),where
+
+N is the size of the input program (almost linear in the sizeof the input program).
+
+6 Experience
+We have implemented a slightly improved version of the above al-gorithm in our prototype programming system based on the Value
+Dependence Graph [WCES94] and implemented in the program-ming language Scheme [CR91]. The implementation uses a weaker
+typing rule than presented above for primitive operations return-ing boolean values and uses predetermined transfer functions for
+direct calls of library functions (the algorithm is thus context-sensitive/polymorhpic for calls to library functions). The analysis
+algorithm is routinely applied to the C programs processed by thesystem.
+
+Two implementations of an earlier type inference based points-to analysis algorithm [Ste95a] have been performed at University
+of California, San Diego; one in C [Mor95] and one in Scheme[Gri95]. Both implementations have been augmented to model
+
+slots of structured objects independently. Our earlier algorithm wasbased on the same non-standard type system as used in the present
+algorithm but used stricter typing rules, implying that the results aremore conservative than they need be.
+
+Our implementation demonstrates that running time of the al-gorithm is roughly linear in the size of the input program on our
+test-suite of around 50 programs. Using our own implementation,we have performed points-to analysis of programs up to 75,000
+lines of code2 (an internal Microsoft tool). The running time for thealgorithm on the 75,000 line C program is approximately 27 seconds (15 seconds process time) on an SGI Indigo2 workstation, orroughly 4 times the cost of traversing all nodes in the program representation. For a 25,000 line C program (LambdaMOO availablefrom Xerox PARC) the running time is approximately 8 seconds
+(5.5 seconds process time). The analysis is performed as a separatestage after the program representation has been built.
+
+Morgenthaler's implementation of our previous algorithm per-forms the processing of statements during parsing of the program.
+He found the parse time to increase by approximately 50% by addingpoints-to analysis to the parser. Counting only the extra time for
+performing the analysis, emacs (127,000 non-empty lines of code)could be analyzed in approximately 50 seconds, and FElt (273,000
+non-empty lines of code) could be analyzed in approximately 82 sec-onds on a SparcStation 10 [Mor95]. The present algorithm can also
+easily be implemented to process the statements during parsing. Therunning times of the previous and the present algorithm are roughly
+the same (only minor fluctuations).Table 1, Table 2, and Table 3 illustrate the distribution of program variables per type variable for a number of benchmark pro-grams. The programs are from Bill Landi's and Todd Austin's
+benchmark suites for their analyses [LRZ93, ABS94] as well asthe SPEC'92 benchmark suite. LambdaMOO is a large C program
+available from Xerox PARC (we used version 1.7.1).Table 1 gives the raw distribution for the total analysis solution
+when performed on an (almost) unoptimized version of the programrepresentation. Most of the type variables describe the location
+
+2At the time of writing, this is the largest program represented using the VDG
+program representation.6
+
+of variables whose addresses are never taken. The type variablesdescribing zero program variables represent non? types describinguser functions and locations allocated by the runtime system (e.g.,
+
+the locations for the argv and argc arguments to main).Table 2 gives the distribution for those type variables that occur
+as location components of other types in the solution of the analysisperformed on an (almost) unoptimized version of the program representation. These type variables represent program variables thatare pointed to by other variables. They do not necessarily represent all the program variables that are pointed to in the program,as minor optimizations are performed on the VDG program representation as it is being built; some of these optimizations eliminatestoring values in variables if this is trivial to avoid, as described
+in [WCES94]. The number of type variables describing more thanone program location is reduced relative to Table 1. The reduction
+is mostly caused by eliminating type variables for values passed tofunctions but never pointed to by a pointer. The values would not
+have been grouped in the first place, if a polymorphic analysis hadbeen used.
+
+Table 3 gives the distribution for the location component typevariables in the solution of the analysis performed on an optimized
+version of the program representation. The optimizations performedon the program representation include a local transformation eliminating all local variables whose address is never taken. These typevariables describe the program variables that are the hardest to get
+good analysis results for. The program variables are all pointedto by other program variables which cannot be eliminated by local
+transformations. Many of the program variables described by a typevariable representing no other program variables are candidates for
+global optimizations such as being represented by a register ratherthan a memory location.
+
+The distributions shown in the tables demonstrate that there area considerable number of type variables describing only a single
+program variable, even for those type variables describing pointedto program variables. Most other type variables describe a small
+number of program variables. There are a couple of major excep-tions; type variables describing several hundred program locations.
+However, for most of the programs, the locations described bythese exceptional type variables are all global constant strings. For
+example, for the LambdaMOO program, the program locations de-scribed by the "largest" single type variable are all strings passed
+as argument to user defined logging and tracing procedures. Anycontext-insensitive analysis is bound to show a similar number of
+possible pointer values for the formal parameters of these loggingand tracing procedures.
+
+Our subjective evaluation of the quality of the analysis resultsis that they are pretty good, given that the contents of all the slots of
+structured variables are represented by a single value type. How-ever, many programs use data structures such as trees and lists as
+central data structures. For these programs the inability to distin-guish between structure elements is a serious loss.
+
+7 Related work
+Henglein used type inference to perform a binding time analysisin almost linear time [Hen91]. His types represent binding time
+values. He presents a set of typing rules, extract constraints fromthe typing rules, and finally solve the constraints by using fast
+union/find data structures. Our points-to analysis algorithm wasinspired by Henglein's type inference algorithm.
+
+The points-to analysis that closest resembles our analysis isWeihl's [Wei80]. His analysis is also flow-insensitive, interprocedural, and deals with pointers to functions. His algorithm doesnot assume that alias relations are reflexive and transitive, and will
+
+#of
+vars.
+
+0
+1
+23
+
+45
+67
+89
+
+01
+23
+45
+67
+89
+
+01
+23
+45
+6
+:
+:
+:30
+
+31
+32
+33
+:
+:
+:44
+
+45
+:
+:
+:52
+
+:
+:
+:74
+
+:
+:
+:78
+
+:
+:
+:83
+
+:
+:
+:113
+
+:
+:
+:120
+
+:
+:
+:285
+
+:
+:
+:613
+
+:
+:
+:624
+
+landi:allroots
+18
+67
+
+landi:assembler
+157
+446
+3
+31
+
+1
+
+1
+
+1
+
+landi:loader
+90
+211
+
+11
+
+11
+
+1
+
+landi:compiler
+116
+166
+
+1
+1
+
+landi:simulator
+232
+464
+31
+21
+
+2
+2
+1
+
+12
+
+2
+1
+
+landi:lex315
+52
+91
+
+1
+
+landi:football
+214
+570
+15
+14
+1
+
+1
+
+1
+
+austin:anagram
+54
+65
+
+1
+1
+
+austin:backprop
+43
+69
+
+austin:bc
+297
+551
+2
+
+2
+2
+
+1
+
+austin:ft
+61
+150
+
+austin:ks
+68
+158
+
+2
+
+1
+
+austin:yacr2
+260
+474
+31
+
+spec:compress
+88
+113
+
+1
+
+spec:eqntott
+228
+437
+2
+
+11
+1
+
+spec:espresso
+1155
+2556
+14
+32
+
+12
+1
+
+11
+1
+
+1
+1
+
+1
+
+spec:li
+449
+877
+12
+1
+2
+
+1
+
+1
+
+spec:sc
+557
+1000
+
+26
+43
+
+12
+
+1
+
+1
+
+1
+1
+
+spec:alvinn
+43
+73
+
+spec:ear
+192
+532
+3
+2
+
+1
+
+1
+
+LambdaMOO
+1369
+2580
+
+92
+3
+12
+
+1
+1
+
+1
+
+Table 1: Number of type variables describing a given number ofprogram variables for the unoptimized program representation. For
+example, for landi:allroots, there are 67 type variables each describ-ing the location of a single program variable.
+7
+
+#of
+vars.
+
+0
+1
+23
+
+45
+67
+89
+
+01
+23
+45
+67
+89
+
+01
+23
+45
+6
+:
+:
+:30
+
+31
+32
+33
+:
+:
+:44
+
+45
+:
+:
+:52
+
+:
+:
+:74
+
+:
+:
+:78
+
+:
+:
+:83
+
+:
+:
+:113
+
+:
+:
+:120
+
+:
+:
+:285
+
+:
+:
+:613
+
+:
+:
+:624
+
+landi:allroots
+0
+1
+
+landi:assembler
+10
+8
+3
+
+31
+
+1
+
+1
+
+1
+
+landi:loader
+9
+6
+11
+
+11
+
+1
+
+landi:compiler
+0
+1
+
+1
+1
+
+landi:simulator
+2
+4
+31
+
+21
+
+2
+2
+1
+
+12
+
+2
+1
+
+landi:lex315
+2
+
+1
+
+landi:football
+5
+11
+
+1
+
+1
+
+austin:anagram
+3
+3
+
+1
+1
+
+austin:backprop
+1
+9
+
+austin:bc
+5
+5
+2
+
+2
+2
+
+1
+
+austin:ft
+4
+2
+
+austin:ks
+4
+1
+2
+
+1
+
+austin:yacr2
+29
+1
+31
+
+spec:compress
+2
+4
+1
+
+spec:eqntott
+5
+8
+2
+
+11
+1
+
+spec:espresso
+14
+19
+12
+22
+
+12
+1
+
+11
+1
+
+1
+1
+
+1
+
+spec:li
+2
+4
+12
+
+1
+2
+
+1
+
+1
+
+spec:sc
+710
+54
+2
+
+11
+
+1
+
+1
+
+1
+1
+
+spec:alvinn
+1
+9
+
+spec:ear
+15
+23
+
+3
+2
+
+1
+
+1
+
+LambdaMOO
+815
+82
+3
+12
+
+1
+
+1
+1
+
+1
+
+Table 2: Number of type variables describing a given number ofpointed to program variables for the unoptimized program representation.
+
+#of
+vars.
+
+0
+12
+
+34
+56
+78
+90
+
+12
+34
+56
+78
+90
+
+12
+34
+56
+:
+:
+:9
+
+30
+31
+32
+33
+:
+:
+:44
+
+45
+:
+:
+:52
+
+:
+:
+:74
+
+:
+:
+:78
+
+:
+:
+:83
+
+:
+:
+:113
+
+:
+:
+:120
+
+:
+:
+:285
+
+:
+:
+:613
+
+:
+:
+:624
+
+landi:allrootslandi:assembler
+
+2
+
+1
+1
+
+landi:loader
+1
+
+1
+
+landi:compiler
+
+1
+
+landi:simulator
+1
+1
+
+1
+
+1
+
+landi:lex315
+1
+
+1
+
+landi:football
+3
+
+austin:anagram
+2
+1
+
+austin:backpropaustin:bc
+
+2
+
+1
+
+austin:ft
+1
+1
+
+austin:ks
+1
+1
+
+austin:yacr2
+26
+
+spec:compress
+
+1
+
+spec:eqntott
+1
+2
+
+11
+
+spec:espresso
+2
+1
+
+1
+
+11
+1
+1
+
+1
+
+spec:li
+
+1
+
+spec:sc
+1
+2
+
+1
+
+spec:alvinnspec:ear
+
+812
+1
+
+1
+
+LambdaMOO
+5
+11
+
+2
+
+1
+
+1
+
+Table 3: Number of type variables describing a given number ofpointed to program variables for the optimized program representation.
+
+8
+
+therefore in some cases produce better results than our algorithm.On the other hand, his algorithm does not distinguish between one
+or several levels of pointer indirection. Additionally, his algorithmworks best if a call graph is available, and it does not deal elegantly
+with recursive functions. His algorithm has a time cost complexitythat is cubic in the size of the input program whereas our algorithm
+has an almost linear time cost complexity.More precise points-to analysis exist, e.g., [CWZ90, EGH94,
+WL95, Ruf95]. These analyses are all flow-sensitive interprocedu-ral data flow analyses. Both Chase's algorithm [CWZ90] and Ruf's
+algorithm [Ruf95] are context-insensitive and have polynomial timecomplexity. The two other algorithms are context-sensitive, meaning that the algorithm distinguishes between effects of differentcalls of the same function instead of computing just one effect that
+is valid for all calls of the function3. The algorithm by Emami, et.al., [EGH94] has a exponential time complexity, as it performs a virtual unfolding of all non-recursive calls. The algorithm by Wilsonand Lam [WL95] also has exponential time complexity but is likely
+to exhibit polynomial time complexity in practice as it uses partialtransfer functions to summarize the behavior of already analyzed
+functions and procedures.Whereas a points-to analysis builds and maintains a model of
+the store during analysis, an alias analysis builds and maintains a listof access path expressions that may evaluate to the same location
+(in other words: they are aliased). The most relevant alias analysisalgorithms are [LR92, LRZ93]. The length of access-paths are
+
+k-limited, using a relatively simple truncation mechanism to eliminate
+
+extra path elements.Deutsch presents an alias analysis for an imperative subset of
+ML [Deu92]. Access paths are defined in terms of monomial rela-tions (a kind of multi-variable polynomial expression with structure
+accessors as the variables). The analysis is therefore only relevantfor strongly typed languages such as ML and strongly typable programs written in weakly typed languages such as C (as shown in[Deu94]). Access paths are combined by unification.
+
+A higher order (context-sensitive) points-to analysis by typeinference has been developed by Tofte and Talpin for the purposes
+of creating an ML interpreter without a garbage collector [TT94].The analysis is based on polymorphic type inference over a nonstandard set of types. They assume a runtime model that makesallocation regions explicit, where allocation regions resemble the
+storage shape graph nodes of our algorithm. Their algorithm doesnot deal with objects that may be updated after being assigned an
+initial value (as is normal for imperative programs). Whether theirwork can be generalized to work for general imperative programs
+is an open question.Andersen defines context-sensitive and context-insensitive analyses that are flow-insensitive4 points-to analysis in terms of con-straints and constraint solving [And94]. The context-sensitive algorithm distinguishes between immediate calling contexts in a 1-limited version of the static program call graph, effectively taking
+two layers of context into consideration. The values being con-strained are sets of abstract locations. Andersen's algorithm allows
+an abstract location to be a member of non-identical sets. Our algo-rithm only allows an abstract location to be described by one type
+representing a set of abstract locations. The size of the solutionof his context-insensitive algorithm is
+
+O(A2), and the size of the
+
+solution of his context-sensitive algorithm is O(A4), where A is thenumber of abstract locations, which in turn is
+
+O(exp N), where N
+
+3Our analysis is context-insensitive because the type system is monomorphic. If
+we had used a polymorphic type system and polymorphic type inference, the algorithmwould have been context-sensitive.
+
+4Andersen uses the term "intra-procedural" to mean "context-insensitive" and the
+term "inter-procedural" to mean "context-sensitive".
+
+is the size of the program5. In contrast, the size of the solution ofour algorithm is
+
+O(N).Choi et al. present both flow-sensitive and flow-insensitive analyses [CBC93]. The flow-insensitive analysis algorithm is describedin more detail in [BCCH95]. Their algorithm computes alias information rather than points-to information but uses a representationthat shares many properties with the storage shape graph. The representation allows abstract locations to be members of non-identicalsets. Their algorithm is based on iterated processing of the program
+statements and it thus likely to be slower than a similar constraintbased algorithm (such as Andersen's context-sensitive algorithm
+but only considering one level of calling context).The algorithm presented in this paper is an extension of another
+almost linear points-to analysis algorithm [Ste95a]. Bill Landi hasindependently arrived at the same earlier algorithm [Lan95]. Barbara Ryder and Sean Zhang are also working on a version of theearlier algorithm with the extension that elements of composite objects are represented by separate type components [Zha95].
+
+8 Conclusion and Future Work
+We have presented a flow-insensitive, interprocedural, context-insensitive points-to analysis based on type inference methods with
+an almost linear time complexity. The algorithm has been imple-mented and shown to be very efficient in practice, and we have
+found the results to be much better than the results of intraprocedu-ral analyses.
+
+A problem with the analysis as presented is that it does notdisambiguate information for different elements of structured objects. The type system can be extended to do so, but the resultinganalysis algorithm will not have an almost linear time complexity.
+The algorithm will still be asymptotically faster than other exist-ing algorithms that does distinguish between different elements of
+structured objects.Our main interest has been developing efficient interprocedural
+points-to analysis algorithms for large programs. We would liketo develop efficient algorithms yielding greater precision than the
+algorithm presented in this paper. Given the algorithm presented inthis paper, there are two possible directions to investigate.
+
+One way to obtain improved results is to develop an efficientflow-sensitive algorithm. The results from the algorithm presented
+in the present paper can be used to prime a data flow analysisalgorithm or otherwise reduce the amount of work to be done by the
+algorithm. One possible method is splitting of functional stores assuggested in [Ste95b].
+
+Another way to obtain improved results is to develop an efficientflow-insensitive, context-sensitive algorithm. This can be done
+using types to represent sets of locations, as in the almost lineartime algorithm, but using polymorphic instead of monomorphic
+type inference methods.We are currently pursuing both directions of research.
+
+Acknowledgements
+Roger Crew, Michael Ernst, Erik Ruf, Ellen Spertus, and DanielWeise of the Analysts group at Microsoft Research co-developed
+the VDG-based programming environment without which this workwould not have come into existence. Members of the Analysts group
+also commented on and proofread versions of this paper. The au-thor also enjoyed interesting discussions with David Morgenthaler,
+William Griswold, Barbara Ryder, Sean Zhang, and Bill Landi on
+
+5To be fair, A is probably proportional to N in practice.
+
+9
+
+various points-to analysis algorithms with almost linear time com-plexity. We would like to thank Bill Landi and Todd Austin for
+sharing their benchmark suites with us.
+
+References
+[ABS94] Todd M. Austin, Scott E. Breach, and Gurindar S. Sohi.Efficient detection of all pointer and array access errors. In SIGPLAN'94: Conference on ProgrammingLanguage Design and Implementation, pages 290-301,
+June 1994.
+[And94] Lars Ole Andersen. Program Analysis and Special-ization for the C Programming Language. PhD thesis, Department of Computer Science, University ofCopenhagen, May 1994.
+
+[ASU86] Alfred V. Aho, Ravi Sethi, and Jeffrey D. Ull-man. Compilers--Principles, Techniques, and Tools.
+
+Addison-Wesley, 1986.
+[BCCH95] Michael Burke, Paul Carini, Jong-Deok Choi, andMichael Hind. Flow-insensitive interprocedural alias
+
+analysis in the presence of pointers. In Proceedingsfrom the 7th International Workshop on Languages
+and Compilers for Parallel Computing, volume 892 ofLecture Notes in Computer Science, pages 234-250.
+Springer-Verlag, 1995. Extended version published asResearch Report RC 19546, IBM T.J. Watson Research
+Center, September 1994.
+[CBC93] Jong-Deok Choi, Michael Burke, and Paul Carini. Ef-ficient flow-sensitive interprocedural computation of
+
+pointer-induced aliases and side effects. In Proceed-ings of the Twentieth Annual ACM SIGPLAN-SIGACT
+Symposium on Principles of Programming Languages,pages 232-245, Charleston, South Carolina, January
+1993.
+[CR91] William Clinger and Jonathan Rees (editors). Revised4report on the algorithmic language Scheme, November
+
+1991.
+[CWZ90] David R. Chase, Mark Wegman, and F. KennethZadeck. Analysis of pointers and structures. In Proceedings of the SIGPLAN '90 Conference on Program-ming Language Design and Implementation, pages
+296-310, June 1990.
+[Deu92] Alain Deutsch. A storeless model of aliasing and itsabstractions using finite representations of right-regular
+
+equivalence relations. In International Conference onComputer Languages, pages 2-13. IEEE, April 1992.
+
+[Deu94] Alain Deutsch. Interprocedural may-alias analysis forpointers: Beyond
+
+k-limiting. In SIGPLAN'94: Con-ference on Programming Language Design and Implementation, pages 230-241, June 20-24 1994.
+[EGH94] Maryam Emami, Rakesh Ghiya, and Laurie J. Hendren.Context-sensitive interprocedural points-to analysis in
+
+the presence of function pointers. In SIGPLAN'94:Conference on Programming Language Design and Implementation, pages 242-256, June 20-24 1994.
+[Gri95] William G. Griswold. Use of algorithm from [Ste95a] ina program restructuring tool. Personal communication
+
+at PLDI'95, June 1995.
+
+[Hen91] Fritz Henglein. Efficient type inference for higher-orderbinding-time analysis. In Functional Programming and
+
+Computer Architecture, pages 448-472, 1991.
+[KR88] Brian W. Kernighan and Dennis M. Ritchie. The CProgramming Language, Second edition. Prentice Hall,
+
+1988.
+[Lan95] William Landi. Almost linear time points-to analyses.Personal communication at POPL'95, January 1995.
+
+[LR92] William Landi and Barbara G. Ryder. A safe approx-imate algorithm for interprocedural pointer aliasing.
+
+In Proceedings of the SIGPLAN '92 Conference onProgramming Language Design and Implementation,
+pages 235-248, June 1992.
+[LRZ93] William A. Landi, Barbara G. Ryder, and Sean Zhang.Interprocedural modification side effect analysis with
+
+pointer aliasing. In Proceedings of the SIGPLAN '93Conference on Programming Language Design and Implementation, pages 56-67, June 1993.
+[Mor95] David Morgenthaler. Poster presentation at PLDI'95,June 1995.
+
+[Ruf95] Erik Ruf. Context-insensitive alias analysis reconsid-ered. In SIGPLAN'95 Conference on Programming
+
+Language Design and Implementation, pages 13-22,June 1995.
+
+[Ste95a] Bjarne Steensgaard. Points-to analysis in almost lin-ear time. Technical Report MSR-TR-95-08, Microsoft
+
+Research, March 1995.
+[Ste95b] Bjarne Steensgaard. Sparse functional stores for im-perative programs. In ACM SIGPLAN Workshop on Intermediate Representations (IR'95), pages 62-70, SanFrancisco, CA, January 22 1995. Proceedings appear
+as March 1995 issue of SIGPLAN Notices.
+[Tar83] Robert E. Tarjan. Data structures and network flowalgorithms. In Regional Conference Series in Applied
+
+Mathematics, volume CMBS 44 of Regional Confer-ence Series in Applied Mathematics. SIAM, 1983.
+
+[TT94] Mads Tofte and Jean-Pierre Talpin. Implementation ofthe typed call-by-value
+
+*-calculus using a stack of re-gions. In Proceedings 21st SIGPLAN-SIGACT Symposium on Principles of Programming Languages, pages188-201, January 1994.
+
+[WCES94] Daniel Weise, Roger F. Crew, Michael Ernst, andBjarne Steensgaard. Value dependence graphs: Representation without taxation. In Proceedings 21stSIGPLAN-SIGACT Symposium on Principles of Programming Languages, pages 297-310, January 1994.
+[Wei80] William E. Weihl. Interprocedural data flow analysis inthe presence of pointers, procedure variables, and label
+
+variables. In Conference Record of the Seventh An-nual ACM Symposium on Principles of Programming
+Languages, pages 83-94, January 1980.
+[WL95] Robert P. Wilson and Monica S. Lam. Efficient context-sensitive pointer analysis for C programs. In SIGPLAN'95 Conference on Programming Language De-sign and Implementation, pages 1-12, June 1995.
+
+[Zha95] Sean Zhang. Poster presentation at PLDI'95, June1995.
+10

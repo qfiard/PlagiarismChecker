@@ -1,0 +1,1512 @@
+
+
+J. Functional Programming 1 (1): 1-000, January 1993 cfl 1993 Cambridge University Press 1
+
+Shrinking Lambda Expressions in Linear Time
+
+Andrew W. Appel
+Princeton University, Princeton, NJ 08544-2087, USA
+
+(email: appel@princeton.edu)
+
+Trevor Jim
+University of Pennsylvania, Philadelphia, PA 19104-6389, USA
+
+(email: tjim@saul.cis.upenn.edu)
+
+Abstract
+Functional-language compilers often perform optimizations based on beta and delta reduction. To avoid speculative optimizations that can blow up the code size, we might
+wish to use only shrinking reduction rules guaranteed to make the program smaller: these
+include dead-variable elimination, constant folding, and a restricted beta rule that inlines
+only functions that are called just once.
+
+The restricted beta rule leads to a shrinking rewrite system that has not previously been
+studied. We show some efficient normalization algorithms that are immediately useful in
+optimizing compilers; and we give a confluence proof for our system, showing that the
+choice of normalization algorithm does not affect final code quality.
+
+1 Introduction
+The lambda calculus is a language of functions, so one of the most useful optimizations we can perform in a lambda-calculus-based language is function inlining.
+Inlining a function eliminates the expense of a procedure call, and instantiating the
+function arguments may enable other optimizations. But indiscriminate inlining
+leads to the evaluation of the entire program at compile time, which can lead to
+code blowup or nonterminating compilation.
+
+A simple solution to this problem is to inline only those functions that are used
+exactly once and whose actual parameters are just atoms (variables or literals).
+After the function has been inlined, its definition can be deleted, resulting in a
+smaller program. It makes sense to perform this optimization in concert with other
+optimizations that are guaranteed to make the code smaller, such as dead-variable
+elimination, and ffi-reduction (the evaluation of side-effect-free primitive operators
+whose arguments are constants).
+
+All of these optimizations either depend critically on the usage counts of variables, or change the usage counts of variables, or both. Thus there is a challenge in
+applying them simultaneously and efficiently. We have previously described (Appel
+& Jim, 1989; Appel, 1992) the Contract phase of the Standard ML of New Jersey
+compiler, which implements these optimizations by a naive algorithm. The naive
+
+2 A. W. Appel and T. Jim
+Contract is effective: it improves the speed of the generated code by a factor of 2.5
+(Appel, 1992, p. 183). However, it is also expensive in terms of compile time.
+
+In this paper, we describe simple and practical improvements to the Contract
+algorithm that allow it to accomplish the same result in less time. Because our new
+algorithms do their optimizing rewrites in a different order than the old algorithm,
+we have also found it reassuring to prove that our rewrite system is confluent--thus,
+all the algorithms produce the same output.
+
+2 Syntax
+The intermediate code of our compiler is a lambda calculus based on continuationpassing style (CPS). A representative subset of the language is defined by the
+following grammar:
+
+M ::= let f(x1; : : : ; xn) = M in N recursive function definition
+
+j f(a1; : : :; an) function application
+j let r = ha1; : : :; ani in M record creation
+j let x = #i(a) in M record field selection
+
+Here M and N range over terms, f, x, and r range over variables, and a ranges over
+atoms. The only primitive operators we treat here are record creation and selection,
+and the only atoms here are variables.
+
+Of course, the calculus used by the compiler has more kinds of atoms (such as integer constants), and many more primitive operators. But the ffi-rules for primitives
+such as arithmetic, branching, and constructor discrimination can be implemented
+in much the same way as the record primitives we discuss here. And all side effects and "observation" of side effects are restricted to particular primitives (they
+are syntactically evident), so side effects do not complicate optimizations such as
+dead-variable elimination. Thus our selection of primitives, while limited, suffices
+to illustrate the complexities of shrinking optimizations.
+
+The syntax of our CPS language enforces an important property: every intermediate value computed by a program is named in the program. In particular, the
+allowable arguments of functions and primitives are severely restricted. For example, f(*xM ) is not a CPS term; anonymous (nameless) functions are prohibited,
+because they compute a value (a closure). And f(g(x)) is not a CPS term, because
+the value computed by g(x) is not named. The way to write such programs in our
+CPS language is to first name the complex argument (*xM or g(x)), then pass the
+name as the argument. Besides names, the only other permissible arguments are
+literals--in other words, all arguments are atoms.
+
+Atomic arguments simplify the task of deciding when to inline. For example,
+inlining a function application f(M ) in a less restricted language may not be sound,
+because M may have side effects or be nonterminating; but it is always semanticspreserving to inline a function with atomic arguments. And it is easy to calculate
+the size of inlined function bodies: substituting atoms for formal parameters does
+not change the size of a term.
+
+Indeed there are several intermediate codes now in use that require function
+
+Shrinking Lambda Expressions in Linear Time 3
+arguments to be atoms: our own CPS (Appel & Jim, 1989) (but not the CPS of
+Steele (1978) or Kranz (1987)); the Bform of Tarditi (1997) (but not the A-normal
+form of Flanagan et al. (1993)); and the "core language" used by Peyton Jones
+(1992).
+
+The continuation-passing of our CPS language is not relevant to the shrinking
+reductions we describe in this paper. For example, Tarditi defines similar reductions
+in his Bform intermediate language, which is a direct-style calculus. But fi-reduction
+is easier to express in CPS than in Bform, and we have implemented our algorithms
+in SML/NJ, which uses CPS. So CPS permits both a simpler exposition and realworld performance evaluation.
+
+3 Rewriting rules
+A substitution is a finite mapping from variables to atoms (but not to terms in
+general). A substitution may be written as fx1 7! a1; : : : ; xn 7! ang where the xi
+are distinct; we use oe to range over substitutions. The application of a substitution
+to a term is defined as usual (avoiding the capture of free variables), and is written
+postfix (M oe or M fx1 7! a1; : : : ; xn 7! ang). Note that if M is a term and oe is a
+substitution, then M oe is a term of the same size as M .
+
+A context C[\Delta ] is a "term with a hole;" C[M ] indicates the term obtained by
+filling the hole of C[\Delta ] with the term M , possibly capturing free variables of M .
+
+The dead-variable-elimination rules delete definitions that are not used:
+
+(let z(x1; : : : ; xn) = N in M ) ! M
+
+(let z = ha1; : : : ; ani in M ) ! M
+
+(let z = #i(a) in M ) ! M
+
+9=
+; where z is not free in M or N
+The record selection rule is a kind of constant-folding on field-selection expressions: `
+
+let r = ha1; : : :; ani
+in C[ let x = #i(r) in M ] ' ! `
+
+let r = ha1; : : :; ani
+in C[ M fx 7! aig ] '
+
+For soundness, we must ensure that if the atom ai is a variable, then it is not
+captured by a binding in the context C[\Delta ]; and that C[\Delta ] does not rebind r. This is
+accomplished by requiring that all bound variables be distinct from each other and
+from free variables. As an added benefit, this also simplifies the implementation of
+substitution in our compiler.
+
+The inlining rule replaces a function call with the body of the function:`
+
+let f(x1; : : : ; xn) = M
+in C[ f(a1; : : : ; an) ] ' ! `
+
+let f(x1; : : : ; xn) = M
+in C[ M 0fx1 7! a1; : : : ; xn 7! ang ] '
+
+where M 0 is obtained from M by renaming all bound variables to "fresh" variables.
+Renaming is necessary to preserve distinct bindings.
+
+These rules are the CPS equivalent of the fi- and ffi-rules of the lambda calculus. In principle, we could use them to do "computation" on CPS, though it is
+more common to use CPS as an intermediate representation for optimization before
+translation to machine language.
+
+4 A. W. Appel and T. Jim
+
+The demands of optimization are different from those of computation. In particular, we demand that optimization terminate. A simple way of guaranteeing termination is to use only shrinking reductions, those that make the term smaller. Clearly
+the dead-variable rules and the record-selection rule are shrinking reductions. But
+the inlining rule is not a shrinking reduction.
+
+We are not willing to abandon inlining, because it is such a useful optimization.
+Therefore we adopt the following shrinking inlining rule for functions called exactly
+once: `
+
+let f(x1; : : : ; xn) = M
+in C[ f(a1; : : :; an) ] ' ! C[ M fx1 7! a1; : : : ; x
+
+n 7! ang ];
+
+where f does not appear in C[\Delta ], M , or in fa1; : : : ; ang. Shrinking inlining combines
+inlining with dead-variable elimination--once the function is inlined into its single
+call site, it becomes dead and its definition can be deleted. Notice that in contrast
+to the general inlining rule, renaming is not required, because no duplication of the
+bindings in M has occurred.
+
+We can simplify our implementation of shrinking inlining by requiring that any
+function called exactly once have its definition deleted. We do this by adding the
+following recursive-dead-function rule:`
+
+let f(x1; : : :; xn) = C[ f(a1; : : : ; an) ]
+in M ' ! M
+
+where f does not appear in C[\Delta ], M , or in fa1; : : : ; ang. Although we could have
+written a more general recursive-dead-function rule (permitting f to be free in C[\Delta ]
+or ai), these cases don't come up much and we prefer to keep our algorithms simple.
+
+We write M ! N if N is obtained from M by transforming some subterm by
+one of our shrinking reductions: dead-variable elimination, including recursive-deadfunction elimination; record selection; and shrinking inlining. We write !\Lambda  for the
+reflexive and transitive closure of the relation !. A term M is in shrink-normal
+form if there is no term N such that M ! N .
+
+Our shrinking reduction system is confluent, or Church-Rosser:
+
+Theorem (Confluence): If M0 !\Lambda  M1 and M0 !\Lambda  M2, there is some M3 such
+that M1 !\Lambda  M3 and M2 !\Lambda  M3.
+
+Proof: See Appendix A.
+
+The important consequence of confluence is that every CPS program has a unique
+shrink-normal form. So although the three Contract algorithms we describe in this
+paper apply the shrinking reductions in very different orders, the final output will be
+identical. Therefore in comparing the algorithms, we only have to compare running
+times, and not the programs produced by the algorithms.
+
+We have also proved confluence for shrinking reductions on ordinary lambda
+calculus--where function arguments can be terms, not just atoms (Appel & Jim,
+1994).
+
+Shrinking Lambda Expressions in Linear Time 5
+Fig. 1. Gathering usage counts; use \Delta  = +1 to increment.
+census (\Delta ; let f(x1; : : : ; xn) = M in N ) =
+
+census(\Delta ; M); census(\Delta ; N)
+
+census (\Delta ; f(a1; : : : ; an) ) =
+
+Countapp[oe(f)]  Countapp[oe(f)] + \Delta 
+Countesc[oe(ai)]  Countesc[oe(ai)] + \Delta ; 1 ^ i ^ n
+
+census (\Delta ; let r = ha1; : : : ; ani in M ) =
+
+Countesc[oe(ai)]  Countesc[oe(ai)] + \Delta ; 1 ^ i ^ n
+census(\Delta ; M)
+
+census (\Delta ; let x = #i(a) in M ) =
+
+Countapp[oe(a)]  Countapp[oe(a)] + \Delta 
+census(\Delta ; M)
+
+4 A naive Contract algorithm
+The Contract phase of our compiler does just the shrinking reductions: deadvariable elimination, record-field selection, and inlining of functions called only
+once. Because we compile ML, our optimizer can assume that programs are well
+typed, so that no program applies a function to the wrong number of arguments,
+or selects a nonexistent field from a record.
+
+Redexes of the shrinking inlining rule depend on a rather global property: to
+determine whether an application f(a) should be inlined requires knowing whether
+f has any other uses.
+
+Thus, contraction is implemented in two passes. The census pass (Figure 1)
+gathers the usage count of each variable, and the contract pass (Figure 2) performs
+the reductions.
+
+The census and contract passes use several global mapping tables:
+
+Bind A table mapping function variables to (argument,body) pairs, and record
+
+variables to tuples of atoms;
+oe A substitution mapping variables to atoms;
+Countapp A table mapping function variables to their number of occurrences in
+
+function-call position, and record variables to their number of occurrences in
+selected-from position.
+Countesc A table mapping variables to their number of occurrences as record fields
+
+or function arguments.
+
+The contraction of a redex often produces new redexes. For example, our record
+selection rule removes a reference to a record, which may then become a candidate
+for dead-variable elimination. This sort of dependency makes it difficult to perform
+all contractions in one pass.
+
+In fact, if we consider a "pass" over an expression tree as "down to the leaves
+and then back up to the root," it is provably impossible to produce a shrink-normal
+form in one down-and-up pass (Appel, 1992, pp. 78-80), or any constant number
+
+6 A. W. Appel and T. Jim
+
+Fig. 2. Performing reductions (old algorithm).
+contract ( let f(x1; : : : ; xn) = M in N ) =
+
+Bind[f]  ((x1; : : : ; xn); M)
+if Countapp[f] ^ 1 and Countesc[f] = 0
+then contract(N)
+else let f(x1; : : : ; xn) = contract(M) in contract(N)
+
+contract ( f(a1; : : : ; an) ) =
+
+if Countapp[oe(f)] = 1 and Countesc[oe(f)] = 0
+
+and Bind[oe(f)] = ((x1; : : : ; xn); M)
+then oe  oe + fx1 7! oe(a1); : : : ; xn 7! oe(an)g; contract(M)
+else oe(f)(oe(a1); : : : ; oe(an))
+
+contract ( let r = ha1; : : : ; ani in N ) =
+
+Bind[r]  ha1; : : : ; ani
+if Countesc[r] = 0
+then contract(N)
+else let r = hoe(a1); : : : ; oe(an)i in contract(N)
+
+contract ( let x = #i(a) in N ) =
+
+if Countapp[x] + Countesc[x] = 0
+then contract(N)
+else if Bind[oe(a)] = hb1; : : : ; bni
+then oe  oe + fx 7! oe(bi)g; contract(N)
+else let x = #i(oe(a)) in contract(N)
+
+of such passes (see section 6). At most we will need a linear number of passes, since
+each pass removes at least one node from the expression tree.
+
+We were led astray by this theorem. We reasoned that if a bounded number of
+passes could not do the job, then several passes are necessary; and thus any reasonable multi-pass algorithm would suffice. Therefore we used the following strategy
+in our code optimizer:
+
+repeat
+
+Initialize oe, Bind, Countapp, and Countesc, to empty.
+Gather usage counts (census).
+Perform contractions based on usage counts (contract).
+until no redexes left.
+
+The Glasgow Haskell optimizer uses the same methodology, described by Santos
+(1995) as "Analyse--Simplify--Iterate."
+
+As contractions were done, we did not update the usage counts to reflect the
+changed program. Since usage counts can increase (by shrinking inlining or record
+selection) as well as decrease (by any shrinking rule), this might seem dangerous.
+But the two rules that depend on usage counts are dead-variable elimination and
+shrinking inlining. The usage count of a dead variable can never increase, so deadvariable elimination is safe with nonupdated usage counts; and if Countesc[f] = 0
+then Countapp[f] can only decrease, so shrinking inlining is safe with nonupdated
+usage counts.
+
+Shrinking Lambda Expressions in Linear Time 7
+The real problem is that the algorithm iterates too many times before reaching
+shrink-normal form. In practice the last several iterations of the algorithm contract
+very few redexes, so we adjusted the algorithm to be
+
+repeat
+
+Initialize oe, Bind, Countapp, and Countesc, to empty.
+Gather usage counts (census).
+Perform contractions based on usage counts (contract).
+until only a dozen contractions done in this round.
+
+This loop was a major part of Standard ML of New Jersey's optimizer, up to
+SML/NJ version 0.96. But as we will show in this paper, keeping the usage counts
+current is easy and practical, and greatly improves the speed of the compiler.
+
+5 A better Contract
+We have recently improved the Contract phase to be a quasi-one-pass algorithm.
+We do this by recording the effect of each optimization on usage counts, and by
+changing the order in which optimizations are applied. As a result we contract the
+vast majority of redexes in one pass, resulting in a program with very few shrinking
+redexes. Our New Contract algorithm uses ncontract (Figure 3) in place of contract,
+but with the same census function of Figure 1.
+
+The first improvement is to carefully maintain usage counts. For example,
+
+ffl In dead-variable elimination: if let f(x) = M is deleted because f is a dead
+
+variable, the usage counts of the free variables of M are decremented.
+ffl In ffi-reduction: when we replace
+
+let r = h~ai
+in C[ let x = #i(r) in M ]
+
+by let r = h~ai in C[ M fx 7! aig ], we decrement the count of r and adjust
+the count of ai according to how many times x appears in M .
+ffl In shrinking inlining: a definition let f(~x) = M is removed and an occurrence
+
+f(~a) is replaced by M f~x 7! ~ag; so the usage count of each ai is adjusted
+according to how many times xi is used in M .
+
+Previously, we had not adjusted usage counts while doing reductions. Typically,
+Contract would overestimate usage counts, thereby doing fewer inlinings and deadvariable eliminations than it otherwise could have.
+
+The second improvement concerns the order in which we perform dead-variable
+elimination. The "old" Contract, encountering an expression such as
+
+let r = ha1; : : : ; ani in M
+during its recursive descent, checks whether r is dead before processing M . We
+can achieve better results by performing dead-variable elimination both before and
+after processing M .
+
+8 A. W. Appel and T. Jim
+
+ffl We remove a dead r before processing M because it decrements the usage
+
+counts of the ai. This can enable other optimizations; for example, if an ai is
+a function called only from M , its usage count decreases and we may be able
+to inline the function.
+ffl A reference to r may occur in M , but be removed during the processing of M .
+
+Thus the earliest we can remove r is after processing M . Removing r may
+now cause one of the ai to become dead, cascading this optimization on the
+way up. It turns out to be quite common to have long chains of variables that
+can be removed going up.
+
+Our adjustment of usage counts forces us to handle recursive-dead-function and
+shrinking-inlining redexes more carefully. Consider a definition let f(~x) = M in N
+where Countapp[f] = 1 and Countesc[f] = 0. This is either a recursive-dead-function
+or shrinking-inlining redex; it doesn't matter to the old Contract, which simply
+discards M and recurses on N . But the new Contract must distinguish the two cases:
+if f is a dead function, the usage counts of variables in M must be decremented,
+while if f is inlined, they should not be decremented.
+
+The way we tell the difference is by recurring on N , and arranging for Bind[f] to
+be set to a special token, inlined, if f is inlined. Upon return, Bind[f] is examined
+and census(\Gamma 1; M ) called if it is not inlined. In either case, M is discarded as in
+the old Contract.
+
+Finally, consider let f(~x) = M in N where Countapp[f] ? 1 or Countesc[f] ? 0.
+There is no recursive-dead-function or shrinking-inlining redex. But it could be that
+during ncontract(N ), the counts of f decrease because of other reductions. So when
+ncontract(N ) returns, we check for three cases:
+
+ffl Bind[f] = inlined, meaning that during ncontract(N ) the counts of f decreased and then f(~a) was found and was replaced by M fxi 7! aig. We must
+now remove f(~x) = M without adjusting the counts of variables in M .
+ffl Bind[f] 6= inlined, but the counts of f are now zero. We can delete f(~x) = M
+
+and perform census(\Gamma 1; M ).
+ffl Bind[f] 6= inlined, and f still has occurrences. We now perform ncontract(M );
+
+but any occurrence of f(~a) that we might find within M must not be inlined,
+because it is a recursive call. To disable inlining of f we set Bind[f]  ()
+before calling ncontract(M ).
+
+Because ncontract adjusts usage counts and performs dead-variable elimination
+both before and after each recursive call, for some inputs the number of passes
+required by the new Contract to reach shrink-normal form is a factor of N better
+than that of the old Contract, where N is the input size.
+
+Figure 4 shows an example of how ncontract finds more redexes in one pass. In
+a compilation of the SML-Lex lexical analyzer generator, the old Contract (solid
+circles) reduces 1839 redexes in the first pass, 722 redexes in the second pass, 85
+in the third, and so on. The new Contract (white circles) reduces 2621 in the first
+pass, so that only 43 are left for all remaining passes. Although we have not reduced
+all the redexes in just one pass, there are so few remaining that a second pass is
+not justified by the expected return.
+
+Shrinking Lambda Expressions in Linear Time 9
+
+Fig. 3. Performing reductions (new algorithm).
+ncontract ( let f(x1; : : : ; xn) = M in N ) =
+
+Bind[f]  ((x1; : : : ; xn); M)
+if Countapp[f] = 0 and Countesc[f] = 0
+then census(\Gamma 1; M); ncontract(N)
+else if Countapp[f] = 1 and Countesc[f] = 0
+then N
+
+0  ncontract(N)
+
+if Bind[f] 6= inlined then census(\Gamma 1; M)
+N
+
+0
+
+else N
+
+0  ncontract(N)
+
+if Bind[f] = inlined then N
+
+0
+
+else if Countapp[f] = 0 and Countesc[f] = 0
+
+then census(\Gamma 1; M); N
+
+0
+
+else Bind[f]  ()
+
+let f(x1; : : : ; xn) = ncontract(M) in N
+
+0
+
+ncontract ( f(a1; : : : ; an) ) =
+
+if Countapp[oe(f)] = 1 and Countesc[oe(f)] = 0
+
+and Bind[oe(f)] = ((x1; : : : ; xn); M)
+then oe  oe + fx1 7! oe(a1); : : : ; xn 7! oe(an)g
+
+Countapp[oe(ai)]  Countapp[oe(ai)] + Countapp[xi] \Gamma  1; 1 ^ i ^ n
+Countapp[oe(f)]  0
+Bind[oe(f)]  inlined
+ncontract(M)
+else oe(f)(oe(a1); : : : ; oe(an))
+
+ncontract ( let r = ha1; : : : ; ani in N ) =
+
+Bind[r]  ha1; : : : ; ani
+if Countapp[r] = 0 and Countesc[r] = 0
+then Countesc[oe(ai)]  Countesc[oe(ai)] \Gamma  1; i ^ 1 ^ n
+
+ncontract(N)
+else N
+
+0  ncontract(N)
+
+if Countapp[r] = 0 and Countesc[r] = 0
+then Countesc[ai]  Countesc[ai] \Gamma  1; i ^ 1 ^ n
+
+N
+
+0
+
+else let r = hoe(a1); : : : ; oe(an)i in N
+
+0
+
+ncontract ( let x = #i(a) in N ) =
+
+if Countapp[x] = 0 and Countesc[x] = 0
+then Countapp[oe(a)]  Countapp[oe(a)] \Gamma  1; ncontract(N)
+else if Bind[oe(a)] = hb1; : : : ; bni
+then oe  oe + fx 7! oe(bi)g
+
+Countapp[oe(bi)]  Countapp[oe(bi)] + Countapp[x]
+Countesc[oe(bi)]  Countesc[oe(bi)] + Countesc[x]
+Countapp[oe(a)]  Countapp[oe(a)] \Gamma  1
+ncontract(N)
+else N
+
+0  ncontract(N)
+
+if Countapp[x] + Countesc[x] = 0
+then Countapp[oe(a)]  Countapp[oe(a)] \Gamma  1
+
+N
+
+0
+
+else let x = #i(oe(a)) in N
+
+0
+
+10 A. W. Appel and T. Jim
+
+Fig. 4. Cumulative reductions after each round
+
+0
+400
+800
+1200
+1600
+2000
+2400
+2800
+
+Re
+
+du
+
+ct
+
+io
+ns
+
+0 1 2 3 4 5 6 7 8
+
+Rounds of contraction
+
+ffl Old
+ffi New
+
+ffl
+
+ffl
+
+ffl ffl ffl ffl ffl ffl ffl
+
+...........................
+
+...........................
+
+...........................
+
+...........................
+
+...........................
+
+...........................
+
+..........................
+
+.............................
+
+..............................
+
+..............................
+
+.....................................................................................................................................................................................................................................................................................................
+
+ffi
+
+ffi ffi ffi ffi
+..........................
+
+..........................
+
+...........................
+
+..........................
+
+...........................
+
+..........................
+
+...........................
+
+..........................
+
+...........................
+
+..........................
+
+................................................................................................................................................................
+
+Table 1. Compile-time improvement.
+
+Compile Time Run Time
+Program New/Old
+
+Old % New % Ratio Old New
+
+Barnes-Hut 57.9 26 54.9 21 0.95 30.57 29.31Boyer 25.1 20 24.7 22 0.98 2.72 2.76
+CML-sieve 37.6 42 33.1 30 0.88 34.58 32.91
+Knuth-B. 23.7 47 19.1 33 0.81 7.56 7.30Lex 41.8 44 35.9 34 0.86 10.45 10.48
+
+Life 7.2 50 6.3 28 0.88 1.46 1.42Mandelbrot 0.54 13 0.51 11 0.94 17.52 16.97
+Yacc 157.3 36 132.8 23 0.84 4.39 4.27Ray 17.3 36 15.5 16 0.89 23.53 22.75
+Simple 82.2 57 63.6 40 0.77 15.53 16.26VLIW 236.6 50 183.9 33 0.78 13.69 13.10
+
+Average 0.87
+Total compile time, percentage of compile time taken by optimization, and executiontime are shown for each benchmark under "old" (multi-pass contract) and "new" (onepass contract) compilers. The optimizations are Contract as well as eta-reduction andspeculative inlining (Appel, 1992, Ch. 6 & 7).
+
+Table 1 shows that using the new Contract, all of the benchmark programs (from
+the benchmark set used by Shao and Appel (1994)) are compiled faster, by an
+average of 13%.
+
+The quality of the code generated by the new Contract seems to be just as good
+as that of the code generated by the old Contract: execution time decreases by
+1:8% \Sigma  2:8%--the average decrease in execution time is less than the variance. This
+is as expected: the new algorithm typically contracts as many redexes in its one
+round as the old algorithm contracts in three.
+
+Why is there any change in execution time at all? Neither algorithm reduces
+programs completely to shrink-normal form (because the required extra rounds of
+Contract would be too expensive (Appel, 1992, p. 192)); each leaves a (slightly
+different) set of residuals.
+
+Shrinking Lambda Expressions in Linear Time 11
+
+6 Asymptotic complexity of Contract
+Both the old and the new Contract algorithms reduce expressions to shrink-normal
+form in worst case time complexity \Theta (N 2).
+
+The upper bound is easily established by considering separately the cost of finding
+redexes and the cost of performing contractions. We find a redex by making a downand-up pass over the expression tree. Each pass takes time \Theta (N ) and finds at least
+one redex (if shrink-normal form has not yet been reached). Contracting a redex
+makes the graph smaller, so there are at most N contractions, and therefore at most
+N passes. This gives an upper bound of O(N 2) on the time spent finding redexes.
+The cost of performing a contraction (substitution and updating usage counts) is
+at worst O(N ), and there are at most N contractions to perform, so the total cost
+of performing contractions is O(N 2). The cost of the algorithm as a whole is the
+sum of these costs, or O(N 2).
+
+A simple example demonstrates the \Omega (N 2) behavior:
+
+let f1(x1; y1; z1) = h(z1)
+
+f2(x2; y2; z2) = h(z2)
+
+...
+
+fN (xN ; yN ; zN ) = h(zN )
+g1() = f2
+g2() = f1(g1; f2; f3)
+g3() = f2(g2; f3; f4)
+
+...
+
+gN () = fN\Gamma 1(gN\Gamma 1; fN ; x)
+in h(gN )
+
+In the ith pass of the new Contract, the body of fi is inlined in the application
+fi(gi; fi+1; fi+2) because the usage count of fi is 1. On the ith upward pass, function
+gi is deleted because it is a dead variable, reducing the usage count of fi+1 to 1.
+Thus N passes are required to reach shrink-normal form, each taking linear time,
+giving \Omega (N 2) as the lower bound.
+
+This pathological case cannot be typical, given the data in Figure 4. A much
+more typical case, on which the old Contract took N passes and the new Contract
+takes one pass, is:
+
+let r1 = hx; xi
+
+r2 = hr1; xi
+
+...
+
+rN = hrN\Gamma 1; xi
+in h(x)
+
+7 A linear-time Contract
+We also have an algorithm that reduces expressions to shrink-normal form in linear
+time, in the worst case. The idea is to represent a program as a doubly linked tree
+
+12 A. W. Appel and T. Jim
+of nodes, and maintain a doubly linked list of the occurrences of each variable. The
+use of in-place updating allows us to contract redexes in any order, freeing us from
+the restrictions of the down-and-up passes of Contract.
+
+We have not implemented this algorithm. It spends all its time doing in-place
+updates of doubly linked lists and of expression tree nodes. This style of programming, while implementable straightforwardly in ML using ref variables, does not
+mesh well with the rest of our compiler. There is a significant advantage, in ease of
+correct implementation and readability, in a style of optimization that uses rewriting by structural induction. The new Contract described in this paper is easily
+implemented in such a style; the linear-time algorithm is not. But there are implementation styles in which doubly linked lists are natural, and our algorithm
+establishes the exact complexity of the problem.
+
+Formally, programs are represented as expression trees. We use D; E; F; : : : to
+range over expressions, which are the nodes of the trees. We use v; w; x; : : : to range
+over binding occurrences of variables, and a; b; c; : : : to range over nonbinding occurrences of variables. Binding occurrences of variables will be called simply variables,
+while nonbinding occurrences will be called occurrences.
+
+We navigate the expression tree via the following functions:
+
+var maps each occurrence to its binding variable;
+occ maps each variable to its set of occurrences (represented as a doubly linked
+
+list);
+
+def maps each variable to the expression that binds it; and
+site maps each occurrence to the smallest expression containing the occurrence
+
+(recall that an occurrence is not an expression).
+
+rec indicates, for each occurrence c, whether it is a recursive occurrence. In the
+
+term C[let f(x) = N in M ], the occurrences of f within N are recursive and
+the occurrences of f in M are not recursive.
+
+For example, the program fragment
+
+let v = hq; ri
+in let w = #1(v)
+
+in w(v; r)
+
+is represented by the following expression tree fragment:
+
+D = let v = ha; bi in E;
+
+E = let w = #1(c) in F;
+F = d(e; f);
+
+Shrinking Lambda Expressions in Linear Time 13
+where
+
+var(a) = q;
+var(b) = var(f) = r;
+var(c) = var(e) = v;
+var(d) = w;
+occ(v) = fc; eg;
+occ(w) = fdg;
+def(v) = site(a) = site(b) = D;
+def(w) = site(c) = E;
+site(d) = site(e) = site(f) = F:
+
+Our example program fragment contains a ffi-redex that can be reduced by: (1)
+deleting the definition of w; and (2) substituting q for w. The reduction can be
+carried out in the expression tree by: (1) updating E to F in D; and (2) updating
+the set of occurrences of q, by
+
+occ(var(a)) := occ(var(a)) [ occ(w):
+(Recall that q = var(a)).
+
+This update can be performed in constant time, even if var(a) is not known. The
+occurrence a is part of the doubly linked occurrence list of some unique variable,
+in this case, q. We can splice the doubly linked list occ(w) next to a inside occ(q),
+all without knowing q.
+
+The reason we might not know var(a) is that it is too expensive, in general, to
+update the var function to maintain the invariant g 2 occ(x) iff var(g) = x, for
+any occurrence g and variable x. In our update above, for example, it would require
+visiting all the elements of occ(w); and we might have to perform var updates
+many times for a single occurrence. We describe below how we obtain var when
+necessary while staying within our linear time bound.
+
+Figure 6 shows the algorithm. The algorithm maintains a set of redexes, each of
+which has one of the following forms:
+
+inline(v) marks a function bound to v that can be inlined;
+dead(v) marks a variable v that has no occurrences (and is therefore a dead
+
+variable), or that has only a recursive occurrence (and is therefore a recursive
+dead function); and
+select(a) marks an occurrence a of a record which is being selected.
+
+The initial redex set is obtained by the same census function used by all our Contract algorithms, modified to mark recursive occurrences as rec. Redexes in the set
+may be removed and reduced in any order, and reduction may add newly discovered
+redexes to the set.
+
+Much of the work is done by the two auxiliary functions, delete and subst.
+Delete(a) removes a from the occurrence list of var(a). This can be done in constant time, just as for the update above. Deleting an occurrence can create new
+dead-variable or function inlining redexes, so delete also checks for this. This involves testing the cardinality of occurrence sets; but we only need to know whether
+the cardinality is zero, one, or greater than one. This test can be done in constant
+
+14 A. W. Appel and T. Jim
+
+Fig. 5. Auxiliary functions for the linear-time algorithm.
+delete(a) =
+
+; remove a from occurrence list
+occ(var(a)) := occ(var(a)) \Gamma  fag
+; check for new redexes
+if j occ(var(a)) j ^ 1
+
+compute v = var(a)
+if j occ(v) j = 0
+
+add dead(v) to redex set
+if occ(v) = fcg;
+and site(c) is c(~cj),
+and def(v) is let v( ~wi) = E in F
+
+if rec(c)
+
+add dead(v) to redex set
+else add inline(v) to redex set
+
+subst(w; a) =
+
+; check for new record redexes
+if rec(a) ; a is a recursive occurrence
+
+for each b in occ(w)
+
+rec(b) := true
+if var(a) defined ; a is a record
+
+for each b in occ(w)
+
+var(b) := var(a) ; var update
+if site(b) is let x = #i(b) in D
+
+add select(b) to redex set
+; perform substitution
+occ(var(a)) := occ(var(a)) [ occ(w)
+
+Fig. 6. The linear-time Contract algorithm.
+while redex set is not empty
+
+remove r from redex set
+case r of
+dead(v) :
+
+if def(v) is D is let v( ~wi) = E in F
+
+splice F in place of D in expression tree
+for each occurrence a in E
+
+delete(a)
+if def(v) is D is let v = hb1; : : : ; bni in E
+
+splice E in place of D in expression tree
+for 1 ^ i ^ n
+
+delete(bi)
+inline(v) :
+
+def(v) is D is let v(w1; : : : ; wk) = E in F
+occ(v) is fag
+site(a) is G is a(b1; : : : ; bk)
+splice F in place of D in expression tree
+splice E in place of G in expression tree
+for 1 ^ i ^ k
+
+subst(wi; bi)
+delete(bi)
+select(a) :
+
+; a is a record, so var(a) is defined
+var(a) is v
+def(v) is let v = hb1; : : : ; bni in D
+site(a) is E is let x = #i(a) in F
+splice F in place of E in the expression tree
+subst(x; bi)
+delete(a)
+
+Shrinking Lambda Expressions in Linear Time 15
+time on doubly linked lists. Delete also computes var(a), but only when the occurrence list has length 1 or less. If we give each occurrence list a "header" node that
+indicates the var value, we can compute var from an occurrence just by searching
+down the list. When the list is of length 1 this takes constant time. Thus delete as
+a whole is a constant time operation.
+
+Subst(w; a) substitutes var(a) for w by updating the occurrence list of var(a),
+as described above. Subst can create new select redexes: var(a) may be bound to
+a record, and some occurrence b of w may be selected from. When we later need
+to reduce the redex select(b), we will have to compute var(b). In this case, b may
+be only one of many occurrences of the record variable, so that we cannot use the
+trick of searching down the occurrence list for the header node. Instead, we will
+faithfully maintain var for every occurrence of a record. This means updating var
+for an occurrence in subst when splicing it into the occurrence list of a record.
+Once an occurrence is bound to a record, it can never be rebound; so a var update
+will be performed at most once per occurrence. Thus the total cost of maintaining
+var for records is at most O(N ).
+
+Similarly, we propagate the rec property as occurrences are substituted. Consider
+a term C[ let v(x) = N in M ], where the occurrences of v within N are marked
+rec and the occurrences within M are unmarked. When we perform a reduction
+within N or M , this may create more occurrences of v; for example, N or M might
+be
+
+C1[ let r = hcvi in C2[ let w = #1(r) in K ] ]
+where cv is an occurrence of v, and K contains occurrences ei of w that now become
+occurrences of v. If r = hcvi was within N , then cv would have been marked rec
+and subst(w; cv) will mark all the ei rec; and if r = hcvi was within M , then cv
+would not have been rec and the ei will stay non-rec. An occurrence acquires the
+rec property at most once, so the total cost of rec propagation is linear.
+
+We can now analyze the total running time of the algorithm. It is the sum of the
+times needed to reduce each redex.
+
+To reduce a redex dead(v), we must first remove its defining expression from
+the expression tree, which takes constant time. We must also traverse the definition
+of v, removing each occurrence in the definition from its occurrence list. Traversing
+a dead definition takes time linear in the size of the definition. But we can delete any
+given definition or occurrence only once; so over a complete run of the algorithm,
+the total time spent reducing dead-variable redexes is O(N ).
+
+Reducing a redex inline(v) involves deleting a call expression a(b1; : : : ; bk) from
+the expression tree (constant time), and performing k substitutions and deletions.
+But any call can be inlined at most once; so the total time spent on inlining is
+O(N ), plus the cost of the var updates performed by subst.
+
+The reduction of a redex select(a) involves one substitution and one deletion,
+and at most O(N ) select redexes can be reduced by the program. Thus the total
+time spent on select redexes is O(N ), plus the cost of the var updates performed
+by subst.
+
+We have already seen that the total cost of var updates is O(N ), and so the
+
+16 A. W. Appel and T. Jim
+algorithm runs in worst-case linear time. Since it is trivial to construct an example
+with c \Delta  N redexes, the time complexity is \Theta (N ).
+
+8 Eta-reduction
+In our intermediate language, eta-reduction is the "copy propagation" of function
+definitions. A definition of the form
+
+let f(x1; : : : ; xn) = g(x1; : : : ; xn)
+simply assigns a new name f to the function g; we can remove the definition of f, and
+use g for f in the rest of the program--provided that g 62 ff; x1; : : : ; xng. The result
+is a smaller program, and thus we consider eta-reduction a shrinking reduction. Eta
+redexes can be introduced by the programmer, but are more commonly introduced
+by code transformations performed by the compiler.
+
+Contracting an eta redex can create further redexes:
+
+let f(x) = let g(y) = h(y)
+
+in g(x)
+in : : :
+
+Here we can reduce one eta redex, removing the definition of g and using h instead;
+this produces a new redex, f(x) = h(x).
+
+In contrast with the Contract phase, however, our Eta phase can produce an
+eta-normal form in at most two passes. In the first pass, we maintain a renaming
+map, and traverse the expression from root to leaves and back. When we reach a
+function definition f(x1; : : : ; xn) = M , we first reduce M , obtaining M 0. If M 0 is
+of the form g(x1; : : : ; xn), we have found an eta redex, so we remove the definition
+for f and record that we should use g in place of f in the renaming map.
+
+This strategy can fail to produce an eta-normal form in some cases involving
+mutually recursive functions, for example:
+
+let f(x1; : : :; xn) = M
+
+and g(y1; : : : ; yn) = f(y1; : : : ; yn)
+in N:
+
+Here we first traverse M , obtaining M 0; then remove the definition of g; and finally
+traverse N , renaming g to f. However, g may still appear in M 0; we may need to
+traverse M 0, renaming g to f.
+
+This seems to be a pathological special case, so our strategy is to defer the
+traversal of any such M 0 to a second pass (this also avoids a possible quadratic
+blowup in execution time). In compiling the 75,000-line SML/NJ compiler, the
+second pass of Eta is never invoked.
+
+Our original implementation combined the Eta and Contract phases. But our
+current implementation keeps the phases separate, for two reasons.
+
+First, we alternate Contract with other optimization passes that do speculative
+inlining and loop-invariant analysis; we iterate this alternation several times. But
+none of these optimizations introduce new eta redexes; so it suffices to do Eta just
+once, before the other optimizations.
+
+Shrinking Lambda Expressions in Linear Time 17
+Second, combining Eta and Contract results in a nonconfluent system. For example, the program
+
+let f(x) = M
+in let h(y) = N
+
+in let g(z) = f(z)
+
+in h(g)
+
+rewrites by inlining f to
+
+let h(y) = N
+in let g(z) = M fx 7! zg
+
+in h(g)
+
+and by j-reducing g to
+
+let f(x) = M
+in let h(y) = N
+
+in h(f):
+
+No sequence of reductions can join the two.
+
+The failure of confluence results in a system that is harder to analyze and debug;
+indeed, our combined Contract-Eta was never free of bugs, and was discarded several
+years ago.
+
+9 Further work
+It should be possible to formally relate each of our three algorithms to the rewriting
+system, and therefore to prove the algorithms correct. This will probably be easier
+for the linear time algorithm (which performs one reduction at a time) than for the
+tree-walk algorithms (which perform reductions incrementally).
+
+10 Conclusion
+Our improvements to the Contract phase of Standard ML of New Jersey yield an
+algorithm that reduces "almost all" shrink redexes in linear time. Our improved
+Eta phases reduces all eta redexes in linear time. The algorithms that they replace
+both took worst-case quadratic time. The new algorithms allow us to greatly reduce the number of Contract and Eta passes performed by the compiler, without
+compromising the speed of the generated code. Furthermore, our rewriting system
+is confluent (Church-Rosser), so the optimizations are nicely deterministic.
+
+References
+Appel, Andrew W. (1992). Compiling with continuations. Cambridge University Press.
+Appel, Andrew W., & Jim, Trevor. (1989). Continuation-passing, closure-passing style.
+
+Pages 293-302 of: Conference record of the sixteenth annual ACM symposium on principles of programming languages.
+
+18 A. W. Appel and T. Jim
+Appel, Andrew W., & Jim, Trevor. 1994 (November). Making lambda calculus smaller,
+
+faster. Tech. rept. CS-TR-477-94. Princeton University.
+
+Barendregt, Henk. (1984). The lambda calculus: Its syntax and semantics (revised edition).
+
+Studies in Logic and the Foundation of Mathematics, vol. 103. North-Holland.
+
+Flanagan, Cormac, Sabry, Amr, Duba, Bruce F., & Felleisen, Matthias. (1993). The
+
+essence of compiling with continuations. Pages 237-247 of: Proceedings of the ACM
+SIGPLAN '93 conference on programming language design and implementation.
+
+Kranz, David. (1987). ORBIT: An optimizing compiler for Scheme. Ph.D. thesis, Yale
+
+University, New Haven, CT.
+
+Peyton Jones, Simon L. (1992). Implementing lazy functional languages on stock hardware:
+
+the Spineless Tagless G-machine. Journal of functional programming, 2, 126-202.
+
+Santos, Andr'e Lu'is de Medeiros. (1995). Compilation by transformation in non-strict
+
+functional languages. Ph.D. thesis, University of Glasgow, Glasgow, Scotland.
+
+Shao, Zhong, & Appel, Andrew W. (1994). Space-efficient closure representations. Pages
+
+150-161 of: Proceedings of the 1994 ACM conference on Lisp and functional programming.
+
+Steele, Guy L. 1978 (May). RABBIT: A compiler for SCHEME. Tech. rept. AI-TR-474.
+
+Artificial Intelligence Laboratory, M.I.T.
+
+Tarditi, David. (1997). Optimizing ML. Ph.D. thesis, Carnegie Mellon University, Pittsburgh, PA. Expected 1997.
+
+Shrinking Lambda Expressions in Linear Time 19
+
+A Proof of Confluence
+We now prove confluence for a class of untyped term rewriting systems that generalizes the shrinking rewrite system of Section 3. Confluence is typically achieved by
+imposing some syntactic restrictions on the form of rules used to define the system.
+However, it is difficult to formulate a simple set of restrictions on rules that permit
+all of the rules we have in mind; and not all rewriting systems are defined by rules.
+Therefore, we will instead specify properties that the rewriting relation as a whole
+must satisfy in order to guarantee confluence.
+
+The main results can be stated as follows.
+
+Definition: A rewriting relation is a shrinking rewriting relation if it is substitutive,
+compatible, includes shrinking inlining, dead-function elimination, recursive-deadfunction elimination, and satisfies Properties 1-5 below.
+
+Confluence follows from the following stronger result. Let !r be the reflexive
+(but not transitive) closure of !, so M !r M 0 if M ! M 0 or M j M 0.
+
+Theorem (Diamond Property): Suppose ! is a shrinking rewriting relation. If
+M0 !r M1 and M0 !r M2, there is some M3 such that M1 !r M3 and M2 !r M3.
+
+Theorem: The rewriting relation of Section 3 is a shrinking rewriting relation, and
+therefore, confluent.
+
+We now develop the necessary technical machinery for the proof of the Diamond
+Property. As we introduce each of the Properties 1-5, we will show that the system
+of Section 3 satisfies it.
+
+We fix a set of constants, ranged over by ffi. Typical ffi's include record selection
+and creation operators, numerals and arithmetic functions, etc. The CPS terms are
+generated by the following grammar.
+
+M ::= let f(x1; : : : ; xn) = M in N recursive function definition
+
+j f(a1; : : : ; an) function application
+j let x1; : : : ; xn = ffi(a1; : : : ; am) in M primitive operation
+
+Note that we allow primitive operations to return more than one result. For
+example, we might want
+
+(let quot; rem = 9 \Xi  2 in N ) ! N fquot 7! 4; rem 7! 1g:
+We use some standard concepts (free and bound variables, occurrences, subterms, etc.) without formal definition; the interested reader may consult Barendregt
+(1984). We write fv(M ) for the free variables of M , and M ae N to indicate that
+M is a subterm of N . We consider terms to be equal modulo renaming of bound
+variables. We have already mentioned that we require, in any mathematical context, that all bound variables be distinct from each other and from free variables;
+this is a standard requirement, sometimes called the Variable Convention.
+
+We informally introduced the concept of a syntactic context as a "term with a
+
+20 A. W. Appel and T. Jim
+hole." We formalize that idea by the following grammar.
+
+C[\Delta ] ::= [\Delta ]
+
+j let f(x1; : : : ; xn) = C[\Delta ] in M
+j let f(x1; : : : ; xn) = M in C[\Delta ]
+j let x1; : : : ; xn = ffi(a1; : : :; am) in C[\Delta ]
+
+If C[\Delta ] is a context, then C[M ] is the term obtained by replacing the hole of C[\Delta ]
+by M , possibly capturing free variables of M ; we omit a formal definition. Note
+that an atom a is not a CPS term, so C[a] is not well defined.
+
+In our proof we will need contexts with more than one distinct hole. For example,
+
+C[\Delta ]1[\Delta ]2 j let f(x1; : : : ; xn) = [\Delta ]1 in [\Delta ]2
+is a context with two distinct holes, which may be filled with two different terms,
+as in
+
+C[M ]1[N ]2 j let f(x1; : : :; xn) = M in N:
+We sometimes abbreviate C[\Delta ]1[\Delta ]2 by C[\Delta ][\Delta ]. See Barendregt (1984, x14.4) for a
+formal definition of this sort of context.
+
+A (term) rewriting relation is a binary relation on terms. A rewriting relation R
+is compatible if whenever (M; N ) 2 R, then (C[M ]; C[N ]) 2 R for every context
+C[\Delta ]. The compatible closure of a rewriting relation R is the least compatible relation
+containing R. The kernel of a compatible rewriting relation R is the least relation
+whose compatible closure is R. If (\Delta ; \Delta 0) is in the kernel of R then \Delta  is called a
+redex and \Delta 0 a contractum (of \Delta ). If ! is a compatible rewriting relation, we write
+
+M \Delta ! M 0 to indicate that M rewrites to M 0 by contracting redex \Delta , that is, we
+have M j C[\Delta ] and M 0 j C[\Delta 0] for some context C[\Delta ] and contractum \Delta 0 of \Delta .
+
+The domain of a substitution f~x 7! ~ag consists of the variables ~x, and its range
+consists of the atoms ~a. A substitution oe may be applied to: an atom a yielding an
+atom aoe; a sequence of atoms ~a yielding a sequence of atoms ~aoe; a term M yielding
+a term M oe; or a context C[\Delta ] yielding a context (Coe)[\Delta ]. A rewriting relation R is
+substitutive if whenever (\Delta ; \Delta 0) 2 R, then (\Delta oe; \Delta 0oe) 2 R for any substitution oe.
+
+Two standard results about substitutions will be useful.
+
+Lemma 1
+If no variable in the domain or range of oe is bound in C[\Delta ], then
+
+(C[M ])oe j (Coe)[M oe]
+for any term M .
+Lemma 2
+If no variable of ~x appears in the domain or range of oe, then
+
+(M f~x 7! ~ag)oe j (M oe)f~x 7! ~aoeg
+for any term M and atoms ~a.
+
+We now develop the Properties needed for confluence. Our first Property says that
+every reduction deletes a definition, and that reduction is invariant with respect to
+
+Shrinking Lambda Expressions in Linear Time 21
+certain changes in the syntax of terms. In stating the Property, we use D to range
+over definitions (f(~x) = M or ~x = ffi(~a)), and we say f(~x) = M defines the variables
+ffg, and ~x = ffi(~a) defines the variables f~xg.
+
+Property 1
+A rewriting relation ! satisfies Property 1 if, whenever M \Delta ! M 0 and \Delta  is not a
+shrinking inlining redex, there exist a substitution oe, a unique context C[\Delta ], and a
+unique term (let D in N ) such that
+
+M j C[ let D in N ] \Delta ! C[ N oe ] j M 0;
+the domain of oe contains only variables defined by D, and C[ let D in N 0 ] !
+C[ N 0oe ] for any term N 0 that contains no more variables defined by D than N .
+
+The term (let D in N ) in Property 1 will be called the focus of the redex \Delta ,
+and N oe will be called the focal replacement of \Delta . For example, in the system of
+Section 3, we have the following focuses and focal replacements.
+
+ffl If \Delta  is a dead-variable-elimination redex (let D in N ); the focus of \Delta  is \Delta 
+
+and the focal replacement of \Delta  is N . Note, here we may take the substitution
+oe to be the empty (identity) substitution.
+ffl If \Delta  is a record selection redex (let r = h~ai in C[ let x = #i(r) in N ]); the
+
+focus of \Delta  is the subterm (let x = #i(r) in N ) and the focal replacement of
+\Delta  is N fx 7! aig.
+
+It will be useful to extend this terminology to shrinking inlining redexes.
+
+ffl If \Delta  is a shrinking inlining redex (let f(~x) = N in C[ f(~a) ]); the focus of \Delta 
+
+is \Delta , and the focal replacement of \Delta  is C[ N f~x 7! ~ag ].
+
+Intuitively, the first part of Property 1 says that every rewrite rule of the system
+deletes a definition, and the focus of a redex is defined to be the smallest subterm
+containing the deleted definition. When a redex is contracted, only the focus is
+affected; the portion of the term outside of the focus is unchanged. Usually the
+focus of the redex is the redex itself, and the focal replacement is the contractum
+of the redex; but not always, as in the case of record selection.
+
+To verify the second part of Property 1 for the system of Section 3, we consider
+two cases.
+
+ffl If C[ let D in N ] ! C[ N ] by dead-variable elimination, then N contains no
+
+variables defined by D. And C[ let D in N 0 ] ! C[ N 0 ] for any N 0 containing
+no variables defined by D.
+ffl If C[ let x = #i(r) in N ] ! C[ N fx 7! aig ] by record selection, then
+
+C[ let x = #i(r) in N 0 ] ! C[ N 0fx 7! aig ] for any N 0, regardless of the
+variables it contains.
+
+The next Property concerns the reduction of a redex properly containing its focus,
+e.g., record selection. Like Property 1, it states that such reductions are invariant
+under certain syntactic modifications to terms.
+
+In a term (let D in N ), we call the definition D the head and N the body. We say
+
+22 A. W. Appel and T. Jim
+a definition is dominant in a context if its scope includes the hole of the context.
+Note that if \Delta  is a redex with focus F 6j \Delta  in term C[F ], then the head of \Delta  is
+dominant in C[\Delta ].
+
+Property 2
+A rewriting relation ! satisfies Property 2 if, whenever \Delta  is a redex with focus
+F 6j \Delta  and focal replacement F 0, then
+
+C1[ (C2[ F ])oe ] ! C1[ (C2[ F 0 ])oe ]
+for any C1[\Delta ], C2[\Delta ], and oe such that the head of \Delta  is dominant in C1[\Delta ], and the
+domain of oe includes no variable appearing in C1[\Delta ].
+
+For the system of Section 3, the only case in which F 6j \Delta  is when \Delta  is a record
+selection redex. In this case, C1[\Delta ], F , and F 0 have the following forms:
+
+C1[\Delta ] j C[ let r = h~ai in C0[\Delta ] ];
+
+F j let x = #i(r) in N;
+F 0 j N fx 7! aig;
+
+and we want to verify that
+
+C1[ (C2[ let x = #i(r) in N ])oe ] ! C1[ (C2[ N fx 7! aig ])oe ]:
+We assume that x does not appear in oe (else rename x). Then since r is not in the
+domain of oe, we have (let x = #i(r) in N )oe j (let x = #i(r) in (N oe)). And since
+ai is not in the domain of oe, by Lemma 2 we have (N fx 7! aig)oe j (N oe)fx 7! aig.
+This is enough to verify the reduction.
+
+The following lemma summarizes an important special case of Property 2.
+
+Lemma 3
+Suppose ! satisfies Property 2, and \Delta  is a redex with focus F 6j \Delta  and focal
+replacement F 0. Then C[F ] ! C[F 0] for any context C[\Delta ] in which the head of \Delta  is
+dominant.
+
+Because of the shrinking inlining and dead-function rules, we must keep track
+of the number of occurrences in function position of a variable during the course
+of a reduction (e.g., in the term f(a), f is in function position and a is not). The
+next property gives conditions guaranteeing that occurrences in function position
+decrease. It holds for our shrinking rewrite system, but not for rewrite systems in
+general; for example, it fails under the unrestricted inlining rule.
+
+Property 3
+A rewriting relation ! satisfies Property 3 if, whenever a variable f has n occurrences in function position in a term M , and no other occurrences, and M ! M 0,
+then f has n or less occurrences in function position in M 0, and no other occurrences.
+
+Our final two properties concern overlaps, which can be particularly troublesome
+in proving confluence. The first property states that when overlaps occur, they do
+so in a harmless manner. The second states that a harmful kind of overlap does not
+
+Shrinking Lambda Expressions in Linear Time 23
+occur. In practice, these two properties are the most difficult to prove of a rewrite
+system, because the number of cases to consider is quadratic in the number of rules.
+
+Property 4
+A rewriting relation ! satisfies Property 4 if, whenever two redexes have the same
+focus, then they have the same focal replacement. So, if \Delta 1 and \Delta 2 have the same
+
+focus, M \Delta 
+
+1! M1, and M \Delta 2! M2, then M1 j M2.
+
+For the system of Section 3, a case analysis shows that if two distinct redexes
+have the same focus, then one redex is a record selection redex
+
+\Delta 1 j let r = h~ai in C[ let x = #i(r) in N ];
+and the other redex is a dead-variable-elimination redex
+
+\Delta 2 j (let x = #i(r) in N ):
+That is, \Delta 2 is the focus of \Delta 1. Since x does not appear in N , the focal replacement,
+N fx 7! aig, of \Delta 1 is the same as the focal replacement, N , of \Delta 2, as desired.
+
+Property 5
+A rewriting relation ! satisfies Property 5 if, whenever F = (let D in N ) is the
+focus of a redex in a term M , F 0 is the focus of a second redex, \Delta 0, in M , and F 0
+is a proper subterm of F , then D is not the head of \Delta 0.
+
+If F 0 j \Delta 0, then \Delta 0 is a proper subterm of F , so D is not the head of \Delta 0. Thus
+to verify Property 5, it is sufficient to consider those cases where F 0 6j \Delta 0. For
+the system of Section 3, the only such case is when \Delta 0 is a record selection redex.
+By way of contradiction, assume D is the head r = h~ai of \Delta 0. Then the focus
+(let D in N ) can only be a dead-variable redex. But the record selection focus
+F 0 ae N must contain r, contradiction.
+
+Proof of the Diamond Property:
+
+If M0 j M1 or M0 j M2 the result follows trivially. So assume M0 \Delta 
+
+1! M1 and
+
+M0 \Delta 
+
+2! M2 for some redexes \Delta 1 and \Delta 2, with focuses F1 and F2, respectively. We
+
+consider the following cases.
+
+If F1 and F2 are disjoint, then M0, M1, and M2 have the following forms:
+
+M0 j C[ F1 ][ F2 ];
+M1 j C[ F 01 ][ F2 ];
+M2 j C[ F1 ][ F 02 ]:
+
+Here F 01 and F 02 are the focal replacements of F1 and F2, respectively.
+
+Define M3 j C[ F 01 ][ F 02 ]. If F2 j \Delta 2, then M1 \Delta 
+
+2! M3 by compatibility. If
+
+F2 6j \Delta 2, then the head of \Delta 2 is dominant in C[F1][\Delta ] and therefore also in C[F 01][\Delta ].
+Then M1 ! M3 by Lemma 3. The same argument shows that M2 ! M3.
+
+If F1 and F2 coincide, then by Property 4, M1 j M2, so it is sufficient to choose
+M3 j M1.
+
+Otherwise the focus of one redex is properly contained in the focus of another;
+
+24 A. W. Appel and T. Jim
+we assume without loss of generality that F1 contains F2. Let F 02 be the focal
+replacement of F2. We consider the following cases.
+
+ffl If F1 is not a shrinking inlining redex, and F2 is contained in the body of F1,
+
+then M0, M1, and M2 have the following forms:
+
+M0 j C1[ let D in C2[ F2 ] ];
+M1 j C1[ (C2[ F2 ])oe ];
+M2 j C1[ let D in C2[ F 02 ] ]:
+
+Here D is the head of F1 and oe is the substitution predicted by Property 1.
+Define M3 j C1[ (C2[ F 02 ])oe ].
+
+If \Delta 2 ae C2[F2], then M1 \Delta 
+
+2oe! M3 by compatibility and substitutivity.
+
+Otherwise F2 6j \Delta 2, and the head of \Delta 2 is dominant in C1[\Delta ] (the head of \Delta 2
+is not D by Property 5). Then M1 ! M3 by Property 2.
+Let y be a variable defined by D. Note that if y does not appear in C2[ F2 ],
+it appears nowhere in M0. Then by Property 3, y does not appear in C2[ F 02 ],
+so M2 ! M3 by Property 1.
+ffl If F1 is a dead-function-elimination redex and F2 is contained in the head of
+
+F1, then M0, M1, and M2 have the following forms:
+
+M0 j C1[ let f(~x) = C2[ F2 ] in M ];
+M1 j C1[ M ];
+M2 j C1[ let f(~x) = C2[ F 02 ] in M ]:
+
+Define M3 j C1[ M ]; then M1 !r M3 by reflexivity.
+Since f is a dead function, it has at most one occurrence in function position
+in C2[ F2 ], and no other occurrences anywhere in M0. Then by Property 3,
+f has at most one occurrence in function position in C2[ F 02 ], and no other
+occurrences in M2. So M2 ! M3 by eliminating the dead function f.
+ffl If F1 is a shrinking inlining redex and F2 is contained in the head of F1, then
+
+M0, M1, and M2 have the following forms:
+
+M0 j C1[ let f(~x) = C2[ F2 ] in C3[ f(~a) ] ];
+M1 j C1[ C3[ (C2[ F2 ])f~x 7! ~ag ] ];
+M2 j C1[ let f(~x) = C2[ F 02 ] in C3[ f(~a) ] ]:
+
+Define M3 j C1[ C3[ (C2[ F 02 ])f~x 7! ~ag ] ].
+Since f has a single occurrence in function position in M0, and no other
+occurrences in M0, by Property 3 the same is true of f in M2. So M2 ! M3
+by shrinking inlining.
+
+If \Delta 2 ae C2[F2], then M1
+
+\Delta 2f~x7!~ag! M
+
+3 by compatibility and substitutivity.
+
+Otherwise F2 6j \Delta 2, and the head of \Delta 2 is dominant in C1[\Delta ] (the head of
+
+\Delta 2 is not f(~x) = C2[ F2 ] by Property 5). Therefore, the head of \Delta 2 is also
+dominant in C1[ C3[\Delta ] ], and M1 ! M3 by Property 2.
+ffl If F1 is a shrinking inlining redex and F2 is contained in the body of F1 disjoint
+
+Shrinking Lambda Expressions in Linear Time 25
+from the inlining site, then M0, M1, and M2 have the following forms:
+
+M0 j C1[ let f(~x) = M in C2[ F2 ][ f(~a) ] ];
+M1 j C1[ C2[ F2 ][ M f~x 7! ~ag ] ];
+M2 j C1[ let f(~x) = M in C2[ F 02 ][ f(~a) ] ]:
+
+Define M3 j C1[ C2[ F 02 ][ M f~x 7! ~ag ] ].
+Since f has a single occurrence in function position in M0, and no other
+occurrences in M0, by Property 3 the same is true of f in M2. So M2 ! M3
+by shrinking inlining.
+
+If F2 j \Delta 2, then M1 \Delta 
+
+2! M3 by compatibility.
+
+If F2 6j \Delta 2, then the head of \Delta 2 must be dominant in C1[ let f(~x) =
+M in C2[\Delta ][ f(~a) ] ], and cannot be f(x) = M by Property 5. Therefore
+the head of \Delta 2 is dominant in C1[ C2[\Delta ][ M f~x 7! ~ag ] ]. So by Lemma 3,
+M1 ! M3.
+ffl If F1 and F2 are shrinking inlining redexes, and the inlining site of F1 appears
+
+in the head of F2, then M0, M1, and M2 have the following forms:
+
+M0 j C1[ let f(~x) = M in C2[ let g(~y) = C3[ f(~a) ] in C4[ g(~b) ] ] ];
+M1 j C1[ C2[ let g(~y) = C3[ M f~x 7! ~ag ] in C4[ g(~b) ] ] ];
+M2 j C1[ let f(~x) = M in C2[ C4[ (C3[ f(~a) ])f~y 7! ~bg ] ] ]:
+
+Define M3 j C1[ C2[ C4[ (C3[ M f~x 7! ~ag ])f~y 7! ~bg ] ] ].
+Then M1 ! M3 by shrinking inlining.
+Note that ~y and ~b are not bound in C3[\Delta ], and are disjoint from ~x. Then by
+Lemmas 1 and 2,
+
+(C3[ f(~a) ])f~y 7! ~bg j (C3f~y 7! ~bg)[ f(~af~y 7! ~bg) ];
+(C3[ M f~x 7! ~ag ])f~y 7! ~bg j (C3f~y 7! ~bg)[ M f~x 7! ~af~y 7! ~bgg ]:
+
+So M2 ! M3 by shrinking inlining.
+ffl If F1 and F2 are shrinking inlining redexes, and the inlining site of F1 appears
+
+in the body of F2, then M0, M1, and M2 have the following forms:
+
+M0 j C1[ let f(~x) = M in C2[ let g(~y) = N in C3[ f(~a) ][ g(~b) ] ] ];
+M1 j C1[ C2[ let g(~y) = N in C3[ M f~x 7! ~ag ][ g(~b) ] ] ];
+M2 j C1[ let f(~x) = M in C2[ C3[ f(~a) ][ N f~y 7! ~bg ] ] ]:
+
+Define M3 j C1[ C2[ C3[ M f~x 7! ~ag ][ N f~y 7! ~bg ] ] ]. Note that f does not
+appear in N f~y 7! ~bg, and g does not appear in M f~x 7! ~ag. Then M1 ! M3
+and M2 ! M3 by shrinking inlining.
+ffl If F1 is a shrinking inlining redex, F2 is a dead-function redex, and the head
+
+of F2 contains the inlining site of F1, then M0, M1, and M2 have the following
+forms:
+
+M0 j C1[ let f(~x) = M in C2[ let g(~y) = C3[ f(~a) ] in N ] ];
+M1 j C1[ C2[ let g(~y) = C3[ M f~x 7! ~ag ] in N ] ];
+M2 j C1[ let f(~x) = M in C2[ N ] ]:
+
+26 A. W. Appel and T. Jim
+
+Define M3 j C1[ C2[ N ] ]. Then M2 ! M3 by eliminating the dead function f.
+Since g is a dead function, it has at most one occurrence in function position
+in C3[ f(~a) ], and no other occurrences anywhere in M0. Then by Property 3,
+g has at most one occurrence in function position in C3[ M f~x 7! ~ag ], and
+no other occurrences anywhere in M1. So M1 ! M3 by eliminating the dead
+function g.
+ffl If F1 is a shrinking inlining redex, F2 is not a shrinking inlining redex, and
+
+the inlining site of F1 is in the body of F2, then M0, M1, and M2 have the
+following forms:
+
+M0 j C1[ let f(~x) = M in C2[ let D in C3[ f(~a) ] ] ];
+M1 j C1[ C2[ let D in C3[ M f~x 7! ~ag ] ] ];
+M2 j C1[ let f(~x) = M in C2[ (C3[ f(~a) ])oe ] ]:
+
+Here oe is the substitution predicted by Property 1.
+Define M3 j C1[ C2[ (C3[ M f~x 7! ~ag ])oe ] ].
+Because f is not in the domain of oe, and no variable of M is in the domain
+of oe, we have
+
+(C3[ f(~a) ])oe j (C3oe)[ f(~aoe) ];
+(C3[ M f~x 7! ~ag ])oe j (C3oe)[ M f~x 7! ~aoeg ]:
+
+Then M2 ! M3 by shrinking inlining.
+Let y be a variable defined by D. Note that if y does not appear in C3[ f(~a) ],
+then it appears nowhere in M0. Then by Property 3, y does not appear in
+C3[ M f~x 7! ~ag ], so M1 ! M3 by Property 1.
+
+End proof.

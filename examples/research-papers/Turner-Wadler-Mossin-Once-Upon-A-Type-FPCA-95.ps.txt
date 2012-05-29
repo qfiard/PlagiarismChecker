@@ -1,0 +1,1535 @@
+
+
+Once upon a type
+
+\Lambda 
+
+David N. Turner Philip Wadler
+
+University of Glasgowy
+dnt,wadler@dcs.glasgow.ac.uk
+
+Christian Mossin
+University of Copenhagenz
+
+mossin@diku.dk.
+
+Abstract
+A number of useful optimisations are enabled if we can determine when a value is accessed at most once. We extend
+the Hindley-Milner type system with uses, yielding a typeinference based program analysis which determines when
+values are accessed at most once. Our analysis can handle higher-order functions and data structures, and admits
+principal types for terms.
+
+Unlike previous analyses, we prove our analysis sound
+with respect to call-by-need reduction. Call-by-name reduction does not provide an accurate model of how often a value
+is used during lazy evaluation, since it duplicates work which
+would actually be shared in a real implementation.
+
+Our type system can easily be modified to analyse usage
+in a call-by-value language.
+
+1 Introduction
+This paper describes a method for determining when a value
+is used at most once. Our method is based on a simple
+modification of the Hindley-Milner type system. Each type
+is labelled to indicate whether the corresponding value is
+used at most once, or may possibly be used many times.
+
+Our type system has a number of applications:
+
+Program transformation: If it is determined that a variable
+is accessed at most once, then one may safely inline the
+expression bound to the variable without reducing efficiency.
+In particular, we can determine when it is safe to inline an
+expression into the body of a function.
+
+Avoiding closure update: Implementations of lazy languages
+use updates to share the evaluation of closures. If it is determined that a closure is accessed at most once, then there
+
+\Lambda Appears in the 7'th International Conference on Functional
+Programming and Computer Architecture, San Diego, California,
+June 1995. This work was supported by EPSRC (GR/J 527099),
+`Save space with linear types', ESPRIT (6809) `Semantique', ESPRIT
+(ECUS025) `Atlantique', and the Danish Technical Research Council.
+
+yComputing Science Department, University of Glasgow, Glasgow
+
+G12 8QQ, Scotland.
+
+zDIKU, University of Copenhagen, Universitetsparken 1, 2100
+
+Copenhagen O/, Denmark. This work was performed while Mossin
+was visiting the University of Glasgow.
+
+is no need to overwrite the closure with the result of evaluation.
+
+Enabling data structure update: If it is determined that a
+structure such as a `cons' cell or an array is accessed at most
+once, then the structure may safely be updated in place.
+
+The last of these application areas has received considerable attention, the second of these some attention, and the
+first almost none. This is quite surprising, since expression
+inlining is central to a wide range of program transformations. In particular, our method provides a sound basis for a
+number of transformations that were previously dealt with
+in an ad hoc manner in the Glasgow Haskell Compiler, and a
+solution to a problem that has bedevilled those attempting
+to extend Deforestation to higher order.
+
+Previous analyses to determine when a value is used at
+most once have been based on either call-by-name (Wright
+and Baker-Finch [WB93], Courtenage and Clack [CC94]) or
+call-by-need (Launchbury et al. [Lau92], Marlow [Mar93]).
+The call-by-name analyses have been proved sound, but are
+not well-suited for optimisation of lazy languages. Our analysis is the first call-by-need analysis to be proved sound, and
+sometimes provides more accurate information than other
+call-by-need analyses. Our proof of soundness is based on
+the operational semantics of Launchbury [Lau93] and the
+call-by-need calculus of Ariola et al. [AFMOW95].
+
+The type system presented here is based on ideas taken
+from the linear logic of Girard [Gir87] and its successor
+the Logic of Unity [Gir93]. However, it turns out to be
+convenient to present this work without reference to linear
+logic. Some of the connections are traced in a companion
+paper [MOTW95], which relates linear logic to the call-byneed calculus of Ariola et al.
+
+We modify the Hindley-Milner type system [Hin69,
+DM82] by attaching uses to types. Type judgements include
+a constraint set relating uses, similar to the constraint sets
+relating subtypes in the work of Mitchell [Mit84, Mit91].
+As with the Hindley-Milner system, there is an algorithm
+that determines a principal type for an expression. Representing usage information as type annotations provides
+a convenient mechanism for communicating usage information across module boundaries, since typed languages such
+as Haskell already import type information from separatelycompiled modules.
+
+A small modification to our analysis enables it to determine when variables are used exactly once (as opposed to at
+most once), making it suitable for use with call-by-value (as
+opposed to call-by-need) evaluation.
+
+1.1 The problem
+Some examples may help to illustrate the nature of the problem solved.
+
+We wish to attach uses to values. The use 1 indicates
+that a value is used at most once, while the use ! indicates
+that a value may be used any number of times.
+
+Consider the following. (Example 1.)
+
+let x = 1 + 2 in
+
+let y = x + 3 in
+
+y + y
+
+Here it is safe to replace x by 1 + 2 within the body of the
+outer `let'. But it is not safe to replace y by x + 3 within
+the body of the inner `let', as the resulting program would
+compute x + 3 twice rather than once. Our type system
+attaches use 1 to x and use ! to y.
+
+Our argument depends crucially on the use of call-byneed. Under call-by-name x+3 is computed twice regardless.
+Hence a call-by-name analysis must attach a use equivalent
+to ! to both x and y, showing why such analyses are not
+suited for our purpose.
+
+At first glance, it may seem child's play to determine if
+a value is used at most once under call-by-need. Surely, if a
+variable appears at most once in a program, then the value
+it is bound to is used at most once? In fact, this is not the
+case.
+
+Consider the following. (Example 2.)
+
+let x = 1 + 2 in
+
+let f = *z: x + z in
+
+f 3 + f 4
+
+Even though x appears only once in the body of the outer
+`let', replacing x by 1 + 2 is unsafe, as the resulting program
+will compute 1 + 2 twice rather than once. Our type system
+attaches use ! to both x and f.
+
+Consider the following. (Example 3.)
+
+let x = 1 + 2 in
+
+let f = (let y = x + 3 in *z: y + z) in
+
+f 4 + f 5
+
+Here, again, one can safely replace the one occurrence of x
+by 1 + 2, although it may require a moment's thought to
+convince oneself this is the case. Indeed, this example is
+sufficiently difficult that the analyses proposed by Launchbury et al. [Lau92] and by Marlow [Mar93] are both overly
+conservative, and in effect attach use ! to x. However, our
+type system attaches use 1 to x and use ! to y and f.
+
+1.2 Call-by-need
+Our work is based on the operational semantics of call-byneed proposed by Launchbury [Lau93], and on the call-byneed lambda calculus of Ariola et al. [AFMOW95]. A correspondence between these two approaches has already been
+shown in the latter work.
+
+Launchbury's rules include an explicit treatment of closure update. By modifying his rules to allow some closures
+to be non-updating, we verify that our type system can be
+used to avoid unnecessary closure updates.
+
+The soundness of our type system is established by showing that it satisfies a subject reduction property: applying a
+call-by-need reduction to a term leaves its type unchanged,
+including type information regarding usage.
+
+Launchbury restricts functions to be applied to variables,
+while Ariola et al. allow functions to be applied to arbitrary expressions. As we explain in Section 5, the difference
+between these approaches is significant for our chosen implementation, the Glasgow Haskell Compiler [PHHPW93],
+which is closely based on the STG-machine of Peyton
+Jones [Pey92]. Therefore, in this paper we adopt Launchbury's syntax (which was influenced by the Haskell compiler
+and the STG machine), and adapt the results of Ariola et
+al. to it.
+
+1.3 Program transformation
+If we want to use program transformation as the basis of
+efficient compilation of a functional language, it is not only
+important that transformation preserves meaning but that
+the transformed program executes at least as fast as the
+original.
+
+Consider Church's beta rule:
+
+(*x: e0) e1 =) [e1=x]e0:
+This rule is good in that it eliminates one application step,
+but bad in that it may duplicate some computation. (In
+particular, computation of e1 may be duplicated if x is used
+more than once in e0.)
+
+The call-by-need calculus of Ariola et al. addresses this
+problem by modifying the above rule:
+
+(*x: e0) e1 =) let x = e1 in e0:
+This rule, together with a number of rules for manipulating
+`let', allow us to safely transform programs, without the risk
+of duplicating work.
+
+However, there are a number of transformation that are
+useful and safe and which are not part of the call-by-need
+calculus. The most important of these is that the beta rule
+
+(*x: e0) e1 =) [e1=x]e0
+is safe when x has use 1. Another is that the rule
+
+let x = e0 in *y: e1 =) *y: let x = e0 in e1
+is safe when the function *y: e1 has use 1. Both of these
+transformations are used extensively in the Glasgow Haskell
+Compiler. Until now, their safety was ensured only by
+ad hoc techniques. And the ad hoc techniques were not
+adequate - an unsafe version of the second rule was allowed, with the result that the compiler itself (which is bootstrapped) was slowed by as much as one third [SP95].
+
+Another example of program transformation is the deforestation algorithm [Wad90a]. In order to ensure safety,
+this algorithm requires that variables are used at most once.
+The definition of `used at most once' is easy because deforestation applies to a first-order language. Attempts to
+apply deforestation to higher-order [MW92] have been hindered by the lack of a suitable definition of `used at most
+once' at higher-order. This paper provides such a definition.
+
+1.4 Outline
+This paper is organised as follows. Section 2 introduces
+the language used and its semantics. Section 3 describes
+the fundamentals of the type system. Section 4 discusses
+principal types and polymorphism. Section 5 summarises
+the call-by-need reduction rules. Section 6 discusses how to
+adapt the analysis so that it is appropriate for a call-byvalue language. Section 7 describes related work. Section 8
+concludes.
+
+2
+
+Var-Once jxj = 1 hH
+
+0i e + hH1i v
+
+hH0; let x = e; H2i x + hH1; H2i v
+
+Var-Many jxj = ! hH
+
+0i e + hH1i v
+
+hH0; let x = e; H2i x + hH1; let x = v; H2i v
+
+Var-Rec hH
+
+0; letrec x = v; H1i x + hH0; letrec x = v; H1i v
+
+Abs hHi *x: e + hHi *x: e App hH
+
+0i e0 + hH1i *x: e1 hH1i [y=x]e1 + hH2i v
+
+hH0i e0 x + hH2i v
+
+Int hHi n + hHi n Plus hH
+
+0i e0 + hH1i n0 hH1i e1 + hH2i n1
+
+hH0i e0 + e1 + hH2i n0 + n1
+
+Nil hHi nil + hHi nil Cons hHi cons x y + hHi cons x y
+
+Case-Nil hH
+
+0i e0 + hH1i nil hH1i e1 + hH2i v
+
+hH0i case e0 of fnil ! e1; cons x y ! e2g + hH2i v
+
+Case-Cons hH
+
+0i e0 + hH1i cons y0 y1 hH1i [y0=x0; y1=x1]e2 + hH2i v
+
+hH0i case e0 of fnil ! e1; cons x0 x1 ! e2g + hH2i v
+
+Let fresh x
+
+0 hH
+
+0; let x
+
+0 = e
+
+0i [x
+
+0=x]e
+
+1 + hH1i v
+
+hH0i let x = e0 in e1 + hH1i v Letrec
+
+fresh x
+
+0 hH
+
+0; letrec x
+
+0 = [x0=x]vi [x0=x]e + hH
+
+1i v
+
+hH0i letrec x = v in e + hH1i v
+
+Figure 1: Natural semantics
+
+2 Language
+We now present the syntax and operational semantics of a
+call-by-need lambda calculus extended with integers, lists,
+and recursion. For the sake of brevity other constructs have
+been omitted, but there would be no difficulty in including
+them.
+
+2.1 Terms
+The syntax of the language is given below. We use the syntax of Launchbury [Lau93] where arguments in applications
+and in cons are restricted to variables.
+
+Variables x; y; z
+Values v ::= *x: e j n j nil j cons x y
+Terms e ::= v j x j e x j e0 + e1 j
+
+case e0 of fnil ! e1; cons x y ! e2g j
+let x = e0 in e1 j letrec x = v in e
+
+It is trivial to translate terms with the standard syntax
+for application and cons into the restricted syntax, for example we can translate `e0 e1' to `let x = e1 in e0 x'. The
+syntax closely resembles the STG language [Pey92].
+
+Our syntax differs from Launchbury in three respects.
+First, we distinguish between non-recursive `let' and recursive `letrec' bindings; second, we allow only a single binding
+in `letrec', rather than several mutually recursive bindings;
+and, third, we restrict the definiens of `letrec' to be a value.
+The third restriction is required to permit the second, since
+otherwise reducing a single recursive binding, such as
+
+letrec y = (let x = e0 in e1) in e2;
+
+may introduce a mutually recursive binding, such as
+
+letrec x = e0 and y = e1 in e2:
+The restricted `letrec' is still powerful enough to define recursive functions and cyclic lists. Without these three changes
+the typing and reduction rules would need to be rather more
+complex; for instance, see Ariola et al. [AFMOW95] for the
+reduction rules required for mutual recursion. We feel that
+the slight loss of expressiveness in the language is justified
+by the considerably simpler presentation that it makes possible.
+
+2.2 Use annotations
+The operational semantics of this section and the reduction
+rules of Section 5 require that let-bound variables are annotated with uses, and the type rules of Sections 3 and 4 allow
+us to infer such annotations.
+
+Each let-bound variable x is annotated with a use jxj,
+which is either 1 or !. If jxj = 1, then x is used at most
+once during evaluation, and if jxj = ! then x may be used
+any number of times. No annotation is required for letrecbound variables, as they always have use !.
+
+2.3 Heaps
+A heap abstracts the state of the store at a point in the computation. It consists of a sequence of bindings associating
+variables with terms.
+
+Heaps H ::= B1; : : : ; Bn
+Bindings B ::= let x = e j letrec x = v
+
+3
+
+We distinguish between non-recursive bindings (written
+`let x = e') and recursive bindings (written `letrec x = v').
+A configuration pairs a heap with a term, and is written
+hHi e.
+
+The expression e in the heap `H0; let x = e; H1' can only
+refer to variables bound in H0. Similarly, the value v in the
+heap H0; letrec x = v; H1 can only refer to the recursivelydefined variable x and the variables bound in H0.
+
+2.4 Evaluation rules
+Figure 1 presents a natural semantics for lazy evaluation,
+which closely resembles the one given by Launchbury. The
+key difference is that the evaluation of a let-bound variable
+depends on its use annotation.
+
+Evaluation rules have the form hH0i e + hH1i v, meaning
+that evaluating expression e in initial heap H0 returns value
+v and final heap H1.
+
+Rule Var-Once evaluates a variable that is used at most
+once. Look up the expression e that is bound to the variable
+x in the heap then evaluates e. As the variable will no longer
+be used, it is removed from the heap.
+
+Rule Var-Many evaluates a variables that may be used
+many times. Look up the expression e that is bound to the
+variable x in the heap, evaluates e, and update the heap
+to bind x to the resulting value. Note that the expression
+e in the heap H0; let x = e; H2 can refer only to variables.
+In practice, the update required by Var-Many may have a
+significant cost, whereas Var-Once avoids this cost.
+
+Rule Var-Rec evaluates recursively bound variables: look
+up the value v that is bound to the variable x in the heap. It
+is simpler because `let' binds a term, while `letrec' can only
+bind a value.
+
+Rule Abs evaluates abstractions: it is trivial since a
+lambda expression is already a value.
+
+Rule App evaluates applications: evaluate the function
+to yield a lambda abstraction, then evaluate the body of the
+abstraction with the argument substituted for the bound
+variable of the abstraction.
+
+Rules Int and Plus are easy. Rules Nil and Cons are
+trivial since both `nil' and `cons x y' are already values. The
+two Case rules are again straightforward.
+
+Rules Let and Letrec are similar, each creating a new
+binding on the heap. In these rules x
+
+0 is a fresh name not
+
+appearing in the expression or the heap.
+
+Observe that all bindings added to the heap are to fresh
+variables, so it trivially follows that all bindings in the heap
+are unique. This property is not quite as trivial in Launchbury's formulation, where renaming occurs during variable
+access rather than during evaluation of a binding construct.
+
+3 A use type system
+We now present a type system which indicates when values
+will be accessed at most once. For simplicity, the type system is monomorphic; extensions which allow polymorphism
+are discussed in Section 4.
+
+3.1 Uses
+Types will be annotated with uses. A type is annotated
+with use 1 if each value of that type is used at most once,
+and annotated with ! otherwise. Thus, 1 and ! stand for
+upper bounds on the number of times a value can be used.
+
+To enable type inference, we also allow use variables (ranged
+over by j; k; l; m). Let ^ range over uses.
+
+Uses ^ ::= j j 1 j !
+
+3.2 Constraints
+We use \Theta  to record the constraints generated by our typing
+rules. We define \Theta  to be a set of constraints of the form
+j ^ fk1; : : : ; kng.
+
+The following rules define an ordering on uses, parameterised on a constraint set \Theta :
+
+Omega ^ ^
+
+\Theta  ! One 1 ^\Theta  ^ Refl ^ ^\Theta  ^
+
+Taut (j ^ fk
+
+1; : : : ; kng) 2 \Theta 
+
+j ^\Theta  ki
+
+3.3 Types
+Types include type variables (let a; b; c range over these),
+function types, integers, and list types.
+
+Types o/ ::= a^ j o/ !^ o/
+
+0 j Int^ j [o/]^
+
+The type a^ indicates that the type variable a ranges over
+types with use ^. The type o/ !^ o/
+
+0 denotes functions from
+
+type o/ to type o/
+
+0 that can be used at most ^ times, Int^
+
+denotes integer values that can be used at most ^ times,
+and [o/]^ denotes lists with elements of type o/, where the list
+can be accessed at most ^ times.
+
+Write jo/j for the use attached to type o/, defined as below:
+
+jo/ !^ o/
+
+0j = ^ jInt^j = ^ j[o/]^j = ^ ja^j = ^
+
+We impose the following well-formedness condition on
+list types:
+
+The type [o/]^ is well-formed only if ^ ^\Theta  jo/j.
+In other words, if a list can be accessed many times, then its
+elements also might be accessed many times (through the
+list). A similar restriction appears in the type systems of
+Guzm'an and Hudak [GH90] and Wadler [Wad90b, Wad91].
+
+3.4 Contexts
+A context associates a type with each variable that may
+appear in a term, and is represented by a list of entries of
+the form x : o/.
+
+Contexts \Gamma ; \Delta  ::= x1 : o/1; : : : ; xn : o/n
+Each variable in a context must be distinct. If x : o/ is
+in \Gamma , we say that x has use ^ if jo/j = ^. If \Gamma  and \Delta  are
+contexts containing no variables in common, write \Gamma ; \Delta  to
+denote the concatenation of the two contexts.
+
+We extend our ordering on uses so that it applies to
+complete contexts, written ^ ^\Theta  j\Gamma j and defined as below:
+
+^ ^\Theta  jx1 : o/1; : : : ; xn : o/nj iff ^ ^\Theta  jo/ij for all i
+Consider the constraint ^ ^ j\Gamma j. If ^ = 1, then no constraint
+is placed on any use in \Gamma . But if ^ = ! then for every entry
+xi : o/i in \Gamma , our definition implies that jo/ij = !.
+
+4
+
+Var x : o/ `
+
+\Theta  x : o/ Exch
+
+\Gamma ; x : o/0; y : o/1; \Delta  `\Theta  e : o/
+\Gamma ; y : o/1; x : o/0; \Delta  `\Theta  e : o/
+
+Cont \Gamma ; x : o/; y : o/ `
+
+\Theta  e : o/
+
+0 jo/j = !
+
+\Gamma ; z : o/ `\Theta  [z=x; z=y]e : o/
+
+0 Weak \Gamma  `
+
+\Theta  e : o/
+
+0
+
+\Gamma ; x : o/ `\Theta  e : o/
+
+0
+
+Abs \Gamma ; x : o/ `
+
+\Theta  e : o/
+
+0 ^ ^
+
+\Theta  j\Gamma j
+
+\Gamma  `\Theta  *x: e : o/ !^ o/
+
+0 App \Gamma  `
+
+\Theta  e : o/ !^ o/
+
+0 \Delta  `
+
+\Theta  x : o/
+
+\Gamma ; \Delta  `\Theta  e x : o/
+
+0
+
+Int `
+
+\Theta  n : Int^ Plus
+
+\Gamma  `\Theta  e0 : Int^0 \Delta  `\Theta  e1 : Int^1
+
+\Gamma ; \Delta  `\Theta  e0 + e1 : Int^
+
+Nil `
+
+\Theta  nil : [o/]^ Cons
+
+\Gamma  `\Theta  x : o/ \Delta  `\Theta  y : [o/]^
+
+\Gamma ; \Delta  `\Theta  cons x y : [o/]^
+
+Case \Gamma  `
+
+\Theta  e0 : [o/]^ \Delta  `\Theta  e1 : o/
+
+0 \Delta ; x : o/; y : [o/]^ `
+
+\Theta  e2 : o/
+
+0
+
+\Gamma ; \Delta  `\Theta  case e0 of fnil ! e1; cons x y ! e2g : o/
+
+0
+
+Let \Gamma  `
+
+\Theta  e : o/ \Delta ; x : o/ `\Theta  e
+
+0 : o/0
+
+\Gamma ; \Delta  `\Theta  let x = e in e
+
+0 : o/0 Letrec \Gamma ; x : o/ `
+
+\Theta  v : o/ \Delta ; x : o/ `\Theta  e : o/
+
+0 jo/j = !
+
+\Gamma ; \Delta  `\Theta  letrec x = v in e : o/
+
+0
+
+Figure 2: Type rules
+
+3.5 Typing judgements
+Typing judgements take the form \Gamma  `\Theta  e : o/, indicating
+that in context \Gamma , and under the constraints \Theta , the term
+e has type o/. The type rules are shown in Figure 2. As
+usual, these consist of zero or more hypotheses above and a
+conclusion below the line.
+
+The type rules are quite similar to the usual rules for
+lambda calculus, and so we concentrate on explaining the
+unusual features: the structural rules, and the constraints
+on uses.
+
+3.6 Structural rules
+The manipulation of contexts is carefully designed so that
+if any variable is used more than once this will be indicated
+by the presence of the structural rule contraction (Cont),
+which introduces the use !.
+
+Terms that may be evaluated together are typed in different contexts which are then combined, as can be seen in
+rules App, Plus, Cons, Case, and Let. As all variables in a
+context must be distinct, the only way for the same variable
+to be used more than once is via the Cont rule. In this rule,
+the substitution [z=x; z=y]e replaces all occurrences of the
+placeholder variables x and y in term e by the variable z.
+The type of z (and its placeholders x and y) must be annotated with the usage !. For instance, here is a type tree for
+the term z + z.
+
+Varx : Int! `
+\Theta  x : Int! Vary : Int! `\Theta  y : Int! Plus
+
+x : Int!; y : Int! `\Theta  x + y : Intj Cont
+
+z : Int! `\Theta  z + z : Intj
+As one would expect, the variable z has use !. The use
+variable j on the result type may be instantiated to 1 or !,
+depending on how the result of the addition is used.
+
+If a variable is never used, this is indicated by the presence of the structural rule weakening (Weak). This rule
+
+places no constraints on the use, since the use 1 (at most
+once) and the use ! (any number of times) are both compatible with not being used at all. However, the weakening
+rule may be helpful in devising a type system for strictness
+analysis, and is certainly important in usage analysis for
+call-by-value languages (see Section 6).
+
+The last structural rule, exchange (Exch), simply indicates that the order of bindings in a context is irrelevant.
+
+The contraction, weakening, and exchange rules are not
+syntax directed, but do not pose an impediment to the existence of principal types since it easy to devise an algorithm
+which determines whether contraction or weakening must
+be used on each variable, placing these rules as close to the
+root of the type tree as possible.
+
+A subtlety in the manipulation of contexts is revealed
+by the Case rule. In the Case rule, the term e0 is always
+evaluated, and then either e1 or e2 is evaluated. Hence it
+makes sense to type e0 in a different context from e1 and e2,
+but to type e1 or e2 in the same context. For instance, the
+following is a valid typing.
+
+xs : [Int1]1; y : Int1 `\Theta 
+
+case xs of fnil ! y; cons x xs
+
+0 ! x + yg : Int1
+
+Although y appears twice in the term, it is only labelled as
+being used once, which is correct because only one branch
+of the `case' term will be evaluated.
+
+3.7 Term rules
+In rule Abs, the constraint ^ ^ j\Gamma j reflects the fact that if a
+function abstraction may be accessed more than once, then
+every free variable of that abstraction may be accessed more
+than once.
+
+Consider again this example from the introduction.
+
+let x = 1 + 2 in
+
+let f = *z: x + z in
+
+f 3 + f 4
+
+5
+
+Since f appears twice in f 3 + f 4 it has use !. Since x is a
+free variable of a lambda abstraction with use !, it is in turn
+forced to have use !. Thus, despite appearing only once in
+the term, x must be labelled with use !, as indeed it should
+be since it will be accessed twice in the course of evaluation.
+
+Note that the Nil and Cons implicitly include the condition ^ ^\Theta  jo/j because of our global well-formedness condition on list types (see Section 3.3).
+
+The term `cons x y' does not create any closures. It does,
+however, refer to the variables x and y, which can be thought
+of as pointers to closures. Consider the following example,
+where the term `cons x y' is used twice.
+
+let l = cons x y in
+
+case l of \Delta  \Delta  \Delta  case l of \Delta  \Delta  \Delta 
+
+Our typing rules give `cons x y' the type [a!]! which in turn
+forces x to have type a! and y to have type [a!]! as expected, since both x and y may be accessed twice.
+
+The Plus rule deserves some explanation. Our addition
+operator is strict, so the result of evaluating e0 + e1 will
+simply be an integer constant which will not refer to any
+part of the results of evaluating e0 and e1. Therefore, the
+usage assigned to the expression e0 + e1 need not depend at
+all on the usages ^0 and ^1. A similar argument applies to
+the App rule, since application is strict in its first argument.
+
+3.8 Recursion
+Finally, in a recursive definition, even a single access to a
+variable may allow additional accesses via the recursion (actually the use of the letrec bound variable in both the body
+and the letrec bound expression requires an implicit contraction). Hence in rule Letrec, the type of the recursively
+bound variable must have use !.
+
+Note that this does not mean that whenever recursion is
+involved that all uses must degenerate to !. If a function is
+defined recursively, the argument and result of the function
+may still have use 1. Here is a function to append two lists.
+
+letrec append = *xs: *zs:
+
+case xs of f
+
+nil ! zs
+cons y ys ! let as = append ys zs in cons y asg
+in \Delta  \Delta  \Delta 
+
+It has the (principal) type
+
+[aj]k !! [aj]l !m [aj]l
+with the set of constraints
+
+k ^ fjg; l ^ fjg; m ^ fkg
+The constraints k ^ fjg and l ^ fjg are generated by our
+global well-formedness condition on list types, and indicates
+that if the argument or result list are accessed more than
+once, then the elements of those lists may also be accessed
+more than once. The constraint m ^ fkg is generated by
+the Abs rule, and indicates that if append is partially applied
+and then used more than once, the first argument list may
+be accessed more than once.
+
+One instance of the above type is
+
+[Int!]! !! [Int!]! !! [Int!]!
+
+indicating that append can take two lists to which there may
+be multiple pointers, and return a list to which there may
+be multiple pointers. Another instance is
+
+[Int
+
+1]1 !! [Int1]1 !1 [Int1]1
+
+indicating that append may be applied multiple times to two
+lists to each of which there is only one pointer, returning a
+list to which there is only one pointer. (Attaching the use 1
+to the second arrow guarantees that one cannot create extra
+pointers to the first argument list by creating and duplicating a partial application.) For this version of append it is
+possible to generate code that reuses the `cons' cells of the
+first argument in producing the result.
+
+3.9 Typeability
+The ordinary rules for simply typed lambda calculus can
+be derived by simply omitting all use annotations and use
+constraints from the rules given here. It follows that if a
+term is typeable in this system, it is typeable in simply typed
+lambda calculus. Conversely, if a term is typeable in simply
+typed lambda calculus, then it is also typeable in this system
+(just take all uses to be !).
+
+4 Principal types and polymorphism
+Before discussing what it means for a type to be principal
+for a given term, we first need to define when a type is an
+instance of another type. Our definition of instantiation is
+closely related to Mitchell's definition of instantiation for a
+type system with simple subtypes [Mit84, Mit91].
+
+4.1 Instantiation
+A substitution is a pair of finite maps. One component maps
+type variables to types, while the other maps use variables
+to uses.
+
+Type substitutions TS ::= fa^11 7! o/1; : : : ; a^nn 7! o/ng
+Use substitutions US ::= fk1 7! ^1; : : : ; kn 7! ^ng
+Substitutions S ::= (TS; US)
+
+Whenever a type variable is replaced by a type, the new
+type must have the same usage: for each (a^ii 7! o/i) 2 S we
+have S(^i) = jo/ij.
+
+We can derive an instance of the typing derivation \Gamma  `\Theta 
+e : o/ by applying a substitution S to \Gamma  and o/, and replacing
+\Theta  with a stronger constraint set \Theta 
+
+0. The behaviour of S on
+
+types and contexts is defined in the usual way. We define
+the conditions under which \Theta 
+
+0 is stronger than \Theta  (under the
+
+substitution S) below:
+
+\Theta 
+
+0 j= S\Theta  iff for each (j ^ fk
+
+1; : : : ; kng) 2 \Theta  we have thatS(j) ^
+
+\Theta 0 S(ki) for each i.
+
+A straightforward induction on the structure of typing
+derivations proves the following substitution lemma.
+
+Lemma 4.1.1 (Type substitution)
+If \Gamma  `\Theta  e : o/ and \Theta 
+
+0 j= S\Theta  then S\Gamma  `
+
+\Theta 0 e : So/.
+
+6
+
+4.2 Unification
+It is easy to modify Robinson's unification algorithm so
+that it unifies types containing usage information. However,
+whenever we unify a usage variable with another usage, we
+need to update the current constraint set. Suppose \Theta  is the
+following constraint set:
+
+j ^ flg; k ^ fmg; l ^ fmg; m ^ fg
+If we unify the types aj and Intk we get the substitution:
+
+(faj 7! Intkg; fj 7! kg)
+Since we have unified j and k, we must modify the constraint
+set \Theta  so that it merges the constraints for j and k:
+
+k ^ fl; mg; l ^ fmg; m ^ fg
+Similarly, if we unify the types aj and Int! we get the substitution:
+
+(faj 7! Int!g; fj 7! !g)
+
+We have instantiated j to !, which in turn forces us to also
+instantiate l and m to !. The constraint k ^ fmg then
+simplifies to k ^ f!g, which can be eliminated, since ! is
+the maximal usage.
+
+If we unify usage variables with other usage variables, or
+with !, we can always derive a new constraint set, as explained above. We can only fail to produce a new constraint
+set if we unify use variables with 1 (for instance, we might
+unify j with ! and l with 1, generating the unsatisfiable constraint ! ^ 1). Fortunately, it is easy to show that, during
+type inference, we never need to make such constraints.
+
+4.3 Principal types
+Every term e has a principal type judgement \Gamma  `\Theta  e : o/, of
+which all other type judgements for e are instances.
+
+Proposition 4.3.1 (Principal types)
+If \Gamma  `\Theta  e : o/ then there exist \Gamma 
+
+0, \Theta 0 and o/0 such that \Gamma 0 `
+
+\Theta 0e : o/
+0 and for all \Gamma 00, \Theta 00 and o/0 such that \Gamma 00 `
+
+\Theta 00 e : o/
+
+00
+
+there exists a substitution S such that S\Gamma 
+
+0 ` \Gamma 00, So/0 = o/00
+
+and \Theta 
+
+00 j= S\Theta 0.
+
+The result is proved, as usual, by exhibiting an algorithm
+that computes principal types.
+
+4.4 Annotations
+The operational semantics of Section 2 and the reduction
+rules of Section 5 require that each let-bound variable x is
+annotated with a use jxj which is either 1 or !. Such annotations may be inferred as follows. First, determine a principal typing for the given term, and a corresponding principal
+type derivation. The typing will include a constraint set \Theta ,
+and we may choose any substitution S of use variables such
+that fg j= S\Theta . Naturally, we choose the substitution that
+maps each use variable to 1, since this yields the best usage
+information.
+
+Since in the end all of the use variables are set to 1, one
+might wonder why we bother with constraint sets at all? But
+a moment's thought will show that we need the constraint
+information in order to infer the principal typing of a term
+from the principal typing of its subterms. This is because
+in general the usage of a subterm depends on the context in
+which it appears, and the constraints on use variables allow
+us to propagate this information.
+
+4.5 Polymorphism
+The next step is to use `let' terms to introduce polymorphism in the usual way. There are two possibilities. The
+first is to allow polymorphism only on type variables. For
+instance, the polymorphic type for append would be:
+
+8aj: [aj]k !! [aj]l !m [aj]l
+with the same constraints as before. This allows append
+to be used on lists of different types, but every occurrence
+of append in the program must have the same usage labelling. For instance, if the labelling indicated that the first
+list passed to append always had use 1, then the code for append could be optimised to reuse the `cons' cells of that list.
+Although crude, an analysis of this sort may be suitable for
+some purposes, such as removing unnecessary closures. An
+existing analyser for this purpose, based on abstract interpretation, has a similar limitation but has proved reasonably
+effective [Mar93].
+
+The second possibility is to allow polymorphism on both
+type and use variables. For instance, the polymorphic type
+for append would be
+
+8j: 8k ^ fjg: 8l ^ fjg: 8m ^ fkg:
+
+8aj: [aj]k !! [aj]l !m [aj]l
+
+In order to maximise the potential for optimisation, the compiler needs to generate different versions of append for different instantiations of the use variables. A similar technique is
+used in Haskell compilers to specialise code involving overloaded functions, and experience to date suggests that this
+is feasible and does not necessarily lead to an explosion in
+code size [Aug93, Jon93]. In some situations, instead of specialising append for different uses, we might consider having
+just one version of append, and interpret the use variables
+j; k; l; m as additional arguments to the append function, enabling run-time selection of the behaviour of append.
+
+The trade-off between these two possibilities is similar to
+the trade-off between monovariant and polyvariant binding
+time analysis in partial evaluation. Further experimentation
+will be necessary to better understand the strengths and
+weaknesses of each approach.
+
+5 Reduction and subject-reduction
+We previously described the semantics of our language using Launchbury's operational semantics of call-by-need. We
+now give an alternative characterisation of that semantics
+using a modification of the call-by-need calculus of Ariola et
+al.
+
+Working in the framework of a calculus with reduction
+rules simplifies our proof of subject-reduction, but more importantly, gives a set of rules which can be used by a compiler to optimise programs without danger of duplicating
+work (or returning the wrong result). We show how our usage information enables additional "safe" reduction rules to
+be formulated, allowing more aggresive optimisation when
+values are known to be used at most once.
+
+5.1 Reduction rules
+In the call-by-need calculus of Ariola et al. [AFMOW95]
+a closure is created for the argument of each function application, whereas in the operational semantics of Launchbury [Lau93] a closure is created only by the appearance of
+
+7
+
+Contexts C ::= [ ] j C x j : : : *x: C j let x = C in e j let x = e in C j letrec x = C in e j letrec x = v in C j
+
+C + e j e + C j case C of fnil ! e1; cons x y ! e2g j case e0 of fnil ! C; cons x y ! e2g j
+case e0 of fnil ! e1; cons x y ! Cg
+Let contexts L ::= [ ] x j let x = [ ] in e j [ ] + e j e + [ ] j case [ ] of fnil ! e1; cons x y ! e2g
+
+Figure 3: Call-by-need contexts
+n0 + n1 =) n0 + n1
+(*x: e) y =) [y=x]e
+case nil of fnil ! e1; cons x y ! e2g =) e1
+case (cons y0 y1) of fnil ! e1; cons x0 x1 ! e2g =) [y0=x0; y1=x1]e2
+let x = v in C[x] =) let x = v in C[v] if jvj = !
+let x = e
+
+0 in e =) fe0=xge if jxj = 1
+
+letrec x = v in C[x] =) letrec x = v in C[v]
+L[let x = e
+
+0 in e] =) let x = e0 in L[e]
+
+L[letrec x = v in e] =) letrec x = v in L[e]
+let x = e
+
+0 in e =) e if x =2 fv(e)
+
+letrec x = v in e =) e if x =2 fv(e)
+
+Figure 4: Call-by-need reductions
+
+`let'. This difference is significant: it means that the model
+of Ariola et al. may create many more closures than the
+model of Launchbury. For example, consider the following.
+
+letrec f = *xs: *y:
+
+case xs of fnil ! y; cons x xs
+
+0 ! f xs0 yg
+
+in let xs = e0 in let y = e1 in f xs y
+
+Here the model of Launchbury only creates closures for the
+original call, and for each element of the list e0. In contrast,
+the model of Ariola et al. also creates two two extra closures
+for each recursive call of f.
+
+Fortunately, it is straightforward to adapt the calculus
+of Ariola et al. to correspond to the model of Launchbury.
+The required contextual forms are given in Figure 3, and
+the reduction rules are given in Figure 4.
+
+A context C is a term with a hole. Note a hole cannot
+appear as the argument of an application or cons, since these
+are restricted to variables and cannot be replaced by arbitrary terms. A let context L has a hole in a strict position
+(the function of an application, the selector of a case, or an
+argument of plus) or in the definiens of a let.
+
+The rules are the compatible closure of the rules shown
+in Figure 4. That is, if e =) e
+
+0 then also C[e] =) C[e0] for
+
+any context C. Capture of free variables is disallowed, so
+context C should not bind x in the two rules containing C,
+and context L should not have x as a free variable in the two
+rules containing L. The rules containing L correspond to the
+several let-floating rules of Ariola et al., which are necessary
+to guarantee that every closed term can be reduced to a
+weak head normal form.
+
+The key change from the work of Ariola et al. involves
+the rule that allows substitution of a value,
+
+let x = v in C[x] =) let x = v in C[v]; if jxj = !:
+This rule is safe because, since v is already a value, the substitution cannot duplicate computation. However, in order
+to guarantee that reductions preserve use types, we must
+restrict this rule to the case where all free variables of v
+have use !; otherwise we may duplicate a variable with use
+1 resulting in an ill-typed term. An adequate restriction
+
+is to require that x has use !, since this implies that all
+free variables of v also have use !, as the reader may easily check (the two important cases are when v is a function
+abstraction and when v is a cons).
+
+In the case where x has use 1, we can allow substitution
+of not just a value but of any expression,
+
+let x = e
+
+0 in e =) fe0=xge; if jxj = 1:
+
+Since we cannot substitute an expression for a variable that
+appears as the argument of an application or cons, we use
+a modified form of substitution, written fe
+
+0=xge. The definition of fe
+
+0=xge is standard, except for the following two
+
+clauses:
+
+fe
+
+0=xg(e x) = let x = e0 in e x;
+
+fe
+
+0=xg(cons y z) = let x = e0 in cons y z; if x = y or x = z:
+
+Note that the substitution rules together with let-floating
+rules introduce possible loops in reduction sequences. For
+example,
+
+let x = e
+
+0 in let z = cons x y in e
+
+=) let z = let x = e
+
+0 in cons x y in e
+
+=) let x = e
+
+0 in let z = cons x y in e:
+
+As we note below, compilers such as the Glasgow Haskell
+compiler are often based on sets of reductions containing
+such loops. Nonetheless, it would be preferable to have a
+reduction system without such loops, and we note this as an
+interesting topic for future work.
+
+5.2 Confluence, soundness, and completeness
+The following results are straightforward adaptations of the
+results of Ariola et al. The system is confluent, and sound
+and complete with respect to Launchbury's operational semantics.
+
+Proposition 5.2.1 (Confluence)
+If e0 =)
+
+\Lambda  e
+
+1 and e0 =)
+
+\Lambda  e
+
+2 then there exists a term e3 suchthat e
+
+1 =)
+
+\Lambda  e
+
+3 and e2 =)
+
+\Lambda  e
+
+3.
+
+8
+
+If H is a heap as in the operational semantics, and e is a
+term, then the configuration hHie corresponds to the term
+`let hHi in e', defined as follows.
+
+let h i in e = e
+let hlet x = e
+
+0; Hi in e = let x = e0 in (let hHi in e)
+
+let hletrec x = v; Hi in e = letrec x = v in (let hHi in e)
+
+Proposition 5.2.2 (Soundness)
+If hHi e + hH
+
+0i v0 then let hHi in e =)\Lambda  let hH0i in v0
+
+Proposition 5.2.3 (Completeness)
+If let hHi in e =)
+
+\Lambda  let hH00i in v00 then there exist H0
+
+and v
+
+0 such that hHi e + hH0i v0 and let hH0i in v0 =)\Lambda 
+
+let hH
+
+00i in v00.
+
+The soundness and completeness results take an even
+simpler form for terms of type integer.
+
+Corollary 5.2.4 (Soundness and completeness)
+There exists a heap H
+
+0 such that hHi e + hH0i n if and only
+
+if let hHi in e =)
+
+\Lambda  n.
+
+NB: We have checked in detail the proof of soundness; it
+is a straightforward adaptation of the proof given by Ariola
+et al. We believe the proofs of confluence and completeness
+should also be straightforward adaptations of their proofs,
+but we have not checked these in detail.
+
+5.3 Subject Reduction
+Use types are preserved by reduction.
+Proposition 5.3.1 (Subject reduction)
+If \Gamma  `\Theta  e : o/ and e =) e
+
+0 then \Gamma  `
+
+\Theta  e
+
+0 : o/.
+
+The proof is straightforward, verifying each rule in Figure 4 separately, and structural induction over terms for the
+compatible closure.
+
+Combining Propositions 5.3.1 and 5.2.2 yields a soundness result for our type system with respect to the operational semantics.
+
+Corollary 5.3.2 (Operational subject reduction)
+If `\Theta  let hHi in e : o/ and hHi e + hH
+
+0i v then
+
+`\Theta  let hH
+
+0i in v : o/.
+
+5.4 Additional transformations
+There are many useful reduction rules that we might add to
+those appearing in Figure 4.
+
+For instance, it is helpful to have the reduction
+
+let x = e0 in (let y = e1 in e2) =)
+let y = (let x = e0 in e1) in e2; if x =2 fv(e2);
+
+which avoids the creation of a closure for e0 if, say, y is
+not evaluated at run time. By the way, note that the rule
+L[let x = e
+
+0 in e] =) let x = e0 in L[e] has as an instance
+
+let y = (let x = e0 in e1) in e2 =)
+let x = e0 in (let y = e1 in e2); if x =2 fv(e2);
+
+which is helpful if, say, further simplification reduces e1 to a
+value. The Glasgow Haskell compiler makes extensive use of
+both reductions [San92]. This explains why we are not too
+bothered by the existence of loops in our reduction rules, as
+noted previously.
+
+Some useful additional transformations depend on usage
+information. The prime example is the reduction
+
+let x = e
+
+0 in (*y: e) =) *y: (let x = e0 in e); if j*y: ej = 1:
+
+This requires adding a further use annotation to terms: we
+assume that each that each abstraction j*x: ej is annotated
+with a use of 1 or ! which we write j*x: ej. The use information is crucial for safety: the reduction might duplicate
+computation if j*y: ej = !. Again, this reduction is extensively used in the Glasgow Haskell compiler. It turns
+out to be particularly important for one form of deforestation [GLP93].
+
+6 Use analysis for call-by-value calculi
+Our use analysis can easily be adapted for call-by-value calculi. In such calculi, we are interested in variables which are
+used exactly once (rather than at most once). For example,
+if f is used exactly once, and x is only used in the body of
+f, then we can safely transform
+
+let x = e in let f = *y: x + 3 in : : :
+into
+
+let f = *y: e + 3 in : : :
+(hopefully reducing the maximum amount of storage used
+by the program). This transformation is clearly unsafe if f is
+never used, since the expression e might be non-terminating.
+We would have transformed a non-terminating program into
+a terminating program.
+
+Changing our type system to determine when a value is
+used exactly once is easy. We simply change the weakening
+rule as below:
+
+Weak \Gamma  ` e : o/
+
+0 jo/j = !
+
+\Gamma ; x : o/ ` e : o/
+
+0
+
+We can now interpret the use 1 as meaning that a value
+is used exactly once. This transforms our type system into
+something much closer to a linear type system. In a companion paper [MOTW95], we elaborate on the connections
+between linear logic and call-by-value reduction, and affine
+logic and call-by-need reduction.
+
+We conjecture that usage-based program transformation
+in the presence of side-effects could be handled by combining our usage analysis with an effect system [Luc87, LG88,
+JG91]. (Effect systems can distinguish side-effecting computation from purely functional computation.)
+
+7 Related work
+7.1 Linear logic
+The type system presented here is based on ideas taken from
+the linear logic of Girard [Gir87] and its successor the Logic
+of Unity [Gir93]. A companion paper describes the embedding of the call-by-need calculus into linear logic that underlies the type system used here [MOTW95]. Interested
+readers are referred to that paper for a survey of related
+work on linear logic.
+
+7.2 Call-by-need analyses
+We are aware of two other analyses that attempt to determine when a value is used at most once under call-by-need
+evaluation. One is a type system due to Launchbury and
+
+9
+
+others [Lau92], the other is an abstract interpretation due
+to Marlow [Mar93]. We note three points of comparison.
+
+First, unlike ours, neither of the other analyses possess a
+proof of soundness. Second, our system sometimes derives
+more precise information than the other two; see Example 3
+in Section 1.1. Third, unlike the above analyses, our type
+system does not detect the case where closures are never
+used (we omitted the zero usage from our analysis so as to
+simplify our usage constraints).
+
+Our next step is to implement our analysis in the Glasgow Haskell compiler, allowing us to compare it directly with
+Marlow's. By observing how our analysis performs on real
+programs we can test whether omitting zero usages has a
+significantly impact.
+
+7.3 Call-by-name analyses
+We also are aware of two analyses that determine usage information for values under call-by-name, one due to Wright
+and Baker-Finch [WB93], the other due to Courtenage and
+Clack [CC94]. Both are based on type systems, and both
+have been argued to be sound. We note three points of
+comparison.
+
+First, choosing call-by-name evaluation instead of callby-need prevents even fairly simple optimisations from being
+discovered. For instance, in Example 1 of Section 1.1, the
+variable x is used once under call-by-need, as our system discovers, but twice under call-by-name. Experience suggests
+this difference is significant, as the situation encountered in
+Example 1 is fairly common.
+
+Second, even if we are satisfied to limit our attention
+to call-by-name, neither system provides an especially useful analysis. The Wright and Baker-Finch system discovers
+too much information: function types are annotated with
+natural numbers which indicate the number of times a function uses its argument, and this level of accuracy renders
+the type system undecidable. The Courtenage and Clack
+system discovers too little information: they can determine
+when an argument is used zero times, exactly once, or at
+least once; but they do not determine when an argument is
+used at most once, which is most helpful for the problems
+we are interested in.
+
+Third, unlike our system, the other systems also provide
+information about when a value is used at least once, which
+is useful for strictness analysis. For this question, the distinction between call-by-need and call-by-name is irrelevant,
+which may explain why the authors of these systems were
+willing to settle for a call-by-name analysis.
+
+7.4 Data structure update
+A number of analyses for in-place update of data structures
+have been proposed, including those by Schmidt [Sch85],
+Hudak [Hud86], Baker [Bak90], Hudak and Guzm'an [GH90],
+and Wadler [Wad90b, Wad91]. These systems are not especially well suited for enabling program transformations
+or eliding closure update in call-by-need languages. Conversely, our system is not the best possible for in-place update, as it can only determine when there is at most one
+pointer to a structure. For many purposes, it is better to
+use a weaker criterion which allows multiple pointers when
+reading a structure but ensures there is at most one pointer
+when a structure is to be updated in place.
+
+8 Conclusions
+We have presented a simple type system which can determine when a value is used at most once, even in the presence
+of higher-order functions and data structures. Our analysis is tailored to the precise reduction strategy used in the
+Glasgow Haskell compiler, and therefore yields more accurate results than analyses which assume call-by-name reduction. We have proved our type system sound with respect to
+Launchbury's natural semantics of lazy evaluation, and have
+provided safe reduction rules which the compiler can use to
+transform programs without risking duplicating work.
+
+A prototype type inference algorithm has already been
+implemented. Our next step is to incorporate our type system into the Glasgow Haskell compiler [PHHPW93]. This
+will enable us to measure the effect of our optimisations on
+large Haskell programs. The Glasgow Haskell compiler uses
+an explicitly-typed core language to express most of its program transformations. By adding our usage information to
+the core language type system we can conveniently provide
+information to the optimiser, enabling additional program
+transformations, and allowing the code generator to omit
+unnecessary closure updates.
+
+Our annotated types provide a convenient way of communicating usage information across module boundaries (we
+simply add usage information to the user-level type information which is already exported from a module).
+
+We intend to further explore how our type system enables
+in-place update of data structures. An interesting question
+is how much of this should be done automatically by the
+compiler, how much should be under the control of the user,
+and to what extent the type system acts as an effective mechanism to let the user understand and control optimisations.
+
+9 Acknowledgements
+The ideas described here grew out of collaboration with the
+Glasgow functional programming group, especially Simon
+Peyton Jones, John Launchbury, Andy Gill, Simon Marlow, Will Partain, Patrick Sansom, and Andre Santos. The
+Semantique II working group provided helpful feedback, especially Patrick Cousot, Sebastian Hunt, Torben Mogensen,
+Dave Sands, and Yan-Mei Tang.
+
+References
+[AFMOW95] Z. Ariola, M. Felleisen, J. Maraist, M. Odersky, and P. Wadler. A call-by-need lambda calculus. Symposium on Principles of Programming Languages, ACM
+Press, San Francisco, California, January 1995.
+
+[Aug93] L. Augustsson, Implementing Haskell overloading.
+
+In Functional Programming Languages and Computer
+Architecture, Copenhagen, Denmark, June 1993. ACM
+Press.
+
+[Bak90] H. Baker, Unify and conquer (garbage, updating,
+
+aliasing : : : ) in functional languages. In Conference on
+Lisp and Functional Programming, ACM Press, Nice,
+June 1990.
+
+[CC94] S. A. Courtenage and C. D. Clack, Analysing resource use in the *-calculus by type inference, In ACM
+Sigplan Workshop on Partial Evaluation and SemanticsBased Program Manipulation, 1994.
+
+10
+
+[DM82] L. Damas and R. Milner, Principal type schemes
+
+for functional programs. In Proceedings 9'th ACM Symposium on Principles of Programming Languages, Albuquerque, N.M., January 1982.
+
+[Gir87] J.-Y. Girard, Linear logic. Theoretical Computer
+
+Science, 50:1-102, 1987.
+
+[Gir93] J.-Y. Girard, On the unity of logic. Annals of Pure
+
+and Applied Logic, 59:201-217, 1993.
+
+[GH90] J. Guzm'an and P. Hudak, Single-threaded polymorphic lambda calculus. In Proceedings 5'th IEEE Symposium on Logic in Computer Science, Philadelphia, Pa.,
+June 1990.
+
+[GLP93] A. Gill, J. Launchbury, and S. Peyton Jones, A
+
+short-cut to deforestation. In Functional Programming
+Languages and Computer Architecture, Copenhagen, Denmark, June 1993. ACM Press.
+
+[Hin69] R. Hindley, The principal type scheme of an object
+
+in combinatory logic. Trans. Am. Math. Soc., 146:29-60,
+December 1969.
+
+[Hud86] P. Hudak, A semantic model of reference counting and its abstraction. In Proceedings ACM Conference
+on Lisp and Functional Programming, Cambridge, Mass.,
+August 1986.
+
+[Jon93] M. Jones, Partial evaluation for dictionary-free
+
+overloading. Technical report TR-959, Computer Science
+Department, Yale University, April 1993.
+
+[JG91] Pierre Jouvelot and D.K. Gifford, Algebraic reconstruction of types and effects. In ACM Symposium on
+Principles of Programming Languages, 1991.
+
+[Lau92] J. Launchbury, A. Gill, J. Hughes, S. Marlow,
+
+S. Peyton Jones, and P. Wadler. Avoiding unnecessary updates. In Glasgow Workshop on Functional Programming,
+Ayr, July 1992. Springer Verlag Workshops in Computing
+Series.
+
+[Lau93] J. Launchbury, A natural semantics for lazy evaluation. In Proceedings 20'th ACM Symposium on Principles of Programming Languages, Charleston, S.C., January 1993.
+
+[Luc87] J.M. Lucassen, Types and effects, towards an integration of functional and imperative programming. PhD
+thesis, MIT Laboratory for Computer Science, 1987.
+
+[LG88] J.M. Lucassen and D.K. Gifford, Polymorphic effect
+
+systems. In ACM Symposium on Principles of Programming Languages, 1988.
+
+[Mar93] S. Marlow, Update avoidance analysis by abstract
+
+interpretation. In Glasgow Workshop on Functional Programming, Ayr, July 1993. Springer Verlag Workshops in
+Computing Series.
+
+[Mit84] J. C. Mitchell, Coercion and type inference (summary). In Proceedings 11'th ACM Symposium on Principles of Programming Languages, January 1984.
+
+[Mit91] J. C. Mitchell, Type inference with simple subtypes.
+
+Journal of Functional Programming, 1(3):245-286, July
+1991.
+
+[MOTW95] J. Maraist, M. Odersky, D. Turner, and P.
+
+Wadler. Call-by-name, call-by-value, call-by-need, and
+the linear lambda calculus. Submitted to 11'th International Conference on the Mathematical Foundations of
+Programming Semantics, New Orleans, Louisiana, April
+1995. (Also available by ftp to ftp.dcs.glasgow.ac.uk,
+directory pub/glasgow-fp/authors/Philip Wadler, files
+linearcall.dvi,ps.)
+
+[MW92] S. Marlow and P. Wadler, Deforestation for higher
+
+order functions. In Glasgow Workshop on Functional Programming, Ayr, July 1992. Springer Verlag Workshops in
+Computing Series.
+
+[Pey89] S. Peyton Jones and J. Salkild, The Spineless Tagless G-machine In Fourth International Conference on
+Functional Programming Languages and Computer Architecture. Imperial College, London, pp. 184-201. ACM,
+Addison-Wesley, September 1989.
+
+[Pey92] S. Peyton Jones, Implementing lazy functional languages on stock hardware: the Spineless Tagless Gmachine Journal of Functional Programming, 2(2):127-
+202, April 1992.
+
+[PHHPW93] S.L. Peyton Jones, C.V. Hall, K. Hammond,
+
+W.D. Partain, and P.L. Wadler, The Glasgow Haskell
+compiler: a technical overview. In Joint Framework for
+Information Technology (JFIT), Technical Conference
+Digest, March, 1993.
+
+[Sch85] D. A. Schmidt, Detecting global variables in denotational specifications. ACM Trans. on Programming Languages and Systems, 7:299-310, 1985.
+
+[San92] A. Santos and S. Peyton Jones In Glasgow Workshop on Functional Programming, Ayr, July 1992.
+Springer Verlag Workshops in Computing Series.
+
+[SP95] P. Sansom and S. L. Peyton Jones, Time and space
+
+profiling for non-strict higher-order functional languages.
+In 22'nd ACM Symposium on Principles of Programming
+Languages, San Francisco, January 1995.
+
+[Wad90a] P. Wadler, Deforestation: Transforming programs
+
+to eliminate trees, Theoretical Computer Science, 73,
+1990.
+
+[Wad90b] P. Wadler, Linear types can change the world! In
+
+M. Broy and C. Jones, editors, Programming Concepts
+and Methods, Sea of Galilee, Israel, April 1990. North
+Holland, 1990.
+
+[Wad91] P. Wadler, Is there a use for linear logic? In Conference on Partial Evaluation and Semantics-Based Program Manipulation (PEPM), ACM Press, New Haven,
+Connecticut, June 1991.
+
+[WB93] D. A. Wright and C. A. Baker-Finch, Usage analysis with natural reduction types. In Workshop on Semantic Analysis, 1993.
+
+11

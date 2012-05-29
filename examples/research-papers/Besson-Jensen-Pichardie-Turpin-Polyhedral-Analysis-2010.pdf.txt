@@ -1,0 +1,680 @@
+
+
+Certified Result Checking for Polyhedral
+
+Analysis of Bytecode Programs?
+
+Fr'ed'eric Besson, Thomas Jensen, David Pichardie, and Tiphaine Turpin
+
+INRIA Rennes - Bretagne Atlantique
+Campus de Beaulieu, F-35042 Rennes, France
+
+Abstract. Static analysers are becoming so complex that it is crucial to
+ascertain the soundness of their results in a provable way. In this paper
+we develop a certified checker in Coq that is able to certify the results of
+a polyhedral array-bound analysis for an imperative, stack-oriented bytecode language with procedures, arrays and global variables. The checker
+uses, in addition to the analysis result, certificates which at the same
+time improve efficiency and make correctness proofs much easier. In particular, our result certifier avoids complex polyhedral computations such
+as convex hulls and is using easily checkable inclusion certificates based
+on Farkas lemma. Benchmarks demonstrate that our approach is effective and produces certificates that can be efficiently checked not only by
+an extracted Caml checker but also directly in Coq.
+
+1 Introduction
+Bytecode verification is an important component for making Java a trustworthyplatform for mobile computing. Several researchers have investigated how to develop machine-checked bytecode verifiers in order to increase the confidence inthis component itself [13, 2]. The standard bytecode verifier ensures one kind of
+security policy that is proved by a simple data flow analysis. The static verifi-cation of other security and safety policies (e.g., to check that all array accesses
+are within bounds) requires more sophisticated static program analysers, whichthemselves are sophisticated pieces of software. A significant example of this is
+the state-of-the-art Astr'ee static analyser for C [9] which proves the absenceof run-time errors for the primary flight control software of the Airbus A340
+fly-by-wire system.In this paper we show that it is possible to use advanced analysers to enhance
+the security of a mobile code platform by developing a machine-verified extendedbytecode verifier that can check the result of such analysers. One approach would
+be to certify the analyser entirely within a proof checker, as done for the keycomponents of the Java bytecode verifier [13, 2]. In previous work, Pichardie
+et. al [18, 6] formalised the theory of abstract interpretation inside the Coqproof assistant and proved the correctness of a variety of program analysers.
+
+? This work was partially funded by the FET Global Computing project Mobius, by
+
+the Brittany region project CertLogS and the FRAE project Ascert.
+
+2 F. Besson, T. Jensen, D. Pichardie and T. Turpin
+This approach is ambitious since it would require to program and certify in Coqthe whole analyser with all its abstract operators (least upper bound, closure,
+widening...) and to prove termination of the fixpoint iteration process. Formallycertifying a polyhedral analyser with this technique would require a tremendous
+certification effort. Moreover, efficiency is a major concern when considering theexpensive symbolic manipulations of a polyhedral library [12] and the problem
+becomes even more perceptible in a pure lambda-calculus language such as Coq.
+
+As noticed by Leroy in the context of certified compilation [15], static analysesand optimisation heuristics are algorithms for which it is generally easier to
+
+prove the correctness of a result verifier than the algorithm itself. In this paperwe apply this result certification methodology [20] to a polyhedral analysis [10]
+for an imperative, stack-oriented bytecode language with procedures, arrays andglobal variables. We design in parallel a polyhedral analyser and a certified result
+checker using the abstract interpretation theory. The analyser and the checkershare the same constraint-based specification whose soundness is formally proved
+in Coq. The analyser uses an optimised polyhedral C library [12] to computea post-fixpoint solution while the checker uses a certified simplified abstract
+domain to check the post-fixpoint. One particularity of our approach is that, inaddition to the program and the post-fixpoint, the checker receives hints that
+enable it to use a simplified abstract domain when verifying the fixpoint. Inparticular, the expensive operations of computing the convex hull of polyhedra
+is replaced by polyhedral inclusion checks which can be performed efficiently byan application of Farkas's lemma. More precisely, we propose the following three
+contributions:
+
+- A certified constraint based specification of a polyhedral analysis for byte-code programs.
+- A notion of certificate for result checking of polyhedral analysers.
+- A certificate result checker, obtained by Coq extraction, able to performstatic array bound checking on resource constrained devices.
+
+2 Polyhedral Analysis of Bytecode
+We consider a cut-down language of Java bytecode which includes integers, dy-namically created (unidimensional) arrays of integers, static methods (procedures) and static fields (global variables). The formal syntax and small-stepoperational semantics are rather straightforward and can be found in the companion report [4].
+
+The analysis is inter-procedural, relational and parametrised with respect toa numeric abstract domain used to abstract the values of the local and global
+
+variables of the program. The analyser automatically infers an invariant for eachcontrol point in the program, a pre-condition that must hold at the point of
+calling a procedure and a post-condition that is guaranteed to hold when theprocedure returns.
+
+Certified Result Checking for Polyhedral Analysis of Bytecode Programs 3
+2.1 Motivating example
+The Binary Search example (in source format here for readability considera-tions) given in Fig. 1 shows how our analysis will prove that the instruction
+
+that accesses the array vec with index mid will not index out of bounds. Wehave annotated the code of Binary Search with the invariants that have been
+inferred automatically. Invariants refer to values of local and global variablesand can also refer to the length of an array. For example, the invariant (
+
+I3)asserts among other properties that when entering the while loop, the relation
+
+0 <= low < high < |vec| is satisfied. Similarly, the post-condition ensures thatthe result is a valid index into the array being searched, or -1, indicating that
+the element was not found. In addition, the analysis introduces a 0-indexed vari-able (such as e.g.
+
+key0 in the example) for each parameter in order to refer toits value when entering the procedure. As a result, the invariant on exit of the
+
+method defines a summary relation between its input and its output.
+
+// PRE: 0 <= |vec0|
+static int bsearch(int key, int[] vec) {
+
+// (I1) key0 = key ^ |vec0| = |vec| ^ 0 <= |vec0|
+
+int low = 0, high = vec.length - 1;
+// (I2) key0 = key ^ |vec0| = |vec| ^ 0 <= low <= high + 1 <= |vec0|
+
+while (0 < high-low) {
+// (I3) key0 = key ^ |vec0| = |vec| ^ 0 <= low < high < |vec0|
+
+int mid = low + (high - low) / 2;
+// (I4) key0 = key ^ |vec0| = |vec|^
+// 0 <= low < high < |vec0| ^ low + high - 1 <= 2 * mid <= low + high
+
+if (key == vec[mid]) return mid;
+else if (key < vec[mid]) high = mid - 1;
+else low = mid + 1;
+// (I5) key0 = key ^ |vec0| = |vec| ^ -2 + 3 * low <= 2 * high + mid^
+// - 1 + 2 * low <= high + 2 * mid ^ -1 + low <= mid <= 1 + high^
+// high <= low+mid^ 1+high <= 2*low+mid^1 +low +mid <= |vec0|+high^
+// 2 <= |vec0| ^ 2 + high + mid <= |vec0| + low
+
+}
+// (I6) key0 = key^|vec0| = |vec|^low-1 <= high <= low^0 <= low^high < |vec0|
+
+return -1;
+} // POST: -1 <= res < |vec0|
+
+Fig. 1. Binary search
+
+2.2 Numeric relational domain specification
+The bytecode analysis is specified with respect to an abstract numeric relationalinterface (defined below) that can be instantiated with standard relational abstract domains [10, 16, 17]. The numeric abstract domain D is a family of sets DV
+
+4 F. Besson, T. Jensen, D. Pichardie and T. Turpin
+indexed with a finite set V of variables. The abstract operators and associatedproperties listed below furnish the interface needed to specify and prove correct
+our generic numeric relational bytecode analysis.
+
+To establish the connection between abstract elements and sets of numericenvironments P(
+
+V ! Z), D is equipped with a concretisation function fl : DV !P(
+V ! Z) compatible with a decidable partial order relation v i.e., d v d0 )
+fl(d) ` fl(d0). The domain D provides an upper-bound (t) and a lower bound(u) operators. To handle variable scopes, the domain is also equipped with a
+
+renaming and a projection operator. The renaming operator [*]W !W 0 : DV +W !D
+
+V +W 0 is purely syntactic and maps a variable wi in the ordered set W to thecorresponding variable
+
+w0i in W 0 (+ denotes disjoint union here). The projectionoperator 9
+
+V 0 : DV +V 0 ! DV allows to project an abstract element onto a subsetof the variables. For instance, 9
+
+{y}.x <= y <= z would (by transitivity) compute
+x <= z.
+
+All the previous operators are language independent. The interface of thenumeric domain with the programming language is made through expressions
+
+(Expr ) and guards (Guard ).
+
+Expr V 3 e ::= n | x |? | e \Pi  e x 2 V, \Pi  2 {+, -, *, /}Guard
+
+V 3 t ::= e on e on2 {=, 6=, <, <=, >, >=}
+
+In the rest of the paper on will denotes the negation of a binary test on. Expres-sions denote sets of numerical values (due to the question mark symbol ? that
+is used to model an arbitrary value) while guards denote predicates on environ-ments. The meaning J*K
+
+ae of such expressions is defined relative to an environment
+ae 2 V ! Z. J
+
+nKae = {n} JxKae = {ae(x)} J?Kae = ZJ
+e1 \Pi  e2Kae = {n1 \Pi  n2 | n1 2 Je1K, n2 2 Je2K}J
+
+e1 on e2Kae () 9 n1 2 Je1Kae, n2 2 Je2Kae. n1 on n2
+
+The abstract assignment of an expression e 2 ExprV to a variable x 2 V ismodelled by the operator J
+
+x := eK] : DV ! DV .
+
+{ae[x 7! v] | ae 2 fl(d) ^ v 2 JeKae} ` fl(Jx := eK](d))
+The set of environments for which a guard t 2 GuardV is true may be over-approximated by assume
+
+](t). Formally, the following holds:
+
+{ae | JtKae} ` fl(assume](t)).
+The analyser used in the benchmarks is obtained by instantiating the opera-tors described above with the domain of convex polyhedra [10]. In addition, the
+analyser uses a widening operator whose purpose is to ensure the termination offixpoint iterations--this operator is therefore not needed at checking time.
+
+Certified Result Checking for Polyhedral Analysis of Bytecode Programs 5
+2.3 Constraint-based specification
+The bytecode analysis is defined by specifying for each bytecode an abstracttransfer function which maps abstract states to abstract states (for non-jumping
+intraprocedural instructions at least). The abstract states are pairs of the form(
+
+s], l]) where l] is a relation between local, global and auxiliary variables and
+s] is an abstract stack whose elements are symbolic expressions built from thesevariables. More precisely, the analysis manipulates the following sets of variables:
+
+R: set of local variables r0, . . . , r|R|-1 of methods,
+R0: set of old local variables rold0 , . . . , rold|R|-1 of methods, representing their initialvalues at the beginning of method execution,
+
+S: set of static fields f0, . . . , f|S|-1 of the program,
+S0: set of old static fields fold0 , . . . , fold|S|-1 of the program used to model valuesof static fields at the beginning of method execution,
+
+A: set of auxiliary variable aux 0, . . . , aux |A|-1 used to keep track of results ofmethods in the symbolic operand stack.
+
+Moreover, we use a "primed" version X0 of the variable set X for renamingpurposes. For each method the analysis computes a signature Pre ! Post whose
+informal meaning is
+
+if the method is called with in a context where its arguments and thestatic fields satisfy the property Pre then if the method returns, then
+its result, its arguments, and the initial and final values of static fieldssatisfy the property Post.
+
+Preconditions are chosen by over-approximating the context in which each methodmay actually be invoked. Additionally the analysis computes at each control
+point of each method a local invariant between the current (R) and initial (R0)values of local variables, the current (
+
+S) and initial (S0) values of static fields,and some auxiliary variables (
+A) which are used temporarily to remember resultsof method calls which are still on the stack
+
+The stack of symbolic expressions is used to "decompile" the operations onthe operand stack. For example, for the instruction Load
+
+r that fetches the valueof local variable r , the analysis just pushes the symbolic expression
+
+r onto the ab-stract stack
+s]. More generally, the effect of most instructions can be representedsymbolically and only the comparisons and assignment to variables require updating the relation l] between variables. In a polyhedron-based analysis this kindof symbolic manipulation [24, 21] is a substantial saving.
+
+Definition 1 (Abstract domain). The abstract value for a program P is de-scribed by an element (Pre
+
+, Post, Loc) of the lattice
+
+State] = (Meth ! DR0+S0) * \Gamma Meth ! DR0+S0+S+{res}\Delta * \Gamma Meth * N ! \Gamma Expr
+
+?R+S+A * DR
+
+0+S0+R+S+A\Delta  + {?}\Delta 
+
+6 F. Besson, T. Jensen, D. Pichardie and T. Turpin
+
+instr Finstr
+Nop (s], l]) ! (s], l])
+Ipush n (s], l]) ! `n :: s], l]'
+Pop (e :: s], l]) ! `s], l]'
+Dup (e :: s], l]) ! `e :: e :: s], l]'
+Iadd (e2 :: e1 :: s], l]) ! `e2 + e1 :: s], l]'
+Isub (e2 :: e1 :: s], l]) ! `e2 - e1 :: s], l]'
+Imult (e2 :: e1 :: s], l]) ! `e2 * e1 :: s], l]'
+Idiv (e2 :: e1 :: s], l]) ! `e2/e1 :: s], l]'
+Ineg (e :: s], l]) ! `0 - e :: s], l]'
+Iinput (s], l]) ! (? :: s], l])
+Load r (s], l]) ! `r :: s], l]'
+Store r (e :: s], l]) ! `s][?/r], Jr := eK](l])'
+Getstatic f (s], l]) ! `f :: s], l]'
+Putstatic f (e :: s], l]) ! `s][?/f], Jf := eK](l])'
+Iinc r n (s], l]) ! `s][r - n/r], Jr := r + nK](l])'
+Newarray (e :: s], l]) ! `e :: s], l]'
+Arraylength (e :: s], l]) ! `e :: s], l]'
+Iaload (e2 :: e1 :: s], l]) ! `? :: s], l]'
+Iastore (e3 :: e2 :: e1 :: s], l]) ! `s], l]'
+
+m[p] = instr 62 {Goto p0, If icmp cond p0, Invoke m0, Return}
+
+Finstr(Loc(m, p)) v Loc(m, p + 1) [Intra]
+
+m[p] = Goto p0
+
+Loc(m, p) v Loc(m, p0) [Goto]
+
+m[p] = If icmp on p0 Loc(m, p) = (e2 :: e1 :: s], l])
+
+(s], assume](e1 on e2) u] l]) v Loc(m, p0) [If1]
+m[p] = If icmp on p0 Loc(m, p) = (e2 :: e1 :: s], l])
+
+(s], assume](e1 on e2) u] l])) v Loc(m, p + 1) [If2]
+
+m[p] = Invoke m0 n = nbArgs(m') Loc(m, p) = (en-1 :: * * * :: e0 :: s], l])`9
+
+R+S0+A `dn-1i=0 assume](ei = roldi ) u 9R0(l])''S!S0 v Pre(m0) [Call1]
+
+m[p] = Invoke m0 Loc(m, p) = (en-1 :: * * * :: e0 :: s], l])
+l]m0 = 9R0 `dn-1i=0 assume](ei = roldi )S!S0 u Post(m0)S0!S0'"
+
+aux j :: s][?/aux j], 9S0+{res}Jaux j := resK "l]S!S0 u l]m0"" v Loc(m, p + 1)
+
+[Call2]
+
+where p is the index of the j-th Invoke in m
+m[p] = Return Loc(m, p) = (e :: s], l])9
+
+R+A(Jres := eK](l])) v Post(m) [Return]
+
+m 2 P n = nbArgs(m)d|
+S|-1
+i=0 assume](fi = foldi ) d
+
+n-1
+i=0 assume](roldi = ri) u Pre(m) v Loc(m, 0)
+
+[Init]
+
+? v Pre(main) [PreMain]
+Fig. 2. Analysis specification
+
+Certified Result Checking for Polyhedral Analysis of Bytecode Programs 7
+The analysis result is specified as a solution of a constraint (inequation)system associated to each program. The constraint system is given in Fig. 2.
+Array references are abstracted by the length of the array they point to. As aconsequence, the instruction Newarray which takes an integer
+
+n on top of thestack and replaces it with a reference to a newly allocated array of length
+
+n, issimply abstracted by the identity function. The constraints [
+Call1] and [Call2]associated with a method call are the most complicated parts of the analysis.
+
+The complications partly arise because we have several kinds of variables (staticfields, local and auxiliary variables) whose different scopes must be catered for.
+The analysis gives rise to two constraints: one that relates the state before thecall to the pre-condition of the method ([
+
+Call1]) and one that registers the impactof the call on the state immediately following the call site ([
+
+Call2]).
+
+When invoking a method m0 from method m, we compute an abstract statethat holds before starting executing
+
+m0 and which constrains the Pre(m0) com-ponent of the abstract element describing
+
+P . This state registers that the ntopmost expressions
+e1, . . . , en on the abstract stack corresponds to the actualarguments that will be bound to the local variables of the callee
+
+m0, by injectingthe constraints
+ei = roldi into the relational domain and adding them to the cur-rent state as given by
+
+l]. Care must be exercised not to confound the parameters
+R0 of the caller with the parameters of the callee, hence the projecting out of
+R0 before joining the constraints. Furthermore, the local variables R, the initialvalues of static fields
+
+S0 and the auxiliary variables A of method m have a dif-ferent meaning in the context of method
+
+m0 and are removed from the abstractstate at the start of
+m0 too. Finally, the current value of static fields S in m atthe point of the method call becomes the initial value of the static fields when
+
+analysing m0, hence the renaming of S into S0.
+
+The second rule [Call2] for Invoke describes the impact of the method call onits successor state. We use an auxiliary variable aux
+
+j (chosen to be free in s]) toname the result of the method call which is pushed onto the stack. This variable
+
+is constrained to be equal to the variable res which receives the value returned by
+m0. The rest of the left-hand side expression of the constraint l]S!S0 u 9R0 (. . .)serves to link the post-condition Post(
+
+m0) of the method with the state l] ofthe call site. These are linked via the local variables r
+
+i constrained to be equalto the argument expressions
+ei and via the global static fields S. Again, somerenaming and hiding of variables is required: e.g., the initial values of the static
+
+fields in m0, referred to by S0, correspond to the values of the static fields beforethe call in the state
+
+l] and in the expressions ei, referred to by S. The renamings
+S0 ! S0 and S ! S0, respectively, ensure that these values are identified.
+
+The purpose of the invariants specified by the analysis is to enforce a suitablesafety policy. In a context of array bound checking we must check that each array
+
+access is within the bounds of the array. As a consequence, for each occurenceof an instruction Iaload or Iastore at a program point (
+
+m, pc), we test if thelocal invariant Loc(
+m, pc) computed by the analysis ensures a safe array access.If these tests succeed we say that Loc satisfies all safety checks.
+
+8 F. Besson, T. Jensen, D. Pichardie and T. Turpin
+2.4 Inference
+The constraint system presented in the previous section can be turned into apost-fixpoint problem by standard techniques. Consequently, the solutions of
+
+the system can be characterised as the set of post-fixpoints {x | F ](x) v x}of a suitable monotone function
+
+F ] operating on the global abstract domainState
+] of the analysis. Computing such a post-fixpoint is then the role of chaotic
+
+iterations [8]. Iteration is sped up by using widening on well-chosen controlpoints. Neither the iteration strategy nor the widening operators belong to the
+
+Trusted Computing Base (TCB) since the validity of the result can be checkedwith a post-fixpoint test.
+
+2.5 Soundness of the analysis
+To prove the soundness of the analysis we prove that for each method of theprogram, the signature Pre ! Post and the local invariants in Loc that are
+
+specified by the constraint system, are correct with respect to the semantics ofthe execution of the method. The full proof has been machine checked in Coq
+(see [23]) in order to prove the soundness of the result checker. Details (see [4])are omitted here for lack of space but we comment the main theorems now.
+
+First we define the safety policy using semantic ingredients. A program issafe if all reachable states w.r.t. to the small-step semantics are distinct from
+the error state. The semantics enters the error state when an array is accessedvia the instructions Iaload and Iastore with a value outside the array bounds.
+
+Definition safe (p:program) : Prop :=8
+
+st, reachable p st ! st <> error.
+
+The constraint based specification of Fig. 2 is turned into a suitable Coq pred-icate
+
+AnalysisSolution (including safety checks) and we prove that the exis-tence of a suitable (Pre
+
+, Post, Loc) solution implies the safety of the program.
+
+Theorem sound_analysis : 8 p loc pre post,
+
+AnalysisSolution p loc pre post ! safe p.
+
+The purpose of Section 3 is to define an executable checker able to check ifa candidate (Pre
+
+, Post, Loc) is a solution to the constraint based specification.The candidate is included in a certificate
+
+cert with extra information that wewill describe in the next section.
+
+Theorem bin_checker_correct_wrt_analysis_spec : 8 p cert,
+
+checker p cert = true !9
+
+loc, 9 pre, 9 post, AnalysisSolution p loc pre post.
+
+Combined together these two theorems prove the semantic soundness of theexecutable checker that can be run in Coq or extracted into a Caml version.
+
+Theorem bin_checker_correct_wrt_semantic :8
+
+p cert, checker p cert = true ! safe p.
+
+Certified Result Checking for Polyhedral Analysis of Bytecode Programs 9
+3 Result Checking of Polyhedral Operations
+In this section, we show how to efficiently implement convex polyhedra operatorsusing a result checking approach.
+
+3.1 The polyhedral domain revisited
+Polyhedra can be represented as sets of linear constraints. For efficiency, it isdesirable to keep these sets in normal form i.e., without redundant constraints.
+For this purpose, polyhedra libraries maintain a dual description of polyhedrabased on generators in which a convex polyhedron is the convex hull of a (finite)
+set of vertices, rays and lines. Vertices, rays and lines are respectively extremalpoints, infinite directions and bi-directional infinite directions of the polyhedron.
+
+At the origin of the efficiency (and complexity) of convex polyhedra algo-rithms is Chernikova's algorithm which is used to maintain the coherence of the
+double description of polyhedra [7]. The main insight of our approach is thatwe develop a checker which only uses the constraint description of polyhedra
+and which never needs to detect redundant constraints. Moreover, projectionsare not computed but delayed using a set of extra existential variables. More
+precisely, our polyhedra are represented by a list of linear expression over twodisjoint sets of variables
+
+V and E. Variables in v 2 V are genuine variables.The set
+E is fixed. Variables e 2 E are (existential) variables that representdimensions which have been projected out.
+
+Definition 2. Let V and E be disjoint sets of variables.
+
+PV = Lin?V +E
+where LinX = {c0 + c1 * x1 + * * * + cn * xn | ci 2 Z, xi 2 X}.
+Given es 2 PV , the concretisation function is defined by
+
+fl(es) = {ae|V | ae 2 (V + E) ! Z ^ 8lc 2 es, Jlc >= 0Kae}
+
+Efficient Coq implementation of PV We have implemented (and provedcorrect) a result checker for convex polyhedra based on an efficient implementation of PV . To ensure the efficiency of the checker, we have carefully fine-tunedalgorithms and data-structures. Variables are coded by binary integers i.e., the
+Coq positive type.
+
+Inductive positive : Set
+
+:= xH | x0 (p:positive) | xI (p:positive).
+
+Variables in v 2 V start with a x0 constructor while existential variables v 2 Estart with a
+
+xI constructor. A linear expression e 2 Lin is coded by a radix treewhose node labels record integer coefficients of the linear expression.
+
+10 F. Besson, T. Jensen, D. Pichardie and T. Turpin
+
+Inductive tree : Set :=
+
+| Leaf
+| Node (left:tree) (label:Z) (right:tree).
+
+Therefore, looking-up a variable coefficient can be done by following a path inthe tree. This operation executes in time linear in the length of the variable
+
+i.e., logarithmic in the number of variables. For efficiency again, Coq polyhedra
+p 2 PV are not simply lists of linear expressions but are dependent recordswhich store: i) a list
+
+lin_cstr of linear constraints coded as trees, ii) a variable
+fresh_v 2 V for which all successors are fresh, iii) a variable fresh_e 2 Efor which all successors are fresh, iv) a set
+
+used_v that stores the variables
+v 2 V that are used in lin_cstr, v) and all the proofs i.e., the data-structureinvariants, that ensure that
+
+fresh_v and fresh_e are really fresh and that theset
+used_v indeed over-approximates the variables used in lin_cstr.
+
+Checking convex polyhedra operations In the following, we show how toimplement the polyhedral operations using (only) polyhedra in constraint form.
+Renaming simply consists in applying the renaming to the expressions withinthe polyhedron. Because the existential variables belong to a disjoint set, no
+capture can occur. Using Fourier-Motzkin elimination (see e.g., [19]), projections can be computed directly over the constraint representation of polyhedra.However, in the worst case, the number of constraints grows exponentially in the
+
+number of variables to project. To solve this problem, we delay the projectionand simply register them as existentially quantified. This is done by renaming
+these variables to fresh existential variables.
+To compute intersections, care must be taken not to mix up the existentialvariables. To avoid captures, existentially variables are renamed to variables that
+
+are fresh for both polyhedra. Interestingly, with our tree encoding, renaming allthe existential variables is a constant time operation. Thereafter, the intersection
+is obtained by concatenating the lists of linear expressions.To implement the
+
+assume operator, the involved expressions are first linearisedand the obtained linear inequalities are put into the form
+
+e >= 0 where e nowbelongs to the set
+Lin defined above. A special care is taken to precisely handleeuclidean division (which is the semantics we give to the division operator in
+
+this work). For instance, the expression x = y/c where c is a strictly positiveconstant, gives rise to a polyhedron made of the linear constraints
+
+c * x <= y and
+y <= c * x + c - 1. Dealing with the round-to-zero integer division can be done viaa program transformation that does case analysis on the signs of the arguments.
+
+We do not detail this here.
+Assignment can be expressed in terms of the previous operators. Given x0 afresh existential variable, we have:J
+
+x := eK](P ) = \Gamma 9{x} \Gamma P u assume](x0 = e)\Delta \Delta {x0}!{x}
+The least upper bound operator i.e., convex hull is the typical operation thatis straightforward to implement using the generator representation of polyhedra.
+
+Certified Result Checking for Polyhedral Analysis of Bytecode Programs 11
+Instead of computing a convex hull, we follow the result certification method-ology and provide a certificate polyhedron that is the result of the convex hull
+computation. Furthermore, our result checker need not check that the resultis exactly the convex hull but only that it is an upper bound by doing a two
+inclusion tests.To implement
+
+inclusion tests, we push the methodology further and use in-clusion certificates. The form of certificates and their generation are described
+
+below.
+
+3.2 Result certification for polyhedral inclusion
+Our inclusion checker vcheck takes as input a pair of polyhedra (P, Q) and aninclusion certificate. It will only return true if the certificate contains enough
+
+information to conclude that P is indeed included in Q (P v Q).In practice, we only use our checker where
+
+Q does not contain existentialvariables (because
+Q is computed by the untrusted analyser). This allows usto reduce the problem of inclusion into
+
+n problems of polyhedron emptinesswhere
+n is the number of constraints in Q. Such a problem admits a nice resultcertification technique thanks to Farkas's lemma (see for instance [19]) that gives
+
+a notion of emptiness certificate for polyhedra.
+Lemma 1 (Farkas Lemma). Let A 2 Qm*n and b 2 Qm. The followingstatements are equivalent:
+
+- For all x 2 Qn, ~(A * x >= b)
+- There exists ic 2 Q+m satisfying At * ic = _0 and bt * ic > 0.
+
+The soundness (() proof is the easy part and is all that is needed in the machine-checked proof. The existence of a certificate ensures the infeasibility of the linear
+
+constraints and therefore that the corresponding polyhedron is empty.Thus, an inclusion certificate ic
+
+1 :: * * * :: icn for an entry (P, Q) is a collectionof
+n vectors of Qm (with n = |Q|) and checking each emptiness certificate ickconsists of 1) computing a matrix-vector product (
+
+At * ic); 2) verifying that theresult is a null vector; 3) computing a scalar product (
+
+bt * ick); and 4) verify-ing that the result is strictly positive. All in all, the certificate checker runs in
+
+quadratic-time in terms of arithmetic operations for each emptiness certificate.Moreover, certificate generation can be recast as a linear programming problem that can be efficiently solved by either the Simplex or interior point methods.
+
+4 Implementation and Experiments
+The relational bytecode analysis has been implemented in Caml and instanti-ated with the efficient NewPolka polyhedral library [12] as its relational abstract
+domain. The programs we analyse are genuine Java programs where unsup-ported instructions have been automatically replaced by conservative numerical
+instructions (e.g., a Getfield is replaced by a sequence Pop; Iinput). Iinput is a
+
+12 F. Besson, T. Jensen, D. Pichardie and T. Turpin
+dummy instruction placing an arbitrary value on top of the operand stack. Theanalyser then computes a solution to the constraint system generated from a
+program. From these invariants, loop headers and join points are extracted andthe inclusion certificates required by the checker are produced using the Simplex algorithm. A binary form of loop headers, join point invariants and theirinclusion certificates constitute the final program certificate.
+
+As invariants computed by static analysers often contain more informationthan necessary for proving a particular safety policy i.e., the absence of array
+out-of-bounds accesses, it is interesting to prune the analysis result and eliminateinvariants that are useless for proving a given safety property. The advantages are
+twofold: invariants to check are smaller and their verification cheaper. We haveapplied the technique described in [5] for pruning constraint-based invariants,
+with some adaptations to deal with the interprocedural aspects of our polyhedralanalysis. The algorithm is not described here for space reasons but can be found
+in the companion report [4].
+
+The result checker for polyhedral analysis described in Section 2 and Section 3has been implemented in Coq. For our benchmarks we consider a refined version
+
+of the safety property where all but a designated subset of array accesses arerequired to be correct.
+
+For each program we compare the checking time with (before) and without(after) fixpoint pruning, using either an extracted checker (Caml) or the checker
+running in Coq. In the first approach the Coq result checker is automaticallytransformed into a Caml program by the Coq extraction mechanism. In the
+second approach, the result checker is directly run inside the reduction engineof Coq to compute a foundational proof of safety of the program (using the
+technique of proof by reflection [1]). Fig. 3 presents our experimental results.The benchmarks are relatively modest in size and it is well known that full-blown
+polyhedral analyses have scalability problems. Our analyser will not avoid thisbut can be instantiated with simpler relational domains such as e.g., octagons,
+without having to change the checker. The programs and the analysis results canbe found online [23] and replayed in Coq or with an extracted Caml checker. We
+consider two families of programs. The first one consists of benchmarks used byXi to demonstrate the dependent type system for Xanadu [24]. For this family we
+automatically prove the absence of out-of-bound accesses. The second is takenfrom the Java benchmark suite SciMark for scientific and numerical computing
+where our polyhedral analysis prove safety for array accesses except for the moreintricate multi-dimensional arrays representing matrices.
+
+Two things are worth noticing. First, the checking time is very small (lessthan one second), which is especially noteworthy given that the checker is run in
+Coq. We clearly benefit here from our efficient implementation and the optimisedreduction engine of Coq [11]. Compared to the extracted version, the Coq verifier
+has at most a factor 10 of efficiency penalty. Second, pruning can halve thenumber of constraints to verify. This reduction can sometimes but not always
+produce a similar reduction in checking time. The reduction is especially visiblewhen the analyser tends to generate huge invariants which cannot be exploited.
+
+Certified Result Checking for Polyhedral Analysis of Bytecode Programs 13
+
+size score certificate size checking time (Caml) checking time (Coq)
+Program before after before after before after
+
+BSearch 80 100% 20 11 2.0 1.4 14.1 11.6
+HeapSort 143 100% 65 25 6.1 3.7 45.0 35.5
+QuickSort 276 100% 90 42 144.5 128.7 1036.7 974.0
+
+Random 883 83% 50 31 7.3 8.0 46.9 44.3
+Jacobi 135 50% 31 10 1.6 1.7 12.8 9.2
+LU 559 45% 206 96 20.1 17.4 100.5 91.5
+SparseCompRow 90 33% 34 6 1.5 1.1 10.3 6.1
+FFT 591 78% 194 50 38.8 22.7 263.2 193.8
+
+Fig. 3. Size in number of instructions, score in ratio succeeded checks / total checks,
+certificates in number of constraints, time in milliseconds
+
+This is e.g., the case for FFT where the analyser approximates an exponentialwith a complex polyhedron.
+
+As part of the Mobius project and collaboration with Pierre Cr'egut fromFrance T'el'ecom, we have experimented with using the polyhedral result checker
+to check array bounds on a mobile phone. This is part of the Mobius demo thatis available online
+
+1. The experiment shows that it is feasible to perform extended
+
+bytecode verification with the polyhedral certificates that we have developed.
+
+5 Related Work
+A number of relational abstract domains (octagons [16], convex polyhedra [10],polynomial equalities [17]) have been proposed with various trade-offs between
+precision and efficiency, and intra-procedural relational abstract interpretationfor high-level imperative languages is by now a mature analysis technique. However, to the best of our knowledge the present work is the first extension of thisto an inter-procedural analysis for bytecode. Dependent type systems for Javastyle bytecode for removing array bounds checks have been proposed by Xi andXia [25]. The analysis of the stack uses singleton types to track the values of
+stack elements, in the same spirit as our symbolic stack expressions. The analy-sis is intra-procedural and does not consider methods (they are added in a later
+work [24] which also adds a richer set of types). The type checking relies on loopinvariants. We have run our analysis on the example Xanadu programs given by
+Xi and have been able to infer the invariants necessary for verifying safe arrayaccess automatically.
+
+The area of certified program verifiers is an active field. Wildmoser, Nipkowet al. [22] were the first to develop a fully certified VCGen within Isabelle/HOL
+for verifying arithmetic overflow in Java bytecode. The certification of abstractinterpreters has been developed by Pichardie et al. [18, 6]. Lee et al. [14] have certified the type analysis of a language close to Standard ML in LF and Leroy [15]
+
+1 http://mobius.inria.fr/
+
+14 F. Besson, T. Jensen, D. Pichardie and T. Turpin
+has certified some of the data flow analyses of a compiler back-end. Wildmoseret al. [21] certify a VCGen that uses untrusted interval analysis for producing
+invariants and that relies on Isabelle/HOL decision procedures to check the ver-ification conditions generated with the help of these invariants. Their technique
+for analysing bytecode is close to ours in that they also use symbolic expressionsto analyse the operand stack and the main contribution of the work reported
+here with respect to theirs is to develop this result checking approach for a fullyrelational analysis.
+
+6 Conclusions and Future Work
+This paper demonstrates the feasibility of an interprocedural relational analysiswhich automatically infers polyhedral loop invariants and pre-/post-condition for
+programs in an imperative bytecode language. To simplify the checking of theseinvariants, we have devised a result checker for polyhedra which uses inclusion
+certificates (issued from a result due to Farkas) instead of computing convexhulls of polyhedra at join points. This checker is much simpler to prove correct
+mechanically than the polyhedral analyser and provides a means of buildinga foundational proof carrying code that can make use of industrial strength
+relational program analysis.Future work concerns extensions to incorporate richer domains of properties
+such as disjunctive completions of linear domains or non-linear (polynomial)invariants. Using propositional reasoning, checking disjunctive invariants can be
+reduced to emptiness tests. As a result, parts of the polyhedral checker could bereused. Emptiness certificates from Section 3.2 can be generalised to deal with
+non-linear inequalities [3]. However, the analyses for inferring such propertiesare in their infancy. On a language level, the challenge is to extend the analysis
+to cover the object oriented aspects of Java bytecode. The inclusion of staticfields and arrays in our framework provides a first step in that direction but a
+full extension would notably require an additional alias analysis.
+
+References
+
+1. Stuart F. Allen, Robert L. Constable, Douglas J. Howe, and William E. Aitken. The
+
+semantics of reflected proof. In Proceedings of the Fifth Annual IEEE Symposium
+on Logic in Computer Science, pages 95-105. IEEE Computer Society, 1990.
+2. G. Barthe and G. Dufay. A tool-assisted framework for certified bytecode verification. In FASE, volume 2984 of LNCS, pages 99-113. Springer, 2004.
+3. F. Besson. Fast reflexive arithmetic tactics: the linear case and beyond. In Types
+
+for Proofs and Programs, pages 48-62. Springer LNCS vol. 4502, 2006.
+4. F. Besson, T. Jensen, D. Pichardie, and T. Turpin. Result certification for relational
+
+program analysis. Research Report 6333, Inria, 2007. http://hal.inria.fr/
+inria-00166930/.
+5. F. Besson, T. Jensen, and T. Turpin. Small witnesses for abstract interpretation
+
+based proofs. In Proc. of 16th Europ. Symp. on Programming (ESOP 2007), pages
+268-283. Springer LNCS vol. 4421, 2007.
+
+Certified Result Checking for Polyhedral Analysis of Bytecode Programs 15
+6. D. Cachera, T. Jensen, D. Pichardie, and V. Rusu. Extracting a Data Flow Analyser in Constructive Logic. Theoretical Computer Science, 342(1):56-78, September
+2005.
+7. N.V. Chernikova. Algorithm for finding a general formula for the non-negative solutions of a system of linear inequalities. U.S.S.R Comp. Mathematics and Mathematical Physics, 5(2):228-233, 1965.
+8. P. Cousot and R. Cousot. Abstract interpretation: A unified lattice model for static
+
+analysis of programs by construction of approximations of fixpoints. In Proc. of
+4th ACM Symp. on Principles of Programming Languages, pages 238-252. ACM
+Press, 1977.
+9. P. Cousot, R. Cousot, J. Feret, L. Mauborgne, A. Min'e, D. Monniaux, and X. Rival.
+
+The Astr'ee analyser. In Proc. of 14th European Symp. on Programming (ESOP'05),
+pages 21-30. Springer LNCS vol. 3444, 2005.
+10. P. Cousot and N. Halbwachs. Automatic discovery of linear restraints among
+
+variables of a program. In Proc. of 5th ACM Symp. on Principles of Programming
+Languages (POPL'78), pages 84-97. ACM Press, 1978.
+11. B. Gr'egoire and X. Leroy. A compiled implementation of strong reduction. In Proc.
+
+of the 7th ACM international conference on Functional programming (ICFP'02),
+pages 235-246. ACM Press, 2002.
+12. B. Jeannet and the Apron team. The Apron library, 2007.
+13. Gerwin Klein and Tobias Nipkow. Verified Bytecode Verifiers. Theoretical Computer Science, 298(3):583-626, 2002.
+14. D. K. Lee, K. Crary, and R. Harper. Towards a mechanized metatheory of Standard ML. In Proc. of 34th ACM Symp. on Principles of Programming Languages
+(POPL'07), pages 173-184. ACM Press, 2007.
+15. X. Leroy. Formal certification of a compiler back-end or: programming a compiler with a proof assistant. In Proc. of the 33rd ACM Symp. on Principles of
+Programming Languages, pages 42-54. ACM Press, 2006.
+16. A. Min'e. The octagon abstract domain. Higher-Order and Symbolic Computation,
+
+19:31-100, 2006.
+17. M. M"uller-Olm and H. Seidl. Precise interprocedural analysis through linear algebra. In Proc. of 31st ACM Symp. on Principles of Programming Languages
+(POPL'04), pages 330-341. ACM Press, 2004.
+18. D. Pichardie. Interpr'etation abstraite en logique intuitioniste: extraction
+
+d'analyseurs Java certifi'es. PhD thesis, Universit'e de Rennes 1, 2005.
+19. A. Schrijver. Theory of Linear and Integer Programming. Wiley, 1998.
+20. H. Wasserman and M. Blum. Software reliability via run-time result-checking.
+
+Journal of the ACM, 44(6):826-849, 1997.
+21. M. Wildmoser, A. Chaieb, and T. Nipkow. Bytecode analysis for proof carrying
+
+code. In Proc. of 1st Workshop on Bytecode Semantics, Verification and Transformation, ENTCS, 2005.
+22. M. Wildmoser and T. Nipkow. Asserting bytecode safety. In Proc. of the 15th
+
+European Symp. on Programming (ESOP'05), 2005.
+23. The Coq development of the work. http://www.irisa.fr/celtique/ext/
+
+polycert/.
+24. H. Xi. Imperative Programming with Dependent Types. In Proc. of 15th IEEE
+
+Symposium on Logic in Computer Science (LICS'00), pages 375-387. IEEE, 2000.
+25. Hongwei Xi and Songtao Xia. Towards Array Bound Check Elimination in Java
+
+Virtual Machine Language. In Proc. of CASCOON '99, pages 110-125, 1999.

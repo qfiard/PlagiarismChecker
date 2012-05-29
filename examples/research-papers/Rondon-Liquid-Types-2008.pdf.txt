@@ -1,0 +1,1453 @@
+
+
+Liquid Types *
+Patrick M. Rondon Ming Kawaguchi Ranjit Jhala
+
+University of California, San Diego{
+prondon,mwookawa,jhala}@cs.ucsd.edu
+
+Abstract
+We present Logically Qualified Data Types, abbreviated to LiquidTypes, a system that combines Hindley-Milner type inference with
+
+Predicate Abstraction to automatically infer dependent types pre-cise enough to prove a variety of safety properties. Liquid types
+allow programmers to reap many of the benefits of dependenttypes, namely static verification of critical properties and the elimination of expensive run-time checks, without the heavy price ofmanual annotation. We have implemented liquid type inference in
+
+DSOLVE, which takes as input an OCAML program and a set of log-ical qualifiers and infers dependent types for the expressions in the
+OCAML program. To demonstrate the utility of our approach, wedescribe experiments using D
+
+SOLVE to statically verify the safetyof array accesses on a set of O
+
+CAML benchmarks that were previ-ously annotated with dependent types as part of the DML project.
+
+We show that when used in conjunction with a fixed set of arraybounds checking qualifiers, D
+
+SOLVE reduces the amount of man-ual annotation required for proving safety from
+
+31% of programtext to under
+1%.
+
+Categories and Subject Descriptors D.2.4 [Software Engineer-ing]: Software/Program Verification; F.3.1 [Logics and Meanings
+
+of Programs]: Specifying and Verifying and Reasoning about Pro-grams
+
+General Terms Languages, Reliability, Verification
+Keywords Dependent Types, Hindley-Milner, Predicate Abstrac-tion, Type Inference
+
+1. Introduction
+Modern functional programming languages, like ML and Haskell,have many features that dramatically improve programmer productivity and software reliability. Two of the most significant are strongstatic typing, which detects a host of errors at compile-time, and
+type inference, which (almost) eliminates the burden of annotatingthe program with type information, thus delivering the benefits of
+strong static typing for free.
+* This work was supported by NSF CAREER grant CCF-0644361, NSF
+PDOS grant CNS-0720802, NSF Collaborative grant CCF-0702603, and agift from Microsoft Research.
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+PLDI'08, June 7-13, 2008, Tucson, Arizona, USA.Copyright cfl 2008 ACM 978-1-59593-860-2/08/06.. . $5.00.
+
+The utility of these type systems stems from their ability to pre-dict, at compile-time, invariants about the run-time values computed by the program. Unfortunately, classical type systems onlycapture relatively coarse invariants. For example, the system can
+express the fact that a variable i is of the type int, meaning thatit is always an integer, but not that it is always an integer within a
+certain range, say between 1 and 99. Thus, the type system is un-able to statically ensure the safety of critical operations, such as a
+division by i, or the accessing of an array a of size 100 at an index
+i. Instead, the language can only provide a weaker dynamic safetyguarantee at the additional cost of high performance overhead.
+
+In an exciting development, several authors have proposed theuse of dependent types [20] as a mechanism for enhancing the
+expressivity of type systems [14, 27, 2, 22, 10]. Such a system canexpress the fact
+
+i :: {* :int | 1 <= * ^ * <= 99}
+which is the usual type int together with a refinement stating thatthe run-time value of
+
+i is an always an integer between 1 and 99.Pfenning and Xi devised DML, a practical way to integrate such
+
+types into ML, and demonstrated that they could be used to recoverstatic guarantees about the safety of array accesses, while simultaneously making the program significantly faster by eliminatingrun-time checking overhead [27]. However, these benefits came at
+the price of automatic inference. In the DML benchmarks, about31% of the code (or 17% by number of lines) is manual annotations
+that the typechecker needs to prove safety. We believe that this non-trivial annotation burden has hampered the adoption of dependent
+types despite their safety and performance benefits.We present Logically Qualified Data Types, abbreviated to Liquid Types, a system for automatically inferring dependent types pre-cise enough to prove a variety of safety properties, thereby allowing programmers to reap many of the benefits of dependent typeswithout paying the heavy price of manual annotation. The heart of
+our inference algorithm is a technique for blending Hindley-Milnertype inference with predicate abstraction, a technique for synthesizing loop invariants for imperative programs that forms the algo-rithmic core of several software model checkers [3, 16, 4, 29, 17].
+Our system takes as input a program and a set of logical qualifierswhich are simple boolean predicates over the program variables, a
+special value variable *, and a special placeholder variable ? thatcan be instantiated with program variables. The system then infers
+liquid types, which are dependent types where the refinement pred-icates are conjunctions of the logical qualifiers.
+
+In our system, type checking and inference are decidable forthree reasons (Section 3). First, we use a conservative but decidable
+notion of subtyping, where we reduce the subtyping of arbitrarydependent types to a set of implication checks over base types,
+each of which is deemed to hold if and only if an embedding ofthe implication into a decidable logic yields a valid formula in
+the logic. Second, an expression has a valid liquid type derivationonly if it has a valid ML type derivation, and the dependent type
+
+of every subexpression is a refinement of its ML type. Third, inany valid type derivation, the types of certain expressions, such
+as *-abstractions, if-then-else expressions, and recursive functionsmust be liquid. Thus, inference becomes decidable, as the space of
+possible types is bounded. We use these features to design a three-step algorithm for dependent type inference (Section 4).
+
+Step 1: Hindley-Milner Type Inference: First, our algorithm in-vokes Hindley-Milner [7] to infer types for each subexpression
+and the necessary type generalization and instantiation annotations.Next, our algorithm uses the computed ML types to assign to each
+subexpression a template, a dependent type with the same struc-ture as the inferred ML type, but which has liquid type variables
+representing the unknown type refinements.
+Step 2: Liquid Constraint Generation: Second, we use the syntax-directed liquid typing rules to generate a system of constraints that
+
+capture the subtyping relationships between the templates that mustbe met for a liquid type derivation to exist.
+
+Step 3: Liquid Constraint Solving: Third, our algorithm uses thesubtyping rules to split the complex template constraints into simple constraints over the liquid type variables, and then solves thesesimple constraints using a fixpoint computation inspired by predicate abstraction [1, 15].Of course, there may be safe programs which cannot be welltyped in our system due either to an inappropriate choice of quali-fiers or the conservativeness of our notion of subtyping. In the former case, we can use the readable results of the inference to manu-ally add more qualifiers, and in the latter case we can use the results
+of the inference to insert a minimal set of run-time checks [22, 10].To validate the utility of our technique, we have built D
+
+SOLVE,which infers liquid types for O
+CAML programs. While liquid typescan be used to statically prove a variety of properties [24], in this
+
+paper we focus on the canonical problem of proving the safety ofarray accesses. We use a diverse set of challenging benchmarks
+taken from the DML project to demonstrate that DSOLVE, togetherwith a simple set of array bounds checking qualifiers, can prove
+safety completely automatically for many programs (Section 5).For the few programs where these bounds checking qualifiers are
+insufficient, the programmer typically only needs to specify one ortwo extra qualifiers. Even in these rare cases, the dependent types
+inferred by DSOLVE using only the bounds checking qualifiers helpthe programmer to rapidly identify the relevant extra qualifiers. We
+show that, over all the benchmarks, DSOLVE reduces the manualannotation required to prove safety from
+
+31% of program text (or
+17% by number of lines) to under 1%. Finally, we describe a casestudy where D
+
+SOLVE was able to pinpoint an error in an open-source O
+CAML bit vector library implementation, in a function thatcontained an explicit (but insufficient) safety check.
+
+2. Overview
+We begin with an overview of our algorithm for inferring dependenttypes using a set of logical qualifiers Q. First, we describe dependent types, logical qualifiers, and liquid types, and then, througha series of examples, we show how our system infers dependent
+types.
+Dependent Types. Following [2, 10], our system allows base re-finements of the form {
+
+* :B | e}, where * is a special value vari-able not appearing in the program,
+
+B is a base type and e is aboolean-valued expression constraining the value variable called
+
+the refinement predicate. Intuitively, the base refinement predicatespecifies the set of values
+
+c of the base type B such that the predi-cate
+[c/*]e evaluates to true. For example, {* :int | 0 < *} spec-ifies the set of positive integers, and {
+
+* :int | * <= n} specifies theset of integers whose value is less than or equal to the value of the
+
+variable n. Thus, B is an abbreviation for {* :B | true}. We use
+
+the base refinements to build up dependent function types, written
+x :T1!T2 (following [2, 10]). Here, T1 is the domain type of thefunction, and the formal parameter
+
+x may appear in the base refine-ments of the range type
+T2.
+
+Logical Qualifiers and Liquid Types. A logical qualifier is aboolean-valued expression (i.e., predicate) over the program variables, the special value variable * which is distinct from theprogram variables, and the special placeholder variable
+
+? thatcan be instantiated with program variables. For the rest of this
+
+section, let us assume that Q is the set of logical qualifiers{
+
+0 <= *, ? <= *, * < ?, * < len ?}. In Section 5 we describe asimple set of qualifiers for array bounds checking. We say that
+
+a qualifier q matches the qualifier q0 if replacing some subset ofthe free variables in
+
+q with ? yields q0. For example, the qualifier
+x <= * matches the qualifier ? <= *. We write Q? for the set of allqualifiers not containing
+
+? that match some qualifier in Q. For ex-ample, when Q is as defined as above, Q
+
+? includes the qualifiers{
+
+0 <= *, x <= *, y <= *, k <= *, * < n, * < len a}. A liquid typeover Q is a dependent type where the refinement predicates are
+
+conjunctions of qualifiers from Q?. We write liquid type when Qis clear from the context. When checking or inferring dependent
+types over the logical qualifiers, our system ensures that the typesare well-formed, i.e., for each subexpression, the free variables appearing in the inferred type are bound in the environment for thatsubexpression.
+
+Liquid Type Inference. Our liquid type inference algorithm pro-ceeds in three steps. First, we perform Hindley-Milner (HM) type
+inference and use the results to generate templates, which are de-pendent types with unknown base refinements represented by liquid
+type variables ^. Second, we generate constraints on the templatesthat capture the subtyping relationships between the refinements.
+Third, we solve the constraints by using predicate abstraction tofind, for each
+
+^, the strongest conjunction of qualifiers from Q?that satisfies all the constraints. Note that for the third step, we need
+
+only consider the finite subset of Q? whose free variables belong tothe program. Next, through a series of examples, we show how our
+type inference algorithm incorporates features essential for infer-ring precise dependent types -- namely path-sensitivity, recursion,
+higher-order functions, and polymorphism -- and thus can stati-cally prove the safety of array accesses.
+
+Notation: We write B as an abbreviation for {* :B | true}. Ad-ditionally, when the base type
+
+B is clear from the context, weabbreviate {
+* :B | ^} as ^ when ^ is a liquid type variable, and{
+* :B | e} as {e} when e is a refinement predicate. For example,
+x:int!y:int!{x <= * ^ y <= *} denotes the type of a functionthat takes two (curried) integer arguments
+
+x, y and returns an inte-ger no less than
+x and y.
+
+Example 1: Path Sensitivity. Consider the max function shown inFigure 1 as an O
+
+CAML program. We will show how we infer that
+max returns a value no less than both arguments.
+
+(Step 1) HM infers that max has the type x :int!y:int!int.Using this type, we create a template for the liquid type of
+
+max,
+x:^x!y :^y!^1, where ^x, ^y, ^1 are liquid type variables repre-senting the unknown refinements for the formals
+
+x, y and the bodyof
+max, respectively.
+
+(Step 2) As the body is an if expression, our algorithm generatesthe following two constraints that stipulate that, under the appropriate branch condition, the then and else expressions, respectively
+x, y, have types that are subtypes of the entire body's type:
+
+x:^x; y:^y; (x > y) `{* = x} <: ^1 (1.1)
+x :^x; y :^y; ~(x > y) `{* = y} <: ^1 (1.2)
+Constraint (1.1) (resp. (1.2)) stipulates that when x and y have thetypes
+
+^x and ^y respectively and x > y (resp. ~(x > y)), the type
+
+of the expression x (resp. y), namely the set of all values equal to x(resp.
+
+y), must be a subtype of the body ^1.
+
+(Step 3) Since the program is "open", i.e., there are no calls to max,we assign
+
+^x, ^y true, meaning that any integer arguments can bepassed, and use a theorem prover to find the strongest conjunction
+
+of qualifiers in Q? that satisfies the subtyping constraints. Thetheorem prover deduces that when
+
+x > y (resp. ~(x > y)) if
+* = x (resp. * = y) then x <= * and y <= *. Hence, our algorithminfers that
+
+x <= * ^ y <= * is the strongest solution for ^1 thatsatisfies the two constraints. By substituting the solution for
+
+^1 intothe template for
+max, our algorithm infers
+
+max :: x:int!y:int!{* :int | (x <= *) ^ (y <= *)}
+Example 2: Recursion. Next, we show how our algorithm infersthat the recursive function
+
+sum from Figure 1 always returns a non-negative value greater than or equal to its argument
+
+k.
+
+(Step 1) HM infers that sum has the type k :int!int. Using thistype, we create a template for the liquid type of
+
+sum, k:^k!^2,where
+^k and ^2 represent the unknown refinements for the formal
+k and body, respectively. Due to the let rec, we use the createdtemplate as the type of
+
+sum when generating constraints for thebody of
+sum.
+
+(Step 2) Again, as the body is an if expression, we generate con-straints that stipulate that under the appropriate branch conditions,
+
+the "then" and "else" expressions have subtypes of the body ^2.For the "then" branch, we get a constraint:
+
+sum:. . .; k:^k; k < 0 `{* = 0} <: ^2 (2.1)
+The else branch is a let expression. First, considering the expres-sion that is locally bound, we generate a constraint
+
+sum:. . .; k:^k; ~(k < 0) `{* = k - 1} <: ^k (2.2)
+from the call to sum that forces the actual passed in at the callsiteto be a subtype of the formal of
+
+sum. The locally bound variable
+s gets assigned the template corresponding to the output of theapplication,
+
+[k - 1/k]^2, i.e., the output template of sum with theformal replaced with the actual argument, and we get the next
+
+constraint that ensures the "else" expression is a subtype of thebody
+
+^2.
+
+~(k < 0); s:[k - 1/k]^2 `{* = s + k} <: ^2 (2.3)
+(Step 3) Here, as sum is called, we try to find the strongest conjunction of qualifiers for ^k and ^2 that satisfies the constraints.To satisfy (2.2),
+
+^k can only be assigned true (the empty conjunc-tion), as when ~
+(k < 0), the value of k - 1 can be either negative,zero or positive. On the other hand,
+
+^2 is assigned 0 <= * ^ k <= *,the strongest conjunction of qualifiers in Q
+
+? that satisfies (2.1) and
+
+(2.3). Constraint (2.1) is trivially satisfied as the theorem prover de-duces that when
+
+k < 0, if * = 0 then 0 <= * and k <= *. When ^2is assigned the above conjunction, the binding for
+
+s in the environ-ment for constraint (2.3) becomes
+s:{0 <= * ^ k - 1 <= *}. Thus,constraint (2.3) is satisfied as the theorem prover deduces that when
+
+~(k < 0) and [s/*](0 <= * ^ k - 1 <= *), if * = s + k then 0 <= *and
+
+k <= *. The substitution simplifies to 0 <= s ^ k - 1 <= s,which effectively asserts to the solver the knowledge about the type
+
+of s, and crucially allows the solver to use the fact that s is non-negative when determining the type of
+
+s + k, and hence, the outputof
+sum. Thus, recursion enters the picture, as the solution for theoutput of the recursive call, which is bound to the type of
+
+s, is usedin conjunction with the branch information to prove that the output
+
+expression is non-negative. Plugging the solutions for ^k and ^2into the template, our system infers
+
+sum :: k :int!{* :int | 0 <= * ^ k <= *}
+
+let max x y =
+
+if x > y then x else y
+
+let rec sum k =
+
+if k < 0 then 0 else
+
+let s = sum (k-1) in
+s + k
+
+let foldn n b f =
+
+let rec loop i c =
+
+if i < n then loop (i+1) (f i c) else c in
+loop 0 b
+
+let arraymax a =
+
+let am l m = max (sub a l) m in
+foldn (len a) 0 am
+
+Figure 1. Example OCAML Program
+
+Example 3: Higher-Order Functions. Next, consider a programcomprising only the higher-order accumulator
+
+foldn shown inFigure 1. We show how our algorithm infers that
+
+f is only calledwith arguments between
+0 and n.
+
+(Step 1) HM infers that foldn has the polymorphic type8
+
+ff.n:int!b:ff!f:(int!ff!ff)!ff. From this ML type, wecreate the new template 8
+
+ff.n:^n!b :ff!f:(^3!ff!ff)!ff for
+foldn, where ^n and ^3 represent the unknown refinements forthe formal
+
+n and the first parameter for the accumulation function
+f passed into foldn. This is a polymorphic template, as the occur-rences of
+
+ff are preserved. This will allow us to instantiate ff withan appropriate dependent type at places where
+
+foldn is called. HMinfers that the type of
+loop is i:int!c:ff!ff, from which wegenerate a template
+i:^i!c:ff!ff for loop, which we will usewhen analyzing the body of
+
+loop.
+
+(Step 2) First, we generate constraints inside the body of loop.As HM infers that the type of the body is
+
+ff, we omit the trivialsubtyping constraints on the "then" and "else" expressions. Instead,
+
+the two interesting constraints are:
+
+. . . ; i :^i; i < n `{* = i + 1} <: ^i (3.1)
+
+which stipulates that the actual passed into the recursive call to
+loop is a subtype of the expected formal, and
+
+. . . ; i :^i; i < n `{* = i} <: ^3 (3.2)
+which forces the actual i to be a subtype of the first parameter of thehigher-order function
+
+f, in the environment containing the criticalbranch condition. Finally, the application
+
+loop 0 yields
+
+. . . `{* = 0} <: ^i (3.3)
+forcing the actual 0 to be a subtype of the formal i.
+(Step 3) Here, as foldn is not called, we assign ^n true and tryto find the strongest conjunction of qualifiers in Q
+
+? for ^i and ^3.
+
+We can assign to ^i the predicate 0 <= *, which trivially satisfies(3.3), and also satisfies (3.1) as when
+
+[i/*](0 <= *), if * = i + 1then
+0 <= *. That is, the theorem prover can deduce that if i isnon-negative, then so is
+
+i + 1. To ^3 we can assign the conjunction
+0 <= * ^ * < n which satisfies (3.2) as when [i/*](0 <= *) and
+i < n, if * = i then 0 <= * and * < n. By plugging the solutionsfor
+
+^3, ^n into the template our algorithm infers
+
+foldn :: 8ff.n :int!b:ff!f :({0 <= * ^ * < n}!ff!ff)!ff
+Example 4: Polymorphism and Array Bounds Checking. Con-sider the function
+
+arraymax that calls foldn with a helper that
+
+calls max to compute the max of the elements of an array and 0.Suppose there is a base type
+
+intarray representing arrays of inte-gers. Arrays are accessed via a primitive function
+
+sub :: a :intarray!j:{* :int | 0 <= * ^ * < len a}!int
+where the primitive function len returns the number of elementsin the array. The
+
+sub function takes an array and an index thatis between
+0 and the number of elements, and returns the integerat that index in the array. We show how our algorithm combines
+
+predicate abstraction, function subtyping, and polymorphism toprove that (a) the array
+
+a is safely accessed at indices between 0and
+len a, and (b) arraymax returns a non-negative integer.
+
+(Step 1) HM infers that (1) arraymax has the type
+a:intarray!int, (2) am has the type l :int!m:int!int, and(3)
+
+foldn called in the body is a polymorphic instance where thetype variable
+
+ff has been instantiated with int. Consequently, ouralgorithm creates the following templates: (1)
+
+a:intarray!^4for
+arraymax, where ^4 represents the unknown refinementfor the output of
+
+arraymax, (2) l:^l!m :^m!^5 for am,where
+^l, ^m and ^5 represent the unknown refinements forthe parameters and output type of
+
+am respectively, and (3) ^6for the type that
+ff is instantiated with, and so the template forthe instance of
+foldn inside arraymax is the type computedin the previous example with
+
+^6 substituted for ff, namely,
+n:int!b:^6!f :({0 <= * ^ * < n}!^6!^6)!^6
+
+(Step 2) First, for the application sub a l, our algorithm generates
+
+l:^l; m:^m `{* = l} <: {0 <= * ^ * < len a} (4.1)
+
+which states that the argument passed into sub must be within thearray bounds. For the application
+
+max (sub a l) m, using the typeinferred for
+max in Example 1, we get
+
+l:^l; m:^m `{sub a l <= * ^ m <= *} <: ^5 (4.2)
+which constrains the output of max (with the actuals (sub a l) and msubstituted for the parameters
+
+x and y respectively), to be a subtypeof the output type
+^5 of am. The call foldn (len a) 0 generates
+
+. . . `{* = 0} <: ^6 (4.3)
+which forces the actual passed in for b to be a subtype of ^6 thetype of the formal
+
+b in this polymorphic instance. Similarly, thecall
+foldn (len a) 0 am generates a constraint (4.4)
+
+. . . ` l :^l!m :^m!^5 <: {0 <= * ^ * < len a}!^6!^6
+forcing the type of the actual am to be a subtype of the formal finferred in Example 1, with the curried argument
+
+len a substitutedfor the formal
+n of foldn, and
+
+. . . `^6 <: ^4 (4.5)
+
+forcing the output of the foldn application to be a subtype of thebody of
+
+arraymax. Upon simplification using the standard rule forsubtyping function types, constraint (4.4) reduces to
+
+. . . `{0 <= * ^ * < len a} <: ^l (4.6)
+. . . `^6 <: ^m (4.7)
+. . . `^5 <: ^6 (4.8)
+
+(Step 3) The strongest conjunction of qualifiers from Q? that we
+can assign to: ^m, ^4, ^5 and ^6 is the predicate 0 <= *. In essencethe solution infers that we can "instantiate" the type variable
+
+ff withthe dependent type {
+* :int | 0 <= *}. This is sound because thebase value
+0 passed in is non-negative (constraint (4.3) is satisfied),and the accumulation function passed in (
+
+am), is such that if itssecond argument (
+m of type ^m) is non-negative then the output (of
+
+e ::= Expressions:|
+
+x variable|
+c constant|
+*x.e abstraction|
+e e application|
+if e then e else e if-then-else|
+let x = e in e let-binding|
+let rec f = *x.e in e letrec-binding|
+[\Lambda ff]e type-abstraction|
+[o/]e type-instantiation
+
+Q ::= Liquid Refinements|
+
+true true|
+q logical qualifier in Q?|
+Q ^ Q conjunction of qualifiers
+
+B ::= Base Types:|
+
+int base type of integers|
+bool base type of booleansT
+
+(B) ::= Type Skeletons:| {
+
+* :B | B} base|
+x:T(B)!T(B) function|
+ff type variableS
+
+(B) ::= Type Schema Skeletons:| T
+
+(B) monotype| 8
+ff.S(B) polytype
+
+o/, oe ::= T(true), S(true) Types, Schemas
+T, S ::= T(E), S(E) Dep. Types, Schemas
+
+^T , ^S ::= T(Q), S(Q) Liquid Types, Schemas
+
+Figure 2. Syntax
+
+type ^5) is non-negative (constraint (4.2) is satisfied). Plugging thesolution into the template, our algorithm infers
+
+arraymax :: intarray!{* :int | 0 <= *}
+The strongest conjunction over Q? we can assign to ^l is
+0 <= * ^ * < len a, which trivially satisfies constraint (4.6). More-over, with this assignment, we have satisfied the "bounds check"
+
+constraint (4.1), i.e., we have inferred an assignment of dependenttypes to all the program expressions that proves that all array accesses occur within bounds.
+
+3. Liquid Type Checking
+We first present the syntax and static semantics of our core lan-guage
+
+*L, a variant of the *-calculus with ML-style polymorphismextended with liquid types. We begin by describing the elements of
+
+*L, including expressions, types, and environments (Section 3.1).Next, we present the type judgments and derivation rules and state
+a soundness theorem which relates the static type system with theoperational semantics (Section 3.2). We conclude this section by
+describing how the design of our type system enables automaticdependent type inference (Section 3.3).
+
+3.1 Elements of *L
+The syntax of expressions and types for *L is summarized in Fig-ure 2.
+
+*L expressions include variables, special constants whichinclude integers, arithmetic operators and other primitive operations described below, *-abstractions, and function applications.In addition,
+
+*L includes as expressions the common constructs
+if-then-else and let, which the liquid type inference algorithmexploits to generate precise types, as well as
+
+let rec which is syn-tactic sugar for the standard
+fix operator.
+
+Types and Schemas. We use B to denote base types such as boolor
+
+int. *L has a system of refined base types, dependent functiontypes, and ML-style polymorphism via type variables that are universally quantified at the outermost level to yield polymorphic typeschemas. We write
+
+o/ and oe for ML types and schemas, T and S
+
+for dependent types and schemas, and ^T and ^S for liquid types andschemas.
+
+Environments and Well-formedness. A type environment \Gamma  isa sequence of type bindings
+
+x:S and guard predicates e. Theformer are standard; the latter capture constraints about the if-thenelse branches under which an expression is evaluated, which isrequired to make the system "path-sensitive" (Section 3.3). A type
+is considered well-formed with respect to an environment if all thefree variables appearing in the refinement predicates of the type
+are bound in the environment. An environment is considered well-formed if, in each type binding, the dependent type is well-formed
+with respect to the preceding (prefix) environment.
+Shapes. The shape of the dependent type (schema) S, denotedby
+
+Shape(S), is the ML type (schema) obtained by replacing allrefinement predicates with
+
+true. We lift the function Shape to typeenvironments by applying it to each type binding and eliminating
+
+the guard predicates.
+Constants. As in [22, 10], the basic units of computation are theconstants
+
+c built into *L, each of which has a dependent type
+ty(c) that precisely captures the semantics of the constants. Theseinclude basic constants, corresponding to integers and boolean
+
+values, and primitive functions, which encode various operations.The set of constants of
+
+*L includes:
+
+true :: {* :bool | *}
+false :: {* :bool | not *},
+
+:: x:bool!y :bool!{* :bool | * , (x , y)}
+3 :: {* :int | * = 3}
+= :: x:int!y :int!{* :bool | * , (x = y)}
++ :: x:int!y :int!{* :int | * = x + y}
+fix :: 8ff.(ff!ff)!ff
+len :: intarray!{* :int | 0 <= *}
+sub :: a:intarray!i:{* :int | 0 <= * ^ * < len a}!int
+
+The types of some constants are defined in terms of themselves(e.g.,
+
++). This does not cause problems, as the dynamic semanticsof refinement predicates is defined in terms of the operational semantics (as in [10]), and the static semantics is defined via a soundoverapproximation of the dynamic semantics [24]. For clarity, we
+will use infix notation for constants like +. To simplify the expo-sition, we assume there is a special base type that encodes integer
+arrays in *L. The length of an array value is obtained using len. Toaccess the elements of the array, we use
+
+sub, which takes as inputan array
+a and an index i that must be within the bounds of a, i.e.,non-negative, and less than the length of the array.
+
+3.2 Liquid Type Checking Rules
+We now describe the key ingredients of the type system: the typingjudgments and derivation rules summarized in Figure 3. Our system
+
+has three kinds of judgments relating environments, expressions,and types.
+
+Well-formedness Judgment \Gamma  ` S: states that the dependenttype schema
+
+S is well-formed under the type environment \Gamma .Intuitively, a type is well-formed if its base refinements are
+
+boolean expressions which refer only to variables in the scopeof the corresponding expression.
+
+Subtype Judgment \Gamma  ` S1 <: S2: states that dependent typeschema
+
+S1 is a subtype of schema S2 in environment \Gamma .
+
+Liquid Type Judgment \Gamma  `Q e : S: states that, using the logicalqualifiers Q, the expression
+
+e has the type schema S under thetype environment
+\Gamma .
+
+Soundness of Liquid Type Checking. Assume that variables arebound at most once in any type environment; in other words,
+
+assume that variables are ff-renamed to ensure that substitutions(such as in [LT-A
+
+PP]) avoid capture. Let ,! describe the singleevaluation step relation for
+
+*L expressions and *,! describe thereflexive, transitive closure of
+
+,!.As the conservative subtyping rule makes it hard to prove a substitution lemma, we prove soundness via two steps. First, we definean "exact" version of the type system, with a judgment
+
+\Gamma  ` e : S,whose rules use an undecidable subtyping relation. We show the
+
+standard weakening, narrowing, and substitution lemmas for thissystem, and thereby obtain preservation and progress theorems.
+Second, we show that our decidable system is conservative: i.e.,if
+
+\Gamma  `Q e : S then \Gamma  ` e : S. Combining the results, we concludethat if an expression is well-typed in our decidable system then we
+
+are guaranteed that evaluation does not get "stuck", i.e., at run-time,every primitive operation receives valid inputs.
+
+THEOREM 1. [Liquid Type Safety]
+
+1. (Overapproximation) If \Gamma  `Q e : S then \Gamma  ` e : S.
+2. (Preservation) If \Gamma  ` e : S and e ,! e0 then \Gamma  ` e0 : S.
+3. (Progress) If ; ` e : S and e is not a value then there exists an
+
+e0, e ,! e0.
+
+We omit the details due to lack of space -- the formalizationand proofs can be found in [24]. Thus, if a program typechecks we
+
+are guaranteed that every call to sub gets an index that is withinthe array's bounds. Arbitrary safety properties (e.g., divide-by-zero
+errors) can be expressed by using suitable types for the appropriateprimitive constant (e.g., requiring the second argument of
+
+(/) to benon-zero).
+
+3.3 Features of the Liquid Type System
+Next, we describe some of the features unique to the design ofthe Liquid type system and how they contribute to automatic type
+
+inference and verification.
+1. Path Sensitivity. Any analysis that aims to prove propertieslike the safety of array accesses needs to be sensitive to branch
+
+information; it must infer properties which hold for the entire ifexpression as well as for the individual
+
+then and else expressions.For example, without the branch information in the
+
+sum examplefrom Section 2, the system would not be able to infer that the
+
+occurrence of k inside the else expression is non-negative, andhence that
+
+sum returned a non-negative value. For array boundschecking, programmers often compare the index to some other
+
+expression -- either the array length, or some other variable that isknown to be smaller than the array length (e.g., in
+
+arraymax fromSection 2), and only perform the array access under the appropriate
+
+guard. To capture this kind of information, the environment \Gamma  alsoincludes branch information, shown in rule [LT-I
+
+F] in Figure 3.
+
+2. Decidable, Conservative Subtyping. As shown in Figure 3,checking that one type is a subtype of another reduces to a set
+
+of subtype checks on base refinement predicates, which further re-duces to checking if the refinement predicate for the subtype implies the predicate for the supertype. As the refinement predicatescontain arbitrary terms, exact implication checking is undecidable.
+To get around this problem, our system uses a conservative but de-cidable implication check, shown in rule [D
+
+EC-<:-BASE] of Fig-ure 3. Let EUFA be the decidable logic of equality, uninterpreted
+
+functions and linear arithmetic [21]. We write [[e]] for the embed-ding of the expression
+
+e into terms of the logic EUFA by encodingexpressions corresponding to integers, addition, multiplication and
+
+division by constant integers, equality, inequality, and disequalitywith corresponding terms in the EUFA logic, and encoding all other
+constructs, including *-abstractions and applications, with uninterpreted function terms. We write:
+
+[[\Gamma ]] j ^ {e | e 2 \Gamma } ^ ^ {[[[x/*]e]] | x :{* :B | e} 2 \Gamma }
+as the embedding for the environment. Notice that we use theguard predicates and base type bindings in the environment
+to strengthen the antecedent of the implication. However, wesubstitute all occurrences of the value variable
+
+* in the refine-ments from
+\Gamma  with the actual variable being refined, therebyasserting in the antecedent that the program variable satisfies the
+
+base refinement predicate. Thus, in the embedded formula, alloccurrences of
+
+* refer to the two types that are being checkedfor subtyping. The embedding is conservative, i.e., the validity of
+
+the embedded implication implies the the standard, weaker, exactrequirement for subtyping of refined types [10, 22]. For example,
+for the then expression in max from Section 2, the subtyping re-lation:
+
+x:int; y :int; x > y ` {* = x} <: {x <= * ^ y <= *}holds as the following implication is valid in EUFA:
+
+((true ^ true ^ x > y) ^ (* = x)) ) (x <= * ^ y <= *)
+3. Recursion via Polymorphism. To handle polymorphism, ourtype system incorporates type generalization and instantiation annotations, which are over ML type variables ff and monomor-phic ML types
+
+o/, respectively, and thus can be reconstructed viaa standard type inference algorithm. The rule [LT-I
+
+NST] allowsa type schema to be instantiated with an arbitrary liquid type
+
+^T of the same shape as o/, the monomorphic ML type used for
+instantiation. We use polymorphism to encode recursion via thepolymorphic type given to
+
+fix. That is, let rec bindings aresyntactic sugar:
+let rec f = e in e' is internally convertedto
+let f = fix (fun f -> e) in e'. The expression type-checks if there is an appropriate liquid type that can be instantiated
+
+for the ff in the polymorphic type of fix; this liquid type corre-sponds to the type of the recursive function
+
+f.
+
+4. The Liquid Type Restriction. The most critical difference be-tween the rules for liquid type checking and other dependent systems is that our rules stipulate that certain kinds of expressions haveliquid types. In essence, these expressions are the key points where
+appropriate dependent types must be inferred. By forcing the typesto be liquid, we bound the space of possible solutions, thus making
+inference efficiently decidable.
+
+[LT-INST] For polymorphic instantiation, also the mechanism forhandling recursion, the liquid type restriction enables efficient inference by making the set of candidate dependent types finite.
+
+[LT-FUN] For *-abstractions, we impose the restriction that theinput and output be liquid to ensure the types remain small, thereby
+
+making algorithmic checking and inference efficient. This is anal-ogous to procedure "summarization" for first-order programs.
+
+[LT-IF] For conditional expressions we impose the liquid restric-tion and implicitly force the
+
+then and else expressions to be sub-types of a fresh liquid type, instead of an explicit "join" operator as
+
+in dataflow analysis. We do so as the expression may have a func-tion type and with a join operator, input type contravariance would
+introduce disjunctions into the dependent type which would haveunpleasant algorithmic consequences.
+
+[LT-LET] For let-in expressions we impose the liquid restrictionas a means of eliminating the locally bound variable from the dependent type of the whole expression (as the local variable goes
+out of scope). The antecedent \Gamma  ` ^T requires that the liquid typebe well-formed in the outer environment, which, together with the
+
+condition, enforced via alpha renaming, that each variable is boundonly once in the environment, is essential for ensuring the soundness of our system [24]. The alternative of existentially quantifyingthe local variable [18] makes algorithmic checking hard.
+
+Liquid Type Checking \Gamma  `Q e : S
+
+\Gamma  `Q e : S1 \Gamma  ` S1 <: S2 \Gamma  ` S2
+
+\Gamma  `Q e : S2 [LT-SUB]
+
+\Gamma (x) = {* :B | e}
+\Gamma  `Q x : {* :B | * = x} [LT-VAR]
+
+\Gamma (x) not a base type
+
+\Gamma  `Q x : \Gamma (x) [LT-VAR]
+
+\Gamma  `Q c : ty(c) [LT-CONST]
+\Gamma ; x: ^Tx `Q e : ^T \Gamma  ` x : ^Tx! ^T
+
+\Gamma  `Q *x.e : (x: ^Tx! ^T ) [LT-FUN]
+
+\Gamma  `Q e1 : (x:Tx!T ) \Gamma  `Q e2 : Tx
+
+\Gamma  `Q e1 e2 : [e2/x]T [LT-APP]
+
+\Gamma  `Q e1 : bool \Gamma ; e1 `Q e2 : ^T \Gamma ; ~e1 `Q e3 : ^T \Gamma  ` ^T
+
+\Gamma  `Q if e1 then e2 else e3 : ^T [LT-IF]
+
+\Gamma  `Q e1 : S1 \Gamma ; x :S1 `Q e2 : ^T \Gamma  ` ^T
+
+\Gamma  `Q let x = e1 in e2 : ^T [LT-LET]
+
+\Gamma  `Q e : S ff not free in \Gamma 
+
+\Gamma  `Q [\Lambda ff]e : 8ff.S [LT-GEN]
+
+\Gamma  `Q e : 8ff.S \Gamma  ` ^T Shape( ^T ) = o/
+
+\Gamma  `Q [o/]e : [ ^T /ff]S [LT-INST]
+
+Decidable Subtyping \Gamma  ` S1 <: S2
+
+Valid([[\Gamma ]] ^ [[e1]] ) [[e2]])
+\Gamma  ` {* :B | e1} <: {* :B | e2} [DEC-<:-BASE]
+
+\Gamma  ` T 0x <: Tx \Gamma ; x :T 0x ` T <: T 0
+
+\Gamma  ` x:Tx!T <: x:T 0x!T 0 [DEC-<:-FUN]
+
+\Gamma  ` ff <: ff [<:-VAR]
+
+\Gamma  ` S1 <: S2
+\Gamma  ` 8ff.S1 <: 8ff.S2 [<:-POLY]
+
+Well-Formed Types \Gamma  ` S
+
+\Gamma ; * :B ` e : bool
+
+\Gamma  ` {* :B | e} [WT-BASE] \Gamma  ` ff [WT-VAR]
+
+\Gamma ; x :Tx ` T
+\Gamma  ` x :Tx!T [WT-FUN]
+
+\Gamma  ` S
+\Gamma  ` 8ff.S [WT-POLY]
+
+Figure 3. Rules for Liquid Type Checking
+
+5. Placeholder Variables and ff-Renaming. We use the place-holder variables
+
+? instead of "hard-coded" program variables tomake our type system robust to
+
+ff-renaming. If Q is {x < *},then ; `
+Q (*x.x + 1) : x:int!{x < *} is a valid judgment, but; `
+Q (*y.y + 1) : y :int!{y < *} is not, as y < * is not in Q?.If instead Q is {? < *}, then Q? includes {x < *, y < *} and so
+
+both of the above are valid judgments. In general, our type systemis robust to renaming in the following sense: if
+
+\Gamma  `Q e1 : S1 and e1is
+ff-equivalent to e2 and the free variables of Q are bound1 in \Gamma ,then for some
+
+S2 that is ff-equivalent to S1, we have \Gamma  `Q e2 : S2.
+
+1 Recall that variables are bound at most once in any environment
+
+4. Liquid Type Inference
+We now turn to the heart of our system: the algorithm Infer (shownin Figure 4) that takes as input a type environment
+
+\Gamma , an expression
+e, and a finite set of logical qualifiers Q and determines whether
+e is well-typed over Q, i.e., whether there exists some S such that
+\Gamma  `Q e : S. Our algorithm proceeds in three steps. First, we ob-serve that the dependent type for any expression must be a refinement of its ML type, and so we invoke Hindley-Milner (HM) toinfer the types of subexpressions, and use the ML types to generate templates representing the unknown dependent types for thesubexpressions (Section 4.1). Second, we use the syntax-directed
+liquid typing rules from Figure 3 to build a system of constraintsthat capture the subtyping relationships between the templates that
+must hold for a liquid type derivation to exist (Section 4.2). Third,we use Q to solve the constraints using a technique inspired by
+predicate abstraction (Section 4.3).
+4.1 ML Types and Templates
+Our type inference algorithm is based on the observation that theliquid type derivations are refinements of the ML type derivations,
+
+and hence the dependent types for all subexpressions are refine-ments of their ML types.
+
+ML Type Inference Oracle. Let HM be an ML type inferenceoracle, which takes an ML type environment
+
+\Gamma  and an expres-sion
+e and returns the ML type (schema) oe if and only if, us-ing the classical ML type derivation rules [7], there exists a
+
+derivation \Gamma  ` e : oe. The liquid type derivation rules are refine-ments of the ML type derivation rules. That is, if
+
+\Gamma  `Q e : Sthen
+HM(Shape(\Gamma ), e) = Shape(S). Moreover, we assume thatthe ML type derivation oracle has "inserted" suitable type generalization ([\Lambda ff]e) and instantiation ([o/]e) annotations. Thus, theproblem of dependent type inference reduces to inferring appropriate refinements of the ML types.
+Templates. Let K be a set of liquid type variables used to representunknown type refinement predicates. A template
+
+F is a dependenttype schema described via the grammar shown below, where some
+
+of the refinement predicates are replaced with liquid type variableswith pending substitutions. A template environment is a map
+
+\Gamma from variables to templates.
+
+` ::= ffl | [e/x]; ` (Pending Substitutions)
+F ::= S(E [ ` * K) (Templates)
+
+Variables with Pending Substitutions. A sequence of pendingsubstitutions
+
+` is defined using the grammar above. To understandthe need for
+`, consider rule [LT-APP] from Figure 3 which speci-fies that the dependent type of a function application is obtained by
+
+substituting all occurrences of the formal argument x in the outputtype of
+
+e1 with the actual expression e2 passed in at the application.When generating the constraints, the output type of
+
+e1 is unknownand is represented by a template containing liquid type variables.
+
+Suppose that the type of e1 is x :B!{* :B | ^}, where ^ is a liq-uid type variable. In this case, we will assign the application
+
+e1 e2the type {
+* :B | [e2/x] * ^}, where [e2/x] * ^ is a variable with apending substitution [18]. Note that substitution can be "pushed inside" type constructors, e.g., ` * ({^1} ! {^2}) is the same as{
+
+` * ^1} ! {` * ^2} and so it suffices to apply the pending substi-tutions only to the root of the template.
+
+4.2 Constraint Generation
+We now describe how our algorithm generates constraints over tem-plates by traversing the expression in the syntax-directed manner of
+
+a type checker, generating fresh templates for unknown types, con-straints that capture the relationships between the types of various
+subexpressions, and well-formedness requirements. The generated
+
+constraints are such that they have a solution if and only if the ex-pression has a valid liquid type derivation. Our inference algorithm
+uses two kinds of constraints over templates. Well-formednessconstraints of the form
+
+\Gamma  ` F , where \Gamma  is template environment,and
+F is a template, ensure that the types inferred for each subex-pression are over program variables that are in scope at that subexpression. Subtyping constraints of the form \Gamma  ` F1 <: F2 where
+\Gamma  is a template environment and F1 and F2 are two templates ofthe same shape, ensure that the types inferred for each subexpression can be combined using appropriate subsumption relationshipsto yield a valid type derivation.
+
+Our constraint generation algorithm, Cons, shown in Figure 4,takes as input a template environment
+
+\Gamma  and an expression e thatwe wish to infer the type of and returns as output a pair of a type
+
+template F , which corresponds to the unknown type of e, and a setof constraints
+
+C. Intuitively, Cons mirrors the type derivation rulesand generates constraints
+
+C which capture exactly the relationshipsthat must hold between the templates of the subexpressions in order
+
+for e to have a valid type derivation over Q. To understand how
+Cons works, notice that the expressions of *L can be split into twoclasses: those whose types are constructable from the environment
+
+and the types of subexpressions, and those whose types are not.
+1. Expressions with Constructable Types. The first class of ex-pressions are variables, constants, function applications and polymorphic generalizations, whose types can be immediately con-structed from the types of subexpressions or the environment. For
+such expressions, Cons recursively computes templates and con-straints for the subexpressions and appropriately combines them to
+form the template and constraints for the expression.As an example, consider
+
+Cons(\Gamma , e1 e2). First, Cons is called toobtain the templates and constraints for the subexpressions
+
+e1 and
+e2. If a valid ML type derivation exists, then e1 must be a functiontype with some formal
+
+x. The returned template is the result ofpushing the pending substitution of
+
+x with the actual argument e2into the "leaves" of the template corresponding to the return type of
+
+e1. The returned constraints are the union of the constraints for thesubexpressions and a subtyping constraint ensuring that the type of
+the argument e2 is a subtype of the input type of e1.
+2. Expressions with Liquid Types. The second class are expres-sions whose types cannot be derived as above, as the subsumption
+
+rule is required to perform some kind of "over-approximation" oftheir concrete semantics. These include
+
+*-abstractions, if-then-elseexpressions, let-bindings, and polymorphic instantiations (which
+
+includes recursive functions). We use two observations to infer thetypes of these expressions. First, the shape of the dependent type
+is the same as the ML type of the expression. Second, from theliquid type restriction, we know that the refinement predicates for
+these expressions are conjunctions of logical qualifiers from Q? (cf.rules [LT-L
+
+ET], [LT-FUN], [LT-IF], [LT-INST] of Figure 3). Thus,to infer the types of these expressions, we invoke
+
+HM to determinethe ML type of the expression and then use
+Fresh to generate atemplate with the same shape as the ML type but with fresh liquid
+
+type variables representing the unknown refinements.As an example, consider
+
+Cons(\Gamma , if e1 then e2 else e3).First, a fresh template is generated using the ML type of the expression. Next, Cons recursively generates templates and constraints forthe
+
+then and else subexpressions. Note that for the then (resp.
+else) subexpression, the environment is extended with e1 (resp.~
+
+e1) as in the type derivation rule ([LT-IF] from Figure 3). Thefresh template is returned as the template for the whole expression.
+
+The constraints returned are the union of those for the subexpres-sions, a well-formedness constraint for the whole expression's template, and subtyping constraints forcing the templates for the thenand
+
+else subexpressions to be subtypes of the whole expression'stemplate
+
+Example: Constraints. The well-formedness constraint; `
+
+x:^x!y:^y!^1 is generated for the fresh template for max(from Figure 1). The constraint ensures that the inferred type
+
+for max only contains program variables that are in scope at thepoint where
+
+max is bound. The if expression that is the body of
+max is an expression with liquid type. For this expression, a freshtemplate
+
+^10 is generated, and the subtyping constraints:
+
+x:^x; y :^y; (x > y) ` {* = x} <: ^10
+x:^x; y:^y; ~(x > y) ` {* = y} <: ^10
+
+x:^x; y:^y ` ^10 <: ^1
+
+are generated, capturing the relationships between the then andthe
+
+if expression, the else and the if expression, and the if andthe output expression, respectively. The constraints (1.1) and (1.2)
+
+are the above constraints simplified for exposition. The recursiveapplication
+
+sum (k-1) from Figure 1 is an expression with aconstructable type. For this expression the subtyping constraint
+
+(2.2) is generated, forcing the actual to be a subtype of the formal.The output of the application, i.e., the output type
+
+^2 of sum, withthe pending substitution of the formal
+k with the actual (k - 1) isshown bound to
+s in (2.3).
+
+4.3 Constraint Solving
+Next, we describe our two-step algorithm for solving the con-straints, i.e., assigning liquid types to all variables
+
+^ such thatall constraints are satisfied. In the first step, we use the wellformedness and subtyping rules to split the complex constraints,which may contain function types, into simple constraints over
+variables with pending substitutions. In the second step, we iter-atively weaken a trivial assignment, in which each liquid type variable is assigned the conjunction of all logical qualifiers, until wefind the least fixpoint solution for all the simplified constraints or
+determine that the constraints have no solution. We first formalizethe notion of a solution and then describe the two-step algorithm
+that computes solutions.
+Satisfying Liquid Assignments. A Liquid Assignment over Q isa map
+
+A from liquid type variables to sets of qualifiers from Q?.Assignments can be lifted to maps from templates
+
+F to dependenttypes
+A(F ) and template environments \Gamma  to environments A(\Gamma ),by substituting each liquid type variable
+
+^ with V A(^) and thenapplying the pending substitutions.
+A satisfies a constraint c if
+A(c) is valid. That is, A satisfies a well-formedness constraint
+\Gamma  ` F if A(\Gamma ) ` A(F ), and a subtyping constraint \Gamma  ` F1 <: F2if
+
+A(\Gamma ) ` A(F1) <: A(F2). A is a solution for a set of constraints
+C if it satisfies each constraint in C.
+
+Step 1: Splitting into Simple Constraints. First, we call Split,which uses the rules for well-formedness and subtyping (Figure 3)
+
+to convert all the constraints over complex types (i.e., functiontypes) into simple constraints over base types. An assignment is
+a solution for C if and only if it is a solution for Split(C).
+Example: Splitting. The well-formedness constraint; `
+
+x:^x!y:^y!^1 splits into the three simple constraints:; `
+^x, x :^x ` ^y and x:^x; y:^y ` ^1, which ensure that: theparameter
+
+x must have a refinement over only constants andthe value variable
+
+* as the environment is empty; the parameter
+y must have a refinement over only x and *; and the outputtype's refinement can refer to both parameters
+
+x, y and the valuevariable. The function subtyping constraint generated by the
+
+call foldn (len a) 0 am shown in (4.4) splits into the simplesubtyping constraints (4.6),(4.7),(4.8). Notice how substitution
+and contravariance combine to cause the flow of the boundsinformation into input parameter
+
+^l (4.6) thus allowing the systemto statically check the array access.
+
+Step 2: Iterative Weakening. Due to the well-formedness con-straints, any solution over Q must map the liquid type variables to
+sets of qualifiers whose free variables are either the value variable
+* or the variables in the input environment \Gamma  (written Var(\Gamma )), orthe variables in the input expression
+
+e (written Var(e)). That is, anysolution maps the liquid variables to a set of qualifiers contained in
+
+Inst(\Gamma , e, Q) which is defined as{
+
+q | q 2 Q? and FreeVar(q) ` {*} [ Var(\Gamma ) [ Var(e)}
+where Var(\Gamma ) and Var(e) are the set of variables in \Gamma  and erespectively. Notice that if Q is finite, then
+
+Inst(\Gamma , e, Q) is alsofinite as the placeholder variables can only be instantiated with
+
+finitely many variables from \Gamma  and e. Thus, to solve the constraints,we call the procedure
+
+Solve, shown in Figure 4, with the splitconstraints and a trivial initial assignment that maps each liquid
+
+type variable to Inst(\Gamma , e, Q).
+
+Solve repeatedly picks a constraint that is not satisfied by thecurrent assignment and calls
+
+Weaken to remove the qualifiers thatprevent the constraint from being satisfied. For unsatisfied constraints of the form: (1) \Gamma  ` {* :B | ` * ^}, Weaken removes fromthe assignment for
+
+^ all the qualifiers q such that the ML typeof
+` * q (the result of applying the pending substitutions ` to q)cannot be derived to be
+
+bool in the environment Shape(\Gamma ); * :B,(2)
+\Gamma  ` {* :B | ae} <: {* :B | ` * ^}, where ae is either a refine-ment predicate or a liquid variable with pending substitutions,
+
+Weaken removes from the assignment for ^ all the logical qual-ifiers
+
+q such that the implication ([[A(\Gamma )]] ^ [[A(ae)]]) ) ` * q is notvalid in EUFA, (3)
+
+\Gamma  ` {* :B | ae} <: {* :B | e}, Weaken, andtherefore
+Solve, returns Failure.
+
+Correctness of Solve. For two assignments A and A0, we say that
+A <= A0 if for all ^, the set of logical qualifiers A(^) contains theset of logical qualifiers
+
+A0(^). We can prove that if a set of con-straints has a solution over Q then it has a unique minimum solution
+
+w.r.t. <=. Intuitively, we invoke Solve with the least possible assign-ment that maps each liquid variable to all the possible qualifiers.
+Solve then uses Weaken to iteratively weaken the assignment untilthe unique minimum solution is found. The correctness of
+
+Solvefollows from the following invariant about the iterative weakening:
+
+if A* is the minimum solution for the constraints, then in each itera-tion, the assignment
+
+A <= A*. Thus, if Solve returns a solution thenit must be the minimum solution for
+
+C over Q. If at some point aconstraint
+\Gamma  ` {* :B | ae} <: {* :B | e} is unsatisfied, subsequentweakening cannot make it satisfied. Thus, if
+
+Solve returns Failurethen
+C has no solution over Q.By combining the steps of constraint generation, splitting and
+
+solving, we obtain our dependent type inference algorithm Infershown in Figure 4. The algorithm takes as input an environment
+\Gamma , an expression e and a finite set of logical qualifiers Q, anddetermines whether there exists a valid liquid type derivation over
+Q for e in the environment \Gamma . The correctness properties of Inferare stated in the theorem below, whose proof is in [24]. From
+Theorems 1, 2, we conclude that if Infer(;, e, Q) = S then everyprimitive operation invoked during the evaluation of
+
+e succeeds.
+
+THEOREM 2. [Liquid Type Inference]
+
+1. Infer(\Gamma , e, Q) terminates,
+2. If Infer(\Gamma , e, Q) = S then \Gamma  `Q e : S, and,
+3. If Infer(\Gamma , e, Q) = Failure then there is no S s.t. \Gamma  `Q e : S.
+
+Running Time. Most of the time taken by Infer goes inside proce-dure
+
+Solve which asymptotically dominates the time taken to gen-erate constraints.
+
+Solve returns the same output regardless of theorder in which the constraints are processed. For efficiency, we implement Solve in two phases. First, Solve makes a (linear) pass thatsolves the well-formedness constraints, thus rapidly pruning away
+
+irrelevant qualifiers. Second, Solve uses a standard worklist-basedalgorithm that solves the subtyping constraints. The time taken in
+the first phase is asymptotically dominated by the time taken in thesecond. Let
+
+Q be the maximum number of qualifiers that any liq-uid variable is mapped to after the first well-formedness pass,
+
+V bethe number of variables in the program
+e that have a base type, and
+D be the size of the ML type derivation for e in the environment
+\Gamma . A constraint is sent to Weaken only when the antecedent of itsimplication changes, i.e., at most
+
+V * Q times. There are at most
+O(D) constraints and so Weaken is called at most O(D * V * Q)times. Each call to
+
+Weaken makes at most Q calls to the theoremprover. Thus, in all the running time of
+
+Infer is O(D * V * Q2)assuming each theorem prover call takes unit time. Of course,
+
+Dcan be exponential in the program size (but tends to be linear in
+
+practice), and the size of each (embedded) theorem prover query is
+O(V *Q). Though validity checking in EUFA is NP-Hard, severalsolvers for this theory exist which are very efficient for the simple
+
+queries that arise in our context [9].
+4.4 Features of Liquid Type Inference
+We now discuss some features of the inference algorithm.
+1. Type Variables and Polymorphism. There are two kinds oftype variables used during inference: ML type variables
+
+ff obtainedfrom the ML types returned by
+HM, and liquid type variables ^ in-troduced during liquid constraint generation to stand for unknown
+
+liquid types. Our system is monomorphic in the liquid type vari-ables. Polymorphism only enters via the ML type variables as fresh
+liquid type variables are created at each point where an ML typevariable
+
+ff is instantiated with a monomorphic ML type.
+
+2. Whole Program Analysis and Non-General Types. Dueto the above, the types we obtain for function inputs are the
+
+strongest liquid supertype of all the arguments passed into thefunction. This is in contrast with ML type inference which
+infers the most general type of the function independent ofhow the function is used. For example, consider the function neg defined as fun x -> (-x), and suppose that Q ={
+
+0 <= *, 0 >= *}. In a program comprising only the above func-tion i.e., where the function is never passed arguments, our algorithm infers neg :: {0 <= * ^ 0 >= *}!{0 <= * ^ 0 >= *} whichis useless but sound. If
+
+neg is only called with (provably)non-negative (resp. non-positive) arguments, the algorithm infers neg :: {0 <= *}!{0 >= *} (resp. neg :: {0 >= *}!{0 <= *})If
+
+neg is called with arbitrary arguments, the algorithm infers
+neg :: int!int and not a more general intersection of functiontypes. We found this design choice greatly simplified the inference
+
+procedure by avoiding the expensive "case splits" on all possible in-puts [14] while still allowing us to prove the safety of challenging
+benchmarks. Moreover, we can represent the intersection type inour system as:
+
+x:int!{(0 <= x ) 0 >= *) ^ (0 >= x ) 0 <= *)},and so, if needed, we can recover the precision of intersection types
+
+by using qualifiers containing implications.
+3. A-Normalization. Recall the sum example from Section 2. Oursystem as described would fail to infer that the output type of:
+
+let rec sum k = if k < 0 then 0 else (s + sum (k-1))was non-negative, as it cannot use the fact that
+
+sum (k-1) isnon-negative when inferring the type of the
+else expression. Thisis solved by A-Normalizing[12] the program so that intermediate
+
+subexpressions are bound to temporary variables, thus allowing usto use information about types of intermediate expressions, as in
+the original sum implementation.
+
+5. Experimental Results
+We now describe our implementation of liquid type inference inthe tool D
+
+SOLVE which does liquid type inference for OCAML. We
+
+Cons(\Gamma , e) =match
+
+e with|
+x -!if
+
+HM(Shape(\Gamma ), e) = Bthen
+
+({* :B | * = x}, ;)else
+(\Gamma (x), ;)|
+
+c -!
+
+(ty(c), ;)|
+
+e1 e2 -!let
+
+(x:Fx ! F, C1) = Cons(\Gamma , e1) inlet
+(F 0x, C2) = Cons(\Gamma , e2) in
+([e2/x]F, C1 [ C2 [ {\Gamma  ` F 0x <: Fx})|
+
+*x.e -!let
+
+(x:Fx ! F ) = Fresh(HM(Shape(\Gamma ), *x.e)) inlet
+(F 0, C) = Cons(\Gamma ; x:Fx, e) in
+(x:Fx ! F, C [ {\Gamma  ` x:Fx ! F } [ {\Gamma ; x:Fx ` F 0 <: F })|
+
+if e1 then e2 else e3 -!let
+
+F = Fresh(HM(Shape(\Gamma ), e)) inlet
+( , C1) = Cons(\Gamma , e1) inlet
+(F2, C2) = Cons(\Gamma ; e1, e2) inlet
+(F3, C3) = Cons(\Gamma ; ~e1, e3) in
+(F, C1 [ C2 [ C3 [ {\Gamma  ` F }[{
+
+\Gamma ; e1 ` F2 <: F } [ {\Gamma ; ~e1 ` F3 <: F })|
+
+let x = e1 in e2 -!let
+
+F = Fresh(HM(Shape(\Gamma ), e)) inlet
+(F1, C1) = Cons(\Gamma , e1) inlet
+(F2, C2) = Cons(\Gamma ; x:F1, e2) in
+(F, C1 [ C2 [ {\Gamma  ` F } [ {\Gamma ; x:F1 ` F2 <: F })|
+
+[\Lambda ff]e -!let
+
+(F, C) = Cons(\Gamma , e) in
+(8ff.F, C)|
+
+[o/]e -!let
+
+F = Fresh(o/) inlet
+(8ff.F 0, C) = Cons(\Gamma , e) in
+([F/ff]F 0, C [ {\Gamma  ` F })
+
+Weaken(c, A) =match
+
+c with|
+\Gamma  ` {* :B | ` * ^} -!
+
+A[^ 7! {q | q 2 A(^) and Shape(\Gamma ); * :B ` ` * q : bool}]|
+
+\Gamma  ` {* :B | ae} <: {* :B | ` * ^} -!
+
+A[^ 7! {q | q 2 A(^) and [[A(\Gamma )]] ^ [[A(ae)]] ) [[` * q]]}]| -!
+
+Failure
+
+Solve(C, A) =if exists
+
+c 2 C such that A(c) is not validthen
+Solve(C, Weaken(c, A)) else A
+
+Infer(\Gamma , e, Q) =let
+
+(F, C) = Cons(\Gamma , e) inlet
+A = Solve(Split(C), *^.Inst(\Gamma , e, Q)) in
+A(F )
+
+Figure 4. Liquid Type Inference Algorithm
+
+describe experiments which demonstrate, over a set of benchmarksthat were previously annotated in the DML project [27], that liquid
+types greatly reduce the burden of manual dependent type annota-tion required to prove the safety of array accesses.
+
+DSOLVE takes as input a closed OCAML program and a set ofqualifiers Q, and outputs the dependent types inferred for the program expressions and the set of applications of primitive operationsthat could not statically be proven safe (ideally empty). D
+
+SOLVE isbuilt on top of O
+CAML: DSOLVE uses the OCAML parser and typeinference engine (to implement the oracle
+
+HM), and outputs theinferred dependent types in
+.annot files as documentation.
+
+Array Bounds Checking Qualifiers. To automate array boundschecking, we observe that the safety of array accesses typically depends on the relative ordering of integer expressions. Thus, to stat-ically prove the safety of array accesses, we use the mechanicallygenerated set of array bounds checking qualifiers QBC defined as{
+
+* ./ X | ./2 {<, <=, =, 6=, >, >=} and X 2 {0, ?, len ?}}
+Next, we show experimental results demonstrating that liquid typeinference over Q
+
+BC suffices to prove the safety of most array ac-cesses. Even when D
+
+SOLVE needs extra qualifiers, the types in-ferred using Q
+
+BC help the programmer quickly identify the rele-vant extra qualifiers.
+
+Benchmarks. We use benchmarks from the DML project [26](ported to O
+
+CAML) that were previously annotated with dependenttypes with the goal of statically proving the safety of array accesses
+
+[27]. The benchmarks are listed in the first column of Table 1.The second column indicates the size of the benchmark (ignoring
+comments and whitespace). The benchmarks include OCAML im-plementations of: the Simplex algorithm for Linear Programming
+(simplex), the Fast Fourier Transform (fft), Gaussian Elimina-tion (
+
+gauss), Matrix Multiplication (matmult), Binary Search in asorted array (
+
+bsearch), computing the Dot Product of two vectors(
+dotprod), Insertion sort (isort), the n-Queens problem (queen),the Towers of Hanoi problem (
+
+tower), a fast byte copy routine(
+bcopy), and Heap sort (heapsort). The above include all DMLarray benchmarks except
+
+quicksort, whose invariants remain un-clear to us. In addition, we ran D
+
+SOLVE on a simplified Quicksortroutine from O
+CAML's Sort module (qsort-o), a version portedfrom the DML benchmark (
+
+qsort-d) where one optimization isremoved, and B
+ITV, an open source bit vector library (bitv).
+
+Array Bounds Checking Results. As shown in column DSOLVEof Table 1, D
+
+SOLVE needs no manual annotations for most pro-grams: that is, the qualifiers Q
+
+BC suffice to automatically provethe safety of all array accesses. For some of the examples, e.g.,
+
+tower, we do need to provide extra qualifiers. However, even inthis case, the annotation burden is typically just a few qualifiers.
+For example, in tower, we require a qualifier which is analogousto
+
+* = n-h1-h2, which describes the height of the "third" tower,capturing the invariant that the height is the total number of rings
+
+n minus the rings in the first two towers. Similarly, in bitv, onequalifier states the key invariant relating a bit vector's length to the
+length of its underlying data structure. The time for inference is ro-bust to the number of qualifiers as most qualifiers are pruned away
+by the well-formedness constraints. In our prototype implementa-tion, the time taken for inference is reasonable even for non-trivial
+benchmarks like simplex, fft and gauss.
+Case Study: Bit Vectors. We applied DSOLVE to verify the opensource B
+
+ITV bit vector library (version 0.6). A bit vector inB
+ITV consists of a record with two fields: length, the num-ber of bits stored, and
+
+bits, the actual data. If b is the numberof bits stored per array element,
+
+length and bits are relatedby
+(len bits - 1) * b < length <= (len bits) * b. The executedcode, and hence, dependent types are different for 32- and 64-bit
+
+machines. Thus, to verify the code using our conjunctive types, wefixed the word size to 32. We were able to verify the array safety
+of 58 of BITV's 65 bit vector creation, manipulation, and iterationfunctions, which contain a total of 30 array access operations.
+
+There are three kinds of manual annotation needed for verifica-tion: extra qualifiers (14 lines, 605 characters), trusted assumptions
+(8 lines, 143 characters), and interface specifications (43 lines,2390 characters). The trusted assumptions (which are akin to dynamic checks) are needed due to current limitations of our system.These include the conservative way in which modular arithmetic is
+embedded into EUFA, the lack of refinements for type variables andrecursive datatypes, and the conservative handling of control-flow.
+The interface specifications are needed because BITV is a library,i.e., an open program. Thus, for verification, we need to specify that
+
+Size DML DSOLVEProgram Line Char Line Char Line Char Time (s)
+dotprod 7 158 3 (30%) 110 (41%) 0 (0%) 0 (0%) 0.31
+bcopy 8 199 3 (27%) 172 (46%) 0 (0%) 0 (0%) 0.15
+bsearch 24 486 3 (11%) 157 (24%) 0 (0%) 0 (0%) 0.46
+queen 30 886 7 (19%) 309 (26%) 0 (0%) 0 (0%) 0.70
+isort 33 899 12 (27%) 702 (44%) 0 (0%) 0 (0%) 0.88
+tower 36 927 8 (18%) 348 (27%) 1 (2%) 26 (2%) 3.33
+matmult 43 797 10 (19%) 454 (36%) 0 (0%) 0 (0%) 1.79
+heapsort 84 1414 11 (12%) 433 (23%) 0 (0%) 0 (0%) 0.53
+fft 107 3279 13 (11%) 790 (19%) 1 (1%) 25 (1%) 9.13
+simplex 118 2712 33 (22%) 1913 (41%) 0 (0%) 0 (0%) 7.73
+gauss 142 2431 22 (13%) 999 (29%) 1 (1%) 67 (2%) 3.17TOTAL 633 14188 125 (17%) 6387 (31%) 3(1%) 93(1%)
+
+qsort-o 62 1585 0 (0%) 0 (0%) 1.89
+qsort-d 112 2735 5 (5%) 63 (2%) 18.28
+bitv 426 10757 65 (15%) 3138 (29%) 63.11
+
+Table 1. Experimental Results: Size is the amount of programtext (without annotation) after removing whitespace and comments
+from the code. DML is the amount of manual annotation requiredin the DML versions of the benchmarks. D
+
+SOLVE is the amountof manual annotation required by D
+SOLVE, i.e., qualifiers not inQ
+BC. Time is the time taken by DSOLVE to infer dependent types.
+
+the API functions are called with valid input vectors that satisfy in-variants like the one described above. The interface specifications,
+by far the largest category of annotations, are unavoidable. The ex-tra qualifiers and expressiveness limitations are directions for future
+work.D
+
+SOLVE was able to locate a serious bounds checking error inB
+ITV. The error occurs in BITV's blit function, which copies cbits from
+
+v1, starting at bit offset1, to v2, starting at bit offset2.This function first checks that the arguments passed are safe, and
+
+then calls a fast but unsafe internal function unsafe blit.
+let blit v1 offset1 v2 offset2 c =
+
+if c < 0 || offset1 < 0 || offset1 + c > v1.length
+
+offset2 < 0 || offset2 + c > v2.length
+then invalid_arg "Bitv.blit";
+unsafe_blit v1.bits offset1 v2.bits offset2 c
+
+unsafe blit immediately accesses the bit at offset1 in v1, re-gardless of the value of
+
+c. When the parameters are such that:
+offset1 = v1.length and v1.length mod b = 0 and c = 0,the
+
+unsafe blit attempts to access the bit at index v1.length,which must be located in
+
+v1.bits[v1.length / b]; but this is
+v1.bits[len v1.bits], which is out of bounds and can cause acrash, as we verified with a simple input. The problem is that
+
+blitdoes not verify that the starting offset is within the bounds of the bit
+
+vectors. This is fixed by adding the test offset1 >= v1.length(and
+
+offset2 >= v2.length for similar reasons). DSOLVE suc-cessfully typechecks the fixed version.
+
+6. Related Work
+The first component of our approach is predicate abstraction,[1, 15] which has its roots in early work on axiomatic semantics
+
+[8]. Predicate abstraction has proven effective for path-sensitiveverification of control-dominated properties of first-order imperative programs [3, 16, 11, 4, 29, 17].The second component of our approach is constraint-based program analysis, an example of which is the ML type inferencealgorithm. Unlike other investigations of type inference for HM
+with subtyping, e.g., [19, 23, 25], our goal is algorithmic depen-dent type inference, which requires incorporating path-sensitivity
+and decision procedures for EUFA. We also draw inspiration fromtype qualifiers [13] that refine types with a lattice of built-in and
+programmer-specified annotations. Our Shape and Fresh functions
+
+are similar to strip and embed from [13]. Liquid types extend qual-ifiers by assigning them semantics via logical predicates, and our
+inference algorithm combines value flow (via the subtyping con-straints) with information drawn from guards and assignments. The
+idea of assigning semantics to qualifiers has been proposed recently[5], but with the intention of checking and inferring rules for qualifier derivations. Our approach is complementary in that the rulesthemselves are fixed, but allow for the use of guard and value binding information in type derivations, thereby yielding a more pow-erful analysis. For example, it is unclear whether the approach of
+[5] would be able to prove the safety of any of our benchmarkprograms, due to the inexpressivity of the qualifiers and inference
+rules. On the other hand, our technique is more computationally ex-pensive as the decision procedure is integrated with type inference.
+
+The notion of type refinements was introduced in [14] withrefinements limited to restrictions on the structure of algebraic
+datatypes, for which inference is decidable. DML(C) [28] extendsML with dependent types over a constraint domain
+
+C; type check-ing is shown to be decidable modulo the decidability of the domain,
+
+but inference is still undecidable. Liquid types can be viewed as acontrolled way to extend the language of types using simple predicates over a decidable logic, such that both checking and infer-ence remain decidable. Our notion of variables with pending substitutions is inspired by a construct from [18], which presents atechnique to reconstruct the dependent type of an expression that
+captures its exact semantics (analogous to strongest postconditionsfor imperative languages). The technique works in a restricted setting without polymorphism and the reconstructed types are termscontaining existentially quantified variables (due to variables that
+are not in scope), and the fix operator (used to handle recursion),which make static reasoning impossible.
+
+7. Conclusions and Future Work
+In this paper, we have presented a dependent type system called liq-uid types, a tool D
+
+SOLVE that infers liquid types, and experimentsshowing that D
+SOLVE can significantly reduce the amount manualannotation required to statically prove the safety of array accesses.
+
+Even in very complex benchmarks like BITV, DSOLVE needs 22lines of manual hints, which is only 5% of the entire code size. The
+other annotations, namely, types specifying correct usage of inter-face functions, are unavoidable. Thus, we believe that liquid types
+will prove useful even for modular verification. If the modules aredesigned well, their interfaces should have far fewer functions than
+their implementations and so the gains from not having to manuallyspecify the types of all top-level bindings will be significant.
+
+Several challenges need to be addressed in order to realize thefull potential of liquid types. First, we would like to make the
+system more expressive, for example, by extending the system toallow refinements for type variables and recursive datatypes. This
+will allow us to apply liquid types to a larger class of programsand properties. Second, for the cases when typechecking fails,
+we require error reporting techniques that help the programmerdetermine whether there is either an error in her program, the set
+of qualifiers is insufficient, or, the conservativeness of the systemis to blame. One approach would be to devise a notion of type
+counterexample and adapt proof-based methods to check if thecounterexample is feasible (i.e., there is an error) or if not, to lazily
+extract new qualifiers from the counterexample [6, 3, 16]. Third,we would like to extend the system to include reasoning about
+imperative features. With such an extension, liquid types could beprofitably applied to verify C++, Java and C# programs which use
+generic datatypes.
+Acknowledgments. We thank Adam Chlipala, Cormac Flana-gan, Radha Jagadeesan, Suresh Jagannathan, Kenn Knowles, Sorin
+
+Lerner, Bill McLoskey, Todd Millstein, Corneliu Popea, PhilipWadler, Westley Weimer, and the anonymous referees for their
+helpful comments and suggestions for improving this paper.
+
+References
+
+[1] Tilak Agerwala and Jayadev Misra. Assertion graphs for verifyingand synthesizing programs. Technical Report 83, University of Texas,
+
+Austin, 1978.
+[2] L. Augustsson. Cayenne - a language with dependent types. In ICFP,1998.
+
+[3] T. Ball and S.K. Rajamani. The SLAM project: debugging systemsoftware via static analysis. In POPL, pages 1-3. ACM, 2002.
+[4] S. Chaki, E. M. Clarke, A. Groce, J. Ouaknine, O. Strichman,and K. Yorav. Efficient verification of sequential and concurrent
+
+c programs. FMSD, 25(2-3):129-166, 2004.
+[5] B. Chin, S. Markstrum, T. D. Millstein, and J. Palsberg. Inferenceof user-defined type qualifiers and qualifier rules. In ESOP, pages
+
+264-278, 2006.
+[6] E. M. Clarke, O. Grumberg, S. Jha, Y. Lu, and H. Veith.Counterexample-guided abstraction refinement. In CAV, LNCS 1855,
+
+pages 154-169. Springer, 2000.
+[7] L. Damas and R. Milner. Principal type-schemes for functionalprograms. In POPL, 1982.
+
+[8] E.W. Dijkstra. A Discipline of Programming. Prentice-Hall, 1976.
+[9] B. Dutertre and L. De Moura. Yices SMT solver.http://yices.csl.sri.com/.
+
+[10] C. Flanagan. Hybrid type checking. In POPL. ACM, 2006.
+[11] C. Flanagan and S. Qadeer. Predicate abstraction for softwareverification. In POPL. ACM, 2002.
+
+[12] C. Flanagan, A. Sabry, B. F. Duba, and M. Felleisen. The essence ofcompiling with continuations. In PLDI, 1993.
+[13] J.S. Foster. Type Qualifiers: Lightweight Specifications to ImproveSoftware Quality. PhD thesis, U.C. Berkeley, 2002.
+[14] T. Freeman and F. Pfenning. Refinement types for ML. In PLDI,1991.
+[15] S. Graf and H. Sa"idi. Construction of abstract state graphs with PVS.In CAV, LNCS 1254, pages 72-83. Springer, 1997.
+[16] T.A. Henzinger, R. Jhala, R. Majumdar, and K.L. McMillan.Abstractions from proofs. In POPL 04. ACM, 2004.
+[17] F. Ivancic, I. Shlyakhter, A. Gupta, and M. K. Ganai. Model checkingc programs using f-soft. In ICCD, pages 297-308, 2005.
+[18] K. Knowles and C. Flanagan. Type reconstruction for generalrefinement types. In ESOP, 2007.
+[19] P. Lincoln and J. C. Mitchell. Algorithmic aspects of type inferencewith subtypes. In POPL, Albequerque, New Mexico, 1992.
+[20] P. Martin-Lof. Constructive mathematics and computer programming.Royal Society of London Philosophical Transactions Series A,
+
+312:501-518, October 1984.
+[21] G. Nelson. Techniques for program verification. Technical ReportCSL81-10, Xerox Palo Alto Research Center, 1981.
+
+[22] X. Ou, G. Tan, Y. Mandelbaum, and D. Walker. Dynamic typing withdependent types. In IFIP TCS, pages 437-450, 2004.
+[23] F. Pottier. Simplifying subtyping constraints. In ICFP, New York,NY, USA, 1996. ACM Press.
+[24] P. Rondon, M. Kawaguchi, and R. Jhala. Liquid types. TechnicalReport CSE Tech Report, UCSD, 2008.
+[25] M. Sulzmann, M. Odersky, and M. Wehr. Type inference withconstrained types. In FOOL, 1997.
+[26] H. Xi. DML code examples. http://www.cs.bu.edu/fac/hwxi/DML/.
+[27] H. Xi and F. Pfenning. Eliminating array bound checking throughdependent types. In PLDI, 1998.
+
+[28] H. Xi and F. Pfenning. Dependent types in practical programming. InPOPL, pages 214-227, 1999.
+[29] Y. Xie and A. Aiken. Scalable error detection using booleansatisfiability. In POPL, pages 351-363, 2005.

@@ -1,0 +1,1161 @@
+
+
+Stateful Contracts for Affine Types*
+
+Jesse A. Tov and Riccardo Pucella
+Northeastern University, Boston, MA 02115, USA{
+
+tov,riccardo}@ccs.neu.edu
+
+Abstract. Affine type systems manage resources by preventing some
+values from being used more than once. This offers expressiveness and
+performance benefits, but difficulty arises in interacting with components
+written in a conventional language whose type system provides no way
+to maintain the affine type system's aliasing invariants. We propose and
+implement a technique that uses behavioral contracts to mediate between
+code written in an affine language and code in a conventional typed
+language. We formalize our approach via a typed calculus with both
+affine-typed and conventionally-typed modules. We show how to preserve
+the guarantees of both type systems despite both languages being able
+to call into each other and exchange higher-order values.
+
+1 Introduction
+Substructural type systems augment conventional type systems with the abilityto control the number and order of uses of a data structure or operation [20].
+
+Linear type systems [19, 11, 3, 1], for example, ensure that values with linear typecannot be duplicated or dropped, but must be eliminated exactly once. Other
+substructural type systems refine these constraints. Affine type systems, whichwe consider here, prevent values from being duplicated but allow them to be
+dropped: a value of affine type may be used once or not at all.Affine types are useful to support language features that rely on avoidance of
+aliasing. One example is session types [6], which are a method to represent andstatically check communication protocols. Suppose that the type declared by
+
+typeA prot = (int send ! string recv ! unit) chan (1)
+represents a channel whose protocol allows us to to send an integer, then receive astring, and finally end the session. Further, suppose that
+
+send and recv consumea channel whose type allows sending or receiving, as appropriate, and return a
+
+channel whose type is advanced to the next step in the protocol. Then we mightwrite a function that takes two such channels and runs their protocols in parallel:
+
+letA twice (c1 : prot, c2 : prot, z: int): string \Omega  string =
+
+let once (c: prot) ( : unit) =
+
+let c = send c z in
+let (s, ) = recv c in s
+in (once c1 ) ||| (once c2 ) (2)
+
+* Our prototype implementation and the full details of our soundness theorem may
+
+be found at http://www.ccs.neu.edu/~tov/pubs/affine-contracts/.
+
+2 J. Tov and R. Pucella
+The protocol is followed correctly provided that c1 and c2 are different channels.Calling
+
+twice(c, c, 5), for instance, would violate the protocol. An affine typesystem can prevent this.
+
+In addition to session types and other forms of typestate [15], substructuraltypes have been used for memory management [8], for optimization of lazy languages [18], and to handle effects in pure languages [2]. Given this range offeatures, a programmer may wish to take advantage of substructural types in
+real-world programs. Writing real systems, however, often requires access to com-prehensive libraries, which mainstream programming languages usually provide
+but experimental implementations often do not. The prospect of rewriting a largelibrary to work in a substructural language strikes these authors as unappealing.
+
+It is therefore compelling to allow conventional and substructural languagesto interoperate. We envision complementary scenarios:
+
+- A programmer wishes to import legacy code for use by affine-typed clientcode. Unfortunately, legacy code unaware of the substructural conditions
+
+may duplicate values received from the substructural language.- A programmer wishes to export substructural library code for access from
+a conventional language. A client may duplicate values received from the li-brary and resubmit them, causing aliasing that the library could not produce
+on its own and bypassing the substructural type system's guarantees.
+
+Our Contributions. We present a novel approach to regulating the interactionbetween an affine language and a conventionally-typed language and implement
+a multi-language system having several notable features:
+
+- The non-affine language may gain access to affine values and may applyaffine-language functions.
+
+- The non-affine type system is utterly standard, making no concessions tothe affine type system.
+- And yet, the composite system preserves the affine language's invariants.
+We model the principal features of our implementation in a multi-language cal-culus that enjoys type soundness. In particular, the conventional language, although it has access to the affine language's functions and values, cannot beused to subvert the affine type system.
+
+Our solution is to wrap each exchanged value in a software contract [4], whichuses one bit of state to track when an affine value has been used. While this idea
+is simple, the details can be subtle.
+
+Design Rationale and Background. Our multi-language system combinestwo sublanguages with different type systems. The
+
+C ("conventional") lan-guage is based on the call-by-value, polymorphic
+* calculus [7, 12] with alge-braic datatypes and SML-style abstype [10]. The
+A ("affine") language addsaffine types and the ability to declare new abstract affine types, allowing us to
+
+implement affine abstractions such as session types and static read-write locks.
+
+Stateful Contracts for Affine Types 3
+A program in our language consists of top-level module, value, and type def-initions, each of which may be written in either of the two sublanguages. (In
+the example above (2), the subscripts on typeA and letA indicate the A lan-guage.) Each language has access to modules written in the other language,
+although they view foreign types through a translation into the native type sys-tem. Affine modules are checked by an affine type system, and non-affine modules
+are checked by a conventional type system. Notably, non-functional affine typesappear as abstract types to the conventional type system, which requires no
+special knowledge about affine types other than comparing them for equality.
+
+In our introductory example, a protocol violation occurs only if the twoarguments to
+
+twice are aliases for the same session-typed channel, which the
+A language type system prevents. Problems would arise if we could use the
+C language to subvert A language's type system non-aliasing invariants. Topreserve the safety properties guaranteed by each individual type system and
+
+allow the two sublanguages to invoke one another and exchange values, we needto perform run-time checks in cases where the non-affine type system is too weak
+to express the affine type system's invariants. Because the affine type system canenforce all of the conventional type system's invariants, we may dispense with
+checks in the other direction.
+
+For instance, the affine type system guarantees that an affine value created inan affine module will not be duplicated within the affine sublanguage. If, however,
+
+the value flows into a non-affine module, then static bets are off. In that case,we resort to a dynamic check that prevents the value from flowing back into an
+affine context more than once. Since our language is higher-order, we use a formof higher-order contract [4] to keep track of each module's obligations toward
+maintaining the affine invariants.
+
+Our approach to integrating affine and conventional types borrows heavilyfrom recent literature on multi-language interoperability [5, 13]. Our approach
+
+borrows from that of Typed Scheme [17, 16] and of Matthews and Findler [9],both of which use contracts to mediate between an untyped, Scheme-like language and a typed language.
+
+2 Example: Taming the Berkeley Sockets API
+The key feature of our system is the ability to write programs that safely mixcode written in an affine-typed language and a conventionally-typed language.
+As an example, we develop a small networking library and application, usingboth of our sublanguages where appropriate.
+
+The Berkeley sockets API is the standard C language interface to networkcommunication [14]. Transmission Control Protocol (TCP), which provides reliable byte streams, is the standard transport layer protocol used by most in-ternet applications (e.g., SMTP, HTTP, and SSH). Setting up a TCP session
+using Berkeley sockets is a multi-step process (Fig. 1). A client must first createa communication end-point, called a socket, via the
+
+socket system call. It mayoptionally select a port to use with
+bind, and then it establishes a connection
+
+4 J. Tov and R. Pucella
+
+client.. ..
+server
+
+both
+
+\Phi 
+
+oe# ffi_
+send(),
+
+recv()
+
+socket() (0O/OE AEo/,ss aeoe
+
+initial
+
+bind()
+
+;C`a bc
+
+connect() ..............
+
+OOO/OE AEo/,ss aeoebound
+listen()
+
+==`a bc
+
+.........
+
+O/OE AEo/,ss aeoelistening
+
+accept()\Omega 
+
+!!
+\Psi \Psi  O/OE AEo/,ss aeoe
+
+connected
+
+close()
+
+9AO/OE AEo/,ss aeoeclosed
+
+Fig. 1. States and transitions for TCP (simplified)
+moduleC Socket : sig
+
+type socket
+val socket : unit ! socket (* ? ) initial *)
+val bind : socket ! port ! unit (* initial ) bound *)
+val listen : socket ! unit (* bound ) listening *)
+val accept : socket ! socket (* listening ) connected \Omega  listening *)
+val send : socket ! string ! bool (* connected ) connected \Phi  closed *)* * *
+
+end
+
+Fig. 2. Selected C language socket operations, annotated with state transitions
+
+with connect. Once a connection is established, the client may send and recvuntil either the client or the other side closes the connection.
+
+For a server, the process is more involved: it begins with socket and bind asthe client does, and then it calls
+
+listen to allow connection requests to beginqueuing. The server calls
+accept to accept a connection request. When acceptsucceeds, it returns a new socket that is connected to a client, and the old,
+
+listening socket is available for further accept calls. (For simplicity, we omiterror transitions, except for failure of
+
+send and recv.)Our
+C sublanguage provides the interface to sockets shown in Fig. 2. Thesocket operations are annotated with their pre- and post-conditions, but the
+
+implementation detects and signals state errors dynamically. For example, calling
+listen on a socket in state initial or calling connect on a socket that is already
+connected will raise an exception. If the other side hangs up, send and recvraise exceptions, but nothing in this interface prevents further communication
+
+attempts that are bound to fail.1By reimplementing the sockets API in language
+
+A , we can use language A 'stype system to move the state transition information from comments into the
+
+type system itself. For example, we give listen in sublanguage A the type
+
+8ff. ff socket ! ff bound ! ff listening , (3)
+1 This simplifies the Berkeley sockets API by omitting address families, protocols,
+
+half-closed sockets, non-blocking IO, etc., but the stateful essence remains.
+
+Stateful Contracts for Affine Types 5
+val socket : unit ! 9ff. ff socket \Omega  ff initial
+val bind : 8ff. ff socket ! port ! ff initial ! ff bound
+val listen : 8ff. ff socket ! ff bound ! ff listening
+val accept : 8ff. ff socket ! ff listening ! (ff listening \Omega  9fi. fi socket \Omega  fi initial)
+val connect : 8ff. ff socket ! host ! port ! (ff initial \Phi  ff bound) ! ff connected
+val send : 8ff. ff socket ! string ! ff connected ! ff connected
+val recv : 8ff. ff socket ! int ! ff connected ! string \Omega  ff connected
+val close : 8ff. ff socket ! ff connected ! unit
+
+Fig. 3. The A language sockets API
+
+which means that given a socket and evidence that the socket is bound, listenchanges the state to
+
+listening and returns evidence to that effect. These evidencetokens are capabilities, and the type parameter on each capability ties it to the
+
+particular socket whose state it describes. These capabilities have affine type sothat when
+
+listen consumes the bound capability, we cannot call listen again onthe same socket.
+
+We reimplement the sockets API in language A in terms of the language Coperations. From the vantage of language
+
+A , C function types are mapped to
+A function types, but the C type Socket.socket is mapped to an opaque type{
+
+Socket.socket}. Type constructor {*} delimits foreign types referenced from theother sublanguage.
+
+We declare a new abstract type for sockets in language A , along with a typeto represent each of the states:
+
+abstypeA ff socket = Sock of {Socket.socket}
+
+and ff initial qualifier A = Initial
+and ff bound qualifier A = Bound
+and ff listening qualifier A = Listening
+and ff connected qualifier A = Connected
+with * * * (* operations detailed below *) * * * end (4)
+
+Several aspects of this abstype declaration bear further explanation:
+
+- Each type has a phantom parameter ff, which is used to associate a socketwith the type witnessing its state.
+
+- The syntax qualifier A on each the state type declares that outside theabstraction boundary, values of those types will appear as affine. Code inside
+
+the abstype declaration sees that they are ordinary, non-affine data types.- Because each of the capabilities has only one constructor with no values,
+they need not be represented at run time.
+The A language sockets interface appears in Fig. 3. The A sockets imple-mentation relies on delegating to
+
+C language functions. From within A , C typesare viewed through a simple translation: function types, quantified types, and a
+
+few base types such as int pass through transparently, whereas other types are
+
+6 J. Tov and R. Pucella
+
+letA clientLoop[ff] (sock: ff socket) (f : string ! string) (cap: ff connected) =
+
+let rec loop (cap: ff connected): unit =
+
+let (str, cap) = recv sock 1024 cap in
+let cap = send sock (f str) cap in
+loop cap
+in try loop cap with SocketError ! ()
+
+let interface threadFork :> (unit (a unit) ! {thread}C = threadForkC
+let recA acceptLoop[ff] (sock: ff socket) (f : string ! string) (cap: ff listening): unit =
+
+let (cap, Pack(fi, (clientsock, clientcap))) = accept sock cap in
+
+threadFork (fun () ! clientLoop clientsock f clientcap);
+acceptLoop sock f cap
+
+letA echoServe (port: int) (f : string ! string) =
+
+let Pack(ff, (sock, cap)) = socket () in
+let cap = bind sock port cap in
+let cap = listen sock cap in
+
+acceptLoop sock f cap
+
+Fig. 4. An echo server in language A
+
+wrapped opaquely as Socket.socket was above. Thus, the type of Socket.socketCbecomes
+
+unit ! {Socket.socket} when viewed from A . Each A function is aminimal wrapper around its
+
+C counterpart:
+
+letA socket () =
+
+let sock = Socket.socketC () in
+
+in Pack(unit, (Sock[unit] sock, Initial[unit])) as 9fi. fi socket \Omega  fi initial
+
+letA listen[ff] (Sock sock as s: ff socket) ( : ff bound) =
+
+try Socket.listenC sock;
+
+Listening[ff]
+with IOError msg ! raise (StillBound (freezeBound s cap, msg)) (5)
+
+For socketA , we call Socket.socketC to create the new socket, which we wrap inthe
+
+Sock constructor and pack into an existential with a new initial capability.(The type abstracted by the existential is immaterial;
+
+unit will do.) Function
+listenA calls its C counterpart on the socket and returns a listening capabil-ity tied by
+
+ff to the socket. On failure, the socket is still in state bound, so itraises an exception containing the
+
+bound capability. The remaining functionsare equally straightforward, but when we're done, provided we got this trusted
+
+kernel correct, we have an A library that enforces the correct ordering of socketoperations.
+
+Calling the various C socket operations from A is safe because none has atype that enables it to gain access to an
+
+A language value. Other situations arenot as simple. Figure 4 shows an implementation of an echo server in language
+
+A . (The working code is included with our prototype implementation on our web
+
+Stateful Contracts for Affine Types 7
+site.) The server sends back the data it receives from each client after passing itthrough an unspecified
+
+string ! string function f . The main function echoServecreates a socket, binds it to the requested port, and begins to listen. The type
+
+system ensures that echoServe performs these operations in the right order, andbecause the capabilities have affine types, it disallows referring to any one of them
+more then once. Function echoServe calls acceptLoop, which blocks in acceptwaiting for clients. For each client, it spawns a thread to handle that client and
+continues waiting for another client. Spawning the thread is where the multi-language interaction becomes tricky.
+
+As in other substructural type systems, A requires that a function be givena type whose usage (unlimited or affine) is at least as restrictive as any variable
+that it closes over. Thus far, we have seen only unlimited function types (!),also written (u . Language
+
+A also has affine function types, written (a .The new client capability
+
+clientcap, returned by accept, has affine type fi connected. Because the thunk for the new thread, (fun () ! clientLoop clientsock f
+clientcap), closes over clientcap, it has affine type as well: unit (a unit. This causesa problem: To create a new thread, we must pass the thunk to the
+
+C function
+threadForkC , whose type as viewed from A is (unit ! unit) ! {thread}C . Sucha type makes no guarantee about how many times
+
+threadForkC applies its argu-ment. In order to pass the affine thunk to it, we assert that
+
+threadForkC has thedesired behavior:
+
+let interface threadFork :> (unit (a unit) ! {thread}C = threadForkC (6)
+This constitutes a checked assertion that the C value actually behaves accord-ing to the given
+
+A type. This gets the program past A 's type checker, and if
+threadForkC attempts to apply its argument twice at run time, a dynamic checkprevents it from doing so and signals an error.
+
+The two sublanguages can interact in other ways:
+- We may call echoServeA from the C language, passing it a C function for f .This is safe because function
+
+f has type string ! string, and thus can nevergain access to an affine value.
+
+- We may use the A language sockets library from a C program:
+
+letC sneaky () =
+
+let Pack(ff, (sock, cap1 )) = socketA () in
+let cap2 = connectA sock "sneaky.example.org" 25 cap1 in
+let cap3 = connectA sock "sneaky2.example.org" 25 cap1 in* * * (7)
+
+This program passes C 's type checker but is caught when it attempts toreuse the
+
+initial capability cap1 at run time. This misbehavior is detectedbecause
+sneaky 's interaction with A is mediated by a behavioral contract.
+
+3 Implementing Stateful Contracts
+In Findler and Felleisen's formulation [4], a contract is an agreement between twosoftware components, or parties, about some property of a value. The positive
+
+8 J. Tov and R. Pucella
+party produces a value, which must satisfy the specified property. The negativeparty consumes the value and is held responsible for treating it appropriately.
+Contracts are concerned with catching violations of the property and blamingthe guilty party, which may help locate the source of a bug. For first-order
+values the contract may be immediately checkable, but for functional valuesnontrivial properties are undecidable, so the check must wait until the negative
+party applies the function, at which point the negative party is responsible forproviding a suitable argument and the positive party for producing a suitable
+result. Thus, for higher-order functions, checks are delayed until first-order valuesare reached.
+
+In our language, the parties to contracts are modules, which must be inentirely one language or the other, and top-level functions, which we consider as
+singleton modules.Contracts on first-order values check assertions about their arguments, and
+either return the argument or signal an error. Contracts on functions returnfunctions that defer checking until first-order values are reached. The result of
+applying a contract should contextually approximate the argument. We representa contract for a type
+
+ff as a function taking two parties and a value of type ff,and returning a value of the same type
+
+ff:
+
+type ff contract = party * party ! ff ! ff (8)
+A simple contract might assert something about a first-order value:
+
+let evenContract (neg: party, pos: party) (x: int) =
+
+if isEven x then x else blame pos (9)
+
+The contract is instantiated with the identities of the contracted parties, andthen may be applied to a value. We may also construct contracts for functional
+
+values, given contracts for the domain and codomain:
+
+let makeFunctionContract[ff, fi] (dom: ff contract, codom: fi contract)(
+
+neg: party, pos: party) (f : ff ! fi) =
+fun (x: ff) ! codom (neg, pos) (f (dom (pos, neg) x)) (10)
+
+When this contract is applied to a function, it can perform no checks immedi-ately. Instead, it wraps the function so that, when the resulting function is applied, the domain contract is applied to the actual parameter and the codomaincontract to the actual result.
+
+We follow this approach closely, but with one small change--contracts foraffine functions are stateful:
+
+let makeAffineFunContract[ff, fi] (dom: ff contract, codom: fi contract)(
+
+neg: party, pos: party) (f : ff ! fi) =
+let stillGood = ref true in
+
+fun (x: ff) !
+
+if ! stillGood
+
+then stillGood  false;
+
+codom (neg, pos) (f (dom (pos, neg) x))
+else blame neg (11)
+
+Stateful Contracts for Affine Types 9
+This approach works for functions because we can wrap a function to modify itsbehavior. But what about for other affine values such as the socket capabilities
+in Sect. 2? We must consider how non-functional values move between the twosublanguages.
+
+In order to understand the solution, we need to show in greater detail howtypes are mapped between the two sublanguages. (The rest of the type system
+appears in the next section.) We define mappings (*)A and (*)C from C typesto
+
+A types and A types to C types, respectively. Base types such as int and
+bool, which may be duplicated without restriction in both languages, map tothemselves:
+
+(B)A = B (B)C = B (12)
+Function types convert to function types. C function types go to unlimited func-tions in
+
+A , and both unlimited and affine A functions collapse to ordinary (!)functions in
+
+C (where q ranges over a and u):
+
+(o/1 ! o/2)A = (o/2)A (u (o/2)A (oe1 (q oe2)C = (oe1)C ! (oe2)C (13)
+Quantified types map to quantified types, but they require renaming becausewe distinguish type variables between the two languages. In particular,
+
+A lan-guage type variables carry usage qualifiers, which indicate whether they may be
+
+instantiated to any type or only to unlimited types. (All type variables in Sect. 2were of the
+
+u kind.)
+
+(8ff. o/ )A = 8fiu. (o/1[{fiu}/ff])A (8ffq. oe)C = 8fi. (oe1[{fi}/ffq])C (14)
+Finally, the remaining types are uninterpreted by the mapping, and merely en-closed in {*}:
+
+(o/ o)A = {o/o}, otherwise (oeo)C = {oeo}, otherwise (15)
+Values in this class of types are inert: they have no available operations otherthan passing them back to their native sublanguage, which removes the {*}. (We
+take {{o/ }} to be equivalent to o/ .)
+
+This mapping implies that all non-functional, affine types in A map toopaque types in
+
+C .2 Since all that the C language can do with values of opaquetype is pass them back to
+
+A , we are free to wrap such values when they flowinto
+C and unwrap them when they return to A . Specifically, when an affinevalue
+
+v passes into C , we wrap it in a * abstraction, fun ( : unit) ! v, and wrapthat thunk with an affine function contract. If the wrapped value flows back into
+
+2 Opaque types may seem limiting, but Matthews and Findler [9] have shown that it is
+
+possible, in what they call the "lump embedding," for each sublanguage to marshal
+its opaque values for the other sublanguage as desired. In practice, this amounts to
+exporting a fold to the other sublanguage.
+
+10 J. Tov and R. Pucella
+
+CA JintK(n, p) = id
+CA Joe1 (u oe2K(n, p) = makeFunctionContract (A C Joe1K, CA Joe2K) (n, p)
+CA Joe1 (a oe2K(n, p) = makeAffineFunContract (A C Joe1K, CA Joe2K) (n, p)
+
+CA JoeoK(n, p) = fun (v: oeo) ! makeAffineFunContract (if oeo is
+
+(id, id) (n, p) (fun () ! v) affine)
+
+A C JintK(n, p) = id
+A C Joe1(q oe2K(n, p) = makeFunctionContract (CA Joe1K, A C Joe2K) (n, p)
+
+A C JoeoK(n, p) = fun (v: unit ! oeo) ! v () (if oeo is affine)
+
+Fig. 5. Type-directed generation of coercions
+
+A , we unwrap it by applying the thunk, which produces a contract error if weattempt unwrapping it more than once.
+
+After type checking, our implementation translates A modules to C andwraps all interlanguage variable references with contracts that enforce the
+
+Alanguage's view of the variable. In Fig. 5, we show several cases from a pair of
+
+metafunctions A C J*K and CA J*K, which perform this wrapping. Metafunction
+A C J*K produces the coercion for references to C values from A , and CA J*K is forreferences to
+
+A values from C . Our formalization does not use this translation,but gives a semantics to the multi-language system directly.
+
+4 Formalization
+We model our language with a pair of calculi corresponding to the two sublan-guages in the implementation. In this section, we first describe the two calculi
+independently, and then move on to explain how they interact.
+
+To distinguish the two calculi, we typeset our affine calculus *A in a blue,
+sans-serif font and our non-affine calculus *C in a bold, red, serif font.
+
+4.1 The Calculi *A and *C
+We model sublanguage C with calculus *C , which is merely call-by-value Sys-tem F [7] equipped with singleton modules, each of which for simplicity declares
+
+only one name bound to one value. The syntax of *C appears in Fig. 6, includingmodule names, which are disjoint from variable names. We include integer literals, which serve as first-order values that should pass transparently into the affinesubcalculus. A program comprises a mutually recursive collection of modules
+
+Mand a main expression
+e. We give only the semantics relevant to modules, as therest is standard. The expression typing judgment has the form \Delta ; \Gamma  `
+
+MC e : o/ ,
+
+and it carries a module context M , which rule TC-Mod uses to type moduleexpressions. To type a program, we must type each module with rule
+
+TM-C;
+
+Stateful Contracts for Affine Types 11
+variables x, y 2 VarC
+type variables ff, fi 2 TVarC
+module names f , g 2 MVarC
+
+programs P ::= M e
+module contexts M ::= m1 . . . mk
+
+modules m ::= module f : o/ = v
+
+types o/ ::= 8ff. o/ | ff|
+
+o/ ! o/ | int
+expressions e ::= x | f | e[o/] | e e|
+
+\Lambda ff. v | dze | * * *
+
+TC-Mod
+
+module f : o/ = v 2 M * `C o/
+
+\Delta ; \Gamma  `MC f : o/
+
+TM-C *
+
+; * `MC v : o/`
+M module f : o/ = v okay
+
+C-Mod
+
+(module f : o/ = v) 2 M
+
+f 7-!M v
+
+Fig. 6. Selected syntax and semantics of *C
+
+note that the whole module context is available to each module, allowing forrecursion. Finally,
+
+C-Mod shows that module names reduce to the value of themodule.
+
+We model sublanguage A with calculus *A , which extends *C with affinetypes. While
+
+*A includes all of *C , we choose not to embed *C in *A to empha-size the generality of our approach, anticipating conventional language features
+
+that we do not know how to type in an affine language. The syntax of *A may befound in Fig. 7. Expressions are mostly conventional: values, which include
+
+* and
+\Lambda  abstractions, constants, and pairs; variables; application and type application;if expressions; pair construction; and pair elimination. Less conventionally, expressions also include module names (f), which reduce to the value of the namedmodule. We define the free variables of an expression in the usual way, but note
+that this includes only regular variables (e.g., y), not module names (e.g., g),which we assume are distinguished syntactically.
+
+Types include integers, function types with qualifier q, universals, and thesyntactically distinguished opaque types, which include type variables, products,
+and reference cells. Figure 8 defines a lattice on qualifiers, of which there areonly two:
+
+u is bottom and a is top. A qualifier is assigned to each type, with thenotation |
+oe| = q. Integers are always assigned the unlimited qualifier u, whereasreferences always have the affine qualifier
+
+a. Function types and type variablesare annotated with their qualifiers, and products get the stronger qualifier of
+
+either of their components. We define the qualifier of a value context \Gamma  as well,to be the maximum qualifier of any type bound in it; in other words,
+
+\Gamma  is affineif any variable is affine, but if none is then it is unlimited.
+
+The subtyping relation appears in Fig. 8. It is reflexive and transitive, co-variant on both pair components and function codomains, and contravariant on
+function domains, as usual. Subtyping arises from the qualifier lattice in twoways: an unlimited function may be used where an affine function is expected
+(but not vice versa), and a universal type whose bound variable has qualifier amay be instantiated by a type with qualifier
+
+u (but not vice versa).
+
+12 J. Tov and R. Pucella
+
+variables x, y 2 VarA
+qualifiers q 2 {a, u}
+type variables ffq, fiq 2 TVarA
+module names f, g 2 MVarA
+
+modules m ::= module f : oe = v
+
+types oe ::= int | oe (q oe | 8ffq. oe | oeo
+opaque types oeo ::= ff | oe \Omega  oe | oe ref
+
+expressions e ::= v | x | f | e e | e[oe] | if0 e e e| h
+
+e, ei | let hx, xi = e in e
+values v ::= c | *x:oe.e | \Lambda ffq. v | hv, vi
+constants c ::= new[oe] | swap[oe][oe] | dze | - | (z-) | * * *
+
+value contexts \Gamma  ::= * | \Gamma , x:oe
+
+type contexts \Delta  ::= * | \Delta , ffq
+
+Fig. 7. Syntax of *A
+q v q , |o/| = q , |\Gamma | = q
+
+u v q q v a |int| = u |oe1 (q oe2| = q |8ffq. oe| = |oe| |ffq| = q
+
+|oe1 \Omega  oe2| = |oe1| t |oe2| |oe ref | = a |\Gamma | = G
+
+x2dom(\Gamma ) |
+
+\Gamma (x)|
+
+oe <: oe
+
+S-Refl
+
+oe <: oe
+
+S-Trans
+
+oe1 <: oe2 oe2 <: oe3
+
+oe1 <: oe3
+
+S-Prod
+
+oe1 <: oe01 oe2 <: oe02
+
+oe1 \Omega  oe2 <: oe01 \Omega  oe02
+
+S-Arrow
+
+oe01 <: oe1 oe2 <: oe02 q v q0
+
+oe1 (q oe2 <: oe01 (q0 oe02
+
+S-Forall
+
+q2 v q1 oe1[fiq2 /ffq1] <: oe2
+
+8ffq1. oe1 <: 8fiq2 . oe2
+
+\Gamma  \Delta  \Gamma  = \Gamma 
+
+* \Delta  * = *
+
+\Gamma 1 \Delta  \Gamma 2 = \Gamma 3 |oe| = a
+
+\Gamma 1 \Delta  \Gamma 2, x:oe = \Gamma 3, x:oe
+
+\Gamma 1 \Delta  \Gamma 2 = \Gamma 3 |oe| = a
+
+\Gamma 1, x:oe \Delta  \Gamma 2 = \Gamma 3, x:oe
+
+\Gamma 1 \Delta  \Gamma 2 = \Gamma 3 |oe| = u
+\Gamma 1, x:oe \Delta  \Gamma 2, x:oe = \Gamma 3, x:oe
+
+Fig. 8. Statics of *A (qualifiers, subtyping, contexts)
+
+Stateful Contracts for Affine Types 13
+\Delta ; \Gamma  `MA e : oe
+TA-Subsume
+
+\Delta ; \Gamma  `MA e : oe oe <: oe0
+
+\Delta ; \Gamma  `MA e : oe0
+
+TA-Lam
+
+\Delta ; \Gamma , x : oe `MA e : oe0 \Delta  `A oe ,,\Gamma |FV(*x:oe. e),, = q
+
+\Delta ; \Gamma  `MA *x:oe. e : oe (q oe0
+
+TA-TApp
+
+\Delta ; \Gamma  `MA e : 8ffq. oe0 \Delta  `A oe |oe| v q
+
+\Delta ; \Gamma  `MA e[oe] : oe0[oe/ffq]
+
+TA-App
+
+\Delta ; \Gamma 1 `MA e1 : oe0 (q oe \Delta ; \Gamma 2 `MA e2 : oe0
+
+\Delta ; \Gamma 1 \Delta  \Gamma 2 `MA e1 e2 : oe
+
+TA-Mod
+
+module f : oe = v 2 M * `A oe
+
+\Delta ; \Gamma  `MA f : oe
+
+TA-New
+
+\Delta ; \Gamma  `MA new[oe] : oe (u oe ref
+
+TA-Swap
+
+\Delta ; \Gamma  `MA swap[oe1][oe2] : (oe1 ref \Omega  oe2) (u (oe1 \Omega  oe2 ref)
+
+Fig. 9. Statics of *A (selected expressions)
+
+Figure 8 defines context splitting, which is used by expression typing todistribute affine assumptions to only one use in a term, but unlimited variables
+to an unlimited number of mentions. When a value context must be split to typetwo subexpressions, in an application expression, for example (Fig. 9), variables
+of affine type are made available to either the operator or operand, but not both.
+
+Selected expression typing rules appear in Fig. 9. Rules TA-Lam and TAApp are the usual substructural rules for typing * expressions and applications:for
+
+* expressions, the qualifier q given to the resulting (q type is the qualifier ofthe context
+
+\Gamma  limited to the free variables of the expression; thus, the functionis at least as restricted as any values it closes over. The type application rule
+
+TA-TApp requires that a type variable be at least as restrictive as any typewith which it is instantiated.
+
+Finally, rule TA-Swap takes a pair of a oe1 reference and a oe2, and returns a
+oe1 and a oe2 reference. From the operational semantics, a small selection of whichappears in Fig. 10, it should be clear that
+
+swap swaps the oe2 argument into thelocation and returns the value previously in the location. Since
+
+TA-Swap doesnot require these two types to be the same,
+swap performs a strong update--that is, it may change the type of the value residing in a reference cell. This is
+
+why the qualifier given to references must be a: if a reference is aliased, then itbecomes possible to observe the type change in a way the destroys type safety.
+This feature of the calculus is a stand-in for the variety of invariants that anaffine type system might enforce. In the mixed calculus,
+
+*C may gain access to
+*A references. It has no operations available to read or write them, but it mustbe prevented from passing an aliased reference cell back into
+
+*A where it cancause trouble.
+
+14 J. Tov and R. Pucella
+
+locations ` 2 Loc
+
+values v ::= * * * | `
+
+stores s ::= {` 7! v, . . . , ` 7! v}
+configurations C ::= (s, e)
+evaluation contexts E ::= [ ]A | E[oe] | E e | v E | hE, ei | hv, Ei | * * *
+
+C 7-!M C
+
+(A-New) (s, new[oe] v) 7-!M (s ] {` 7! v}, `)
+(A-Swap) (s ] {` 7! v1}, swap[oe1][oe2] h`, v2i) 7-!M (s ] {` 7! v2}, hv1, `i)
+
+Fig. 10. Dynamics of *A (selected rules)
+programs P ::= M e
+module contexts M ::= m1 . . . mk
+
+modules m ::= m | m|
+
+interface f :> oe = g
+
+*C expressions e ::= * * * | fg
+
+*C types o/ ::= * * * | {oe}
+*A expressions e ::= * * * | fg
+
+*A types oe ::= * * * | {o/}
+
+Fig. 11. New syntax for *AC
+4.2 Mixing It Up with *AC
+The primary aim of this work is to construct (type-safe) programs by mixingmodules written in an affine language and modules written in a non-affine language, and to have them interoperate as seamlessly as possible. We can thenmodel an affine program calling into a library written in a legacy language, or
+a conventional program calling into code written in an affine language. In ei-ther case, we must ensure that the non-affine portions of the program do not
+break the affine portions' invariants. As noted in Sect. 3, we accomplish this viarun-time checks in the style of higher-order contracts [4].
+
+The additional syntax for mixed programs is in Fig. 11. The main expressionin a mixed program is in subcalculus
+
+*C . Modules now include *A modules, *Cmodules, and interface modules, which are used to assert a
+
+*A type about a *Cmodule as we saw in Sect. 2.
+
+We add to each subcalculus's expressions a production referring to modulesfrom the other subcalculus. We decorate each such module name with the name
+of the module in which it appears (e.g., f g for a reference to *C module f from
+*A module g) and use this name as the negative party in contracts regulatingthe intercalculus boundary, in order to assign blame.
+
+Static Semantics. The type system for the mixed calculus is the union of thetype systems for
+
+*A and *C (Figs. 6, 8, and 9), along with additional typingrules (Fig. 12) for
+
+*A module invocations in *C expressions and *C moduleinvocations in
+*A expressions.
+
+Stateful Contracts for Affine Types 15
+` P : o/ , `M m okay
+
+Prog8
+
+m 2 M, `M m okay *; * `MC e : o/`
+
+M e : o/
+
+TM-I
+
+(module g : (oe)C = v) 2 M |oe| = u`
+
+M interface f :> oe = g okay
+
+\Delta ; \Gamma  `MC e : o/ , \Delta ; \Gamma  `MA e : oe
+
+TA-ModC
+
+(module f : o/ = v) 2 M * `C o/
+
+\Delta ; \Gamma  `MA f : (o/)A
+
+TC-ModA
+
+(module f : oe = v) 2 M * `A oe
+
+\Delta ; \Gamma  `MC f : (oe)C
+
+TA-ModI
+
+(interface f :> oe = g) 2 M * `A oe
+
+\Delta ; \Gamma  `MA f : oe
+
+Fig. 12. New statics for *AC
+Rule TC-ModA (Fig. 12) types occurrences of *A module names in *C ex-pressions. The rule uses the type conversion function (*)
+
+C , defined in Sect. 3 (p. 9)
+
+to give a *C type to the *A module invocation. Because *A types are richerthan
+
+*C types--*A function types carry extra information in the qualifier--theconversion loses information, which may need to be recovered through dynamic
+
+checks. For example, given a *A module g with type int (u int (a int, the con-version rule assigns it the
+
+*C type int ! int ! int. Calculus *C 's type systemcannot enforce that the result of applying
+
+g be applied at most once, which willneed to be checked at run time.
+
+For a *C module with type o/ invoked from a *A expression, we use themodule at type (
+
+o/ )A . It would be reasonable for TA-ModC to give it any
+*A type in the pre-image of the *A -to-*C mapping, but (*)A makes the mostpermissive, statically safe choice, which is to map all
+
+*C arrows (!) to theunlimited
+*A arrow ((u ). Consider:
+
+- If f : int ! int in *C , then int (u int is the right type in *A . There is noreason to limit
+
+f to an affine function type, because *C does not impose thatrequirement, and subtyping allows us to use it at
+
+int (a int, if necessary.- If f : (int ! int) ! int in
+*C , then (int (u int) (u int will allow theimported function to be passed unlimited functions but not affine functions.
+
+This is a safe choice, because *C 's type system does not tell us whether fmay call its argument more than once.
+
+In the latter case, what if the programmer somehow knows that function f appliesits argument at most once, as in the example of
+
+threadForkC (p. 7)? It shouldnot violate
+*A 's invariants to pass an affine function to threadForkC , but *Acannot know this. Therefore, rule
+
+TA-ModC gives *C modules a conservative
+*A type that requires no run-time checks. We can use an interface module to
+
+16 J. Tov and R. Pucella
+coerce a *C module's type o/ to a more permissive *A type in the pre-image of
+o/, and this, too, requires a dynamic check.
+
+Operational Semantics. We extend the syntax of our mixed language withseveral new forms (Fig. 13). Whereas our source syntax segregates the two subcalculi into separate modules, module invocation reduces to the body of themodule, which leads expressions of both subcalculi to nest at run time. Rather
+than allow *A terms to appear directly in *C , and vice versa, we need a wayto cordon off terms from one calculus embedded in the other and to ensure that
+the interaction is well-behaved. We call these new expression forms boundaries.
+
+The new run-time syntax includes both boundary expressions oef ACg(e) for
+embedding *C expressions in *A and boundary expressions f CAoeg (e) for embedding *A expressions in *C . Each of these forms has a superscript oe, written onthe
+
+*A side, which represents a contract between the two modules that gave riseto the nested expression. Some contracts, for example
+
+int, are fully enforced byboth type systems. Other contracts, such as
+int (a int, require dynamic checks.The type system guarantees that such a function receives and returns only integers, but this type also imposes an obligation on the negative party to applythe function at most once, which the
+
+*C type system alone does not enforce.
+The right subscript of a boundary is a module name in the inner subcalculus,representing the positive party to the contract: It promises that if the enclosed
+
+subexpression reduces to a value, then the value will obey contract oe. The leftsubscript is the negative party, which promises to treat the resulting value properly. In particular, if the contract is affine, then the negative party promises touse the resulting value at most once.
+
+Boundaries first arise when a module in one calculus refers to a module inthe other calculus. When the name of a
+
+*C module appears in a *A term, AModC wraps the module name with an AC boundary, using the *A -conversionof the module's type
+
+o/ as the contract. For interface modules, the contract is asdeclared by the interface, and the name of the interface is the positive party (
+
+AModI). From the other direction, a *A module invoked from a *C expressionis wrapped in a CA boundary by rule
+
+C-ModA.
+We add evaluation contexts for reduction under boundaries, which means itis now possible to construct a
+
+*C evaluation context with a *A hole, and viceversa. If the expression under a boundary reduces to a value, it is time to apply
+
+the boundary's contract to the value. There are three possibilities:
+
+- Some values, such as integers, always satisfy the contract, so the boundaryis discarded.
+
+- Functional values and opaque affine values must have their checks deferred:functions until application time, and opaque values until they pass back
+
+into their original subcalculus. For deferred checks, we leave the value in a"sealed" boundary,
+
+f CA[`]oeg (v) or oef AC[ ]g(v), which is itself a value form.- When a previously sealed opaque value reaches a boundary back to its original subcalculus, both that boundary and the sealed boundary are discarded.
+
+Stateful Contracts for Affine Types 17
+*C terms e ::= * * * | CAf f oe(e)
+*C values v ::= * * * | CAf f [`]oe(v)
+*C eval. cxts. E ::= * * * | CAf f oe(E)
+
+*A terms e ::= * * * | oe ACf f (e)
+*A values v ::= * * * | oe ACf f [ ](v)
+*A eval. cxts. E ::= * * * | oe ACf f (E)
+
+configurations C ::= (s, e) | blame f
+
+answers A ::= (s, v) | blame f
+
+stores s ::= {} | s ] {` 7! v} | s ] {` 7! v}
+
+(C-ModA) (s, fg) 7-!M (s, CAg f oe(f)) (module f : oe = v) 2 M
+(A-ModC) (s, fg) 7-!M (s, (o/)
+
+A AC
+
+g f (f )) (module f : o/ = v) 2 M
+
+(A-ModI) (s, fg) 7-!M (s, oe ACg f `f0') (interface f :> oe = f 0) 2 M
+
+(C-Wrap) (s, CAf g oe(v)) 7-!M coerceC (s, oe, v, f , g)
+(A-Wrap) (s, oe ACf g (v)) 7-!M coerceA (s, oe, v, f, g)
+
+(C-B-A) (s, CAf g [`]8ff
+
+q.oe(v)[o/]) 7-!
+
+M check(s, `, |oe|, CAf g
+
+oe[(o/)A /ffq]"v[(o/)A ]", f )
+
+(C-fi-A) (s, CAf g [`]oe1(
+
+q oe
+
+2(v1) v2) 7-!
+
+M check(s, `, q, CAf g
+
+oe2 "v1 oe1 AC
+
+g f (v2)<<, f )
+
+(A-B-C) (s, 8ff
+
+q.oe AC
+
+f g [ ](v)[oea]) 7-!M (s,
+
+oe[oea/ffq] AC
+
+f g "v[(oea)
+
+C ]")
+
+(A-fi-C) (s, oe1(
+
+q oe
+
+2 AC
+
+f g [ ](v1) v2) 7-!M (s,
+
+oe2 AC
+
+f g "v1 CAg f
+
+oe1(v2)<<)
+
+coerceC (s, oe, v, f , g) = 8>><>>:
+
+(s, dze) if v = dze
+(s, v0) if v = {o/
+
+o}
+
+g0 AC[ ]f0(v0)
+(s ] {` 7! blssd}, CAf g [`]oe(v)) otherwise
+
+coerceA (s, oe, v, f, g) = 8>><>>:
+
+(s, dze) if v = dze
+check(s, `, |oeo|, v0, g0) if v = g0CA[`]oe
+
+o
+
+f0 (v0)
+
+(s, oe ACf g [ ](v)) otherwise
+
+check(s, `, q, e, f) = 8><>:
+
+(s, e) if q = u
+(s0 ] {` 7! dfnct}, e) if s = s0 ] {` 7! blssd}
+(s, blame f ) otherwise
+
+Fig. 13. Dynamics of *AC (run-time syntax and reduction rules)
+
+18 J. Tov and R. Pucella
+
+Rule C-Wrap implements contract application for *A values embedded in
+*C expressions, as indicated by metafunction coerceC . The first case of coerceChandles immediate checks, and its second case unseals previously sealed
+
+*C val-ues that have returned home. The second case of coerce
+
+C seals and blesses a *Avalue, by allocating a location
+`, to which it stores a distinguished value blssd;it adds this location to the boundary, which marks the sealed value as not yet
+
+used. This corresponds directly to the reference cell allocated by makeAffineFunContract in Sect. 3.
+
+Rule A-Wrap implements contracts for *C values in *A expressions. Meta-function coerce
+
+A 's first case is the same as coerceC 's, and the third case seals avalue for deferred checking; it need not allocate a location to track the usage of a
+
+*C value. The third case unseals a previously sealed *A value on its way back to
+*A , and this requires checking that an affine value has not been previously un-sealed. This step is specified by metafunction check , which also has three cases.
+
+Unlimited values are unsealed with no check. If an affine value remains blessed,check updates the store to mark it "defunct" and returns the unsealed value. If,
+on the other hand, there is an attempt to unseal a defunct affine value, checkblames the negative party. This is the key dynamic check that enforces the affine
+invariant for non-functional values.
+
+Rules C-B-A, C-fi-A, A-B-C, and A-fi-C all handle sealed abstractions,which are unsealed when they are applied. For sealed
+
+*A abstractions, the seallocation
+` must be checked, to ensure that an affine function or type abstractionis not unsealed and applied more than once. This is the dynamic check that
+
+enforces the affine invariant for functions.
+
+Type Soundness. The presence of strong updates means that aliasing a loca-tion can result in a program getting "stuck": if an aliased location is updated
+at a different type, reading from the alias produces a value of unexpected type.Calculus
+
+*A 's type system prevents this, but adding *C means that a *A valuemay be aliased outside
+
+*A . Our soundness criterion is that no program thatgets stuck is assigned a type. In particular, all aliasing of affine values is either
+
+prevented by *A 's type system or detected by a contract at run time.
+
+In order to prove a Wright-Felleisen-style type soundness theorem [21], weidentify precisely what property is preserved by subject reduction. We use an
+
+internal type system to track which portions of the store are reachable from
+*A values that have flowed into *C . Under this type system, configurationsenjoy standard progress and preservation, which allows us to state and prove a
+
+syntactic type soundness theorem using the internal type system's configurationtyping judgment
+
+.M C : o/:
+
+Theorem (Type Soundness). If ` M e : o/ and ({}, e) 7-!M * C such thatconfiguration
+
+C cannot take another step, then C is an answer with .M C : o/ .
+
+Our full formalization, including complete definitions of the calculi and proofs,is available at
+
+http://www.ccs.neu.edu/~tov/pubs/affine-contracts/.
+
+Stateful Contracts for Affine Types 19
+5 Conclusion
+Our work is part of an ongoing program to investigate practical aspects of sub-structural type systems, and this paper describes one step in that program.
+Here, we have focused on the problem of interaction between substructural andnon-substructural code, each governed by its own type system, and explored the
+use of higher-order contracts to prevent the conventional language from break-ing the substructural language's invariants. Our answer to the problem at hand
+naturally raises more questions.
+Exceptions. In a production language with a contract system, contract vio-lations should not always terminate the program. Real programs may catch an
+
+exception and either try to mitigate the condition that caused it, try somethingeasier instead, or report an error and go on with some other task. To ensure
+soundness, it suffices to prevent the questionable actions from occurring.On one hand, we believe that ML-style exceptions should not provide too
+much difficulty in an affine setting. In our prototype, try-with expressions aremultiplicative, in the sense that the type environment needs to be split between
+an expression and its exception handler, not given in whole to both.On the other hand, we do not know how exceptions or any sort of blame might
+work in a linear setting--this is one reason why we chose an affine calculus.Terminating the program is problematic because of the implicit discarding of
+linear values, but catching an exception once part of a continuation containinglinear values has been discarded seems even worse. Exceptions in linear languages
+remain an open question.
+Linearity. Our work emphasizes contract-based interaction with affine type sys-tems rather than linear type systems because it remains unclear to us what linear
+
+contracts ought to mean. We may want a conventional language to interoperatewith a language that (at least sometimes) prohibits discarding values. However,
+unlike affine guarantees, which are safety properties, relevance guarantees--thata value is used at some point in the future--are a form of liveness property.
+
+One approximation is to consider a contract representing a relevance guaran-tee to be violated if at any point we can determine that the contract necessarily
+will be violated. Detecting the violation of such a liveness property is undecidablein general, but tracing garbage collection approximates a liveness property very
+close to the one we desire. In an idealized semantics, we might garbage collectthe store after each reduction step and signal a violation if the seal location of
+a not-yet-used linear value has become unreachable. In a real implementation,finalizers on linear values could detect discarding. If we detect a violation, we
+probably could do nothing to prevent it, but at worst we could file a bug report.
+Our work suggests that adding substructural libraries to a conventional pro-gramming language such as ML does not require a particularly complicated
+
+implementation, and our results yield a realistic contract-based design.
+Acknowledgments. We wish to thank Daniel Brown, Ryan Culpepper, JedDavis, Matthias Felleisen, Alec Heller, Sam Tobin-Hochstadt, Aaron Turon, and
+
+20 J. Tov and R. Pucella
+the anonymous referees for their helpful comments, discussion, and corrections.This research was supported in part by AFOSR grant FA9550-09-1-0110.
+
+References
+
+1. Ahmed, A., Fluet, M., Morrisett, G.: L3: A linear language with locations. Tech.
+
+Rep. TR-24-04, Harvard University (2004)
+2. Barendsen, E., Smetsers, S.: Uniqueness typing for functional languages with graph
+
+rewriting semantics. Mathematical Structures in Computer Science 6(6) (1996)
+3. Benton, P.N.: A mixed linear and non-linear logic: Proofs, terms and models. In:
+
+CSL'94. pp. 121-135. No. 933 in LNCS, Springer, Heidelberg (1995)
+4. Findler, R.B., Felleisen, M.: Contracts for higher-order functions. In: ICFP'02. pp.
+
+48-59. ACM, New York (2002)
+5. Flanagan, C.: Hybrid type checking. In: POPL'06. vol. 41, pp. 245-256. ACM
+
+(2006)
+6. Gay, S.J., Hole, M.J.: Types and subtypes for client-server interactions. In:
+
+ESOP'09. LNCS, vol. 1576, pp. 74-90. Springer (1999)
+7. Girard, J.Y.: Interpr'etation fonctionelle et 'elimination des coupures de
+
+l'arithm'etique d'ordre sup'erieur. Ph.D. thesis, Universit'e Paris VI (1972)
+8. Jim, T., Morrisett, G., Grossman, D., Hicks, M., Cheney, J., Wang, Y.: Cyclone:
+
+A safe dialect of C. In: Proc. USENIX Annual Technical Conference (2002)
+9. Matthews, J., Findler, R.B.: Operational semantics for multi-language programs.
+
+In: POPL'07. vol. 42, pp. 3-10. ACM, New York (2007)
+10. Milner, R., Tofte, M., Harper, R., MacQueen, D.: The Definition of Standard ML.
+
+MIT, Cambridge, revised edn. (1997)
+11. Plotkin, G.: Type theory and recursion. In: LICS'93. p. 374. IEEE Computer Society (1993)
+12. Reynolds, J.C.: Towards a theory of type structure. In: Symposium on Programming, LNCS, vol. 19, pp. 408-423. Springer, Heidelberg (1974)
+13. Siek, J.G., Taha, W.: Gradual typing for functional languages. In: Workshop on
+
+Scheme and Functional Programming. pp. 81-92. ACM, New York (2006)
+14. Stevens, W.R.: UNIX Network programming. Prentice-Hall, New Jersey (1990)
+15. Strom, R., Yemini, S.: Typestate: A programming language concept for enhancing
+
+software reliability. IEEE Transactions on Software Engineering 12(1) (1986)
+16. Tobin-Hochstadt, S., Felleisen, M.: Interlanguage migration: From scripts to programs. In: OOPSLA'06. pp. 964-974. ACM, New York (2006)
+17. Tobin-Hochstadt, S., Felleisen, M.: The design and implementation of Typed
+
+Scheme. In: POPL'07. pp. 395-406. ACM, New York (2008)
+18. Turner, D.N., Wadler, P., Mossin, C.: Once upon a type. In: FPCA'95. pp. 1-11.
+
+ACM, New York (1995)
+19. Wadler, P.: Linear types can change the world. In: Programming Concepts and
+
+Methods. pp. 347-359. North Holland, Amsterdam (1990)
+20. Walker, D.: Substructural type systems. In: Pierce, B.C. (ed.) Advanced Topics in
+
+Types and Programming Languages, chap. 1, pp. 3-44. MIT, Cambridge (2005)
+21. Wright, A.K., Felleisen, M.: A syntactic approach to type soundness. Information
+
+and Computation 115(1), 38-94 (1994)

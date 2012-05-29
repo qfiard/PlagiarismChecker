@@ -1,0 +1,2021 @@
+
+
+Types for Lexically-Scoped Access Control
+
+Tachio Terauchi Alex Aiken Jeffrey S. Foster
+
+Report No. UCB/CSD-3-1282
+October 2003
+
+Computer Science Division (EECS)
+University of California
+Berkeley, California 94720
+
+Types for Lexically-Scoped Access Control *
+
+Tachio Terauchi Jeffrey S. Foster Alex Aiken
+
+October 15, 2003
+
+Abstract
+We develop a new system for defining and enforcing access control statically. In our system, key-pairs
+guard access to resources, and the association between key-pairs and resources can be changed at any
+program point (i.e., the binding is late). Our static system uses an ordering on lexically scoped abstract
+names to allow local access control policies to be enforced in other parts of a program. In particular,
+this means that individual program components can locally refine access control policies and the policies
+will be respected by the entire program. The result is a system that can enforce, at compile time, a wide
+variety of useful, fine-grain access control patterns.
+
+1 Introduction
+In situations where a program P interacts with one or more untrusted program components U , a well-specifiedaccess control policy protects
+
+P 's resources from unwanted operations performed by U .Systems such as Java and the Common Language Runtime (CLR) provide a mechanism for defining and
+
+enforcing fine-grain access control. In these systems, a programmer defines permissions denoting resourcesthat pieces of code are allowed to access. For example, a Java class that conducts network transactions needs
+permission to access network sockets. A key part of stack-based access control is ensuring that if component
+C does not have permission to access resource v, then C cannot gain access to v by calling a function thathas permission to access
+
+v. To enforce stack-based access control policies, the run-time system records theset of permissions
+S1, S2, . . . of each codes f1, f2, . . . on the execution stack. When a resource v is accessed,the run-time system permits the access only if
+
+v 2 Ti Si. That is, v can be used only if all functions on thestack have permission to access
+v. Stack-based access control systems usually also include a mechanism forgaining privileges, so that only a suffix of the stack is examined for access right.
+
+In addition to a set of pre-defined permissions, Java and the CLR allow programmers to define newpermissions. For example, in an airline ticketing program, a flight scheduling component may define new
+permissions used to protect internal resources such as flight time information from being modified by aticketing agent component.
+
+This paper presents a new stack-based access control system that is enforced statically, in contrast to therun-time enforcement in Java and the CLR. We begin with an example application of our system, slightly
+simplified for the purposes of introduction. Before giving the example, we give a very compressed overviewof our approach.
+
+In our system, permissions are expressed as key-pairs consisting of a grant key and a limit key. Eachkey-pair is associated with a set of resources, but the two keys are used for different operations on those
+resources. We have already mentioned that in stack-based access control each piece of code may limit accessto a set of resources; this is the function of limit keys. The power to limit access is not sufficient, however.
+Something must also grant access to resources, at least initially, or no resources could ever be used; this is thefunction of grant keys. Splitting the management of access rights for a set of resources into grant and limit
+keys is fundamental to our design and, we believe, gives our system practical advantages (see Section 2).
+
+*This research was supported in part by Subcontract no. PY-1099 to Stanford, Dept. of the Air Force prime contract no.
+F33615-00-C-1693.
+
+1
+
+A second novel feature of our system is subkeys. Subkeys are analogous to subclasses in an object-orientedlanguage. If a limit (grant) key
+
+k1 is a subkey of a limit (grant) key k2 then k1 guards access to a subset ofthe resources
+k2 protects (see Section 2.5).Finally, in our approach the programmer writes code to expresses access control policies using the following expressions for manipulating keys and resources:
+
+* newkey generates a new pair of keys; newkey < p generates new subkeys of the key-pair p. Initially,keys are not associated with any resources.
+
+* associate e1 with e2 associates the key-pair e1 with the resource e2.
+
+* limit e1 in e2 limits e2's access rights to the resources associated with the limit key e1.
+
+* grant e1 in e2 grants e2 access rights to the resources associated with the grant key e1.
+
+* The function gKey(p) (resp. lKey(p)) returns the grant (resp. limit) key of the key pair p.
+Consider two components C and D that need to share access to a number of files. This is expressed in oursystem by creating a key-pair, associating it with the files, and then granting access to those files to both
+
+Cand
+D:
+
+shared files = newkey;. . .
+
+associate file a with shared files;. . .
+associate file b with shared files;
+[Component C]:. . .
+
+grant gKey(shared files) in. . .
+
+/* accesses the shared files */. . .
+
+[Component D]:. . .
+
+grant gKey(shared files) in. . .
+
+/* accesses the shared files */
+
+Now assume that we wish to add to C a function f that is visible to other, less trusted, components,which may or may not have access to
+
+shared files. We want only certain files in shared files to beaccessible through
+f. Our system is designed to support such refinements of access control policies with onlylocal modifications to component
+
+C; in particular, neither component D nor any other component needs to bemodified to implement these changes. We create a subkey-pair
+
+some files of shared files and associateit with a subset of files, say just
+file a and file b. Using limit, we ensure that callers of the function
+f can access at most the files associated with some files; which files they can actually access depends ontheir access rights at the point where they call
+
+f.
+
+[Component C]:
+
+grant gKey(shared files) in. . .
+
+some files = newkey<shared files;. . .
+
+associate file a with some files;. . .
+associate file b with some files;. . .
+
+f = *x.limit lKey(some files) in. . .
+
+/* accesses the selected files */
+
+Component D can call f because it has access to shared files. But components without access to theselected files cannot.
+
+In our view, our system provides two key features: late binding of keys and resources (i.e., a resource canbe associated with a key after both the key and the resource exist) and the ability to create subkeys at any
+
+2
+
+point. As a result, these features allow late, local refinement of access control policies, as well as non-localenforcement of policies. In the example above, we have added a refinement of the original policy to function
+f in component C. This policy is local to C, meaning that the entire refinement is done in the component C,but it is enforced non-locally; i.e., a call to
+
+f in D respects the refined access control policy.Our aim is to statically check such fine-grain access control policies. There are two benefits to static
+
+access control. One benefit is that it can find access violations early at compile time. The other benefit isefficiency; the run-time system need not to check for access violations.
+
+Static checking requires our system to statically track three things: (a) the association between resourcesand keys; (b) the subkey hierarchy; and (c) which resources are used by expressions. For (a), we use abstract
+names, which are lexically scoped, to identify keys and to qualify resource types with their associated keys.It is important to note that only the static names of keys are lexically scoped; keys themselves are not
+lexically scoped and in fact can be passed as arguments, stored in data structures, etc. For (b), the staticsystem tracks the subnaming hierarchy, which is the static analog of the subkey hierarchy. Finally, for (c)
+we develop a type and effect system that, for each expression e, assigns an effect set describing the set ofresources accessed in the evaluation of
+
+e.
+
+1.1 Contributions and Overview
+This paper makes several contributions:
+
+* Our access control system is static, i.e., the system checks for access violations at compile time. Thisis similar to some other recent research (e.g., [12]) but in stark contrast to common implementations
+
+of Java and CLR where violations are checked at run-time.
+
+* Despite being static, the system is able to define and enforce many non-trivial access control patternsthrough its ability to reason about locally refined access control policies.
+
+* The heart of our formal system is a novel, type-based must alias analysis, which may be of independentinterest.
+
+* We have a proof of soundness for the core subset of the system. Our system is sound in the presenceof updatable references, higher-order functions, and concurrency.
+Our system is type-based, relying only on standard techniques. One reason for choosing a type-basedapproach is compositional verification. Type systems explicitly express assumptions about the environment
+of each program fragment. Therefore program components may be checked separately under compatibleenvironments, and then composed to form a well-typed program.
+
+The rest of the paper proceeds as follows. Section 2 introduces our system informally. We introducethe important features of the system step-by-step, making improvements as we proceed. Materials up to
+and including Section 2.2 are sufficient to perform late, local refinement of access control policies. A smallexample is given in Section 2.4. To enforce local access policies non-locally, we introduce subkeys and
+subnaming in Section 2.5. Section 3 presents the static system formally and sketches a proof of soundness(the complete proof appears in Appendix A). Section 4 shows a few extensions to the system. Section 5
+discusses our system's relation to must alias analysis. Section 6 discusses related work. Section 7 concludes.
+
+2 Informal Presentation
+This section informally develops the key ideas in our access control system. In the interests of clarity, wepresent some of the material introduced in Section 1 again, but in a more leisurely fashion and with more
+examples. The formal details of our system are presented in Section 3.In a typical implementation of a dynamic stack-based access control system (such as Java's), permissions
+are objects containing strings, and the run-time system checks permissions by inspecting the strings beforeeach access of associated resources. For example, permission to access flight information on flight 356 may be
+represented as a string "Flight Info : 356". Instead, we design access control into the static semanticsof the language so that the type system can precisely track access control policies.
+
+3
+
+We introduce key-pairs, each consisting of a limit key and a grant key. Each key-pair is used to groupresources. Limit keys are used to limit access to resources and grant keys are used to grant access to resources.
+We consider every program value (e.g. a function, a pointer, etc) to be a resource possibly associatedwith some key-pair. Key-pairs are named in the static system using an infinite set
+
+Names. That is, each
+ae 2 Names identifies a key-pair. While technically ae is a static name for a run-time key-pair, for brevity wesay "the key-pair
+
+ae" instead of "the key-pair identified by ae" when there can be no confusion.Each type
+o/ in our system consists of a name and a raw type. A resource of the raw type oe associatedwith the key-pair
+
+ae is given the type ae oe; we say that ae qualifies oe in this type. For example, each pointertype is of the form
+
+ae ref (o/).The limit (resp. grant) key part of the key-pair
+
+ae has the raw type lkey (ae) (resp. gkey (ae)). Keys arethemselves program values. Therefore keys may also be under access control, and thus are associated with
+
+a key-pair. A limit (resp. grant) key ae associated with the key-pair ae1 is given a type ae1 lkey (ae) (resp.
+ae1 gkey (ae)).Finally, we use ?
+
+oe to denote the type of a program value not associated with any key-pair. Such programvalues are not subject to access control, hence they may be accessed by any code.
+
+2.1 Limit and Grant
+To limit access rights, we introduce the syntax form
+
+limit e1, e2, . . . , en-1 in en
+where e1, e2, . . . , en-1 are the limit keys and en is the code whose access rights are limited to the resourcesassociated with the keys
+
+e1, e2, . . . , en-1.Let
+lkey be the limit key of key-pair ae. Assume that the function h and the pointer t are associatedwith
+lkey, and consider this definition:
+
+g = *x. limit lkey in x(h, ! t)
+Since g dereferences t, g can be called only by code with access to t. For example, the following code shouldbe rejected if the limit key
+
+akey is not associated with t. (*hx1, . . . , xni.e is a function of n arguments.)
+
+limit akey in g (*hx, yi.y)
+Moreover, because the access rights of the body of g are limited to resources associated with lkey, thefunction passed to
+
+g may only access resources associated with lkey. So if lkey is associated only with hand
+t, then g is forbidden from accessing any resource but h or t. For example, if u is a pointer not equalto
+t (and is not qualified with ?)
+
+g (*hx, yi.! u)
+is forbidden.Now that we have seen how to limit access rights, we turn to granting access rights. We introduce the
+
+syntax form
+
+grant e1 in e2
+
+where e1 is a grant key and e2 is the code granted access to the resources associated with key e1. Notethat
+
+grant takes only a single expression as an argument, in contrast to limit, because multiple sequential
+grants can be used to grant a set of permissions, where multiple sequential limits will limit access to theintersection of access rights in the
+
+limit expressions.Let
+gkey be the grant key part of the key-pair ae. The code below grants itself access to the resources hand
+t in order to call g.
+
+grant gkey in g (*hx, yi.x (y))
+
+4
+
+A grant is stronger than a limit because it enables unconditional access to the resources regardlessof what access rights are available to the code's context. In Java, the analog of
+
+limit is the permissionsattached to traversed methods and the analog of
+grant is the initial set of permissions granted for anexecution thread and additional accesses granted by the special form
+
+doPrivileged.We use a type and effect system [7, 9] to statically check access control policies. For each expression, we
+
+assign an effect set conservatively approximating the expression's access rights. Effect sets are finite sets ofkey-pair names. The type checking rules derive judgments of the form \Gamma  `
+
+e : o/ ; L (read "the expression ehas the type
+o/ in the type environment \Gamma  and requires access rights L"). For example, the type checkingrule for pointer dereferences is:
+
+\Gamma  ` e : ae ref (o/); L
+\Gamma  ` ! e : o/; L [ {ae}
+
+This rule says that the dereference of a pointer is well-typed if the access to the pointer is enabled.The type checking rule for
+
+limit is more elaborate:
+
+For 1 <= i <= n - 1, \Gamma  ` ei : ae0i lkey (aei); Li\Gamma  `
+en : o/n; Ln \Gamma  ` Ln ` {ae1, ae2, . . . , aen-1}
+
+\Gamma  ` limit e1, e2, . . . , en-1 in en : o/n; Ln [ S1<=i<=n-1(Li [ {ae0i})
+
+The second line says that the body of the expression, en, only accesses the resources associated with thekey-pairs
+
+ae1, ae2, . . . , aen-1. In the conclusion, note the presence of Ln requires that the context have the rightto access the key-pairs in
+
+Ln; this prevents en from gaining more access rights than its context. On the firstline, since each key
+ei is itself a resource, it is associated with a key-pair ae0i (if it is not associated with anykey-pair then
+ae0i = ?). Moreover, evaluating each ei may also involve resource accesses, approximated by
+Li. Therefore, the context must have access rights to the resources associated with key-pairs identified byS
+
+1<=i<=n-1(Li [ {ae0i}), which is included in the overall effect.The type checking rule for grant is simpler:
+
+\Gamma  ` e1 : ae1 gkey (ae2); L1\Gamma  `
+
+e2 : o/ ; L2 [ {ae2}
+
+\Gamma  ` grant e1 in e2 : o/; L1 [ L2 [ {ae1}
+
+The key e1 is required to have a type of the form ae1 gkey (ae2), and e2 is granted the access to the resourcesassociated with the key-pair
+
+ae2 as indicated by the presence of {ae2} in e2's effect. However, unlike with
+limit, the context need not have access to ae2.Grant keys are dangerous because they enable unconditional access rights regardless of the context. Hence
+
+programmers should prevent arbitrary code from using grant keys and gaining unwanted access rights. Bysplitting keys into key-pairs instead of using a single key for both limiting and granting, we have sought to
+make it easy to isolate and control the ability to grant access to resources. In particular, this design allowsprogrammers to code in a style where each grant key is forgotten immediately after it is used to grant the
+access right to the code that generated the key.Nevertheless, grant keys can be useful outside of this trivial style as long as they are used with discretion.
+As an example, consider system calls in the UNIX operating system. Application programs are usuallyprohibited from accessing system resources such as printers except through system calls. We can emulate
+the behavior of such a protocol using grant keys. Let all printers be associated with the grant key k printers.Then the system function
+
+print can be written
+
+*hx, yi.grant k printers in {. . .
+
+/* code for outputting x to the printer y */ }
+
+so that a program that does not have access to the printers may print by calling this function. 1
+
+1The Java security model has a similar feature: doPrivileged enables a code to access more resources than are available to
+the code's context.
+
+5
+
+2.2 Associating Resources with Key-Pairs
+We next introduce the syntax forms newkey to generate new key-pairs and associate e 1 with e2 to associateresources with key-pairs. The syntax form
+
+newkey < e, which generates new subkey-pairs, is introducedtogether with subnaming in Section 2.5.
+
+We first describe newkey. We use existential types to guarantee that different key-pairs (particularlythose generated by the same syntactic occurrence of
+
+newkey) are identified by different names.
+
+\Gamma  ` newkey : ? (9ae.? h? lkey (ae), ? gkey (ae)i); ;
+Raw tuple types are written ho/1, . . . , o/ni. For extracting grant (resp. limit) keys from a pair, we define lKey(resp.
+
+gKey) as the projection function *x.(x.1) (resp. *x.(x.2)).Note that the type of a newly generated key-pair is qualified with ?, i.e., by default the new key-pair is
+
+not associated with any key-pair and hence is available to any code. Other program values are also qualifiedwith ? when they are created, also making them available to any code. For example, the type checking rule
+for allocating a new store location (i.e. a new pointer) is
+
+\Gamma  ` e : o/; L
+\Gamma  ` ref e : ? ref (o/); L
+
+In our system, each association between a key and a resource occurs after both the key and the resourceare created, i.e., associations happen late. We use the syntax form
+
+associate e1 with e2
+to associate the resource e1 with the key-pair with limit key e2.2 The type checking rule for associate isshown below.
+
+\Gamma  ` e1 : ae1 oe; L1 \Gamma  ` e2 : ae2 lkey (ae3); L2
+\Gamma  ` associate e1 with e2 : ae3 oe; L1 [ L2 [ {ae1, ae2}
+
+The associate construct is similar to type casting. That is, given a resource of the type ae1 oe, associatingit with the key-pair
+
+ae3 has the effect of casting the type to ae3 oe.In the rule for
+associate, because the limit key e2 may itself be associated with some key-pair (identifiedby
+ae2), we assert that the context must hold the access right to ae2. We assert that the context must alsohave access to the resource
+
+e1, and this is indicated by the inclusion of ae1 in the effect set of the conclusion.To see why this condition is necessary, consider the code below which might not be permitted to access the
+
+pointer ptr but nevertheless is able dereference it by generating a new key-pair, enabling, and associating
+ptr with it. (The form open x = e unpacks the existential package e.)
+
+open akeypair = newkey;
+grant gKey(akeypair) in {
+
+ptr casted = associate ptr with lKey(akeypair);
+! ptr casted; /* ptr accessed */}
+
+This code would type check if ae1 were missing from the effect set.
+2.3 Preventing Resource Forging
+Pointers, i.e. store locations, are naturally unforgeable in a strongly typed language that does not admitexplicit pointer manipulations such as casting an integer to a memory address. In our system, keys are also
+
+unforgeable. But many other resources are forgeable. For example, any program can duplicate any purefunction consisting only of variables and
+
+*'s by simply having another instance of the function.
+2We can also allow associating via grant keys and key-pairs themselves, as used in the example in Section 1. However, the
+ability to associate via limit keys is important, as it eliminates the need to expose grant keys (either alone or in key-pairs) for
+this purpose.
+
+6
+
+Our system does not automatically prevent such resource forging. This sounds unsafe because if aresource is forgeable then any code may re-create it and use the resource. Consider the file access control
+policy from Section 1. If file resource are strings containing the actual file name in the file system, then inany language with normal string operations it is trivial to create from scratch any file name with no access
+controls whatsoever.Fortunately, such situations usually can be remedied easily. In the file access control example, we can
+define file resources to have an abstract data type ([10]) File defined in a program component File Manager.The representation of a
+
+File could be a string type, but this would not be visible outside of the File Managercomponent. In this design,
+
+File Manager would handle all file operations directly via system calls, and allother components would be required to go through
+
+File Manager. This can be made possible by using theaccess control mechanism to ensure that only
+File Manager has access to file-related system calls. Whenrequesting some file for the first time, a component must ask
+
+File Manager for the appropriate File resourcereferring to the requested file. We also give
+File Manager a type signature such that, for example, callingthe
+File writing function would have the effect of accessing the given File resource. Then File Managercomponent can ensure that
+
+File resources are unforgeable so as to allow access control on files by associating
+File resources with key-pairs.In our system, we assume that a programmer takes necessary steps to make resources unforgeable if he
+
+wishes to have them under access control. For a naturally unforgeable resource like a pointer or a key, thiscan be as simple as associating the resource with some key-pair shortly after creating it and before making
+it available to other parts of the program. For other resources, use of abstract data types may be necessary,as seen in the
+
+File example.
+
+2.4 Simple Example
+The system described thus far is capable of expressing some fine-grain access control policies. Consider thefollowing code which, for each node of the linked list
+
+g, applies the function p to the item field of the node.
+
+t := g;
+while (t 6= nil) {
+
+p(t.item);
+t := (! t).next;}
+
+Let ae 6= ?. Let g have the record type NodeType defined below. (We take the liberty of using a C-likestructure declaration for simplicity.)
+
+NodeType = ae {
+
+ae ItemType item;
+ae ref (NodeType) next;}
+;
+
+(The first occurrence of ae is not a binding name; it just qualifies the record type.)We would like to use the system to limit
+
+p to accessing only the passed t.item. In particular, we wantto prevent
+p from modifying the list structure of g, because the code is traversing it. We may do this byassociating each
+
+t.item with a fresh key before calling p.
+
+t := g;
+while (t 6= nil) {
+
+open akey = newkey;
+grant gKey(akey) in {
+
+theitem = associate t.item with lKey(akey);
+limit lKey(akey) in { p(theitem); };
+t := (! t).next;}
+
+}
+
+7
+
+Note that the function p could be complicated, potentially calling other functions. Nevertheless, thetype system is able to ensure that each function application only accesses the specified
+
+t.item, because thelexically scoped name (which appears when the new key-pair is opened) distinguishes each instance of
+
+akeyand its late binding with the resource.
+
+This example shows the system's ability to declare late, local access control policies. That is, a program-mer may store a collection of resources uniformly with the same type, and when there is a need for finer
+access control (e.g. at the level of individual resources in the collection) the key-associations are refined.
+
+2.5 Subkeys and Subnaming
+We now introduce subkeys, and their corresponding static representation using subnaming. These additionsrequire a few changes to features explained earlier. To motivate the introduction of subkeys, we illustrate
+
+the problem that we would encounter if the system did not support them.Consider the file access control example from Section 1. Recall that the key-pair
+
+shared files is asso-ciated with the files shared between the program components
+C and D. Let aeshared identify shared files.Below, the code for
+C is re-written; in particular, it uses newkey instead of newkey<shared files to generatethe key-pair
+some files.
+
+[Component C]:
+
+open some files = newkey;. . .
+
+associate file a with lKey(some files);. . .
+associate file b with lKey(some files);. . .
+
+f = *x.limit lKey(some files) in. . .
+
+/* accesses the selected files */
+
+In the code above, f gets the type ?
+
+(o/1 {aesome}-! o/2)
+
+where aesome identifies the key-pair some files. Here, the set above the arrow is the latent effect of thefunction, as usual in a type and effect system. Because
+
+aesome is lexically scoped in C's context and thereforeinvisible in
+D's context, the type system fails to type check D's call to f.The problem stems from the inability of the type system to understand local associations outside of
+
+the local context when the lexically scoped names are completely anonymous. This prevents non-localenforcement of locally refined policies.
+
+Our system solves this problem by allowing the programmer to declare subset relations between resourcesvia subkeys. The syntax form
+
+newkey<e generates a new immediate subkey-pair of an existing key-pair. Aswith
+associate, we let e be just the limit key part of the key-pair; again, this avoids the need to propagatethe grant key just to associate resources with the key-pair. The type checking rule for
+
+newkey<e is
+
+\Gamma  ` e : ae1 lkey (ae2); L
+\Gamma  ` newkey<e : ? (9ae3 < ae2.? h? lkey (ae3), ? gkey (ae3)i); L [ {ae1}
+
+Here, in the bounded existential raw type 9ae3 < ae2. . . ., the key-pair name ae3 is the bound name and ae2is the upper-bound free in the raw type. The intuition behind this rule is that the new key-pair should be
+
+identified by some fresh name ae3 such that ae3 < ae2. The subnaming relation < statically keeps track of thesubkey hierarchy.
+
+Recall that any resources associated with a key-pair are also associated with its superkey-pairs. Thusresources associated with a key-pair are a subset of its superkey-pair's resources. Then, because the resources
+associated with the key-pair aesome are a subset of those associated with the key-pair aeshared, we can use
+shared files as the superkey-pair when generating some files. Here is the code from Section 1 again(using limit keys to generate and associate).
+
+8
+
+[Component C]:open some files =
+
+newkey<lKey(shared files);. . .
+associate file a with lKey(some files);. . .
+associate file b with lKey(some files);. . .
+
+f = *x.limit lKey(some files) in. . .
+
+/* accesses the selected files */
+
+Subnaming induces subeffecting and subtyping. In the example, the type system can reason that {aesome} <{
+aeshared}. We add the usual type checking rules so that a subeffect (resp. subtype) may be used where itssupereffect (resp. supertype) is expected. Here we have
+
+? (o/1 {aesome}-! o/2) < ? (o/1 {
+
+aeshared}-! o/
+
+2)
+
+and hence f can be called by a context having access to aeshared. Now D's call to f type checks.Without subkeys and subnaming, the type system cannot track a key/resource association outside of
+
+the context of the code in which the association is made.3 The key observation that leads to subkeys andsubnaming is that locally associated resources (i.e., a subkey) can be viewed as a local refinement of some
+larger collection of resources that is recognized (e.g., is associated with a superkey) outside the local context.In this way, subkeys and subnaming allow the programmer to define late, local associations that can be used
+non-locally.To better understand the uses of subnaming, we present a larger example. Consider an airline ticketing
+program that contains two components: FlightCtrl having control of ticketing and seating information forall flights and
+
+TicketAgt representing a ticket agent. There is only one FlightCtrl but there could be morethan instance of
+
+TicketAgt.Suppose each component runs its own execution thread and that only read access to the seating and
+
+ticketing information is available to the TicketAgt thread, but TicketAgt may request FlightCtrl makemodifications to the ticketing and seating arrangement. Let information for each flight be represented by
+the bounded existential record type
+
+FlightInfo = 9ae1 <aeall flights {?
+
+lkey (ae1) key;
+ae1 TicketingInfo tickets;
+ae1 SeatingInfo seats;
+ae2 int flight number;
+ae2 ref (FlightInfo) next;}
+;
+
+The FlightCtrl thread is granted access to aeall flights, so it may access the FlightInfo record of everyflight.
+
+Recognizing TicketAgt's request, perhaps after some authentication, FlightCtrl responds by retrievingthe flight information for the flight being requested:
+
+[FlightCtrl Component]:. . .
+
+if (AuthTicketAgt(agent1, flight num) {
+
+open finfo = getFlightInfo(flight num);. . .
+
+The TicketAgt thread does not have write access to the tickets or seatings fields of finfo, so it cannotmake the changes by itself. But it may create a function that does the job when called by
+
+FlightCtrl:
+3To be precise, this statement is true up to absence of grant keys. In fact, without subnaming, the grant keys must be used
+to grant unconditional access to the non-local context when using associations non-locally. Therefore not having subnaming
+precludes many useful stack-based access control patterns.
+
+9
+
+[TicketAgt]:. . .
+
+f agent = *x.. . .
+
+/* Makes changes to
+
+finfo.tickets and finfo.seats */
+
+FlightCtrl runs f agent in its thread. But FlightCtrl, not fully trusting f agent, uses the access controlmechanism to check that
+
+f agent is actually limited to modifying the seating and ticketing information ofthe specified flight:
+
+[FlightCtrl Component]:. . .
+
+limit finfo.key in f agent()
+The type system guarantees that f agent does not gain unwanted accesses (such as write access to flightinformation for other flights).
+
+The subnaming relation ae1 < aeall flights implied in the type of FlightInfo is important. Existentialquantification allows the program to operate on one
+
+FlightInfo at a time. Without subnaming, the boundname
+ae1 would become completely anonymous when the existential package is opened. Then, because thiswould mean that
+
+ae1 is a name unknown to FlightCtrl, FlightCtrl would be forbidden from accessing
+finfo, and hence would be unable to run f agent. Subnaming allows anybody with access to ae all flightsto perform access control at the level of individual
+
+FlightInfo instances.We can take this example a step further. Suppose that
+
+TicketAgt also has its own set of resources asso-ciated with the key-pair
+aeagt. Assume that f agent accesses some of these resources and that FlightCtrlhas access rights to
+aeagt.Let
+ThirdPartyLib be a third party library component that TicketAgt uses to, say, help itself calculateticket costs and print out information on the terminal screen. To let
+
+ThirdPartyLib use some of its resourcesin a controlled manner,
+TicketAgt imposes access control on its own resources:
+
+[TicketAgt]:. . .
+
+open lib key = newkey;. . .
+
+associate agt resources.a with lKey(lib key);. . .
+associate agt resources.b with lKey(lib key);
+
+Let aelib identify the key-pairs lib key. Now suppose that f agent runs functions from ThirdPartyLib.The programmer wishes to limit the resources the functions can use, so the definition of
+
+f agent would looklike
+
+[TicketAgt]:. . .
+
+f agent = *x. {. . .
+
+limit lKey(lib key) in {. . .
+
+/* calls ThirdPartyLib's functions */ }. . .
+
+}
+Coming back to FlightCtrl, it seems reasonable to assume that the FlightCtrl thread is still capableof running
+
+f agent because it has accesses to TicketAgt's resources as well as the flight information.
+
+[FlightCtrl]:. . .
+
+/* agt key is the key-pair identified by ae agt */
+limit finfo.key, lKey(agt key) in f agent()
+
+10
+
+ae 2 Names [ {?, ?} x 2 Vars m 2 Integers L `finite Names [ {?, ?}
+raw types oe ::= int | ho/1, o/2, . . . , o/ni | ref (o/) | o/1 L-! o/2 | 8ae1 <ae2.o/ | 9ae1 <ae2.o/ | lkey (ae) | gkey (ae)types
+
+o/ ::= ae oevalues
+
+v ::= m | Top | x | hv1, v2, . . . , vni | *x:o/.e | \Lambda ae1 <ae2.v | pack v as 9ae2 <ae3.o/expressions
+
+e ::= v | he1, e2, . . . , eni | e.i | e1 e2 | ref e | e1 := e2 | ! e | spawn e |
+
+e [ae] | pack e as 9ae2 <ae3.o/ | open x = e1 as o/ in e2 |
+limit e1, e2, . . . , en-1 in en | grant e1 in e2 | newkey<e | associate e1 with e2
+
+Figure 1: Source language
+
+But because we did not create lib key as subkeys, the type system does not see the associations made in the
+TicketAgt component. Indeed, the type system must give f agent the type ? (o/1 L-! o/2) where aelib 2 L,but
+
+aelib is not visible to FlightCtrl's context.Fortunately, subkeys provide an easy one-line fix.
+
+[TicketAgt]:. . .
+
+open lib key = newkey<lKey(agt key); /* fixed */. . .
+
+associate agt resources.a with lKey(lib key);. . .
+associate agt resources.b with lKey(lib key);
+
+Now the type system may give f agent the type ? (o/1 L0-! o/2) where L0 contains aeagt instead of aelib.Then the system is able to type check the call to
+
+f agent in the FlightCtrl thread.
+
+3 Formal System
+We next formally present the core subset of our access control system and prove its soundness.Figure 1 shows the source language, which consists of call-by-value first-class functions with primitives for
+
+imperative store operations and concurrency. The language is rather spare, missing a few bells and whistlesseen in earlier sections for brevity (e.g.,
+
+while and record types). These features can easily be added. Webriefly explain the syntax.
+
+As before, each type o/ consists of a name and a raw type. The raw types are integers int, tuplesh
+o/1, o/2, . . . , o/ni, pointers ref (o/), functions o/1 L-! o/2, bounded universal types 8ae1 <ae2.o/ , bounded existentialtypes 9
+
+ae1 <ae2.o/ , limit keys lkey (ae), and grant keys gkey (ae). In bounded quantified types, the name on theleft of
+< is the bound name and the name on the right is the upper-bound free in the raw type.A program value
+
+v is either an integer m, the constant limit key Top, a variable x, a tuple hv1, v2, . . . , vni,a function
+*x : o/.e, a bounded polymorphic abstraction \Lambda ae1 < ae2.v, or a bounded existential package
+pack v as 9ae2 <ae3.o/ .A program expression
+
+e is either a value or one of the following syntax forms. The expression he 1, e2, . . . , enicreates a tuple. The expression
+
+e.i projects the ith value of the tuple e. The expression e1 e2 applies thefunction
+e1 to e2. The expression ref e allocates a new store location and initializes it to e. The expression
+e1 :=e2 assigns e2 to the store location e1. The expression !e dereferences the pointer (i.e. the store location)
+e. The expression spawn e spawns a new thread for the evaluation of e. The expression e [ae] instantiatesthe bounded universal abstraction
+
+e. The expression pack e as 9ae2 < ae3.o/ creates a bounded existentialpackage of
+e. The expression open x = e1 as o/ in e2 unpacks the bounded existential package e1 to evaluate
+e2. Section 2 introduced the syntax forms limit e1, e2, . . . , en-1 in en, grant e1 in e2, newkey < e, and
+associate e1 with e2.Expressions and types are equivalent up to consistent renaming of bound names and variables.
+
+11
+
+\Gamma  ` m : ? int; ; (Int) \Gamma  ` Top : ? lkey (?); ; (Top)
+
+x:o/ 2 \Gamma 
+\Gamma  ` x : o/ ; ; (Var)
+
+For 1 <= i <= n, \Gamma  ` ei : o/i; Li
+\Gamma  ` he1, e2, . . . , eni : ? ho/1, o/2, . . . , o/ni; S1<=i<=n Li (Tuple)
+
+\Gamma  ` e : ae ho/1, o/2, . . . , o/ni; L
+
+\Gamma  ` e.i : o/i; L [ {ae} (Proj)
+
+\Gamma , x:o/1 ` e : o/2; L \Gamma , x:o/1 ` \Pi 
+
+\Gamma  ` *x:o/1.e : ? (o/1 L-! o/2); ;
+
+(Fun) \Gamma  ` e1 : ae (o/1
+
+L1-! o/
+
+2); L2 \Gamma  ` e2 : o/1; L3\Gamma  `
+
+e1 e2 : o/2; L1 [ L2 [ L3 [ {ae} (App)
+
+\Gamma  ` e : o/; L
+\Gamma  ` ref e : ? ref (o/); L (Ref)
+
+\Gamma  ` e1 : ae ref (o/); L1 \Gamma  ` e2 : o/; L2
+
+\Gamma  ` e1 := e2 : o/; L1 [ L2 [ {ae} (Assign)
+
+\Gamma  ` e : ae ref (o/); L
+\Gamma  ` ! e : o/; L [ {ae} (Deref)
+
+\Gamma  ` e : o/; ;
+\Gamma  ` spawn e : ? int; ; (Spawn)
+
+\Gamma , ae1 <ae2 ` v : o/ ; ; \Gamma , ae1 <ae2 ` \Pi 
+
+\Gamma  ` \Lambda ae1 <ae2.v : ? (8ae1 <ae2.o/ ); ; (Gen)
+
+\Gamma  ` e : ae1 (8ae2 <ae3.o/ ); L \Gamma  ` ae4 < ae3
+
+\Gamma  ` e [ae4] : o/ [ae4/ae2]; L [ {ae1} (Inst)
+
+\Gamma  ` e : o/ [ae3/ae1]; L \Gamma  ` ae3 < ae2
+\Gamma  ` pack e as 9ae1 <ae2.o/ : ? (9ae1 <ae2.o/ ); L (Pack)
+
+\Gamma  ` e1 : ae1 (9ae2 <ae3.o/1); L1 \Gamma , ae2 <ae3, x:o/1 ` e2 : o/2; L2\Gamma  `
+
+o/2 \Gamma  ` L2 \Gamma , ae2 <ae3, x:o/1 ` \Pi 
+
+\Gamma  ` open x = e1 as o/1 in e2 : o/2; L1 [ L2 [ {ae1} (Ope
+
+For 1 <= i <= n - 1, \Gamma  ` ei : ae0i lkey (aei); Li\Gamma  `
+en : o/n; Ln \Gamma  ` Ln < {ae1, ae2, . . . , aen-1}
+
+\Gamma  ` limit e1, e2, . . . , en-1 in en : o/n; Ln [ S1<=i<=n-1(Li [ {ae0i}) (Limit)
+
+\Gamma  ` e1 : ae1 gkey (ae2); L1\Gamma  `
+
+e2 : o/; L2 [ {ae2}
+
+\Gamma  ` grant e1 in e2 : o/ ; L1 [ L2 [ {ae1} (Gra
+
+\Gamma  ` e : ae1 lkey (ae2); L
+\Gamma  ` newkey<e : ? (9ae3 < ae2.? h? lkey (ae2), ? gkey (ae2)i); L [ {ae1} (NewKey)
+
+\Gamma  ` e1 : ae1 oe; L1 \Gamma  ` e2 : ae2 lkey (ae3); L2
+\Gamma  ` associate e1 with e2 : ae3 oe; L1 [ L2 [ {ae1, ae2} (Associate)
+
+\Gamma  ` e : o/1; L1 \Gamma  ` o/1 < o/2 \Gamma  ` L1 < L2
+
+\Gamma  ` e : o/2; L2 (Subsumption)
+
+Figure 2: Type checking rules: expressions
+
+12
+
+\Gamma  ` ae
+\Gamma  ` ae < ae (Sub Refl ae)
+
+\Gamma  ` ae1 < ae2 \Gamma  ` ae2 < ae3
+
+\Gamma  ` ae1 < ae3 (Sub Trans ae)
+
+ae1 <ae2 2 \Gamma 
+\Gamma  ` ae1 < ae2 (Sub ae)
+
+\Gamma  ` ae
+\Gamma  ` ? < ae (Sub
+
+\Gamma  ` ae1 < ae2 \Gamma  ` oe1 < oe2
+
+\Gamma  ` ae1 oe1 < ae2 oe2 (Sub o/)
+
+\Gamma  ` oe
+\Gamma  ` oe < oe (Sub Refl oe)
+
+\Gamma  ` oe1 < oe2 \Gamma  ` oe2 < oe3
+
+\Gamma  ` oe1 < oe3 (Sub Trans oe)
+
+For 1 <= i <= n, \Gamma  ` o/i < o/i0
+\Gamma  ` ho/1, o/2, . . . , o/ni < ho/10, o/20, . . . , o/n0i (Sub Tuple)
+
+\Gamma  ` o/3 < o/1 \Gamma  ` o/2 < o/4 \Gamma  ` L1 < L2
+
+\Gamma  ` o/1 L1-! o/2 < o/3 L2-! o/4
+
+(Sub Fun)
+
+\Gamma  ` ae3 < ae2 \Gamma , ae1 <ae3 ` o/1 < o/2 \Gamma , ae1 <ae3 ` \Pi 
+
+\Gamma  ` (8ae1 <ae2.o/1) < (8ae1 <ae3.o/2) (Sub Univ)
+
+\Gamma  ` ae2 < ae3 \Gamma , ae1 <ae2 ` o/1 < o/2 \Gamma , ae1 <ae2 ` \Pi 
+
+\Gamma  ` (9ae1 <ae2.o/1) < (9ae1 <ae3.o/2) (
+
+\Gamma  ` L
+\Gamma  ` ; < L (Sub Effect ;)
+
+\Gamma  ` ae1 < ae2 \Gamma  ` L1 < L2
+
+\Gamma  ` L1 [ {ae1} < L2 [ {ae2} (Sub Effect {ae})
+
+Figure 3: Type checking rules: subnaming, subtyping, subeffecting
+
+\Gamma  ` ? (Name ?) \Gamma  ` ? (Name ?)
+
+ae1 <ae2 2 \Gamma 
+
+\Gamma  ` ae1 (Name ae)
+
+\Gamma  ` ae \Gamma  ` oe
+
+\Gamma  ` ae oe (Type) \Gamma  ` int (RType Int)
+
+For 1 <= i <= n, \Gamma  ` o/i
+
+\Gamma  ` ho/1, o/2, . . . , o/ni (RType Tuple)
+
+\Gamma  ` o/
+\Gamma  ` ref (o/ ) (RType Ref)
+
+\Gamma  ` o/1 \Gamma  ` o/2 \Gamma  ` L
+
+\Gamma  ` o/1 L-! o/2
+
+(RType Fun)
+
+\Gamma , ae1 <ae2 ` o/ \Gamma , ae1 <ae2 ` \Pi 
+
+\Gamma  ` 8ae1 <ae2.o/ (RType Univ)
+
+\Gamma , ae1 <ae2 ` o/ \Gamma , ae1 <ae2 ` \Pi 
+
+\Gamma  ` 9ae1 <ae2.o/ (RType Exists)
+
+\Gamma  ` ae
+\Gamma  ` lkey (ae) (RType LKey)
+
+\Gamma  ` ae
+\Gamma  ` gkey (ae) (RType GKey)
+
+For each ae 2 L, \Gamma  ` ae
+
+\Gamma  ` L (Effect)
+
+; ` \Pi  (Env ;)
+
+\Gamma  ` o/ \Gamma  ` \Pi  x /2 dom(\Gamma )
+
+\Gamma , x:o/ ` \Pi  (Env x)
+
+\Gamma  ` ae2 \Gamma  ` \Pi  ae1 /2 dom(\Gamma ) [ {?, ?}
+
+\Gamma , ae1 <ae2 ` \Pi  (Env ae)
+
+Figure 4: Type checking rules: well-formed names, types, effects, environments
+
+13
+
+3.1 Static Semantics
+Type environments are sequences of variable-to-type bindings and names annotated with a supername.
+
+\Gamma  ::= ; | \Gamma , x:o/ | \Gamma , ae1 <ae2
+Figure 2 shows type checking rules for expressions. The meaning of \Gamma  ` e : o/; L is that the effect set Lconservatively approximates
+
+e's access rights. A program is a closed expression. A program e is well-typediff ; `
+e : o/ ; ; for some o/, i.e., iff e can be type checked with no enabled access rights. Let us now discusssome of the important points in the type checking rules.
+
+As explained in Section 2.5, (NewKey) assigns a bounded existential type to a newly created key-pair.The constant
+
+Top serves as the initial key. (Top) assigns Top the limit-key type ? lkey (?). The fact that
+Top is not a grant key is important, as otherwise any code would be able to access any resource by grantingitself
+
+Top. The syntax form newkey is equivalent to newkey<Top.Subnaming induces subtyping and subeffecting (see Figure 3), which are then used in two places: (Subsumption) and (Limit). (Subsumption) allows a subtype (resp. subeffect) to be used wherever its supertype(resp. supereffect) is expected. (Subsumption) formally captures the intention that whatever is associated
+with key-pairs are also associated with its super-key-pairs.(Limit) replaces the rule introduced in Section 2 by using the subeffecting relation
+
+< instead of the subsetrelation. This is needed to allow contexts with access rights limited to some key-pair to execute a code with
+
+access rights limited to its superkey-pair when the code accesses only what are allowed by the context. Forexample, consider the following function
+
+g which takes a resource and accesses it. We wish to limit g's accessrights to the key-pair
+g key identified by aeg.
+
+g = \Lambda ae<aeg.*x:ae oe.limit lKey(g key) in . . .
+The type system can give the g the raw type
+
+8ae<aeg.(ae oe {ae}-! o/)
+for some oe and o/ so that a caller whose access rights are locally refined with respect to ae g is able call g withits resource.
+
+Figure 3 also shows that, as usual, subtyping is invariant under pointer types. Subtyping is also invariantfor raw key types, i.e., lkey (
+
+ae1) < lkey (ae2) then ae1 = ae2, and analogously for grant key types. It is easyto see that covariant keys would be unsound because limiting (resp. granting)
+
+ae1 should not somehow limit(resp. grant)
+ae2 when ae1 < ae2 and ae1 6= ae2. To see that contravariance also fails, observe that associating
+ae1 should not somehow associate ae2 when ae2 < ae1 and ae1 6= ae2.4Section 2 discusses (Grant) and (Associate). Recall that values are created with no associated key-pair.
+
+Thus the rules for introductory forms (Int), (Tuple), (Fun), (Ref), (Gen), (Pack) and (NewKey) all qualifytheir values with ?. The corresponding eliminatory forms (Proj), (App), (Assign), (Deref), (Inst), (Open),
+(Limit), (Grant), (NewKey) and (Associate) that use the values require an effect set consistent with therequired access rights. Note that \Gamma  ` ?
+
+< ae for any \Gamma  ` ae.As usual in a type and effect system, the latent effect of a function is recorded in its type at (Fun) and
+
+used at (App).(Spawn) implies that a newly spawned thread starts without any access rights. We could alternatively
+have the spawned thread inherit the access rights of the spawner. In this case, we would add the rule
+
+\Gamma  ` e : o/; L
+\Gamma  ` spawn e : ? int; L (Spawn alt)
+
+The only non-syntax directed rule is (Subsumption). Effect sets are finite and subtyping is structural, sotype checking is decidable.
+4We could relax invariance by assigning a pair of a covariant name and a contravariant name for each key type. Here we
+stick with invariance for simplicity.
+
+14
+
+3.2 Sketch of Type Soundness
+We sketch a proof of soundness. A complete version of the proof appears in Appendix A.The first step is to define a dynamic semantics rich enough to classify an access violation as a run-time
+
+error. This is only to prove soundness of the system; a real implementation should follow a straightforwarddynamic semantics that ignores access control checks.
+
+We introduce the set KeyPairs such that each element of KeyPairs denotes a key-pair. Each programvalue is now annotated with a key-pair, with the intended meaning that the value is associated with the
+key-pair. So a program value, say the function *x:o/.e, associated with the key-pair k 2 KeyPairs is
+
+k *x:o/.e
+We type check the annotated values by keeping track of names identifying k 2 KeyPairs in the type envi-ronment.
+
+\Gamma  ::= . . . | k :ae
+We use the special key-pairs bot and top to denote non-association and the Top key-pair, respectively.The dynamic semantics needs to track enabled accesses for each context. Like in an eager stack-inspection
+
+semantics, we maintain exactly the enabled accesses in the syntax form access A in e where A `finiteKeyPairs [ {
+
+bot, top} denote the enabled accesses for the expression e. This approach makes the soundnessproof easy. The following rule is used to type check
+
+access A in e.
+
+\Gamma  ` e : o/ ; L \Gamma  ` L < {ae | \Gamma  ` k : ae for some k 2 A}
+
+\Gamma  ` access A in e : o/; ;
+
+access A in e is a run-time syntax form not available to the source program. Each access A in e appearsas the result of the evaluation of
+
+limit or grant.Evaluation is defined as a sequence of call-by-value small-step reductions of the form
+
+(S, K, he1, e2, . . . , eni) -! (S0, K0, he01, e02, . . . , e0n0i)
+where e1, e2, . . . , en, e01, e02, . . . , e0n0 are the execution threads, S, S0 are stores mapping store locations toprogram values, and
+
+K, K 0 are key-managers representing immediate sub-key-pair relation between key-pairs. So
+k1 is a (immediate or non-immediate) sub-key-pair of k2 iff k1 7! k2 2 K*? where K*? is thereflexive, transitive closure of
+
+K lifted with bottom. In this section, we restrict the reduction rules to thecase for one execution thread to save space.
+
+To make evaluation fail at access violations, the dynamic semantics checks the enabled accesses whenevera program value is used. For example, when calling a function associated with the key-pair
+
+k, the dynamicsemantics checks whether
+k is enabled in the current set of access rights A.
+
+k 2 CloseK(A)
+(S, K, E[access A in R[(k *x:o/.e) v]])-! (
+
+S, K, E[access A in R[e[v/x]]])
+
+CloseK is a function such that k 2 CloseK(A) iff k is a sub-key-pair of some key-pair in A in the key-pairrelation
+
+K. If the condition k 2 CloseK(A) is false, then this reduction cannot be taken, which implies thatthe evaluation for this thread gets stuck, indicating a run-time error.
+
+The evaluation contexts E and R are used to find the redex and the set representing the enabled accessesfor the redex. Intuitively,
+
+E[access A in R[e]] means that e is in an evaluation context and A is the set ofits enabled accesses.
+
+We use the special constant value err to signal a run-time error. Whenever an execution thread getsstuck, i.e., when it reduces to a irreducible non-value, it immediately reduces to
+
+err. Note that err has notype.
+
+As mentioned before, limit and grant introduce occurrences of access A in e. The new access rights
+B after limit is reduced is the intersection of the previous access rights A with those specified in limit.
+
+15
+
+(Here lkey (k) denotes the limit key value (unannotated) of the key-pair k.)
+
+{k01, k02, . . . , k0n} ` CloseK(A)
+B = CloseK(A) " CloseK({k1, . . . , kn})
+
+(S, K, E[access A in R[
+
+limit k01 lkey (k1), . . . , k0n lkey (kn) in e]]) -!(
+
+S, K, E[access A in R[access B in e]])
+
+In contrast, the new access rights B after grant is reduced is the union of the previous access rights A withthose specified in
+
+grant. (Here gkey (k) denotes the grant key value (unannotated) of the key-pair k.)
+
+k1 2 CloseK(A)
+
+B = A [ {k2}
+
+(S, K, E[access A in R[grant k1 gkey (k2) in e]])-! (
+
+S, K, E[access A in R[access B in e]])
+
+The reduction for associate is relatively simple. Here r is an unannotated program value. The reductionchanges
+
+r's annotation from k1 to k3.
+
+{k1, k2} ` CloseK(A)
+(S, K, E[access A in R[
+
+associate k1 r with k2 lkey (k3)]])-! (
+
+S, K, E[access A in R[k3 r]])
+
+The reduction for newkey creates a new key-pair k3 as the immediate sub-key-pair of k2.
+
+k1 2 CloseK(A) k3 /2 dom(K) [ {bot, top}
+(S, K, E[access A in R[newkey<k1 lkey (k2)]]) -!(
+
+S, K [ {k3 7! k2}, E[access A in R[v]])
+
+where v is the existential package containing the new key-pair value (not shown).Appendix A.1 shows the complete dynamic semantics.
+
+Recall that we have intentionally enriched the dynamic semantics with explicit key-pairs just so thatwe could identify access violations. A real implementation of the run-time system does not need key-pairs
+because our type system checks for access violations at compile time.The next step is to define a well-typed program state.
+
+Definition 1 \Gamma  ` (S, K, he1, e2, . . . , eni) (read "the program state (S, K, he1, e2, . . . , eni) is well-typed under\Gamma ") iff
+
+(1) \Gamma  ` \Pi .
+(2) For each 1 <= i <= n, \Gamma  ` ei : o/i; ; for some o/i.
+(3) ` 2 dom(S) iff ` 2 dom(\Gamma ).
+(4) k 2 dom(K) iff k 2 dom(\Gamma ).
+(5) x /2 dom(\Gamma ).
+(6) If \Gamma  ` ` : o/ and S(`) = v then \Gamma  ` v : o/ ; ;.
+(7) Suppose \Gamma  ` k1 : ae1 and \Gamma  ` k2 : ae2. Then \Gamma  ` ae1 < ae2 iff k1 7! k2 2 K*?.
+The first condition says that \Gamma  must be well-formed. The second condition says that each execution threadis well-typed under \Gamma  with effect set ;. The third and the fourth conditions say that \Gamma  and
+
+S, K must havematching store locations and key-pairs. The fifth condition says that \Gamma  must not contain variables. The
+
+sixth condition expresses the usual well-typed store condition. The last condition says that the key-manager
+K contains exactly the sub-key-pair relationship implied by the type environment \Gamma .Recall that
+
+err is non-typable. The soundness proof then reduces to showing the following theorem.
+
+16
+
+Theorem 1 (Subject Reduction) If \Gamma  ` (S, K, ~e) and (S, K, ~e) -! (S0, K0, ~e0), then there is \Gamma 0 such that\Gamma 0 ` (
+
+S0, K0, ~e).
+
+The theorem is proved by induction on the type derivation and case analysis on reduction kinds. Theimmediate corollary is that a well-typed program does not cause access violations.
+
+4 Extensions
+We next discuss a few possible extensions to the system.
+
+4.1 Run-Time Checks
+Our system is powerful enough to statically enforce many fine-grain access control policies. But the pro-grammer may still encounter situations where the static checking feels overly restrictive. We may extend
+
+our system with run-time checks.
+
+\Gamma  ` e1 : ae1 lkey (ae2); L1\Gamma  `
+e2 : o/; L2 [ {ae2} \Gamma  ` e3 : o/; L2
+
+\Gamma  ` have-access e1 ? e2 e3 : o/; L1 [ L2
+
+The syntax form have-access e1 ? e2 e3 checks whether the current context has e1 enabled, and if soevaluates
+
+e2 or else evaluates e3.The disadvantage of this extension is that the run-time system now must track key values and enabled
+
+access rights. Without this extension, our system is completely static, and therefore a program with accesscontrol has no run-time overhead over an equivalent program without access control. Nevertheless, even
+with this extension, the run-time system only needs to check enabled access rights at have-key's. Hence theoverhead should be minimal.
+
+4.2 Effect Kinds
+In our airline ticketing example, we assumed that the TicketAgt thread has read access but not write accessto the flight information. Strictly speaking, the system we described cannot distinguish different kinds of
+
+effects on the same resource.It is easy to extend the system with effect kind constants for the primitives in the language (e.g., distinguishing the effect of dereferencing from the effect of assigning or associating) and programmer-defined effectkind variables (e.g., the effect kinds readSeating, editSeating for
+
+SeatingInfo). Effect kinds qualify effects,i.e., each effect is now of the form
+j ae where j is an effect kind. Then the programmer may, for example,limit
+e's access to only reading a selected SeatingInfo by
+
+limit readSeating(theseating key) in e
+and the type system checks that e's effect set is a subeffect of {readSeating ae}, where ae identifies theseating key.
+
+4.3 Type Variables, Effect Variables, and More
+We restricted the formal system to just bounded quantified types over names to make the presentationconcise. But because the system relies only on standard type-system techniques, it is straightforward to
+
+extend the system with type variables and effect variables so as to admit bounded quantification over them.Existentially quantified type variables naturally encode abstract data types [10]. We may also want a
+native support for parameterized recursive data types. A practical implementation may be to add recursively-defined named data types seen in languages like ML.
+
+17
+
+5 Relation to Must Alias Analysis
+We briefly discuss the relation between our access control system and must alias analysis. In order to expresslocally refined access control policies, our access control checks constraints of the form "resources used by
+the expression e must-alias one of the resources in the set A," where A may be defined locally. The firststep toward this goal is generation of lexically scoped names and late binding of names with program values.
+Lexically scoped names allow the creation of new names distinguishable from other names, and late bindingallows existing program values to be must-aliased with these names. Together, they support creation of fine
+must-aliasing relations. Note that relations are not lexically scoped; they may be transported outside of alexical scope by existential or universal name quantification.
+
+However, there is a problem when these names are left disjoint. The problem occurs when the namescollide (with other names or with their lexical boundaries), for example, when the type system needs to equate
+two types differing in names. The problem becomes more severe in a setting like stack-based access controlbecause names propagate and collide not only through types of expressions but also through their effects.
+This is the problem subnaming solves. With subnaming, names are no longer disjoint. So the type system isable to make compromises by using supernames when possible. This has the effect of "downgrading" a fine
+must-aliasing relation to a coarser one.
+
+6 Related Work
+Stack-based access control is used in Java [8] and the CLR [4]. Pottier et al [12] present a type system thatcan statically check a subset of Java's access control policies. Their system is faithful to the Java security
+model and hence conservatively approximates Java's dynamic access control. It is not our goal to matchJava's access control system, but we believe it is possible to encode Java's mechanism in a way so that access
+policies enforceable by Pottier et al's system can also be enforced by ours. We also believe that our systemis more expressive, because of its ability to locally refine access control policies.
+
+The implementation of run-time systems for stack-based dynamic access control is a research subject initself. In addition to direct inspection of the execution stack at run-time, which is done by Java and the
+CLR, several other techniques have been proposed. One approach is security-passing style where enabledaccess rights are explicitly passed as function arguments [15]. Also, an implementation technique based on
+code instrumentation has been proposed [13]. We believe that, should the need for run-time checks arise inour system (e.g., as discussed in Section 4.1), we can add such checks using any of these techniques. Besides
+efficient implementation, studying dynamic semantics has lead to a deeper understanding of the stack-basedaccess control mechanism [15, 6]. It is interesting to note that Pottier et al [12] first develop their static system
+on the security-passing-style converted language, then translate back to obtain a corresponding system forthe source language.
+
+There are a variety of ways to perform access control besides the stack-based approach. Abadi et al[1] present a system based on examining execution history. Their system is a generalization of the stackbased mechanism where the access rights at a point in time are determined not only by the access rightsencoded in the stack but also by those of functions that have already returned. Using our syntax, their
+system roughly can be explained as splitting limit into start limit and end limit and analogously for
+grant. Statically checking history-based policies in a convincing manner would require reasoning about thesequential behavior of programs, and it is unclear whether we would be able to adapt our system to statically
+
+checking history-based access control policies.Researchers have also proposed systems for statically enforcing generic security policies. These systems
+include Hoare style proof-systems [11, 3] and a higher-order type system [14]. One of their goals is a portableframework that is less tied to the source language. It is difficult to compare our system with these as the
+problem domains are so different.Our system is an application of type and effect systems [7, 9]. Type and effect systems are widely used
+for checking non-standard program properties; the work of Pottier et al also uses a type and effect system[12].
+
+Finally, there is a connection to work on aliasing control, particularly previous work on the programmingconstruct
+
+restrict, originally studied in [5] and extended in [2]. Briefly, restrict is a mechanism for
+
+18
+
+specifying and checking local non-aliasing of store locations. To this end, abstract location names are usedto approximate store locations so that location names distinguish local aliases of store locations from other
+aliases. Beyond what has been previously published on this subject, we noticed that, instead of usingincomparable location names, we could use subnaming so that each local alias of a set of store locations
+
+Sis a subtype of the type of all aliases of
+S. This captures the notion that each local alias is a refinement ofthe set of all aliases. Our use of subnaming for refinement of access control policies exploits the same idea.
+
+7 Conclusions
+We have presented a new system for defining and enforcing fine-grain access control. The system is simple,relying only on standard techniques from the types literature, yet powerful enough to express many nontrivial access control policies statically. The system draws its power from two key features: late and locallydefined access control policies and non-local enforcement of the policies. We make the former possible
+through late binding between resources and key-pairs identified by lexically scoped names. To make thelatter possible, we use subnaming.
+
+At the core, our use of subnaming is a kind of local must alias analysis. This technique itself appears tobe applicable to a variety of problems in addition to access control.
+
+References
+
+[1] M. Abadi and C. Fournet. Access Control based on Exection History. In Proceedings of the tenth AnnualNetwork and Distributed System Security Symposium, pages 107-121, Feb. 2003.
+
+[2] A. Aiken, J. S. Foster, J. Kodumal, and T. Terauchi. Checking and Inferring Local Non-Aliasing. InProceedings of the 2003 ACM SIGPLAN Conference on Programming Language Design and Implementation, San Diego, California, June 2003.
+[3] C. Colby, K. Crary, R. Harper, P. Lee, and F. Pfenning. Automated techniques for provably safe mobilecode. Theoretical Computer Science, 290:1175-1199, 2003. Special issue on Dependable Computing.
+
+[4] ECMA. Standard ECMA-335: Common Language Infrastructure, 2002. http://www.ecma-international.org/publications/ standards/ecma-335.htm.
+[5] J. S. Foster and A. Aiken. Checking Programmer-Specified Non-Aliasing. Technical Report UCB//CSD-01-1160, University of California, Berkeley, Oct. 2001.
+[6] C. Fournet and A. G. Gordon. Stack Inspection: Theory and Variants. In Proceedings of the 29thAnnual ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages, pages 307-
+
+318, Portland, Oregon, Jan. 2002.
+[7] D. K. Gifford, P. Jouvelot, J. M. Lucassen, and M. A. Sheldon. FX-87 Reference Manual. TechnicalReport MIT/LCS/TR-407, MIT Laboratory for Computer Science, Sept. 1987.
+
+[8] L. Gong. Java Security Architecture (JDK 1.2), 1998. http://java.sun.com/products/jdk/1.2/docs/guide/security/spec/security-spec.doc.html.
+[9] J. M. Lucassen and D. K. Gifford. Polymorphic Effect Systems. In Proceedings of the 15th Annual ACMSIGPLAN-SIGACT Symposium on Principles of Programming Languages, pages 47-57, San Diego,
+
+California, Jan. 1988.
+[10] J. C. Mitchell. Abstract Types Have Existential Type. ACM Transactions on Programming Languagesand Systems, 10(3):470-502, July 1988.
+
+[11] G. Necula and P. Lee. Safe, Untrusted Agents using Proof-Carrying Code. In I. G. Vigna, editor,Special Issue on Mobile Agent Security, volume 1419 of Lecture Notes in Computer Science, pages
+
+61-91. Springer-Verlag, 1998.
+
+19
+
+x 2 Vars ` 2 Locations k 2 KeyPairs [ {bot, top} A `finite KeyPairs [ {bot, top}
+raw values r ::= m | loc (`) | lkey (k) | gkey (k) | hv1, v2, . . . , vni | *x:*.e | \Lambda  * .v | pack v as *values
+
+v ::= x | k r | errexpressions
+
+e ::= v | he1, e2, . . . , eni | e.i | e1 e2 | ref e | e1 := e2 | ! e | spawn e |
+
+e [*] | pack e as * | open x = e1 as * in e2 |
+limit e1, e2, . . . , en-1 in en | grant e1 in e2 | newkey<e | associate e1 with e2 | access A in e
+
+Figure 5: Target language
+
+R-contexts R ::= [ ] | h. . . , vi, R, . . .i | R.i | R e | v R | ref R | R := e | v := R | R [*] | pack R as * | open x = R as * in
+
+limit . . . , vi, R, . . . in e | grant R in e | newkey<R | associate R with e | associate v with R
+E-contexts E ::= [ ] | h. . . , vi, E, . . .i | E.i | E e | v E | ref E | E := e | v := E | E [*] | pack E as * | open x = E as * in
+
+limit . . . , vi, E, . . . in e | grant E in e | newkey<E | associate E with e | associate v with E | E
+access A in E
+
+Figure 6: Evaluation contexts
+[12] F. Pottier, C. Skalka, and S. Smith. A Systematic Approach to Static Access Control. In D. Sands,editor, 10th European Symposium on Programming, volume 2028 of Lecture Notes in Computer Science,
+
+pages 30-45, Genova, Italy, 2001. Springer-Verlag.
+[13] 'Ulfar Erlingsson and F. B. Schneider. IRM Enforcement of Java Stack Inspection. In Proceedings of the2000 IEEE Symposium on Security and Privacy, pages 246-255, Oakland, California, May 2000.
+
+[14] D. Walker and K. Watkins. A Type System for Expressive Security Policies. In Proceedings of the 27thAnnual ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages, pages 254-267,
+
+Boston, Massachusetts, Jan. 2000.
+[15] D. S. Wallach, A. W. Appel, and E. W. Felten. SAFKASI: A Security Mechnism for Language-basedSystems. ACM Transactions on Software Engineering and Methodology, 9(4):341-378, Oct. 2000.
+
+A Type Soundness
+We sometimes use the symbol - to indicate "don't care."
+
+A.1 Dynamic Semantics
+The first step in the dynamic semantics is to translate the source program into the language shown inFigure 5. The translation involves type-erasure, replacing each name or type annotation with a *. We erase
+
+names and types so that we do not need to worry about proper alpha-renaming of names during reductions.Also each program value in the source program is translated into a program value in of the target program
+by annotating them with bot, i.e., for each v in the source, bot v. Finally, the translation replaces each Topwith
+
+bot lkey (top).Let
+
+e be the translated target program. Then the evaluation proceeds from the initial state (;, ;, hei)followed by a sequence of small-step reductions shown in Figure 7. Each state is of the form (
+
+S, K, ~e) where Sis the store mapping store locations to values,
+K is the key-pair manager representing immediate sub-key-pairrelation between key-pairs, and
+~e are the execution threads.The evaluation contexts
+E and R are shown in Figure 6. The only difference between E and R is that Rlacks
+access A in R.
+
+20
+
+(S, K, h. . . , E[hv1, v2, . . . , vni], . . .i) -! (S, K, h. . . , E[bot hv1, v2, . . . , vni], . . .i) [Tuple]
+
+k 2 CloseK(A)
+(S, K, h. . . , E[access A in R[(k h. . . , vi, . . .i).i]], . . .i) -! (S, K, h. . . , E[access A in R[vi]], . . .i) [Proj]
+
+k 2 CloseK(A)
+(S, K, h. . . , E[access A in R[(k *x:*.e) v]], . . .i) -! (S, K, h. . . , E[access A in R[e[v/x]]], . . .i) [App]
+
+` /2 dom(S)
+(S, K, h. . . , E[ref v], . . .i) -! (S [ {` 7! v}, K, h. . . , E[bot loc (`)], . . .i) [Ref]
+
+k 2 CloseK(A)
+(S [ {` 7! -}, K, h. . . , E[access A in R[(k loc (`)) := v]], . . .i) -! (S [ {` 7! v}, K, h. . . , E[access A in R[v]], . . .i)
+
+k 2 CloseK(A)
+(S [ {` 7! v}, K, h. . . , E[access A in R[! k loc (`)]], . . .i) -! (S [ {` 7! v}, K, h. . . , E[access A in R[v]], . . .i) [De
+
+(S, K, h. . . , E[spawn e], . . .i) -! (S, K, h. . . , E[bot 0], . . . , access ; in ei) [Spawn]
+
+k 2 CloseK(A)
+(S, K, h. . . , E[access A in R[(k \Lambda  * .v) [*]]], . . .i) -! (S, K, h. . . , E[access A in R[v]], . . .i) [Inst]
+
+(S, K, h. . . , E[pack v as *], . . .i) -! (S, K, h. . . , E[bot pack v as *], . . .i) [Pack]
+
+k 2 CloseK(A)
+(S, K, h. . . , E[access A in R[open x = (k pack v as *) as * in e]], . . .i) -! (S, K, h. . . , E[access A in R[e[v/x]]], . . .i)
+
+{k01, k02, . . . , k0n} ` CloseK(A)
+(S, K, h. . . , E[access A in R[limit k01 lkey (k1), k02 lkey (k2), . . . , k0n lkey (kn) in e]], . . .i) -!(
+
+S, K, h. . . , E[access A in R[access CloseK(A) " CloseK({k1, k2, . . . , kn}) in e]], . . .i)
+
+[Limit]
+
+k1 2 CloseK(A)
+(S, K, h. . . , E[access A in R[grant k1 gkey (k2) in e]], . . .i) -! (S, K, h. . . , E[access A in R[access A [ {k2} in e]], . . .i
+
+k1 2 CloseK(A) k3 /2 dom(K) [ {bot, top}
+(S, K, h. . . , E[access A in R[newkey<k1 lkey (k2)]], . . .i) -!(
+
+S, K [ {k3 7! k2}, h. . . , E[access A in R[bot pack bot hbot lkey (k3), bot gkey (k3)i as *]], . . .i)
+
+[New
+
+{k1, k2} ` CloseK(A)
+(S, K, h. . . , E[access A in R[associate k1 r with k2 lkey (k3)]], . . .i) -! (S, K, h. . . , E[access A in R[k3 r]], . . .i) [A
+
+(S, K, h. . . , E[access A in v], . . .i) -! (S, K, h. . . , E[v], . . .i) [InAccess]
+
+Figure 7: Small-step reduction rules
+
+21
+
+\Gamma  ` k : ae
+\Gamma  ` k m : ae int; ; (Int'ed)
+
+\Gamma  ` k : ae \Gamma  ` ` : o/
+\Gamma  ` k loc (`) : ae ref (o/); ; (Loc)
+
+\Gamma  ` k1 : ae1 \Gamma  ` k2 : ae2
+\Gamma  ` k1 lkey (k2) : ae1 lkey (ae2); ; (LKey)
+
+\Gamma  ` k1 : ae1 \Gamma  ` k2 : ae2
+\Gamma  ` k1 gkey (k2) : ae1 gkey (ae2); ; (GKey)
+
+\Gamma  ` k : aeFor 1 <=
+i <= n, \Gamma  ` vi : o/i; ;
+
+\Gamma  ` k hv1, v2, . . . , vni : ae ho/1, o/2, . . . , o/ni; ; (Tuple'ed)
+
+\Gamma  ` k : ae \Gamma , x:o/1 ` e : o/2; L \Gamma , x:o/1 ` \Pi 
+
+\Gamma  ` k *x:*.e : ae (o/1 L-! o/2); ;
+
+(Fun'ed)
+
+\Gamma  ` k : ae3 \Gamma , ae1 <ae2 ` v : o/ ; ; \Gamma , ae1 <ae2 ` \Pi 
+
+\Gamma  ` k \Lambda  * .v : ae3 (8ae1 <ae2.o/ ); ; (Gen'ed)
+
+\Gamma  ` e : ae1 (8ae2 <ae3.o/ ); L \Gamma  ` ae4 < ae3
+
+\Gamma  ` e [*] : o/[ae4/ae2]; L [ {ae1} (Inst *)
+
+\Gamma  ` k : ae4 \Gamma  ` v : o/ [ae3/ae1]; ; \Gamma  ` ae3 < ae2
+
+\Gamma  ` k pack v as * : ae4 (9ae1 <ae2.o/ ); ; (Packed)
+
+\Gamma  ` e : o/[ae3/ae1]; L \Gamma  ` ae3 < ae2
+\Gamma  ` pack e as * : ? (9ae1 <ae2.o/ ); L (Pack *)
+
+\Gamma  ` e1 : ae1 (9ae2 <ae3.o/1); L1 \Gamma , ae2 <ae3, x:o/1 ` e2 : o/2; L2\Gamma  `
+
+o/2 \Gamma  ` L2 \Gamma , ae2 <ae3, x:o/1 ` \Pi 
+
+\Gamma  ` open x = e1 as * in e2 : o/2; L1 [ L2 [ {ae1} (Open *)
+
+\Gamma  ` e : o/; L \Gamma  ` L < {ae | \Gamma  ` k : ae for some k 2 A}
+
+\Gamma  ` access A in e : o/; ; (InAccess)
+
+k :ae 2 \Gamma 
+\Gamma  ` k : ae (KeyPair k) \Gamma  ` top : ? (KeyPair
+
+top) \Gamma  ` bot : ? (KeyPair bot) `:o/ 2 \Gamma \Gamma  ` ` : o/ (Location `)
+
+\Gamma  ` ae \Gamma  ` \Pi 
+
+\Gamma , k :ae ` \Pi  (Env k)
+
+\Gamma  ` o/ \Gamma  ` \Pi 
+
+\Gamma , `:o/ ` \Pi  (Env `)
+
+Figure 8: Type checking rules: additional rules for the target language
+CloseK is a function such that k 2 CloseK(A) iff k is a sub-key-pair of some key-pair in A in the key-pairrelation
+
+K. More concretely, we define the reflexive, transitive closure of K lifted with bot as
+
+K*? = Sn2! Rn(K [ {bot 7! k | k 2 dom(K) [ {top}})[{
+
+k 7! k | k 2 dom(K) [ {bot, top}}
+
+where R(K) = K [ {k
+
+1 7! k2 | k1 7! k3 2 K and
+
+k3 7! k2 2 K for some k3}
+
+Then CloseK can be defined as
+
+CloseK(A) = {k1 | k1 7! k2 2 K*? for some k2 2 A}
+If the state (S, K, h. . . , e, . . .i) cannot be reduced by the rules in Figure 7 but e is not a value, then eimmediately reduces to a special constant
+
+err, i.e.
+
+(S, K, h. . . , e, . . .i) -! (S, K, h. . . , err, . . .i)
+
+A.2 Type Soundness
+The static semantics for the target language is the type checking rules from Section 3.1 plus the additionalrules in Figure 8. Each type environment is now a sequence of variable-to-type bindings, names annotated
+
+22
+
+with a supername, location-to-type bindings, and key-pair-to-name bindings.
+
+\Gamma  ::= ; | \Gamma , x:o/ | \Gamma , ae1 <ae2 | `:o/ | k :ae
+Note that err has no type. The following theorem connects source programs to target programs.
+Theorem 2 Let e1 be an expression in the source language and e2 be the corresponding translated expression.Then if \Gamma  `
+
+e1 : o/ ; L then \Gamma  ` e2 : o/; L.
+
+Proof: By induction on the type checking derivation. 2In the rest of the paper, we always refer to expressions in the target language unless specified otherwise.
+
+We re-state the definition of well-typed program state.
+Definition 2 \Gamma  ` (S, K, he1, e2, . . . , eni) (read "the program state (S, K, he1, e2, . . . , eni) is well-typed under\Gamma ") iff
+
+(1) \Gamma  ` \Pi .
+(2) For each 1 <= i <= n, \Gamma  ` ei : -; ;.
+(3) ` 2 dom(S) iff ` 2 dom(\Gamma ).
+(4) k 2 dom(K) iff k 2 dom(\Gamma ).
+(5) x /2 dom(\Gamma ).
+(6) If \Gamma  ` ` : o/ and S(`) = v then \Gamma  ` v : o/ ; -.
+(7) Suppose \Gamma  ` k1 : ae1 and \Gamma  ` k2 : ae2. Then \Gamma  ` ae1 < ae2 iff k1 7! k2 2 K*?.
+Lemma 1 If \Gamma  ` \Pi  and \Gamma  ` e : o/ ; L then \Gamma  ` o/ and \Gamma  ` L.
+Proof: By induction on the type checking derivation. 2
+Lemma 2 (Substitution) (1) If \Gamma , x:o/1 ` \Pi , \Gamma , x:o/1 ` e : o/2; L, and \Gamma  ` v : o/1; ;, then \Gamma  ` e[v/x] : o/2; L.
+
+(2) If \Gamma , ae1 <ae2 ` \Pi , \Gamma , ae1 <ae2 ` e : o/; L, and \Gamma  ` ae3 < ae2, then \Gamma  ` e : o/ [ae3/ae1]; L[ae3/ae1].
+(3) If \Gamma , ae1 <ae2 ` \Pi , \Gamma , ae1 <ae2 ` o/1 < o/2, and \Gamma  ` ae3 < ae2, then \Gamma  ` o/1[ae3/ae1] < o/2[ae3/ae1].
+(4) If \Gamma , ae1 < ae2, x : o/1 ` \Pi , \Gamma , ae1 < ae2, x : o/1 ` e : o/2; L, and \Gamma  ` ae3 < ae2, then \Gamma , x : o/1[ae3/ae1] ` e :
+
+o/2[ae3/ae1]; L[ae3/ae1].
+
+Proof: By induction on the type checking derivation. 2
+Lemma 3 Suppose \Gamma 1 ` \Pi  and \Gamma 1 ` e : o/; L. Then for any \Gamma 2 ' \Gamma 1 such that \Gamma 2 ` \Pi , \Gamma 2 ` e : o/; L.
+Proof: The only non-trivial case is when \Gamma 2 contains more instances of name bindings, i.e., ae < -'s, than\Gamma 
+
+1, since type environment well-formedness conditions may fail with more names. But it is easy to see thatwhenever a new name is introduced in the environment, we may choose a name that has not appeared in the
+
+environment (see (Gen'ed) and (Open *)). By Lemma 1, the choices do not affect the conclusions. Hencethe lemma follows.
+
+2
+
+Lemma 4 (Replacement) Suppose \Gamma 1 ` \Pi  and \Gamma 1 ` E[e1] : o/; L. Then there is a sub-derivation \Gamma 1 ` e1 :
+o/1; L1 for some o/1, L1. Furthermore, for any e2 and \Gamma 2 ' \Gamma 1 such that \Gamma 2 ` \Pi  and \Gamma 2 ` e2 : o/1; L1, we have\Gamma 
+
+2 ` E[e2] : o/; L.
+
+Proof: This follows from the usual replacement argument and Lemma 3. 2
+Lemma 5 Suppose \Gamma  ` R[e] : o/; L. Let \Gamma  ` e : o/1; L1 be a sub-derivation. Then \Gamma  ` L1 < L.
+
+23
+
+Proof: By induction on the type checking derivation. 2
+Lemma 6 If \Gamma  ` v : o/; L then \Gamma  ` v : o/; ;.
+Proof: By induction on the type checking derivation. 2We are now prepared prove our main theorem, re-stated here.
+
+Theorem 3 (Subject Reduction) If \Gamma  ` (S, K, ~e) and (S, K, ~e) -! (S0, K0, ~e0), then there is \Gamma 0 such that\Gamma 0 ` (
+
+S0, K0, ~e).
+
+Proof: Firstly, we show that for each ei 2 ~e, if ei is not a value then (S, K, ~e) is of the form matchingthe left hand side of -! in one of the reduction rules from Figure 7 with
+
+ei as the evaluating thread. Tosee this, first note that for [Proj], [App], [Ref], [Assign], [Deref], [Open], [Limit], [Grant], [NewKey], and
+
+[Associate], the redex indeed does appear in some context of the form E[access A in R[ ]] since otherwiseit must appear in some context of the form
+
+R[ ] but then by Lemma 5 \Gamma  6` ei : -; ;. Secondly, for [Assign](ref. [Deref]), the location assigned (ref. dereferenced) must be in the store because otherwise it violates
+
+Definition 2 (3).Therefore it suffices to show the statement in the theorem holds for each forms matching (
+
+S, K, ~e).
+
+[Tuple] Suppose \Gamma  ` (
+
+S, K, h. . . , E[hv1, v2, . . . , vni], . . .i)
+
+So we have \Gamma  ` E[hv1, v2, . . . , vni] : -; ;. By inspection of the type checking rules, there must be a sub-derivation with (Tuple) as the last rule.
+
+For 1 <= i <= n, \Gamma  ` vi : o/i; Li
+\Gamma  ` hv1, v2, . . . , vni : ? ho/1, o/2, . . . , o/ni; S1<=i<=n Li
+
+We have (S, K, h. . . , E[hv
+
+1, v2, . . . , vni], . . .i) -!(
+S, K, h. . . , E[bot hv1, v2, . . . , vni], . . .i)
+
+Let \Gamma 0 = \Gamma . We have by (Tuple'ed)
+
+\Gamma 0 ` bot : ?For 1 <=
+
+i <= n, \Gamma 0 ` vi : o/i; ;
+
+\Gamma 0 ` bot hv1, v2, . . . , vni : ? ho/1, o/2, . . . , o/ni; ;
+
+Then by Lemma 1 and (Subsumption),
+
+\Gamma 0 ` bot hv1, v2, . . . , vni : ? ho/1, o/2, . . . , o/ni; [
+
+1<=i<=n
+
+Li
+
+Hence by Lemma 4, it follows that
+
+\Gamma 0 ` (S, K, h. . . , E[bot hv1, v2, . . . , vni], . . .i)
+
+[Proj] Suppose \Gamma  ` (
+
+S, K, h. . . , E[access A in R[(k h. . . , vi, . . .i).i]], . . .i)
+
+So we have \Gamma  ` E[access A in R[(k h. . . , vi, . . .i).i]] : -; ;. By inspection of the type checking rules, theremust be a sub-derivation with (Proj) as the last rule.
+
+\Gamma  ` k h. . . , vi, . . .i : ae ho/1, o/2, . . . , o/ni; L
+
+\Gamma  ` (k h. . . , vi, . . .i).i : o/i; L [ {ae}
+
+We first show that
+
+(S, K, h. . . , E[access A in R[(k h. . . , vi, . . .i).i]], . . .i)-! (
+
+S, K, h. . . , E[access A in R[vi]], . . .i)
+
+24
+
+It suffices to show that k 2 CloseK(A). By Lemma 5 and (InAccess), it must be the case that
+
+\Gamma  ` {ae} < {ae | \Gamma  ` k : ae for some k 2 A}
+By inspection of the type checking rules, we see that there must be ae0 such that
+
+\Gamma  ` k : ae0 \Gamma  ` ae0 < ae
+So by Definition 2 (7), k 2 CloseK(A).Now let \Gamma 0 = \Gamma . We next show that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[vi]], . . .i)
+By inspection of the type checking rules, we see that the sub-derivation of the premise must end with(Tuple'ed) followed by zero or more (Subsumption)'s. So
+
+\Gamma 0 ` vi : o/0i ; ; \Gamma 0 ` o/ 0i < o/i \Gamma 0 ` ; < L [ {ae}
+So by Lemma 1 and (Subsumption) \Gamma 0 `
+
+vi : o/i; L [ {ae}
+
+So by Lemma 4 it follows that,
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[vi]], . . .i)
+
+[App] Suppose \Gamma  ` (
+
+S, K, h. . . , E[access A in R[(k *x:*.e) v]], . . .i)
+
+So we have \Gamma  ` E[access A in R[(k *x:*.e) v]] : -; ;. By inspection of the type checking rules, there mustbe a sub-derivation with (App) as the last rule.
+
+\Gamma  ` k *x:*.e : ae (o/1 L1-! o/2); L2 \Gamma  ` v : o/1; L3
+
+\Gamma  ` k *x:*.e v : o/2; L1 [ L2 [ L3 [ {ae}
+
+We first show that
+
+(S, K, h. . . , E[access A in R[(k *x:*.e) v]], . . .i) -!(
+
+S, K, h. . . , E[access A in R[e[v/x]]], . . .i)
+
+It suffices to show that k 2 CloseK(A). By Lemma 5 and (InAccess), it must be the case that
+
+\Gamma  ` {ae} < {ae | \Gamma  ` k : ae for some k 2 A}
+By inspection of the type checking rules, we see that there must be ae0 such that
+
+\Gamma  ` k : ae0 \Gamma  ` ae0 < ae
+So by Definition 2 (7), k 2 CloseK(A).Now let \Gamma 0 = \Gamma . We next show that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[e[v/x]]], . . .i)
+By inspection of the type checking rules, we see that the sub-derivation of the first premise must end with(Fun'ed) followed by zero or more (Subsumption)'s. So
+
+\Gamma 0, x:o/01 ` e : o/ 02; L01 \Gamma 0, x:o/01 ` \Pi \Gamma 0 `
+
+o/1 < o/01 \Gamma 0 ` o/ 02 < o/02\Gamma 0 `
+L01 < L1 \Gamma 0 ` ; < L2
+
+So by (Subsumption), \Gamma 0 `
+
+v : o/01; L3
+
+and by Lemma 2 (1), Lemma 1, and (Subsumption),
+
+\Gamma 0 ` e[v/x] : o/2; L1 [ L2 [ L3
+So by Lemma 4 it follows that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[e[v/x]]], . . .i)
+
+25
+
+[Ref ] Suppose \Gamma  ` (
+
+S, K, h. . . , E[ref v], . . .i)
+
+So we have \Gamma  ` E[ref v] : -; ;. By inspection of the type checking rules, there must be a sub-derivationwith (Ref) as the last rule.
+
+\Gamma  ` v : o/ ; L
+\Gamma  ` ref v : ? ref (o/ ); L
+We have (S, K, h. . . , E[ref v], . . .i) -!
+
+(S [ {` 7! v}, K, h. . . , E[bot loc (`)], . . .i)
+for ` /2 dom(S). Let \Gamma 0 = \Gamma , `:o/. We have by (Loc)
+
+\Gamma 0 ` bot : ? \Gamma 0 ` ` : o/
+\Gamma 0 ` bot loc (`) : ? ref (o/); ;
+
+Then by Lemma 1 and (Subsumption),
+
+\Gamma 0 ` bot loc (`) : ? ref (o/); L
+Now, we have \Gamma 0 ` ` : o/ , (S [ {` 7! v})(`) = v, and \Gamma  ` v : o/ ; -. Hence by Lemma 3 and Lemma 4, it followsthat
+
+\Gamma 0 ` (S [ {` 7! v}, K, h. . . , E[bot loc (`)], . . .i)
+[Assign] Suppose
+
+\Gamma  ` (S [ {` 7! -}, K, h. . . , E[access A in R[(k loc (`)) := v]], . . .i)
+So we have \Gamma  ` E[access A in R[(k loc (`)) := v]] : -; ;. By inspection of the type checking rules, theremust be a sub-derivation with (Assign) as the last rule.
+
+\Gamma  ` k loc (`) : ae ref (o/ ); L1 \Gamma  ` v : o/ ; L2
+
+\Gamma  ` (k loc (`)) := v : o/ ; L1 [ L2 [ {ae}
+
+We first show that
+
+(S [ {` 7! -}, K, h. . . , E[access A in R[(k loc (`)) := v]], . . .i)-! (
+
+S [ {` 7! v}, K, h. . . , E[access A in R[v]], . . .i)
+
+It suffices to show that k 2 CloseK(A). By Lemma 5 and (InAccess), it must be the case that
+
+\Gamma  ` {ae} < {ae | \Gamma  ` k : ae for some k 2 A}
+By inspection of the type checking rules, we see that there must be ae0 such that
+
+\Gamma  ` k : ae0 \Gamma  ` ae0 < ae
+So by Definition 2 (7), k 2 CloseK(A).Now let \Gamma 0 = \Gamma . We next show that
+
+\Gamma 0 ` (S [ {` 7! v}, K, h. . . , E[access A in R[v]], . . .i)
+By inspection of the type checking rules, we see that the sub-derivation of the first premise must end with(Loc) followed by zero or more (Subsumption)'s. So
+
+\Gamma 0 ` ` : o/
+(Subtyping is invariant under pointer types.) Hence Definition 2 (6) is satisfied. Also by Lemma 1 and(Subsumption)
+
+\Gamma  ` v : o/; L1 [ L2 [ {ae}
+Hence by Lemma 4, it follows that
+
+\Gamma 0 ` (S [ {` 7! v}, K, h. . . , E[access A in R[v]], . . .i)
+
+26
+
+[Deref ] Suppose
+
+\Gamma  ` (S [ {` 7! v}, K, h. . . , E[access A in R[! k loc (`)]], . . .i)
+So we have \Gamma  ` E[access A in R[! k loc (`)]] : -; ;. By inspection of the type checking rules, there mustbe a sub-derivation with (Deref) as the last rule.
+
+\Gamma  ` k loc (`) : ae ref (o/ ); L
+\Gamma  ` ! k loc (`) : o/; L [ {ae}
+
+We first show that
+
+(S [ {` 7! v}, K, h. . . , E[access A in R[! k loc (`)]], . . .i)-! (
+
+S [ {` 7! v}, K, h. . . , E[access A in R[v]], . . .i)
+
+It suffices to show that k 2 CloseK(A). By Lemma 5 and (InAccess), it must be the case that
+
+\Gamma  ` {ae} < {ae | \Gamma  ` k : ae for some k 2 A}
+By inspection of the type checking rules, we see that there must be ae0 such that
+
+\Gamma  ` k : ae0 \Gamma  ` ae0 < ae
+So by Definition 2 (7), k 2 CloseK(A).Now let \Gamma 0 = \Gamma . We next show that
+
+\Gamma 0 ` (S [ {` 7! v}, K, h. . . , E[access A in R[v]], . . .i)
+By inspection of the type checking rules, we see that the sub-derivation of the premise must end with (Loc)followed by zero or more (Subsumption)'s. So
+
+\Gamma 0 ` ` : o/
+(Subtyping is invariant under pointer types.) Hence by Definition 2 (6) and Lemma 6, it must be the casethat
+
+\Gamma  ` v : o/; ;
+So by Lemma 1 and (Subsumption) \Gamma  `
+
+v : o/ ; L [ {ae}
+
+Hence by Lemma 4, it follows that
+
+\Gamma 0 ` (S [ {` 7! v}, K, h. . . , E[access A in R[v]], . . .i)
+
+[Spawn] Suppose \Gamma  ` (
+
+S, K, h. . . , E[spawn e], . . .i)
+
+So we have \Gamma  ` E[spawn e] : -; ;. By inspection of the type checking rules, there must be a sub-derivationwith (Spawn) as the last rule.
+
+\Gamma  ` e : o/ ; ;
+\Gamma  ` spawn e : ? int; ;
+We have (S, K, h. . . , E[spawn e], . . .i) -!
+
+(S, K, h. . . , E[bot 0], . . . , access ; in ei)
+Let \Gamma 0 = \Gamma . We have by (Int'ed) \Gamma 0 `
+
+bot : ?
+
+\Gamma 0 ` bot 0 : ? int; ;
+Also by (InAccess), \Gamma 0 `
+
+e : o/; ; \Gamma 0 ` ; < ;
+
+\Gamma 0 ` access ; in e : o/ ; ;
+Hence by Lemma 4, it follows that
+
+\Gamma 0 ` (S, K, h. . . , E[bot 0], . . . , access ; in ei)
+
+27
+
+[Inst] Suppose \Gamma  ` (
+
+S, K, h. . . , E[access A in R[(k \Lambda  * .v) [*]]], . . .i)
+
+So we have \Gamma  ` E[access A in R[(k \Lambda  * .v) [*]]] : -; ;. By inspection of the type checking rules, there mustbe a sub-derivation with (Inst *) as the last rule.
+
+\Gamma  ` k \Lambda  * .v : ae1 (8ae2 <ae3.o/ ); L \Gamma  ` ae4 < ae3
+
+\Gamma  ` (k \Lambda  * .v) [*] : o/ [ae4/ae2]; L [ {ae1}
+
+We first show that (S, K, h. . . , E[access A in R[(k \Lambda  * .v) [*]]], . . .i)
+
+-! (S, K, h. . . , E[access A in R[v]], . . .i)
+It suffices to show that k 2 CloseK(A). By Lemma 5 and (InAccess), it must be the case that
+
+\Gamma  ` {ae} < {ae | \Gamma  ` k : ae for some k 2 A}
+By inspection of the type checking rules, we see that there must be ae0 such that
+
+\Gamma  ` k : ae0 \Gamma  ` ae0 < ae
+So by Definition 2 (7), k 2 CloseK(A).Now let \Gamma 0 = \Gamma . We next show that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[v]], . . .i)
+By inspection of the type checking rules, we see that the sub-derivation of the first premise must end with(Gen'ed) followed by zero or more (Subsumption)'s. So
+
+\Gamma 0, ae2 <ae03 ` v : o/0; ; \Gamma 0, ae2 <ae03 ` \Pi \Gamma 0 `
+
+ae3 < ae03 \Gamma 0 ` o/0 < o/\Gamma 0 ` ;
+
+< L
+
+So we have \Gamma 0 `
+
+ae4 < ae03
+
+and by Lemma 2 (2), Lemma 1, and (Subsumption),
+
+\Gamma 0 ` v : o/ [ae4/ae2]; L [ {ae1}
+So by Lemma 4 it follows that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[v]], . . .i)
+
+[Pack] Suppose \Gamma  ` (
+
+S, K, h. . . , E[pack v as *], . . .i)
+
+So we have \Gamma  ` E[pack v as *] : -; ;. By inspection of the type checking rules, there must be a sub-derivationwith (Pack *) as the last rule.
+
+\Gamma  ` v : o/[ae3/ae1]; L \Gamma  ` ae3 < ae2
+\Gamma  ` pack v as * : ? (9ae1 <ae2.o/ ); L
+We have (S, K, h. . . , E[pack v as *], . . .i) -!
+
+(S, K, h. . . , E[bot pack v as *], . . .i)
+Let \Gamma 0 = \Gamma . We have by (Packed)
+
+\Gamma 0 ` bot : ? \Gamma 0 ` v : o/[ae3/ae1]; ; \Gamma 0 ` ae3 < ae2
+
+\Gamma 0 ` bot pack v as * : ? (9ae1 <ae2.o/ ); ;
+
+Then by Lemma 1 and (Subsumption),
+
+\Gamma 0 ` bot pack v as * : ? (9ae1 <ae2.o/ ); L
+Hence by Lemma 4, it follows that
+
+\Gamma 0 ` (S, K, h. . . , E[bot pack v as *], . . .i)
+
+28
+
+[Open] Suppose \Gamma  ` (
+
+S, K, h. . . , E[access A in R[
+
+open x = (k pack v as *) as * in e]], . . .i)
+
+So we have \Gamma  `
+
+E[access A in R[open x = (k pack v as *) as * in e]] : -; ;
+
+By inspection of the type checking rules, there must be a sub-derivation with (Open *) as the last rule.
+
+\Gamma  ` (k pack v as *) : ae1 (9ae2 <ae3.o/1); L1\Gamma 
+
+, ae2 <ae3, x:o/1 ` e : o/2; L2\Gamma  `
+o/2 \Gamma  ` L2 \Gamma , ae2 <ae3, x:o/1 ` \Pi 
+
+\Gamma  ` open x = (k pack v as *) as * in e : o/2; L1 [ L2 [ {ae1}
+
+We first show that
+
+(S, K, h. . . , E[access A in R[
+
+open x = (k pack v as *) as * in e]], . . .i)-! (
+
+S, K, h. . . , E[access A in R[e[v/x]]], . . .i)
+
+It suffices to show that k 2 CloseK(A). By Lemma 5 and (InAccess), it must be the case that
+
+\Gamma  ` {ae1} < {ae | \Gamma  ` k : ae for some k 2 A}
+By inspection of the type checking rules, we see that there must be ae01 such that
+
+\Gamma  ` k : ae01 \Gamma  ` ae01 < ae1
+So by Definition 2 (7), k 2 CloseK(A).Now let \Gamma 0 = \Gamma . We next show that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[e[v/x]]], . . .i)
+By inspection of the type checking rules, we see that the sub-derivation of the first premise must end with(Packed) followed by zero or more (Subsumption)'s. That is, for some
+
+ae4
+
+\Gamma 0 ` v : o/01[ae4/ae2]; ;\Gamma 0 `
+
+ae4 < ae03 \Gamma 0 ` ae03 < ae3\Gamma 0
+
+, ae2 <ae03 ` o/ 01 < o/1
+
+So we have by Lemma 2 (3) \Gamma 0 `
+
+o/ 01[ae4/ae2] < o/1[ae4/ae2]
+
+so \Gamma 0 `
+
+v : o/1[ae4/ae2]; ;
+
+Furthermore, because \Gamma 0 ` o/2, \Gamma 0 ` L2 and \Gamma 0 ` ae4 < ae2, we have by Lemma 2 (4)
+
+\Gamma 0, x:o/1[ae4/ae2] ` e : o/2; L2
+Hence by Lemma 2 (1) \Gamma 0 `
+
+e[v/x] : o/2; L2
+
+Finally by Lemma 4 it follows that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[e[v/x]]], . . .i)
+
+29
+
+[Limit] Suppose \Gamma  ` (
+
+S, K, h. . . , E[access A in R[
+
+limit k01 lkey (k1), . . . , k0n lkey (kn) in e]], . . .i)
+
+So we have \Gamma  ` E[access A inR[
+
+limit k01 lkey (k1), . . . , k0n lkey (kn) in e]] : -; ;
+By inspection of the type checking rules, there must be a sub-derivation with (Limit) as the last rule.
+
+For 1 <= i <= n, \Gamma  ` k0i lkey (ki) : ae0i lkey (aei); Li\Gamma  `
+
+e : o/ ; L \Gamma  ` L < {ae1, ae2, . . . , aen}
+
+\Gamma  ` limit k01 lkey (k1), . . . , k0n lkey (kn) in e :
+
+o/ ; L [ S1<=i<=n-1(Li [ {ae0i})
+
+Let B = CloseK(A) " CloseK({k1, k2, . . . , kn}). We first show that
+
+(S, K, h. . . , E[access A in R[
+
+limit k01 lkey (k1), . . . , k0n lkey (kn) in e]], . . .i) -!(
+
+S, K, h. . . , E[access A in R[access B in e]], . . .i)
+
+It suffices to show that for 1 <= i <= n, k0i 2 CloseK(A). By Lemma 5 and (InAccess), it must be the casethat
+
+\Gamma  ` {ae0i} < {ae | \Gamma  ` k : ae for some k 2 A}
+By inspection of the type checking rules, we see that there must be ae00i such that
+
+\Gamma  ` k0i : ae00i \Gamma  ` ae00i < ae0i
+So by Definition 2 (7), k0i 2 CloseK(A).Now let \Gamma 0 = \Gamma . We next show that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[access B in e]], . . .i)
+Firstly, by Lemma 5 \Gamma 0 `
+
+L < {ae | \Gamma  ` k : ae for some k 2 A}
+
+Hence by \Gamma 0 ` L < {ae1, ae2, . . . , aen} and Definition 2 (7), it follows that
+
+\Gamma 0 ` L < {ae | \Gamma  ` k : ae for some k 2 B}
+(Since subtyping is invariant for limit key types.) Then by Lemma 1 and (Subsumption),
+
+\Gamma 0 ` access B in e : o/; L [ [
+
+1<=i<=n-1
+
+Li [ {ae0i}
+
+Hence by Lemma 4, it follows that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[access B in e]], . . .i)
+
+[Grant] Suppose
+
+\Gamma  ` (S, K, h. . . , E[access A in R[grant k1 gkey (k2) in e]], . . .i)
+So we have \Gamma  ` E[access A in R[grant k1 gkey (k2) in e]] : -; ;. By inspection of the type checking rules,there must be a sub-derivation with (Grant) as the last rule.
+
+\Gamma  ` k1 gkey (k2) : ae1 gkey (ae2); L1\Gamma  `
+
+e : o/; L2 [ {ae2}
+
+\Gamma  ` grant k1 gkey (k2) in e : o/ ; L1 [ L2 [ {ae1}
+
+30
+
+We first show that
+
+(S, K, h. . . , E[access A in R[grant k1 gkey (k2) in e]], . . .i) -!(
+
+S, K, h. . . , E[access A in R[access A [ {k2} in e]], . . .i)
+
+It suffices to show that k1 2 CloseK(A). By Lemma 5 and (InAccess), it must be the case that
+
+\Gamma  ` {ae1} < {ae | \Gamma  ` k : ae for some k 2 A}
+By inspection of the type checking rules, we see that there must be ae0 such that
+
+\Gamma  ` k1 : ae0 \Gamma  ` ae0 < ae1
+So by Definition 2 (7), k1 2 CloseK(A).Now let \Gamma 0 = \Gamma 0. We next show that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[access A [ {k2} in e]], . . .i)
+By Lemma 5 \Gamma 0 `
+
+L < {ae | \Gamma  ` k : ae for some k 2 A}
+
+Therefore by Definition 2 (7), it follows that
+
+\Gamma 0 ` L [ {ae2} < {ae | \Gamma  ` k : ae for some k 2 A [ {k2}}
+(Since subtyping is invariant for grant key types.) Then by Lemma 1 and (Subsumption),
+
+\Gamma 0 ` access A [ {k2} in e : o/; L1 [ L2 [ {ae2}
+Hence by Lemma 4, it follows that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[access A [ {k2} in e]], . . .i)
+
+[NewKey] Suppose
+
+\Gamma  ` (S, K, h. . . , E[access A in R[newkey<k1 lkey (k2)]], . . .i)
+So we have \Gamma  ` E[access A in R[newkey< k1 lkey (k2)]] : -; ;. By inspection of the type checking rules,there must be a sub-derivation with (NewKey) as the last rule.
+
+\Gamma  ` k1 lkey (k2) : ae1 lkey (ae2); L
+\Gamma  ` newkey<k1 lkey (k2) :? (9
+
+ae3 < ae2.? h? lkey (ae3), ? gkey (ae3)i); L [ {ae1}
+
+We first show that
+
+(S, K, h. . . , E[access A in R[newkey<k1 lkey (k2)]], . . .i) -!(
+
+S, K [ {k3 7! k2}, h. . . , E[access A in R[
+
+bot pack bot hbot lkey (k3), bot gkey (k3)i as *]], . . .i)
+
+for some k3 /2 dom(K) [ {bot, top}. It suffices to show that k1 2 CloseK(A). By Lemma 5 and (InAccess),it must be the case that
+
+\Gamma  ` {ae1} < {ae | \Gamma  ` k : ae for some k 2 A}
+By inspection of the type checking rules, we see that there must be ae0 such that
+
+\Gamma  ` k1 : ae0 \Gamma  ` ae0 < ae1
+So by Definition 2 (7), k1 2 CloseK(A).
+
+31
+
+Pick ae3 /2 dom(\Gamma ) [ {?, ?}. Let \Gamma 0 = \Gamma , ae3 <ae2, k :ae3. We next show that
+
+\Gamma 0 ` (S, K [ {k3 7! k2}, h. . . , E[access A in R[
+
+bot pack bot hbot lkey (k3), bot gkey (k3)i as *]], . . .i)
+
+By (Packed) and (Tuple'ed), we have
+
+\Gamma 0 ` bot pack bot hbot lkey (k3), bot gkey (k3)i as * :? (9
+
+ae3 < ae2.? h? lkey (ae2), ? gkey (ae2)i); ;
+
+Hence by Lemma 1 and (Subsumption),
+
+\Gamma 0 ` bot pack bot hbot lkey (k3), bot gkey (k3)i as * :? (9
+
+ae3 < ae2.? h? lkey (ae2), ? gkey (ae2)i); L [ {ae1}
+
+Also, it is easy to see that Definition 2 (4) and (7) is satisfied. Hence
+
+\Gamma 0 ` (S, K [ {k3 7! k2}, h. . . , E[access A in R[
+
+bot pack bot hbot lkey (k3), bot gkey (k3)i as *]], . . .i)
+
+[Associate] Suppose \Gamma  ` (
+
+S, K, h. . . , E[access A in R[
+
+associate k1 r with k2 lkey (k3)]], . . .i)
+
+So we have \Gamma  `
+
+E[access A in R[associate k1 r with k2 lkey (k3)]] : -; ;
+
+By inspection of the type checking rules, there must be a sub-derivation with (Associate) as the last rule.
+
+\Gamma  ` k1 r : ae1 oe; L1 \Gamma  ` k2 lkey (k3) : ae2 lkey (ae3); L2
+\Gamma  ` associate k1 r with k2 lkey (k3) : ae3 oe; L1 [ L2 [ {ae1, ae2}
+
+We first show that (S, K, h. . . , E[access A in R[
+
+associate k1 r with k2 lkey (k3)]], . . .i) -!(
+
+S, K, h. . . , E[access A in R[k3 r]], . . .i)
+
+It suffices to show that k1 2 CloseK(A) and k2 2 CloseK(A). By Lemma 5 and (InAccess), it must be thecase that
+
+\Gamma  ` {ae1} < {ae | \Gamma  ` k : ae for some k 2 A}
+By inspection of the type checking rules, we see that there must be ae0 such that
+
+\Gamma  ` k1 : ae0 \Gamma  ` ae0 < ae1
+So by Definition 2 (7), k1 2 CloseK(A). The case for k2 is analogous.Now let \Gamma 0 = \Gamma . We next show that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[k3 r]], . . .i)
+The cases split between (Int'ed), (Loc), (Lkey), (Gkey), (Tuple'ed), (Fun'ed), (Gen'ed), and (Packed) de-pending on
+
+oe, but in each case we have \Gamma 0 `
+
+k3 r : ae3 oe; ;
+
+(Since subtyping is invariant for limit key types.) Then by Lemma 1 and (Subsumption),
+
+\Gamma 0 ` k3 r : ae3 oe; L1 [ L2 [ {ae1, ae2}
+Hence by Lemma 4, it follows that
+
+\Gamma 0 ` (S, K, h. . . , E[access A in R[k3 r]], . . .i)
+
+32
+
+[InAccess] Suppose \Gamma  ` (
+
+S, K, h. . . , E[access A in v], . . .i)
+
+So we have \Gamma  ` E[access A in v] : -; ;. By inspection of the type checking rules, there must be asub-derivation with (InAccess) as the last rule.
+
+\Gamma  ` v : o/; L \Gamma  ` L < {ae | \Gamma  ` k : ae for some k 2 A}
+
+\Gamma  ` access A in v : o/; ;
+
+We have (
+
+S, K, h. . . , E[access A in v], . . .i) -! (S, K, h. . . , E[v], . . .i)
+
+Let \Gamma 0 = \Gamma . Then by Lemma 6, \Gamma  `
+
+v : o/; ;
+
+Hence by Lemma 4, it follows that \Gamma 0 ` (
+
+S, K, h. . . , E[v], . . .i)
+
+This concludes the proof of Theorem 3. 2Let
+
+e be a source program. We say that e gets stuck if it cannot be translated to the target language orif its evaluation reaches a state of the form (
+
+S, K, h. . . , err, . . .i).
+
+Corollary 1 (Type Soundness) If the program e is well-typed then it does not get stuck.
+Proof: Recall that each source program e is well-typed iff ; ` e : -; ;. The corollary follows from Theorem 2and Theorem 3 since the initial state (;
+
+, ;, hei) is well-typed under the type environment ;. 2 Thecorollary implies that a well-typed program does not violate its access control policy.
+
+33

@@ -1,0 +1,1495 @@
+
+
+A Theory of Type Qualifiers
+
+\Lambda 
+
+Jeffrey S. Foster
+jfoster@cs.berkeley.edu
+
+Manuel F"ahndrich
+maf@microsoft.com
+
+EECS Department
+University of California, Berkeley
+
+Berkeley, CA 94720-1776
+
+Alexander Aiken
+aiken@cs.berkeley.edu
+
+Abstract
+We describe a framework for adding type qualifiers to a language. Type qualifiers encode a simple but highly useful
+form of subtyping. Our framework extends standard type
+rules to model the flow of qualifiers through a program,
+where each qualifier or set of qualifiers comes with additional rules that capture its semantics. Our framework allows types to be polymorphic in the type qualifiers. We
+present a const-inference system for C as an example application of the framework. We show that for a set of real C
+programs, many more consts can be used than are actually
+present in the original code.
+
+1 Introduction
+Programmers know strong invariants about their programs,
+and it is widely accepted by practitioners that such invariants should be automatically, statically checked to the extent possible [Mag93]. However, except for static type systems, modern programming languages provide little or no
+support for expressing such invariants. In our view, the
+problem is not a lack of proposals for expressing invariants;
+the research community, and especially the verification community, has proposed many mechanisms for specifying and
+proving properties of programs. Rather, the problem lies in
+gaining widespread acceptance in practice. A central issue
+is what sort of invariants programmers would be willing to
+write down.
+
+In this paper we consciously seek a conservative framework that minimizes the unfamiliar machinery programmers
+must learn while still allowing interesting program invariants
+to be expressed and checked. One kind of programming annotation that is widely used is a type qualifier.
+
+Type qualifiers are easy to understand, yet they can express strong invariants. The type system guarantees that in
+every program execution the semantic properties captured
+by the qualifier annotations are maintained. This is in contrast to dynamic invariant checking (e.g., assert macros or
+
+\Lambda This research was supported in part by the National Science
+Foundation Young Investigator Award No. CCR-9457812, NASA
+Contract No. NAG2-1210, and an NDSEG fellowship.
+
+To appear in the Proceedings of the ACM SIGPLAN '99 Conference on Programming Language Design and Implementation (PLDI), Atlanta, Georgia,
+May 1999.
+
+Purify [Pur]), which test for properties in a particular program execution.
+
+A canonical example of a type qualifier from the C world
+is the ANSI C qualifier const. A variable with a type annotated with const can be initialized but not updated.1 A
+primary use of const is annotating pointer-valued function
+parameters as not being updated by the function. Not only
+is this information useful to a caller of the function, but it
+is automatically verified by the compiler (up to casting).
+
+Another example is Evans's lclint [Eva96], which introduces a large number of additional qualifier-like annotations
+to C as an aid to debugging memory usage errors. One
+such annotation is nonnull, which indicates that a pointer
+value must not be null. Evans found that adding such annotations greatly increased compile-time detection of null
+pointer dereferences [Eva96]. Although it is not a typebased system, we believe that annotations like lclint's can
+be expressed naturally as type qualifiers in our framework.
+
+Yet another example of type qualifiers comes from
+binding-time analysis, which is used in partial evaluation
+systems [Hen91, DHM95]. Binding-time analysis infers
+whether values are known at compile time (the qualifier
+static) or may not be known until run time (the qualifier dynamic) by specializing the program with respect to an
+initial input.
+
+There are also many other examples of type qualifiers in
+the literature. Each of the cited examples adds particular
+type qualifiers for a specific application. This paper presents
+a framework for adding new, user-specified type qualifiers to
+a language in a general way. Our framework also extends the
+standard type system to perform qualifier inference, which
+propagates programmer-supplied annotations through the
+program and checks them. Such a system gives the programmer more complete information about qualifiers and
+makes qualifiers more convenient to use than a pure checking system.
+
+The main contributions of the paper are
+
+ffl We show that it is straightforward to parameterize a
+
+language by a set of type qualifiers and inference rules
+for checking conditions on those qualifiers. In particular, the changes to the lexing, parsing, and type checking (see below) phases of a compiler are minimal. We
+believe it would be realistic to incorporate our proposal
+into software engineering tools for any typed language.
+
+1C allows type casts to remove constness, but the result is implementation dependent [KR88].
+
+1
+
+ffl We show that the handling of type qualifiers can be
+
+separated from the standard type system of the language. That is, while the augmented type system includes rules for manipulating and checking qualifiers,
+in fact the computation of qualifiers can be isolated in
+a separate phase after standard typechecking has been
+performed. This factorization is similar to that of region inference [TT94].
+
+ffl We introduce a natural notion of qualifier polymorphism that allows types to be polymorphic in their
+qualifiers. We present examples from existing C programs to show that qualifier polymorphism is useful
+and in fact necessary in some situations.
+
+ffl We present experimental evidence from a prototype
+
+qualifier inference system. For this study, we examine the use of the qualifier const on a set of C benchmarks. We show that even in cases where programmers
+have apparently tried to systematically mark variables
+as const, monomorphic qualifier inference is able to infer many additional variables as const. Furthermore,
+polymorphic qualifier inference finds more const variables than monomorphic inference. This study shows
+both that qualifier inference is practical and useful,
+even for existing qualifiers and programs.
+
+The technical observation behind our framework is that a
+type qualifier q introduces a simple form of subtyping: For
+all types o/ , either o/ _ q o/ or q o/ _ o/. Here, as through
+the rest of the paper, we write qualifiers in prefix notation,
+so q o/ represents standard type o/ qualified by q. We illustrate the subtyping relationship using the examples given
+above. In C, non-const l-values can be promoted to const
+l-values, but not vice-versa. We capture this formally by
+saying that o/ _ const o/ for any type o/ . In Evans's system,
+the set of non-null pointers is a subset of the set of all pointers, which is expressed as nonnull o/ _ o/ . In binding time
+analysis values may be promoted from static to dynamic.
+Since static and dynamic are dual notions, we can choose
+to write static o/ _ o/ or o/ _ dynamic o/, depending on
+which qualifier name we regard as the canonical one.
+
+Our framework extends a language with a set of standard
+types and standard type rules to a qualified type system as
+follows.2 The user defines a set of n type qualifiers q1; : : : ; qn
+and indicates the subtyping relation for each (whether qi o/ _
+o/ or o/ _ qi o/ for any standard type o/ ). Each level of a
+standard type may be annotated with a set of qualifiers,
+e.g., if ref (int) is a standard type, then q1 ref (q2 int) is a
+qualified type, where q1 qualifies the ref and q2 qualifies the
+int. We extend the standard type system to infer qualified
+types.
+
+The polymorphic version of our system requires polymorphic constrained types to capture bounds on polymorphic
+qualifier variables. This form of polymorphic types involves
+only relatively simple constraints that can be solved with
+very efficient algorithms [HR97].
+
+Each qualifier comes with rules that describe well-formed
+types and how qualifiers interact with the operations in
+the language. These rules are supplied by the user and
+may be nearly arbitrary (see Section 2.4). For example,
+a rule for const adds a qualifier test to require that the lefthand side of an assignment is non-const. An example of a
+
+2Apologies to Mark P. Jones for overloading the term qualified
+types [Jon92].
+
+well-formedness condition comes from binding time analysis:
+Nothing dynamic may appear within a value that is static.
+Thus, a type such as static (dynamic ff ! dynamic fi) is
+not well-formed.3
+
+Because our framework is parameterized by the set of
+qualifiers, we must extend not only the types, but also
+the source language. We add both qualifier annotations,
+which introduce qualifiers into types, and qualifier assertions, which enforce checks on the qualifiers of a qualified
+type. These extensions allow the programmer to express the
+invariants that are to be checked by the qualifier inference
+rules.
+
+We conclude this section with a brief illustration of the
+need for qualifier polymorphism. Qualifier polymorphism
+solves a problem with const familiar to C and C++ programmers. One of the more awkward consequences of the
+standard (monomorphic) C++ type system appears in the
+Standard Template Library (STL) [MSS96] for C++. STL
+must always explicitly provide two sets of operations, one
+for constant data structures and one for non-constant data
+structures. For illustration, consider the following pair of C
+functions:
+
+typedef const int ci;
+int *id1(int *x) - return x; ""
+ci *id2(ci *x) - return x; ""
+
+C programmers would like to have only one copy of this
+function, since both versions behave identically and in fact
+compile to the same code. Unfortunately we need both. A
+pointer to a constant cannot be passed to id1 without a
+cast. A pointer to a non-constant can be passed to id2, but
+then the return value will be const. In the language of type
+theory, this difficulty occurs because the identity function
+has type ^ ff ! ^ ff, with qualifier set ^ appearing both coand contravariantly.
+
+In part because of the lack of const polymorphism in
+C and C++, const is often either not used, or function
+results are deliberately cast to non-const. For example, the
+standard library function strchr takes a const char *s as
+a parameter but returns a char * pointing somewhere in s.
+By adding polymorphism, we allow const to be used more
+easily without resorting to casting.
+
+The rest of this paper is organized as follows. Section 2
+describes our framework in detail, including the rules for
+const. Section 3 discusses type inference, qualifier polymorphism, and soundness. Section 4 describes our constinference system. Section 5 discusses related work, Section 6
+suggests future directions, and Section 7 concludes.
+
+2 Qualified Type Systems
+For our purposes, types are terms over a set of type constructors \Sigma  and type variables TVar. Program variables are
+denoted by PVar . Each type constructor c has an arity a(c).
+We denote the set of types by Typ:
+
+Typ ::= ff j c(Typ1; : : : ; Typa(c))
+where ff 2 TVar and c 2 \Sigma . A type environment A is a map
+A : PVar ! Typ. We abbreviate the vector (x1; : : : ; xn) by
+
+3Many descriptions of binding-time analysis omit the standard
+types. In such a system, this type would be written static (dynamic !
+dynamic).
+
+2
+
+e ::= v
+
+j e1 e2
+j if e1 then e2 else e3 fi
+j let x = e1 in e2 ni
+v ::= x x 2 PVar
+
+j n n 2 Z
+j *x:e
+o/ ::= ff
+
+j int
+j o/ ! o/
+
+Figure 1: Source language
+
+const dynamic
+
+const const dynamic nonzero dynamic
+const nonzero ; dynamic nonzero
+
+nonzero
+
+6
+\Phi \Phi \Phi 
+
+\Phi \Phi \Phi *
+
+HHH
+HHHY
+
+\Phi \Phi \Phi 
+
+\Phi \Phi \Phi *
+
+HHH
+HHHY6
+HHH
+HHHY 6
+
+\Phi \Phi \Phi 
+
+\Phi \Phi \Phi *
+
+6
+HHH
+HHHY
+
+\Phi \Phi \Phi 
+
+\Phi \Phi \Phi *
+
+Figure 2: Example qualifier lattice
+~x. We define
+
+A[~x 7! ~o/](y) = ae A(y) y 62 fx1; : : : ; xngo/
+
+i y = xi
+
+where the xi are distinct.
+
+We demonstrate our framework by adding type qualifiers
+to the functional language shown in Figure 1. Using the C
+convention, we interpret 0 in the guard of an if statement
+as false and any non-zero value as true. Here we distinguish
+syntactic values v (which can be evaluated without computation) from general expressions e. We use a call-by-value
+language, though the addition of qualifiers works equally
+well for call-by-name languages.
+
+For this language, \Sigma  = fint; !g with arities 0 and 2, respectively, and the type system is that of the simply-typed
+lambda calculus. Although this language is convenient for
+demonstrating the type checking system, some qualifiers
+(e.g., const) are not meaningful in it. In Section 2.4, we
+add updateable references (in C terminology, l-values) to our
+language and give the additional inference rules for const.
+
+The user supplies a set of qualifiers q1; : : : ; qn, annotated
+to indicate the subtyping relation.
+
+Definition 1 A type qualifier q is positive (negative) if o/ _
+q o/ (q o/ _ o/ ) for any type o/.
+
+For convenience we denote the absence of qualifier q by ?q
+if q is positive or ?q if q is negative.
+
+We extend subtyping to sets of qualifiers by defining a
+qualifier lattice.
+
+Definition 2 (Qualifier lattice) Each positive qualifier q
+defines a two-point lattice Lq = ?q v q. Each negative
+
+ae ::= Q o/
+o/ ::= ff j int j (ae1 ! ae2)
+Q ::= ^ j l
+
+Figure 3: Type language with qualifiers
+qualifier q defines a two-point lattice Lq = q v ?q. The
+qualifier lattice L is defined by L = Lq1 \Theta  \Delta  \Delta  \Delta  \Theta  Lqn . We
+write ? and ? for the bottom and top elements of L.
+
+Clearly it is unnecessary to model both positive and negative qualifiers, since they are dual notions. Instead of using
+a negative qualifier q, we can give ?q a name and use it as
+a positive qualifier, rearranging the type inference rules appropriately. However, as it is often more intuitive to think
+of certain qualifiers as being positive or negative, we allow
+both.
+
+Figure 2 shows the qualifier lattice for the positive qualifiers const and dynamic and the negative qualifier nonzero.
+A nonzero qualifier on an integer indicates that the integer
+cannot be zero. Instead of writing ?q or ?q in the picture
+we have simply omitted the name q. (static is just another
+name for ?dynamic, and we have omitted it.) Notice that moving up the lattice adds positive qualifiers or removes negative
+qualifiers.
+
+We use v for the ordering on L, and u and
+t for meet and join. For a positive (negative)
+qualifier qi, we denote by :qi the lattice element
+(?q1; : : : ; ?qi\Gamma 1; ?qi; ?qi+1; : : : ; ?qn) (for negative qualifiers (?q1; : : : ; ?qi\Gamma 1; ?qi; ?qi+1; : : : ; ?qn)), where ?qj and
+?qj are the minimal and maximal elements of Lqj .
+
+This general formulation allows any combination of qualifiers to appear on any type. In practice, however, qualifiers
+need not be orthogonal. The analysis designer may specify
+inference rules that depend on multiple qualifiers and wellformedness conditions that prohibit certain combinations of
+qualifiers.
+
+2.1 Qualified Types
+The next step is to add qualifiers to the standard type system. We define a new set of types QTyp, the qualified types,
+by
+
+QTyp ::= Q o/
+
+o/ ::= ff j c(QTyp1; : : : ; QTypa(c)) c 2 \Sigma 
+Q ::= ^ j l
+
+where ^ 2 QVars, the set of variables that range over type
+qualifiers, and the l are elements of the lattice L. The qualified types are just the standard types annotated with sets
+of qualifiers, i.e., lattice elements or qualifier variables. Notice that we do not need variables that range over qualified
+types, since the combination of a qualifier variable and a
+type variable ^ ff serves the same purpose.
+
+Figure 3 shows the qualified types for our example
+language. To avoid ambiguity, we parenthesize function
+types. Example qualified types are dynamic nonzero int and
+dynamic (const ff ! ^ fi). Notice that we allow qualifiers
+to appear on all levels of a type, even though a particular
+qualifier may only be associated with certain standard types
+(e.g., const only applies to updateable references).
+
+3
+
+We now extend the v relation to a subtyping relation
+_ on QTyp. We create a set of subtyping rules that give
+judgments ` ae _ ae
+
+0, meaning that ae is a subtype of ae0.
+
+We abbreviate ` fae _ ae
+
+0; ae0 _ aeg by ` ae = ae0. The
+
+system also uses judgments of the form ` Q v Q
+
+0, which
+
+is valid if Q v Q
+
+0 holds in the lattice. Figure 4a contains
+
+the subtyping rules for our example language.
+
+The choice of subtyping rules depends on the meanings
+of the type constructors \Sigma . In general, for any c 2 \Sigma  the
+rule
+
+` Q v Q
+
+0
+
+` aei = ae
+
+0i i 2 [1::n]
+
+` Q c(ae1; : : : ; aen) _ Q
+
+0 c(ae01; : : : ; ae0n)
+
+is sound. Indeed, this is the standard choice if c constructs
+updateable references (see Section 2.4).
+
+2.2 Qualifier Annotations and Qualifier
+
+Assertions
+
+Now we wish to extend the standard type system to infer
+qualified types. Our construction should apply to any set of
+type qualifiers. Thus we immediately encounter a problem,
+because when constructing a qualified type we do not know
+how to choose the top-level qualifiers, i.e., the qualifiers on
+the outermost constructor.
+
+We divorce this issue from the type system by adding
+qualifier annotations to the source language. Initially we assume that any new top-level qualifier is ?. We then allow
+user annotations that change the top-level qualifier monotonically. Dually, we also add qualifier assertions to the
+source language that allow the user to check the top-level
+qualifier on a type. While we also allow extra constraints on
+the qualifiers to be added to the type rules, qualifier assertions are a simple way to test invariants, and their use does
+not require extensive knowledge of type systems.
+
+For our example language, we add productions for annotations and assertions:
+
+e ::= \Delta  \Delta  \Delta 
+
+j ejl
+j l e
+
+Here qualifier annotation l e tells the type checker that l e's
+top-level qualifier should be at least l. Note that the qualifier on an abstraction qualifies the function type itself and
+not the type of the parameter. The qualifier assertion ejl
+requires that if Qe is e's top-level qualifier, then Qe v l.
+
+2.3 Qualified Type Systems
+The final step is to extend the original type checking system
+to handle qualified types. Intuitively this extension should
+be natural, in the sense that adding type qualifiers should
+not modify the structure of inferred types but only their
+qualifiers. We must also extend the type system with a subsumption rule, to allow subtyping, and rules for qualifier assertions and annotations. The resulting qualified type system
+for our example language is shown in Figure 4b. Judgments
+are of the form A ` e : ae, meaning that in the type environment A expression e has qualified type ae. The system
+in Figure 4 is the standard subtyping system (see [Mit91])
+specialized to our application. Section 3.1 contains a formal
+description of the construction of a qualified type system
+from a standard type system.
+
+In general each qualifier comes with a set of rules describing how the qualifier interacts with the operations in
+the language. Notice in Figure 4b that the antecedents of
+certain rules, e.g., (App), match the types of subexpressions against arbitrary qualifiers Q. We allow the qualifier
+designer to restrict these Q to enforce the semantics of particular qualifiers. In Section 2.4 we show how a type rule for
+assignment is modified for the const qualifier.
+
+We define two pairs of transformation functions between
+standard and qualified types and expressions. For a qualified
+type ae 2 QTyp, we define strip(ae) 2 Typ to be ae with all
+the qualifiers removed. Analogously, for an expression e in
+the annotated language, strip(e) is e without any qualifier
+annotations or assertions.
+
+In the other direction, for a standard type o/ 2 Typ we
+define ?(o/ ) to be the qualified type ae with the same type
+structure as o/ and all qualifiers set to ?. Analogously, for
+an expression e in the original language, ?(e) is the corresponding expression in the annotated language with only ?
+qualifier annotations and no qualifier assertions.
+
+Observation 1 Let `S be the judgment relation of the
+type system of the simply-typed lambda calculus, and let
+` be the judgment relation of the type system given in Figure 4. Then
+
+ffl If ; `S e : o/ , then ; ` ?(e) : ?(o/ ).
+ffl If ; ` e
+
+0 : ae, then ; `S strip(e0) : strip(ae).
+
+This captures our intuitive requirement that the type qualifiers do not modify the underlying type structure.
+
+Even without any additional rules on qualifiers, the qualified type system can be quite useful. Perhaps the most obvious kind of type qualifier to add is one that captures a
+property of a data structure. For example, we may want to
+distinguish between sorted lists and possibly unsorted lists.
+We add a negative type qualifier sorted and annotate all of
+our sorting functions so they return sorted lists. (We do not
+attempt to verify that sorted is placed correctly--we simply
+assume it is.) We can then add qualifier assertions, e.g., to
+check that a merge function is only called with sorted lists.
+
+2.4 Example: const
+Many qualifiers include restrictions on their usage. In our
+system, these restrictions can be expressed as qualifier assertions or as extra constraints between qualifiers. We illustrate
+the general pattern by adding updateable references (in C
+terminology, l-values) to our example language and giving
+the rules for const.
+
+Qualifier annotations and assertions can always be used
+safely (see Section 3.3), whereas modifications to the type
+rules must be made with care. It is up to the qualifier designer to ensure that after any modifications the type inference rules remain not only sound, but also intuitive to the
+programmer, who sees only the presence or absence of qualifiers and not the underlying type system. This is especially
+important when designing multiple, interacting qualifiers,
+which can potentially complicate the type system.
+
+We add ML-style references to the language in Figure 1;
+for a discussion of const in the C type system, see Section 4.
+As mentioned in the introduction const is positive (for any
+o/ , o/ _ const o/). We extend the source language and the
+
+4
+
+` Q1 v Q2
+` Q1 int _ Q2 int (SubInt)
+
+` Q1 v Q2 ` ae2 _ ae1 ` ae01 _ ae02
+
+` Q1 (ae1 ! ae01) _ Q2 (ae2 ! ae02) (SubFun)
+
+(a) Subtyping rules
+
+A ` e : ae ` ae _ ae0
+
+A ` e : ae0 (Sub)
+
+A ` e : Q o/ ` Q v l
+
+A ` ejl : Q o/ (Assert)
+
+A ` e : Q o/ ` Q v l
+
+A ` l e : l o/ (Annot)
+
+A ` n : ? int (Int)
+
+A ` x : A(x) (Var)
+A[x 7! aex] ` e : ae
+A ` *x:e : ? (aex ! ae) (Lam)
+
+A ` e1 : Q (ae2 ! ae) A ` e2 : ae2
+
+A ` e1 e2 : ae (App)
+
+A ` e1 : Q int A ` e2 : ae A ` e2 : ae
+
+A ` if e1 then e2 else e3 fi : ae (If)
+
+A ` e1 : ae1 A[x 7! ae1] ` e2 : ae2
+
+A ` let x = e1 in e2 ni : ae2 (Let)
+
+(b) Syntax-directed rules
+
+Figure 4: Basic type checking rules
+qualified type language:
+
+e ::= \Delta  \Delta  \Delta  j ref e j !e j e1 := e2
+v ::= \Delta  \Delta  \Delta  j ()
+o/ ::= \Delta  \Delta  \Delta  j ref (ae) j unit
+
+In this language, ref e creates an updateable reference, !e
+returns the contents of a reference, and e1 := e2 stores the
+value of e2 in reference e1. The type unit has only one value,
+().
+
+Since we have introduced a new type constructor ref,
+we also need to describe how it interacts with subtyping.
+There are well-known problems with mixing subtyping and
+updateable references [AC96]. The obvious rule,
+
+` Q1 v Q2 ` o/1 _ o/2
+` Q1 ref (o/1) _ Q2 ref (o/2) (Unsound)
+
+is unsound. For example, suppose we allowed subtyping
+under a ref. Then we could typecheck the following code
+(any missing qualifiers are ?):
+
+1 let x = ref(nonzero 37) in
+2 let y = x in
+3 y := 0;
+4 (!x)jnonzero
+5 ni ni
+
+Line 3 typechecks because we can promote the type of
+y to :nonzero int, since by subtyping nonzero int _
+:nonzero int. But notice that this does not affect the type
+
+of x, hence line 4 also typechecks even though the contents
+of x is now 0.
+
+The solution to this problem is to ensure that any aliases
+of the same ref cell contain the same qualifiers, which can be
+achieved by using equality on the type of the ref's contents
+in the subtyping rule.
+
+` Q1 v Q2 ` ae1 = ae2
+` Q1 ref (ae1) _ Q2 ref (ae2) (SubRef)
+
+The subtyping rule for unit is the expected rule:
+
+` Q1 v Q2
+` Q1 unit _ Q2 unit (SubUnit)
+
+We give type rules for our new constructs; here we jump
+directly to the qualified type rules.
+
+A ` () : ? unit (Unit)
+
+A ` e : ae
+A ` ref e : ? ref (ae) (Ref)
+
+A ` e : Q ref (ae)
+
+A ` !e : ae (Deref)
+
+A ` e1 : Q ref (ae2) A ` e2 : ae2
+
+A ` e1 := e2 : ? unit (Assign)
+
+5
+
+The semantics of const requires that the left-hand side
+of an assignment be non-const. In our framework, this requirement can be expressed with an assertion e1j:const := e2
+on every assignment. Notice that such assertions can be
+added automatically.
+
+Another way to add this restriction is to change (Assign).
+Recall that in our construction of the qualified type rules,
+whenever we needed to insert a qualifier but had no way of
+choosing one, we simply allowed all qualifiers. This is where
+Q came from in (Assign).
+
+Rather than using annotations, we allow the qualifier
+designer to place restrictions at these choice points. Thus
+(Assign) becomes
+
+A ` e1 : :const ref (ae2) A ` e2 : ae2
+
+A ` e1 := e2 : ? unit (Assign
+
+0)
+
+2.5 Practical Considerations
+Although adding qualifier annotations and assertions
+changes the syntax of the source language, in practice the
+changes to the lexer and parser can be minimal. We can
+require that all qualifiers begin with a reserved symbol, so
+that the lexer can unambiguously tokenize qualifiers. The
+grammar for types is extended so that qualifiers can appear
+on all levels of a type, using well-understood techniques to
+avoid ambiguity [ASU88]. We add a special syntactic form
+for assertions.
+
+We have prototyped such a set of extensions to an ANSI
+C front end. The extended language accepts standard ANSI
+C as a subset. The extensions required only trivial modifications.
+
+We can transform a qualified program to an unqualified
+program simply by removing the qualifiers and the assertions. One way to do this is to follow the approach of Evans
+[Eva96] and use special comment syntax for our language
+extensions. This has the advantage that a compiler for the
+standard language will automatically ignore all qualifiers,
+though it makes the parser for the qualified type system
+much more complicated, especially when arbitrary levels of
+qualification are permitted.
+
+3 Type Inference, Polymorphism, and Soundness
+3.1 Type Inference
+The rules in Figure 4 describe a type checking system. We
+can also extend a type inference system in a similar way. As
+before we assume that the original type system is monomorphic; polymorphism can be dealt with as described in Section 3.2. We view the standard type inference system as
+a collection of type inference rules R1; : : : ; Rk giving judgments of the form A ` e : o/ ; C, meaning in type environment A expression e has type o/ under equality constraints
+C. Formally, the constraints generated by typing judgments
+are given by
+
+C ::= fo/1 = o/2g j C1 [ C2
+A solution to a set of equality constraints fli = rig is a
+substitution S : TVar ! Typ that maps type variables to
+ground types (types without variables) such that ` S(li) =
+S(ri) for all i. If A ` e : o/ ; C and a solution S of C exists,
+then S defines a valid typing of e. If no solution exists, e is
+untypable.
+
+For expository purposes we assume that the type rules
+Ri can be written in the form
+
+A[~x1 7! ~o/1] ` e1 : o/1; C1 \Delta  \Delta  \Delta  A[~xn 7! ~o/n] ` en : o/n; Cn
+
+C = (Sni=1 Ci) [ fli = rig
+
+A ` e : o/e; C
+
+where the ei are the immediate subexpressions of e (i.e., the
+inference rules are compositional), and the fli = rig are a
+set of equality constraints between types, usually the o/i and
+o/e.
+
+In order to construct a new rule for qualified types, we
+define a spread operation (similar to [TT94])
+
+sp : (TVar ! QTyp) \Theta  Typ ! QTyp
+that consistently rewrites standard types as qualified types.
+The first parameter of sp(\Delta ; \Delta ) is a mapping V that is used to
+consistently rewrite type variables and metavariables, and
+the second parameter is the type to be rewritten.
+
+sp(V; ff) = V (ff)
+sp(V; c(o/1; : : : ; o/a(c))) =
+
+^ c(sp(V; o/1); : : : ; sp(V; o/a(c)))
+
+where the ff are standard type variables and the ^ are fresh
+variables ranging over lattice elements. Intuitively, whenever sp(\Delta ; \Delta ) encounters a type constructor, it does not know
+which qualifier to add, and so the translation allows any
+qualifier to appear on the constructor.
+
+From the original type inference rules Ri we construct
+the qualified type inference rules R
+
+0i as
+
+A[~x1 7! \Gamma \Gamma \Gamma \Gamma !sp(V; o/ )1] ` e1 : sp(V; o/1); C1 \Delta  \Delta  \Delta 
+A[~xn 7! \Gamma \Gamma \Gamma \Gamma !sp(V; o/)n] ` en : sp(V; o/n); Cn
+
+C = (Sni=1 Ci) [ fsp(V; li) = sp(V; ri)g
+
+A ` e : sp(V; o/e); C
+
+where V maps each distinct metavariable o/ in Ri to a distinct qualified type metavariable ae, and each variable ff in
+Ri to a distinct qualified type ^ ff.
+
+For example, in the standard type inference system for
+our language, the application rule is
+
+A ` e1 : o/1; C1 A ` e2 : o/2; C2
+
+C = C1 [ C2 [ fo/1 = o/2 ! ffg
+
+A ` e1 e2 : ff; C
+
+The constructed rule in the qualified type system is
+
+A ` e1 : ae1; C1 A ` e2 : ae2; C2
+C = C1 [ C2 [ fae1 = ^ (ae2 ! ^
+
+0 ff)g
+
+A ` e1 e2 : ^
+
+0 ff; C
+
+As in Figure 4 we add a subsumption rule and rules for
+qualifier annotations and assertions to the constructed type
+inference system. The resulting qualified type inference system proves judgments of the form A ` e : ae; C, where now
+C contains subtyping constraints and lattice inequalities:
+
+C ::= fae1 _ ae2g j fQ1 v Q2g j C1 [ C2
+These constraints arise from the subsumption rule and from
+equality constraints in the original rules (recall that ae = ae
+
+0
+
+is an abbreviation for fae _ ae
+
+0; ae0 _ aeg, where ae and ae0 are
+
+qualified types).
+
+To solve the subtyping constraints, we first apply the
+subtyping rules (in Figure 4a for our example language) to
+the constraints so that we are left with only lattice constraints. These constraints are of the form ^ v L, L v ^, or
+L1 v L2. This is an atomic subtyping system, which can be
+solved in linear time for a fixed set of qualifiers [HR97].
+
+6
+
+3.2 Polymorphism
+As mentioned in the introduction, we can add a notion of
+polymorphic type qualifiers. We begin by adding polymorphic constrained types oe to our type language:
+
+oe ::= 8~^:aenC
+
+ae ::= Q o/
+o/ ::= ff j int j ae1 ! ae2
+Q ::= ^ j l
+
+The type 8~^:aenC represents any type of the form ae[~^ 7! ~Q]
+under the constraints C[~^ 7! ~Q], for any choice of qualifiers
+
+~Q. Note that polymorphism only applies to the qualifiers
+
+and not to the underlying types.
+
+Following [OSW97], we introduce existential quantification on constraint systems:
+
+C ::= fae1 _ ae2g j fQ1 v Q2g j C1 [ C2 j 9~^:C
+Note that we can lift existential quantification to the toplevel by renaming variables. If S[~^ 7! ~Q] is a solution of C,
+then S is a solution of 9~^:C. Intuitively, existential quantification binds purely local qualifier variables (see below).
+
+As is standard in let-style polymorphism [Mil78], we
+restrict the introduction of polymorphic types to letexpressions. Due to well-known problems with mixing updateable references and polymorphism, we only allow syntactic values (i.e., functions in C) to be polymorphic [Wri95].
+We extend the qualified type inference system to introduce
+and eliminate polymorphic types:
+
+A ` v : ae1; C1 A[x 7! 8~^:ae1nC1] ` e2 : ae2; C2
+
+~^ not free in A
+A ` let x = v in e2 ni : ae; (9~^:C1) [ C2
+
+(Letv)
+
+A(x) = 8~^:aenC
+A ` x : ae[~^ 7! ~Q]; C[~^ 7! ~Q] (Var
+
+0)
+
+In (Letv), we bind ~^ before adding C1 to the constraints
+generated by e2 so the purely local ~^ can be renamed freely
+without changing the conclusion of the rule. This matches
+the intuition that the ~^ are local to the body of the let, and
+also allows for a relatively simple proof of soundness. See
+[EST95] for an alternate approach.
+
+Polymorphism solves the problem with C's monomorphic
+type system that was outlined in the introduction. Consider
+the following code fragment:
+
+1 let id = *x:x in
+2 let y = id(ref 1) in
+3 let z = id(const ref 1) in
+
+: : :
+ni ni ni
+
+We first derive that *x:x has type ? (^x ffx ! ^x ffx). Then
+we apply the rule (Letv) to give id the polymorphic type
+8^x:? (^x ffx ! ^x ffx)n;. Now when we apply id in lines 2
+and 3, we can use rule (Var
+
+0) to instantiate id with two separate sets of qualifiers, and so y can have type ? ref (? int)
+even though z must have type const ref (? int).
+
+3.3 Soundness
+By using standard techniques found in [WF94, EST95,
+OSW97] we show that the type system we have presented, with qualifiers, references, and polymorphism, satisfies a subject reduction property. Our proof closely follows
+[EST95]. We give only a proof sketch, due to space limitations.
+
+We begin by defining a store s as a finite mapping from
+locations (i.e., variables) to values. We denote locations
+by a as a reminder that they must be bound in the store.
+The semantics assumes that all values are qualified, so that
+a semantic value is a qualifier annotation and a syntactic
+value (l v). A program can always be rewritten in this form
+by inserting ? annotations. We define a reduction context
+to fix the left-to-right ordering of evaluation:
+
+R ::= [ ] j R e j (l v) R j if R then e2 else e3 fi
+
+j let x = R in e2 ni j Q ref R
+j!R j R := e j Q a := R j l R j Rjl
+
+We give single-step operational semantics for the execution of a program in Figure 5. A configuration hs; ei is a pair
+where s represents the store and e represents the current redex. We assume that all values are qualified. We extend
+typings to configurations:
+
+Definition 3 (Store Typing) We write A ` hs; ei : ae; C
+if both of the following hold:
+
+1. A ` e : ae; C
+2. For all a 2 dom(s), A(a) = Qa ref (aea) and A ` s(a) :
+
+aea; C.
+
+The first condition guarantees that e has the right type, and
+the second condition guarantees that the typing of the store
+is consistent with the values in the store.
+
+Lemma 1 If A ` e : ae; C and S is a substitution such that
+SC is satisfiable, then SA ` e : Sae; SC.
+
+Proof: By induction on the derivation of A ` e : ae; C.
+Since SC is satisfiable all subsets of the constraints SC are
+satisfiable. The only interesting case is in (Letv). In this
+case, we first rewrite the proof of A ` e : ae; C so that none
+of the variables ~^ are changed by S; we can do so because
+the ~^ are bound by an existential quantifier in the conclusion
+of (Letv). 2
+
+Theorem 1 (Subject Reduction) If A ` hs; ei : ae; C
+and hs; ei ! hs
+
+0; e0i, then there exists an A0 such that
+
+A
+
+0jdom(A) = A and A0 ` hs0; e0i : ae; C0 where C0 ` C.
+
+Proof: By induction on the structure of e. In the case of
+(Letv), we need to show that we can give e2[x 7! v] the same
+type as let x = v in e2 ni. We have A ` v : ae1; C1. In the
+typing proof A[x 7! 8~^:ae1nC1] ` e2 : ae2; C2, at each occurrence of x in e2 we applied (Var
+
+0) with some substitution S
+
+on ~^. By Lemma 1 we have A ` v : Sae1; SC1, so we can
+replace x by v and prove the same judgment. 2
+
+Next we observe that stuck expressions (expressions that
+are not values but for which no reduction applies [WF94])
+do not typecheck, which is trivial to prove. Then we can
+show
+
+Corollary 1 (Soundness) If ; ` e : ae; C, then either e is
+a value or e diverges.
+
+7
+
+hs; R[(l2 v)jl1]i ! hs; R[l2 v]i l2 v l1
+hs; R[l1 (l2 v)]i ! hs; R[l1 v]i l2 v l1
+hs; R[if (l n) then e2 else e3 fi]i ! hs; R[e2]i n 6= 0
+
+hs; R[if (l 0) then e2 else e3 fi]i ! hs; R[e3]i
+
+hs; R[(l *x:e1) v]i ! hs; R[e1[x 7! v]]i
+hs; R[let x = v in e2 ni]i ! hs; R[e2[x 7! v]]i
+
+hs; R[l ref v]i ! hs[a 7! v]; R[l a]i a fresh
+
+hs; R[!(l a)]i ! hs; R[s(a)]i a 2 dom(s)
+hs; R[(l a) := v]i ! hs[a 7! v]; R[? ()]i a 2 dom(s)
+
+Figure 5: Operational Semantics
+4 Const Inference
+In this section we describe a const-inference system for C
+that takes an entire C program and infers the maximum
+number of consts that can be syntactically present in the
+program. Such a system relieves the programmer of the
+burden of annotating all possible const locations. Instead
+the programmer can annotate the most important consts
+and use the inference to determine the constness of the remaining variables and parameters. Furthermore, our experiments show that the polymorphic qualifier system allows
+more const annotations than the C type system, which is
+monomorphic.
+
+4.1 C Types
+C types already contain qualifiers, hence our implementation
+does not use the sp operator defined in Section 3.1. However, our system does need to translate the C types into the
+form described in Section 2.4. All variables in C refer to
+updateable memory locations. In the terminology of this
+paper, they are all ref types. When C variables appear in
+r-positions, they are automatically dereferenced. For example, consider the following code:
+
+int x;
+const int y;
+x = y;
+
+In our example language, this program is written x := !y.
+Omitting the qualifiers on int, let A = ;[x 7!
+? ref (int); y 7! const ref (int)] as can be derived from the
+definitions of x and y. Then we can type this program in
+our system as follows:
+
+A ` y : const ref (int)
+A ` x : ? ref (int) A ` !y : int
+
+` ? v :const
+A ` x := !y : unit
+
+Even though in the C type it appears that the const is
+associated with the int, in fact const qualifies the ref constructor of y. Hence y's constness does not affect x.
+
+We can explain this systematically by giving a translation ` from the C types to ref types. For the sake of simplicity we only discuss pointer and integer types. Let the C
+types be given by the grammar
+
+CTyp ::= Q int j Q ptr(CTyp)
+
+We define the mapping ` : CTyp ! QTyp as follows:
+
+`(CTyp) = Q
+
+0 ref (ae)
+
+where (Q
+
+0; ae) = `0(CTyp)
+
+`
+
+0(Q int) = (Q; ? int)
+
+`
+
+0(Q ptr(CTyp)) = (Q; (Q0 ref (ae)))
+
+where (Q
+
+0; ae) = `0(CTyp)
+
+Intuitively, the qualified type corresponding to a C type has
+one extra ref on the outside, and the const qualifiers have
+shifted up one level in the type. Note that these are the
+types of l-values, and the outermost ref should be removed
+to get the type of an r-value.
+
+The advantage of this transformation is that we can use
+the standard subtyping rules for ref. Consider the following
+example:
+
+int *x;
+const int *y;
+y = x;
+
+In the C type system, we are assigning x, which has type
+ptr(int), to y, which has type ptr(const int), thus it appears that we are using a non-standard subtyping rule, because pointers are updateable. However, when we translate
+this into our system, we see that the r-value x has type
+? ref (int), and the l-value y has type ? ref (const ref (int)).
+In order to assign x to y, we must show ` ? ref (int) _
+const ref (int) which is true in the standard subtyping relation we use.
+
+4.2 Other Considerations
+Ultimately we would like the analysis result to be the text
+of the original C program with some extra const qualifiers
+inserted. Thus we place some restrictions on the types we
+infer. In C different variables with the same struct type
+share the declaration of their fields. Thus in our system, if
+a and b are declared with the same struct type, we only
+allow a and b to differ on the outermost (top-level) qualifier;
+the qualifiers on their fields must be identical. For example,
+consider the following code:
+
+struct st - int x; "";
+struct st a, b;
+a = b;
+
+The assignment a=b is equivalent to a.x = b.x. To satisfy
+the type rules, it is sufficient for the r-type of b.x to be a
+subtype of the r-type of a.x. However, because a.x and b.x
+share the field annotation in struct st, we require them to
+
+8
+
+be equal. Note that the top-level qualifier attached to the
+ref constructors of the l-types of a and b can be distinct from
+each other. For example, although a must be a non-const
+ref, we do not require that b be non-const.
+
+On the other hand, we treat typedefs as macroexpansions, e.g., in
+
+typedef int *ip;
+ip c, d;
+
+c and d do not share any qualifiers.
+
+One of the complications of analyzing real programs is
+that real programs use libraries, the code for which is often either unavailable or written in another language. For
+any undefined functions, we make the most conservative assumption possible: We treat any parameters not declared
+const as non-const. In general library functions are annotated with as many consts as possible, and so lack of const
+does mean can't-be-const.
+
+C contains many different ways to defeat the type system, of which the most obvious is casting. For explicit casts
+we choose to lose any association between the value being
+cast and the resulting type. For implicit casts we retain as
+much information as possible.
+
+Another way to defeat the type system is to use variablelength argument lists, or call a function with the wrong number of arguments. Both cases happen in practice; we simply
+ignore extra arguments.
+
+4.3 Polymorphic Inference
+Recall that we allow standard let-style polymorphism, in
+which polymorphic expressions are explicitly marked. Since
+a C program is made up of a set of possibly mutuallyrecursive functions, we need to syntactically analyze the program to find the let blocks.
+
+Definition 4 The function dependence graph (FDG) of a
+program is a graph G = (V; E) with vertices V and edges
+E. V is the set of all functions in the program, and there is
+an edge in E from f to g iff function f contains an occurrence
+of the name g.
+
+The FDG exactly captures the implicit structure of function definitions. There is an edge from f to g if g must be
+type checked before f, and the strongly-connected components of the FDG are the sets of mutually-recursive functions.
+
+To apply the polymorphic inference to a C program,
+we first construct the FDG. Then we traverse the stronglyconnected components of the FDG in reverse depth-first order (the traversal can be computed in time linear in the size
+of the graph [CLR90]). We analyze each set of mutually
+recursive functions monomorphically and then we apply the
+rule for quantification. After we reach the root node of the
+FDG, we analyze any global variable definitions.
+
+More work is required after type inference to measure the
+results. We want to know how many formal parameters can
+be polymorphic, i.e., either const or non-const. However,
+in general a C function may refer to global variables, so a C
+function's polymorphic type is not closed.
+
+The types of global variables are closed once we have analyzed the whole program. A straightforward post-analysis
+pass combines this information with the types inferred during the FDG traversal to compute the results.
+
+0%
+20%
+40%
+60%
+80%
+100%
+
+wom
+
+an-3
+
+.0a
+
+patc
+
+h-2.5 m4-1.4
+
+diffu
+
+tils-2
+
+.7
+
+ssh1.2.2
+
+6
+
+uucp
+
+-1.04
+
+Other
+Poly
+Mono
+Declared
+
+Figure 6: Number of inferred consts for benchmarks
+
+We would prefer to use polymorphic recursion rather
+than let-style polymorphism to avoid working with the FDG,
+but BANE [AFFS98], the toolkit used to conduct our experiments, did not support polymorphic recursion when this
+work began. Because the qualifier lattice is finite and qualifiers do not change the type structure, the computation of
+polymorphic recursive types is decidable and in fact should
+be very efficient. We have recently learned that Jakob Rehof
+has written a polymorphic recursive type inference system
+for C++ [Reh99].
+
+4.4 Experiments
+We perform const inference using the rules for const outlined in Section 2.4. Table 1 lists the set of benchmarks we
+used to test our analysis. We purposely selected programs
+that show a significant effort to use const, rather than those
+that use it in only a few places.
+
+Several of these "programs" are actually collections of
+programs that share a common code base. We analyzed
+each set of programs at once. This occasionally required
+renaming certain functions that were defined in several files
+to be distinct.
+
+For each benchmark, we measured the number of interesting consts (see below) inferred by the monomorphic and
+the polymorphic version of our analysis. For any given ref
+type, there are three possible results that our analysis can
+infer: It can decide that the ref
+
+1. must be const,
+2. must not be const, or
+3. could be either.
+If the analysis inferred that something not marked as const
+must in fact be const, this would indicate a type error. Since
+all of our benchmarks are correct C programs, all of the
+possible additional consts detected must be from (3). The
+total number of possible consts is the sum of (1) and (3).
+Note that the number of possible consts does not depend on
+the source-level const annotations, since removing a const
+merely shifts the annotation on a ref type from (1) to (3).
+
+9
+
+Name Lines Description
+woman-3.0a 1496 Replacement for man package
+patch-2.5 5303 Apply a diff file to an original
+m4-1.4 7741 Unix macro preprocessor
+diffutils-2.7 8741 Collection of utilities for diffing files
+ssh-1.2.264 18620 Secure shell
+uucp-1.04 36913 Unix to unix copy package
+
+Table 1: Benchmarks for const inference
+Name Compile time (s) Mono time (s) Poly time (s) Declared Mono Poly Total possible
+woman-3.0a 4.84 3.91 8.91 50 67 72 95
+patch-2.5 16.98 18.70 33.43 84 99 107 148
+m4-1.4 19.48 36.81 64.43 88 249 262 370
+diffutils-2.7 24.46 35.70 57.34 153 209 243 372
+ssh-1.2.26 84.55 101.90 174.28 147 316 347 547
+uucp-1.04 113.75 177.71 457.16 433 1116 1299 1773
+
+Table 2: Number of inferred possibly const positions for benchmarks
+We only counted the number of "interesting" consts
+placed on arguments and results of defined functions. Recall
+that consts can only be placed on pointers and that arguments are passed by value, so the function int foo(int x,
+int *y) has only one interesting location where const can
+go, namely on the contents of y, which is itself a ref.
+
+Figure 6 shows our results, which are tabulated in Table 2. Our current implementation uses BANE [AFFS98],
+a framework for constructing constraint-based analyses, for
+the qualifier inference. BANE handles constraint representation and solution, and our analysis tool generates constraints
+and interprets the results.
+
+The first column of measurements gives the compile time.
+The next two columns give the running time (average of five)
+for the monomorphic and polymorphic const-inference. We
+do not include the parsing time. Note that the inference
+scales roughly linearly with the program size, and that the
+polymorphic inference takes at most 3 times longer than the
+monomorphic inference. Our implementation uses a generic
+set constraint engine to solve qualifier constraints, and we
+expect substantial speedups would be achieved with a framework specialized to the qualifier lattice.
+
+The next column lists the number of interesting consts
+that were declared in the program. The right-most column
+indicates the total number of places that are syntactically
+allowed to have a const qualifier (according to our definition
+of interesting).
+
+The Mono and Poly columns list the results of the
+monomorphic and polymorphic inference algorithms, respectively. As mentioned previously, any additional qualifiers
+inferred can be either const or non-const (these correspond
+to unconstrained qualifier variables). For the monomorphic
+type system we can make all of these positions const and
+still have a type correct program. For the polymorphic type
+system we need to leave these as unconstrained variables,
+since they may be required to be const or non-const in
+
+4The ssh distribution also includes a compression library zlib and
+the GNU MP library (arbitrary precision arithmetic). We treated
+both of these as unanalyzable libraries; zlib contains certain structures that are inconsistently defined across files, and the GNU MP
+library contains inlined assembly code.
+
+different contexts.
+
+The measurements show that many more consts can be
+inferred than are typically present in a program. For some
+programs the results are quite dramatic, notably for uucp1.04, which can have more than 2.5 times more consts than
+are actually present. Recall these are already programs in
+which some effort was made to use const.
+
+For this set of benchmarks polymorphic analysis allows 5-
+16% more consts than monomorphic analysis. These results
+show that qualifier polymorphism is both useful and already
+latent in C programs, although we believe that most of the
+benefit for polymorphism comes from allowing fewer type
+casts rather than more consts.
+
+Our experiments show that an automated inference tool
+makes it much easier for a programmer to fully use const
+annotations to express information about the side-effects of
+functions. They also show that polymorphism allows more
+const annotations than the monomorphic C type system
+without casts.
+
+5 Related Work
+There are three threads of related work: examples of systems that use type qualifiers, frameworks related to type
+qualifiers, and other techniques for checking programmerspecified invariants.
+
+We have already mentioned the example qualifier systems of const from ANSI C [KR88], Evans's lclint [Eva96],
+and static and dynamic annotations from binding-time
+analysis [DHM95]. Two other examples are the secure information flow system of [VS97], which annotates types with
+high- and low-security qualifiers, and the *-calculus with
+trust annotations of [O/P97]. [O/P97] suggests an extension
+of their system to multiple levels of trust, which is similar
+to our idea of a lattice of type qualifiers.
+
+Another example comes from Titanium [YSP+98], a
+Java-based SPMD programming language. Titanium uses
+the qualifier local to distinguish pointers to local memory,
+which can be accessed with a simple load instruction, from
+pointers to non-local memory, which must be accessed with
+a network operation. A pointer annotated with local must
+
+10
+
+be local; a pointer not annotated with local may either be
+local or non-local. In Titanium, local annotations are critical because they allow the compiler to remove expensive
+run-time tests.
+
+Several other researchers have noted that type qualifiers
+are an important tool for program analysis. [Sol95] gives a
+framework for understanding a particular family of related
+analyses as type annotation (qualifier) systems. [ABHR99]
+describes the Dependency Core Calculus (DCC) and provides translations into DCC from several dependency-based
+type qualifier systems such as [VS97]. DCC is one example
+of a calculus based on monads. Recent work [Kie98, Wad98]
+has explored the connection between monads and effect systems [LG88]. Some effect systems can also be expressed as
+type qualifier systems. However, the exact connection between monads, effect systems, and type qualifiers is unclear.
+
+Other frameworks choose a different design point by providing more powerful annotation languages. For example,
+Klarlund and Schwartzbach's graph types [KS93] allow programmers to specify detailed shape invariants on data structures. Another approach is the Extended Static Checking
+system [Det96, LN98], which uses sophisticated theoremproving techniques that allow the programmer to check invariants. The advantage of such systems is that the invariants are much more precise than in a type qualifier system.
+However, specifying such invariants requires more effort and
+sophistication on the programmer's part.
+
+6 Future Work
+In the framework presented in this paper, types remain
+static throughout the source program, even though the values stored in some locations may change through updates.
+Indeed, as stated our framework cannot express the analysis
+of lclint, in which annotations on a given location may
+vary at each program point.
+
+One solution we are investigating is to assign each location a distinct type at every program point and to add
+subtyping constraints between the different types. For example, suppose that x has type o/1 before a non-branching
+statement s and x has type o/2 after s. Then if s does not
+perform a strong update of x we add the constraint o/1 _ o/2;
+if s does strongly update x then we do not add this constraint. This technique allows a measure of flow sensitivity,
+which may make type qualifiers more useful in certain applications.
+
+Finally, an issue we have not addressed is the presentation and specification of polymorphic function types. In
+our system each polymorphic type also carries a set of constraints, and we currently do not have a notation for specifying constraints in the source language. Additionally, in
+practice these constraint systems can be large and difficult
+to interpret. Simplifying these constrained types for presentation is an open research problem.
+
+7 Conclusion
+We believe that type qualifiers are a simple yet useful addition to standard type systems. We have presented a framework for adding type qualifiers, qualifier annotations, and
+qualifier assertions to an standard language, and we allow
+types to be polymorphic in the type qualifiers. Our experimental results show that for a set of benchmarks, many
+
+more const qualifiers can be added than are present, even
+though our benchmarks make significant use of const.
+
+Acknowledgments
+We would like to thank Daniel Weise, Henning Niss, Martin
+Elsman, Zhendong Su, and the anonymous referees for their
+helpful comments and suggestions.
+
+References
+[ABHR99] Mart'in Abadi, Anindya Banerjee, Nevin Heintze, and
+
+Jon G. Riecke. A Core Calculus of Dependency.
+In Proceedings of the 26th Annual ACM SIGPLANSIGACT Symposium on Principles of Programming
+Languages, pages 147-160, San Antonio, Texas, January 1999.
+
+[AC96] Mart'in Abadi and Luca Cardelli. A Theory of Objects. Springer, 1996.
+
+[AFFS98] Alexander Aiken, Manuel F"ahndrich, Jeffrey S. Foster, and Zhendong Su. A Toolkit for Constructing
+Type- and Constraint-Based Program Analyses. In
+Proceedings of the second International Workshop on
+Types in Compilation, Kyoto, Japan, March 1998.
+
+[ASU88] Alfred V. Aho, Ravi Sethi, and Jeffrey D. Ullman.
+
+Compilers: Principles, Techniques, and Tools. Addison Wesley, 1988.
+
+[CLR90] Thomas H. Cormen, Charles E. Leiserson, and
+
+Ronald L. Rivest. Introduction to Algorithms. McGraw Hill, 1990.
+
+[Det96] David L. Detlefs. An overview of the Extended Static
+
+Checking system. In Proceedings of the First Workshop on Formal Methods in Software Practice, pages
+1-9, January 1996.
+
+[DHM95] Dirk Dussart, Fritz Henglein, and Christian Mossin.
+
+Polymorphic Recursion and Subtype Qualifications:
+Polymorphic Binding-Time Analysis in Polynomial
+Time. In Static Analysis, Second International Symposium, number 983 in Lecture Notes in Computer
+Science, pages 118-135, Glasgow, Scotland, September 1995. Springer-Verlag.
+
+[EST95] Jonathan Eifrig, Scott Smith, and Valery Trifonov.
+
+Type Inference for Recursively Constrained Types
+and its Application to OOP. In Mathematical Foundations of Programming Semantics, Eleventh Annual
+Conference, volume 1 of Electronic Notes in Theoretical Computer Science. Elsevier, 1995.
+
+[Eva96] David Evans. Static Detection of Dynamic Memory
+
+Errors. In Proceedings of the 1996 ACM SIGPLAN
+Conference on Programming Language Design and
+Implementation, pages 44-53, Philadelphia, Pennsylvania, May 1996.
+
+[Hen91] Fritz Henglein. Efficient Type Inference for HigherOrder Binding-Time Analysis. In J. Hughes, editor,
+FPCA '91 Conference on Functional Programming
+Languages and Computer Architecture, volume 523 of
+Lecture Notes in Computer Science, pages 448-472,
+Cambridge, MA, August 1991. Springer-Verlag.
+
+[HR97] Fritz Henglein and Jakob Rehof. The Complexity of
+
+Subtype Entailment for Simple Types. In Proceedings, Twelfth Annual IEEE Symposium on Logic in
+Computer Science, pages 352-361, Warsaw, Poland,
+July 1997.
+
+[ICF98] Proceedings of the third ACM SIGPLAN International Conference on Functional Programming, Baltimore, Maryland, September 1998.
+
+11
+
+[Jon92] Mark P. Jones. A theory of qualified types. In Bernd
+
+Krieg-Br"ucker, editor, 4th European Symposium on
+Programming, number 582 in Lecture Notes in Computer Science, pages 287-306, Rennes, France, February 1992. Springer-Verlag.
+
+[Kie98] Richard Kieburtz. Taming Effects with Monadic Typing. In ICFP'98 [ICF98], pages 51-62.
+
+[KR88] Brian W. Kernighan and Dennis M. Ritchie. The C
+
+Programming Language. Prentice Hall, 2nd edition,
+1988.
+
+[KS93] Nils Klarlund and Michael I. Schwartzback. Graph
+
+Types. In Proceedings of the 20th Annual ACM
+SIGPLAN-SIGACT Symposium on Principles of
+Programming Languages, pages 196-205, Charleston,
+South Carolina, January 1993.
+
+[LG88] John M. Lucassen and David K. Gifford. Polymorphic
+
+Effect Systems. In Proceedings of the 15th Annual
+ACM SIGPLAN-SIGACT Symposium on Principles
+of Programming Languages, pages 47-57, San Diego,
+California, January 1988.
+
+[LN98] K. Rustan M. Leino and Greg Nelson. An Extended
+
+Static Checker for Modula-3. In Compiler Construction: 7th International Conference, volume 1383 of
+Lecture Notes in Computer Science, pages 302-305,
+April 1998.
+
+[Mag93] Steve Maguire. Writing Solid Code. Microsoft Press,
+
+1993.
+
+[Mil78] Robin Milner. A Theory of Type Polymorphism in
+
+Programming. Journal of Computer and System Sciences, 17:348-375, 1978.
+
+[Mit91] John C. Mitchell. Type inference with simple subtypes. Journal of Functional Programming, 1(3):245-
+285, July 1991.
+
+[MSS96] David R. Musser, Atul Saini, and Alexander
+
+Stepanov. STL Tutorial and Reference Guide.
+Addison-Wesley Publishing Company, 1996.
+
+[O/P97] Peter O/rbaek and Jens Palsberg. Trust in the
+
+*-calculus. Journal of Functional Programming,
+3(2):75-85, 1997.
+
+[OSW97] Martin Odersky, Martin Sulzmann, and Martin Wehr.
+
+Type Inference with Constrained Types. In Benjamin
+Pierce, editor, Proceedings of the 4th International
+Workshop on Foundations of Object-Oriented Languages, January 1997.
+
+[Pur] Pure Atria. Purify: Fast detection of memory leaks
+
+and access errors.
+
+[Reh99] Jakob Rehof. Personal communication, January 1999.
+[Sol95] Kirsten Lackner Solberg. Annotated Type Systems
+
+for Program Analysis. PhD thesis, Aarhus University,
+Denmark, Computer Science Department, November
+1995.
+
+[TT94] Mads Tofte and Jean-Pierre Talpin. Implementation of the Typed Call-by-Value *-Calculus using a
+Stack of Regions. In Proceedings of the 21st Annual
+ACM SIGPLAN-SIGACT Symposium on Principles
+of Programming Languages, pages 188-201, Portland,
+Oregon, January 1994.
+
+[VS97] Dennis Volpano and Geoffrey Smith. A Type-Based
+
+Approach to Program Security. In Michel Bidoit
+and Max Dauchet, editors, Theory and Practice of
+Software Development, 7th International Joint Conference, volume 1214 of Lecture Notes in Computer
+Science, pages 607-621, Lille, France, April 1997.
+Springer-Verlag.
+
+[Wad98] Philip Wadler. The Marriage of Effects and Monads.
+
+In ICFP'98 [ICF98], pages 63-74.
+
+[WF94] Andrew K. Wright and Matthias Felleisen. A Syntactic Approach to Type Soundness. Information and
+Computation, 115(1):38-94, 1994.
+
+[Wri95] Andrew K. Wright. Simple Imperative Polymorphism. In Lisp and Symbolic Computation 8, volume 4, pages 343-356, 1995.
+
+[YSP+98] K. Yelick, L. Semenzato, G. Pike, C. Miyamoto,
+
+B. Liblit, A. Krishnamurthy, P. Hilfinger, S. Graham,
+D. Gay, P. Colella, and A. Aiken. Titanium: A HighPerformance Java Dialect. In ACM 1998 Workshop
+on Java for High-Performance Network Computing,
+February 1998.
+
+12

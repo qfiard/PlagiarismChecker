@@ -1,0 +1,806 @@
+
+
+A Theory of Hygienic Macros
+
+David Herman and Mitchell Wand
+College of Computer and Information Science
+
+Northeastern University
+
+Boston, MA 02115{
+dherman,wand}@ccs.neu.edu
+
+Abstract. Hygienic macro systems, such as Scheme's, automatically
+rename variables to prevent unintentional variable capture--in short,
+they "just work." Yet hygiene has never been formally presented as a
+specification rather than an algorithm. According to folklore, the definition of hygienic macro expansion hinges on the preservation of alphaequivalence. But the only known notion of alpha-equivalence for programs with macros depends on the results of macro expansion! We break
+this circularity by introducing explicit binding specifications into the
+syntax of macro definitions, permitting a definition of alpha-equivalence
+independent of expansion. We define a semantics for a first-order subset
+of Scheme-like macros and prove hygiene as a consequence of confluence.
+
+The subject of macro hygiene is not at all decided, and more researchis needed to precisely state what hygiene formally means and [precisely
+which] assurances it provides. --Oleg Kiselyov [1]
+
+1 What are Hygienic Macros?
+Programming languages with hygienic macros automatically rename variables toprevent subtle but common bugs arising from unintentional variable capture--
+the experience of the practical programmer is that hygienic macros "just work."Numerous macro expansion algorithms for Scheme have been developed over
+many years [2-6], and the Scheme standard has included hygienic macros sinceR
+
+4RS [7].
+
+Yet to date, a formal specification for hygiene has been an elusive goal. In-tuitively, macro researchers have always understood hygiene to mean preserving
+
+ff-equivalence. In particular, performing an ff-conversion of a bound variableshould not result in a macro expansion that accidentally captures the renamed
+variable. But this idea has never been made precise.Why should such a simple idea be so hard to formalize? The problem is this:
+since the only known binding forms in Scheme are the core forms, the bindingstructure of a Scheme expression does not become apparent until after it has
+been fully expanded to core Scheme. Thus ff-equivalence is only well-defined forScheme programs that have been fully expanded, with no remaining instances of
+
+macros. So if the conventional wisdom is correct, the definition of hygienic macroexpansion relies on
+
+ff-equivalence, but the definition of ff-equivalence relies onthe results of macro expansion! This circularity is clearly paradoxical, and the
+
+definition of hygiene has consequently remained a mystery.But in practice, well-behaved macros follow regular binding disciplines consistently, independent of their particular expansion. For example, Scheme's letconstruct can be macro-defined using
+
+lambda, yet programmers rely on knowingthe binding structure of
+let without actually thinking about its expansion. If thesemantics of macros only had access to this binding structure in such a way that
+
+we could reason formally about the scope of Scheme programs without resortingto operational reasoning about their expansion, we could cut the Gordian knot
+and specify both ff-equivalence and hygiene in an intuitive and precise way.To put it more succinctly, we argue that the binding structure of a macro
+is a part of its interface. In this paper, we make that interface explicit as atype annotation. Our type system is novel but incorporates ideas both from the
+shape types of Culpepper and Felleisen [8] and nominal datatypes of Gabbayand Pitts [9]. With the aid of these type annotations, we define a notion of
+
+ff-equivalence for Scheme programs with first-order macros, i.e., macros that do not
+
+expand into subsequent macro definitions, and prove hygiene as a consequenceof confluence. We discuss higher-order macros as future work in Section 9.
+
+The organization of this paper is as follows. The next section introduces *m,a Scheme-like language with typed macros. Section 3 defines the
+
+ff-equivalencerelation for
+*m, and Section 4 introduces the macro type system. Section 5defines the macro expansion semantics. The next two sections present the key
+
+correctness theorems: type soundness in Section 6 and hygiene in Section 7. InSection 8 we present a front end for parsing S-expressions as
+
+*m expressions.Section 9 concludes with a discussion of related and future work.
+
+2 *m : an Intermediate Language for Modeling Macros
+In Scheme, macro expansion transforms S-expressions into a small, fixed set ofcore forms which the underlying compiler or interpreter is designed to recognize.
+Expansion eliminates uses of macros by translating them according to theirdefinitions, repeating this process recursively until there are no derived forms
+left to translate. Thus macro expansion consumes programs in surface syntax:
+(let ((x (sqrt 2)))
+
+(let ((y (exp x)))
+
+(lambda (f)
+
+(f y))))
+
+and produces programs with only the internal forms recognized by the compiler:
+
+((*x. ((*y. *f. f y) (exp x))) (sqrt 2))
+We use a distinct syntax for core forms to highlight the fact that they indicatethe completion of macro expansion. We use S-expressions not simply to describe
+
+Scheme, but as a simple and general model of tree-structured syntax. Becausemacro expansion operates on partially expanded programs, which may contain
+both core forms and S-expressions yet to be expanded, a model for macros mustincorporate both syntactic elements.
+
+To that end, we define an intermediate language for modeling macro expan-sion, called
+
+*m . The core forms are based on the *-calculus, but with additionalforms for local binding of macro definitions and macro application.
+
+1
+
+e ::= v | *v. e | e e | let syntax x = m in e end | opJsKoe
+v ::= x | ?a
+op ::= v | m
+m ::= macro p : oe ) e
+p ::= ?a | ((p))
+s ::= e | op | ((s))
+
+Unlike the surface syntax of Scheme, the syntax of *m consists not just of S-expressions but also expressions
+
+e, whose syntactic structure is fixed and man-ifest. Of course, macros admit arbitrary syntactic extension in the form of Sexpressions, so S-expressions s appear in the grammar as the arguments to macroapplications. Here too, though, the syntactic structure is made apparent via a
+shape type annotation oe. We return in detail to shape types in Section 2.2. Vari-ables
+
+v come in two sorts: program variables x, which are standard, and patternvariables
+
+?a, which are bound in macro argument patterns and used in theirdefinitions. Thus, for example,
+
+*x. x is a traditional *-abstraction, but *?a. ?amight appear in the body of a macro as a
+
+*-abstraction whose bound variablewill be provided from one of the macro's inputs. Macro operators
+
+op are eithervariable references or macro expressions. Macros
+m contain a pattern p, a typeannotation
+oe, and a template expression e. A pattern p is a tree of pattern vari-ables (assumed not to contain duplicates). Finally, an S-expression
+
+s is a treeof expressions or macro operators. The latter form is used to pass macros as
+
+arguments to other macros.The syntax of
+
+*m may seem unfamiliar compared to the simple S-expressionsof Scheme. After all, Scheme applications
+
+((s)) look different from *m applica-tions
+opJsKoe and in Scheme, pattern variables are indistinguishable from programvariables. However, given shape-annotated macro definitions, we can easily parse
+
+surface S-expression syntax into *m . We describe this process in Section 8.
+
+2.1 Tree Locations
+In order to address context-sensitive properties of terms, we use the mechanismof tree locations [10] to identify subterms by their position. Tree structures in
+
+our language take the general form t ::= L | ((t)) for some non-terminal of leaves
+L. For any such tree structure, we can select a subtree as a path from the rootof the tree to the node containing the subtree. A tree location
+
+` is an element ofN*. Given a tree
+t, the subtree t.` is defined by t.ffl = t and ((t)).i ` = ti.`.
+
+1 Throughout this paper we use an overbar notation (x) to represent sequences.
+
+2.2 Binding Specifications
+Macro definitions and applications in *m are explicitly annotated with shapetypes. The purpose of these annotations is to fix the structure of macros, including their scoping structure. For example, the following macro m matches fourpattern variables,
+
+?a, ?b, ?e1, and ?e2:
+
+macro ((?a ?b ?e1 ?e2)) : ((h0i h1i expr0 expr0,1)))
+
+*?a. ((*?b. ?e2) ?e1)
+
+The shape type oe = ((h0i h1i expr0 expr0,1)) tells us that pattern variables
+?a and ?b are placed in binding positions in the macro template, pattern vari-able
+
+?e1 is used in the scope of ?a alone, and ?e1 appears inside the scope ofboth
+
+?a and ?b. Maintaining the bindings in order--?a is bound outside, ?binside--makes it possible to resolve references unambiguously even if both
+
+?aand
+?b are instantiated with the same variable. For example, this tells us that
+mJ((x x x x))Koe =ff mJ((x y x y))Koe 6=ff mJ((x y y x))Koe.Shape types are defined by the following grammar:
+
+o/ ::= expr | oe ! expr
+fi ::= h`i | expr`,`
+oe ::= o/ | fi | ((oe))
+
+The base types o/ include the type of expressions and the types of macros, whichreceive S-expressions as arguments and produce expressions. Binding types
+
+fiexpress the scope of S-expressions. A binder type h
+`i corresponds to a variable inbinding position. The location
+` represents the position in the macro S-expression
+
+where the binder occurs. A body type expr`,` corresponds to an expression insidethe scope of one or more binders; the locations
+
+` indicate the positions in themacro S-expression of each of the binders that are in scope, in the order in which
+
+they are bound, outermost first.
+
+2.3 From S-Expressions to the Lambda Calculus
+Once a *m program has been fully expanded, it consists only of core forms, whichin our simple model corresponds to the untyped
+
+*-calculus. We say a programis in expansion-normal form (ENF) if it obeys the familiar grammar:
+
+e ::= x | *x. e | e e
+If ENF is the internal language of the compiler or evaluator, then S-expressionsare the surface language used by the programmer. The syntax of the surface
+
+language is a restricted subset of *m S-expressions:
+
+s ::= x | ((s))
+Thus we can envision an idealized pipeline for the evaluation of programs withmacros as shown in Figure 1.
+
+S-expression Parser expression Expander ENF Evaluator value
+
+Fig. 1. Pipeline for an idealized evaluator with macro expansion.
+In real Scheme implementations, parsing is interleaved with macro expansionas the syntactic roles of expressions gradually become apparent. This is different
+from our idealized pipeline, which completely separates parsing from expansion.This is due to the fact that complete type information makes it possible to parse
+an S-expression before macro expansion. We return to the front end in Section 8.
+
+3 Alpha-Equivalence
+We follow Gabbay and Pitts [9] in using variable swapping to define ff-equivalence.Swapping is defined by:
+
+(v1 v2) * v1 = v2(
+
+v1 v2) * v2 = v1(
+v1 v2) * v = v if v 62 {v1, v2}(
+v1 v2) * *v. e = *((v1 v2) * v). ((v1 v2) * e)
+
+(v1 v2) * ((s)) = (((v1 v2) * s))etc.
+
+The support of a term is the set of variables it contains:
+
+supp(v) = {v}supp(
+
+*v. e) = {v} [ supp(e)supp(
+((s))) = Si supp(si)etc.
+
+A variable v is fresh with respect to a finite set of terms S, written v # S, iffor all terms
+
+s 2 S, v 62 supp(s). We write v # s1, . . . , sn where n >= 1 to mean
+v # {s1, . . . , sn}.We also define the notion of simultaneously introducing multiple, distinct
+
+fresh variables by overloading the freshness relation for variable mappings. If Sis a set of terms and
+
+Z is a mapping {` 7! z} then we write Z # S to mean
+
+8` 2 dom(Z) . Z(`) # S and 8`, `0 2 dom(Z) . Z(`) = Z(`0) ) ` = `0
+We identify the binders of a form by collecting the set of binding positionsidentified in the form's shape type. The function bp(
+
+oe) produces the set of bind-ing positions of a shape type, and the function pp(
+p) identifies the positions ofpattern variables in a macro pattern.
+
+bp(((oe))) = Si{i ` | ` 2 bp(oei)} pp(((p))) = Si{i ` | ` 2 pp(pi)}bp(h
+
+`i) = {ffl} pp(?a) = {ffl}
+
+bp(expr`) = bp(o/ ) = ;
+
+We can use bp to compute the set of binders of a macro application binders(oe, s)as a mapping from binding positions
+
+` to their actual binders s.`:
+
+binders(oe, s) = {` 7! s.` | ` 2 bp(oe)}
+
+3.1 Shape-Directed Conversion
+Consider the following Scheme expression, with all occurrences of the variable xlabelled for the sake of explanation.
+
+(let ((x1 x2))
+
+(x3 (lambda (x4) x5)))
+
+In order to ff-convert x1 to a fresh name z, we must be careful to rename only theoccurrences of
+
+x bound by x1, which in this example includes only x3. Becausemacros may have arbitrary shape, a structural induction on the S-expression
+
+would be insufficient to recognize which instances of x were which. Instead,we define a notion of shape-directed conversion (
+
+Z X)oe * s, which follows thestructure of a form's binding specification rather than its syntax.
+
+(Z X)o/ * s = s
+(Z X)h`i * x = z if z = Z(`)
+(Z X)h`i * v = v if ` 62 dom(Z)
+
+(Z X)expr
+
+`,`0 * e = (z x) * (Z X)expr`0 * e if z = Z(`) and x = X(`)
+
+(Z X)expr
+
+`,`0 * e = (Z X)expr`0 * e if ` 62 dom(Z)
+
+(Z X)((oe)) * ((s)) = (((Z X)oei * si))
+(Z X)((oe)) * ?a = ?a
+
+The key to the definition of shape-directed conversion is the fourth rule, whichswaps a bound variable with its corresponding fresh name in an expression within
+
+its scope. Because body types order their bound variables from the outside in,occurrences of the variable
+
+x are renamed to z only after performing all innerrenamings, in case
+x is shadowed by an inner binding.
+
+3.2 Alpha-Equivalence
+The definition of ff-equivalence appears in Figure 2. The first four rules parallelthe rules of
+
+ff-equivalence for the *-calculus, but note that we do not convertpattern variables
+
+?a used in binding positions. The rule for macro bindings con-verts the macro name and proceeds inductively. The next rule is key: to compare
+
+two macro applications, their operators must be equivalent, and their argumentsmust be equivalent once we
+
+ff-convert their bound variables. Checking these in-volves several conditions. First, the two expressions must bind exactly the same
+
+pattern variables, if any; we ensure this by requiring that at any binding po-sition
+
+`, s.` binds an ordinary program variable x if and only if s0.` binds anordinary program variable
+
+x0. We collect the binder mappings X and X0 for the
+
+v =ff v
+
+e =ff e0
+*?a. e =ff *?a. e0
+
+z # e, e0
+(z x) * e =ff (z x0) * e0
+
+*x. e =ff *x0. e0
+
+e1 =ff e01
+e2 =ff e02
+
+e1 e2 =ff e01 e02
+
+z # e, m, e0, m0
+m =ff m0 (z x) * e =ff (z x0) * e0
+
+let syntax x = m in e end =ff let syntax x0 = m0 in e0 end
+
+op =ff op08
+` 2 bp(oe) . 9x = s.` , 9x0 = s0.`
+X = binders(oe, s) X0 = binders(oe, s0)
+Z = {` 7! z | ` 2 bp(oe), 9 x = s.`} Z # s, s0
+
+(Z X)oe * s =ff (Z X0)oe * s0
+
+opJsKoe =ff op0Js0Koe
+
+8` 2 pp(p) . p.` = ?a` and p0.` = ?a0` and ?z` # e, e08
+
+`, `0 2 pp(p) . ?z` = ?z`0 ) ` = `0
+
+(?z` ?a`) * p = (?z` ?a0`) * p0
+(?z` ?a`) * e =ff (?z` ?a0`) * e0
+
+(macro p : oe ) e) =ff (macro p0 : oe ) e0) 8
+
+i . si =ff s0i
+((s)) =ff ((s0))
+
+Fig. 2. Alpha-equivalence of *m programs.
+
+two respective forms, and we choose a mapping of fresh binders Z, being carefulnot to
+
+ff-convert at locations that bind pattern variables. Finally, we comparethe
+ff-converted arguments s and s0. The rule for comparing macros is somewhatsimpler. We choose fresh pattern variables
+
+?z` to replace the pattern variables ineither macro, and compare both their patterns and templates. Finally, compound
+
+S-expressions are compared inductively.
+
+3.3 Instantiation
+Identifying binders in a shape type positionally is convenient for the theory,since it results in one canonical representation for each distinct type. However,
+
+for some operations it is necessary to identify binders by name. We present analternate form of shape types ^
+
+oe which use variables rather than locations torepresent their binding structure:
+
+^fi ::= hvi | exprv,v
+^oe ::= o/ | ^fi | ((^oe))
+
+We write ^oe = oe[X] to denote the instantiation of a nameless shape type oe withthe concrete variable names of a variable mapping
+
+X.The free and bound variables of an expression are computed via shapedirected generalizations of the standard operations FV (s, ^oe) and BV (s, ^oe) (omitted for space). The following theorem ensures that we can always replace anS-expression with an
+
+ff-equivalent S-expression with fresh binders.
+
+Theorem 1 (Freshness). Let s be an S-expression and S be a finite set of S-expressions. Then there exists an S-expression
+
+s0 =ff s such that BV (s0, ^oe) # S.
+
+Proof. Induction on the structure of s. For each binding in s, choose fresh bindersthat are not in supp(
+
+S).
+
+It easy to show that if e and e0 are in ENF, then e =ff e0 if and only if thetwo expressions are
+
+ff-equivalent as *-terms.
+
+4 Type Checking
+The job of the type checker is to confirm that each macro definition conforms toits specification and that each use of a macro conforms to its interface. Excerpts
+
+of the type checking algorithm are presented in Figure 3. The type system usestwo environments to track the two dimensions of binding in
+
+*m . The programenvironment
+\Gamma  ::= * | \Gamma  [v := o/ ] tracks the scope of variables from bindingforms such as
+
+* and let syntax. The pattern environment \Phi  2 {*} [ PVar !Shape tracks the binding of pattern variables for the current macro (if any). This
+
+environment is constructed by pairing the structure of a macro pattern p withan instantiation of the macro's type annotation:
+
+penv(((p)), ((^oe))) = Si penv(pi, ^oei)penv (
+
+?a, ^oe) = {?a 7! ^oe}
+
+The type rule [T-MacDef] permits only non-nested macro definitions byrequiring an empty pattern environment. Rule
+
+[T-MacApp] checks macro ar-guments with their annotated type instantiated with the actual binders. Rule
+
+[T-PBody] checks a pattern variable reference with a body type, ensuring thatall the necessary pattern variables have been bound in the proper order. Rule
+[T-PAbs] checks abstractions with pattern variable binders. We discuss [T-PRef]in the next section. Rule
+
+[T-Body] binds a variable from a body type in the pro-gram environment. Rule
+
+[T-Macro] forms a pattern environment \Phi  and checksthe template against its annotated type (subject to well-formedness constraints),
+
+filtering out any pattern variables from the program environment; the first-ordermacros of
+
+*m cannot refer to pattern variables outside their own scope.
+
+4.1 The Aliasing Problem
+The design of our type system led us to discover a peculiarity of Scheme macros.Consider the following macro:
+
+(define-syntax K
+
+(syntax-rules ()
+
+((K a b)
+
+(lambda (a)
+
+(lambda (b) a)))))
+
+(\Gamma , \Phi ) ` e : expr
+[T-MacDef]
+
+(\Gamma , *) ` m : oe ! expr
+(\Gamma  [m := oe ! expr], *) ` e : expr
+
+(\Gamma , *) ` let syntax x = m in e end : expr
+
+[T-MacApp]
+
+(\Gamma , \Phi ) ` op : oe ! expr
+(\Gamma , \Phi ) ` s : oe[binders(oe, s)]
+
+(\Gamma , \Phi ) ` opJsKoe : expr
+
+[T-PBody]
+
+\Phi (?a) = expr?b
+\Gamma  |pvar = [?b := expr]
+
+(\Gamma , \Phi ) ` ?a : expr
+
+[T-PAbs]
+
+\Phi (?a) = h?ai
+(\Gamma  [?a := expr], \Phi ) ` e : expr
+
+(\Gamma , \Phi ) ` *?a. e : expr
+
+[T-PRef]
+
+\Phi (?a) = h?ai
+\Gamma  |pvar = \Gamma  0[?a := expr]
+
+(\Gamma , \Phi ) ` ?a : expr
+
+(\Gamma , \Phi ) ` e : ^fi (\Gamma , \Phi ) ` op : oe ! expr
+
+[T-Body]
+
+(\Gamma  [v := expr], \Phi ) ` e : exprv0
+
+(\Gamma , \Phi ) ` e : exprv,v0
+
+[T-Macro]
+
+wf (oe)
+(\Gamma  |var , penv(p, oe[pvars(p)])) ` e : expr
+
+(\Gamma , \Phi ) ` (macro p : oe ) e) : oe ! expr
+
+Fig. 3. Excerpts from the *m type system.
+
+One might expect that any application of K would produce an expression equiva-lent to
+
+*x. *y. x. But consider the application (K x x): even in a hygienic macrosystem, this would expand into
+
+*x. *x. x! The binding structure of K is thus de-pendent on its actual arguments. We call this dependency the aliasing problem.
+
+To resolve this ambiguity, we propose a simple rule we call the shadow restric-tion, enforced by the type rule
+
+[T-PRef]. A pattern binder ?a (i.e., of type h?ai)may only occur in an expression position if no other intervening pattern binders
+
+are in scope. For example, *?a. (*?b. ?b) is legal but *?a. (*?b. ?a) is ill-typed. Inparticular, this prohibits the definition of the
+
+K macro above. This restrictionmight seem draconian, but in fact
+K can easily be rewritten:
+
+(define-syntax K0
+
+(syntax-rules ()
+
+((K0 a b)
+
+(lambda (a)
+
+(let ((tmp a))
+
+(lambda (b) tmp))))))
+
+Note that even with standard, untyped Scheme macros, this new definition al-ways exhibits the intended behavior, in that even
+
+(K0 x x) expands into anexpression equivalent to
+*x. *y. x.
+
+4.2 Alpha-Equivalence Preserves Type
+Theorem 2 gives us the freedom to use ff-equivalent S-expressions without af-fecting the types.
+
+Lemma 1. (\Gamma , \Phi ) ` s : oe[X] , (\Gamma , \Phi ) ` (Z X)oe * s : oe[Z]
+Theorem 2 (Alpha-equivalence preserves type). If (\Gamma , \Phi ) ` s : ^oe and
+s =ff s0 then (\Gamma , \Phi ) ` s0 : ^oe.
+
+5 Macro Expansion
+In this section, we specify our macro expansion semantics. We begin with anotion of compatibility, defined via expansion contexts.
+
+5.1 Expansion Contexts
+An expansion context Coe is an S-expression with a hole [ ], which produces anS-expression of shape
+
+oe when filled with an expression e. When the shape of acontext is clear or irrelevant, we omit it for brevity.
+
+Cexpr
+
+` ::= [ ] | *v. Cexpr | Cexpr e | e Cexpr
+
+| let syntax x = Coe!expr in e end|
+
+let syntax x = m in Cexpr end|
+Coe!expr(s) | opJCoeKoe
+C((oe)) ::= ((s1..i-1 Coei si+1..|oe|)) i 2 1..|oe|
+Coe!expr ::= macro p : oe ) Cexpr
+
+5.2 Variable Conventions
+The heart of hygienic macro expansion is the management of bindings to preventaccidental capture. Different expansion algorithms achieve this in different ways.
+
+For the specification of hygienic macro expansion, we simply specify the necessaryconditions on variables under which expansion can proceed.
+
+Analogous to the Barendregt variable convention [11], the transparent pred-icate allows a macro definition to be substituted into an application only if no
+intervening bindings can capture free variable references in the macro template.This condition is sometimes referred to as referential transparency.
+
+transparent(s, ^oe, s0, ^oe0) , BV (s, ^oe) " FV (s0, ^oe0) = ;
+This condition alone is not enough to prevent unintended capture. The predicatehygienic requires a macro template's bindings to be fresh before performing an
+
+application. This prevents the bindings in the template from capturing referencesin the macro's arguments.
+
+hygienic(s, ^oe, s0) , BV (s, ^oe) # s0
+
+5.3 Expansion Semantics
+The semantics of macro expansion involves two rules. The first rule connectsmacro applications to their definitions via the substitution operation
+
+s[x := m]^oe,which uses the shape type ^
+oe to traverse the structure of s.
+
+v[x := m]expr = v (v 6= x)(
+
+*x. e)[x := m]expr = *x. e(
+*v. e)[x := m]expr = *v. (e[x := m]expr) (v 6= x)
+x[x := m]oe!expr = m
+v[x := m]oe!expr = v (v 6= x)
+
+e[x := m]expr
+
+x,v = e
+
+e[x := m]expr
+
+v,v0 = e[x := m]exprv0 (v 6= x)
+
+etc.
+A macro substitution step is defined by the rule:
+
+let syntax x = m in e end 7-!subst e[x := m]exprif transparent(
+
+e, expr, m, type(m))
+
+Note that the variable convention must be fulfilled to prevent the context of themacro application from capturing free variable references in the macro template.
+
+The second rule of macro expansion performs a macro transcription step,expanding an individual macro application. This rule is carried out in two parts.
+The first part, pattern matching, matches the macro pattern against the actualsub-expressions, producing a substitution
+
+ae:
+
+match(((p)), ((s))) = Si match(pi, si)match(
+
+?a, s) = {?a 7! s}
+
+Next, transcription instantiates all pattern variables in the template with thesubstitution function
+
+ae:
+
+transcribe(x, ae) = xtranscribe(
+
+?a, ae) = ae(?a)transcribe(
+*v. e, ae) = *(transcribe(v, ae)). (transcribe(e, ae))transcribe(
+e1 e2, ae) = (transcribe(e1, ae)) (transcribe(e2, ae))transcribe(
+opJsKoe, ae) = (transcribe(op, ae))Jtranscribe(s, ae)Koetranscribe(
+m, ae) = m
+
+transcribe(((s)), ae) = (((transcribe(s, ae))))
+
+The macro transcription step is defined as the rule:
+
+(macro p : oe ) e)JsKoe 7-!trans transcribe(e, match(p, s))if transparent(
+
+s, ^oe, e, expr) and hygienic(e, expr, s)where ^
+oe = oe[binders(oe, s)]
+
+The first variable convention also applies to this rule, since binders introduced inthe actual arguments of the macro application should not capture free references
+
+from the template. The second convention prevents binders introduced from thebody of the template from capturing references in the actual arguments.
+
+We define the binary relation 7-!" to be the compatible closure of the com-bined rules 7-!
+
+subst [ 7-!trans on S-expressions up to ff-equivalence, i.e., the leastrelation such that
+
+s1 7-!" s2 if there exist S-expressions s01, s02, a context C, andexpressions
+
+e1, e2 such that s1 =ff s01, s2 =ff s02, s01 = C[e1], s02 = C[e2], andeither
+e1 7-!subst e2 or e1 7-!trans e2.The binary relation 7-!-!
+
+" is the reflexive, transitive closure of 7-!".
+
+6 Type Soundness
+The type soundness proof is in the style of Wright and Felleisen [12]. The Preser-vation Lemma is proved for any S-expression
+
+s; it is reused in this more generalform for the proof of confluence.
+
+Lemma 2 (Preservation). If (\Gamma , \Phi ) ` s : ^oe and s 7-!" s0 then (\Gamma , \Phi ) ` s0 : ^oe.
+Proof. The proof depends on three lemmas that guarantee that macro substitu-tion, pattern matching, and transcription respectively preserve type, as well as
+
+a decomposition lemma. Theorem 2 ensures that choosing ff-equivalent terms tosatisfy the variable conventions is also type-preserving.
+
+Lemma 3 (Progress). If ` e : expr then either e is in ENF or there exists an
+e0 such that e 7-!" e0.
+
+Proof. Macro substitution is defined for all well-typed S-expressions, as is match.Theorem 1 allows us to choose
+
+ff-equivalent terms that satisfy the variable con-ventions for the expansion rules.
+
+Theorem 3 (Type soundness). If ` e : expr and e 7-!-!" e0 and e0 67-!", then
+e0 is in ENF and ` e0 : expr.
+
+7 Hygiene
+Theorem 4 (Confluence). Let s be an S-expression such that (\Gamma , \Phi ) ` s : ^oe.
+
+s
+
+s1 <<
+
+"
+
+s01
+
+"
+
+>>
+
+s2 <<
+
+"" >>
+
+Proof. In the style of Barendregt [11], Chapter 11, g*1. The proof involves markinga redex and tracking the marked redex and any copies or expansions of that
+marked term through multiple expansion steps. The central lemma shows thatboth macro substitution and transcription commute with expansion of marked
+redexes.
+
+At last, the final Hygiene Theorem follows immediately from confluence.
+Theorem 5 (Hygiene). Let e0 be an expression such that ` e0 : expr. If
+e0 =ff e00, e0 7-!-!" e, and e00 7-!-!" e0 such that e and e0 are in ENF, then
+e =ff e0.
+
+This theorem provides the crucial guarantee of hygienic macros, namely that
+ff-conversion of *m programs is semantics-preserving.
+
+8 Front End
+The parsing algorithm uses the same environments as the type system in or-der to distinguish the sorts of variables as well as annotate macro applications
+
+with types. Excerpts of this parsing algorithm are presented in Figure 4. Be-cause function application in Scheme is denoted by parenthesization rather than
+invoking a special application macro, the rule for parsing function applicationsinserts an explicit reference to a built-in macro
+
+@. This is similar to the techniqueused in PLT Scheme [13], in which implicit function applications are rewritten
+
+to explicit applications of #%app.Scheme implementations generally provide a standard library of macros. The
+primitive forms lambda and @ can be implemented as built-in macros in the initialcontext of a Scheme program:
+
+C0 = let syntax
+
+lambda = (macro ((((?a)) ?e)) : ((((h00i)) expr00)) ) *?a. ?e)
+@ = (macro ((?e1 ?e2)) : ((expr expr)) ) ?e1 ?e2)
+in [ ] end
+
+The parser must account for these macros in its initial environment:
+
+\Gamma 0(lambda) = ((((h00i)) expr00)) ! expr
+\Gamma 0(@) = ((expr expr)) ! expr
+
+9 Related and Future Work
+Hygienic macros are over twenty years old, and many macro systems have beendesigned to facilitate or guarantee hygiene [2, 5, 3, 6]. Several have been defined
+
+in a rigorous and formal way, but none provides a specification for hygiene, norany satisfying account for the guarantees it provides. Our work shares a common
+observation with the syntactic closures macro system [4], namely that macroprogrammers know the binding structure of macros a priori; their work provides
+an API rather than a theory. Our primitive lambda and @ macros resemble themicros of Krishnamurthi [14].
+
+Several syntactic extension mechanisms have been designed for languagesother than Scheme [15, 16]. MacroML [17] is particularly relevant since it automatically prevents unintended variable capture. Their system is restrictive: bind-ing forms can only extend ML's
+
+let form, and macros cannot inspect or destruc-ture their syntactic arguments. Our work allows destructuring of S-expressions
+
+parse(\Gamma , \Phi , x, expr) = j ?x if x 2 dom(\Phi )x if x 62 dom(\Phi )
+parse(\Gamma , \Phi , ((let-syntax ((((x s1)))) s2)), expr) = let syntax x = m in e end
+
+where parseMacro(s1) = m
+
+and parse(\Gamma  [x := type(m)], \Phi , s2, expr) = e
+parse(\Gamma , \Phi , ((x s)), expr) = opJs0Koe
+
+where parseOperator(\Gamma , \Phi , x) = (op, oe ! expr)
+
+and binders(\Phi , oe, ((s))) = X
+and parse(\Gamma , \Phi , ((s)), oe[X]) = s0
+parse(\Gamma , \Phi , ((s1 s2)), expr) = parse(\Gamma , \Phi , ((@ s1 s2)), expr)
+
+if s1 62 dom(\Gamma  ) and ?s1 62 dom(\Phi )
+
+Fig. 4. Excerpts of the type-directed parsing algorithm.
+
+while still preserving the integrity of expressions. Our work also provides a the-ory of
+
+ff-equivalence. Previous work on staged notational definitions [18] providesa meta-language SND for reasoning about MacroML programs; we believe our
+
+system more closely matches the informal reasoning used by macro programmers.
+
+The shape types of Culpepper and Felleisen [8] are similar in expressivepower to ours, allowing destructuring of S-expressions and synthesis of arbitrary
+
+binding forms. Our work extends theirs by accounting for binding structures.Crucially, this provides us with our account of
+
+ff-equivalence and hygiene. Ouruse of types for expressing bindings was inspired by the nominal datatypes of
+
+Gabbay and Pitts [9].
+
+Gasbichler [19] provides a detailed formal account of a rich macro systemin order to study the interaction of hygienic macros and module systems. Our
+
+work is concerned instead with the guarantees provided by hygiene. Griffin [20]and Bove and Arbilla [21] also provide formal accounts of notational definitions
+and macros, respectively. The former is based on a higher-order representation ofbinding forms, the latter on de Bruijn indices. We have taken an explicitly-named
+approach in order to explore the connection between hygiene and ff-equivalence.Both works prove key correctness properties, but in the context of a language
+with only top-level macro definitions, i.e., without lexically scoped macros.
+
+Finally, we note that the design of our shape types bears some resemblanceto the locally nameless approach to binding structures [22-24]. In particular, our
+
+macro types use tree locations ` in order to avoid using an ff-equivalence relationon shape types, but when destructuring a type, we instantiate these locations
+with concrete names. We intend to investigate this relationship further.
+
+There is much more to discover of the theory of hygienic macros. Our elemen-tary type system is not yet expressive enough to permit important idioms in common use, including recursive macros, variable-length lists and list-patterns [25],and case dispatch. Another important next step will be to understand the type
+structure of higher-order macros, which expand into subsequent macro defini-tions. We intend to investigate the connection to staged types for this question.
+
+Other areas for future exploration include procedural macros, inference for shapetypes, and support for intentional capture.
+References
+
+1. Kiselyov, O.: How to write seemingly unhygienic and referentially opaque macros
+
+with syntax-rules. In: Scheme Workshop. (2002)
+2. Kohlbecker, E., Friedman, D.P., Felleisen, M., Duba, B.: Hygienic macro expansion.
+
+In: LISP and Functional Programming. (1986)
+3. Clinger, W., Rees, J.: Macros that work. In: POPL. (1991)
+4. Bawden, A., Rees, J.: Syntactic closures. In: LISP and Functional Programming.
+
+(1988) 86-95
+5. R. Kent Dybvig, R.H., Bruggeman, C.: Syntactic abstraction in Scheme. Lisp and
+
+Symbolic Computation 5(4) (December 1993) 295-326
+6. van Tonder, A.: SRFI 72: Hygienic macros. Online (September 2005)
+7. Clinger, W., Rees, J.: Revised4 report on the algorithmic language Scheme. Technical report (1991)
+8. Culpepper, R., Felleisen, M.: Taming macros. In: GPCE. (2004)
+9. Gabbay, M.J., Pitts, A.M.: A new approach to abstract syntax with variable
+
+binding. Formal Aspects of Computing 13(3-5) (2001) 341-363
+10. Gorn, S.: Explicit definitions and linguistic dominoes. In: Systems and Computer
+
+Science, Proceedings of the Conference held at Univ. of Western Ontario. (1967)
+11. Barendregt, H.P.: The Lambda Calculus: Its Syntax and Semantics. revised edn.
+
+North-Holland, Amsterdam (1984)
+12. Wright, A.K., Felleisen, M.: A syntactic approach to type soundness. Information
+
+and Computation 115(1) (1994) 38-94
+13. Flatt, M.: PLT MzScheme: Language manual. Technical Report PLT-TR2007-1-
+
+v371, PLT Scheme Inc. (2007) http://www.plt-scheme.org/techreports/.
+14. Krishnamurthi, S.: Linguistic Reuse. PhD thesis, Rice University (May 2001)
+15. de Rauglaudre, D.: Camlp4 reference manual. Online (September 2003)
+16. Sheard, T., Peyton Jones, S.: Template metaprogramming for Haskell. In
+
+Chakravarty, M.M.T., ed.: Haskell Workshop. (2002) 1-16
+17. Ganz, S.E., Sabry, A., Taha, W.: Macros as multi-stage computations: type-safe,
+
+generative, binding macros in MacroML. In: ICFP 2001. (2001) 74-85
+18. Taha, W., Johann, P.: Staged notational definitions. In: GPCE. (2003) 97-116
+19. Gasbichler, M.: Fully-parameterized, first-class modules with hygienic macros.
+
+PhD thesis, University of T"ubingen (August 2006)
+20. Griffin, T.: Notational definition--a formal account. In: LICS. (1988) 372-383
+21. Bove, A., Arbilla, L.: A confluent calculus of macro expansion and evaluation. In:
+
+LISP and Functional Programming, ACM Press (June 1992) 278-287
+22. McKinna, J., Pollack, R.: Some lambda calculus and type theory formalized. Journal of Automated Reasoning 23 (1999) 373-409
+23. Gordon, A.D.: A mechanisation of name-carrying syntax up to alpha-conversion.
+
+In: Workshop on HOL Theorem Proving and its Applications. (1994) 413-425
+24. McBride, C., McKinna, J.: Functional pearl: I am not a number--I am a free
+
+variable. In: Haskell Workshop. (2004) 1-9
+25. Kohlbecker, E.E., Wand, M.: Macro-by-example: Deriving syntactic transformations from their specifications. In: Principles of Programming Languages. (1987)

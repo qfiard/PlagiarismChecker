@@ -1,0 +1,1139 @@
+
+
+Union Types for Semistructured Data
+
+Peter Buneman Benjamin Pierce
+
+University of Pennsylvania
+Dept. of Computer & Information Science
+
+200 South 33rd Street
+Philadelphia, PA 19104-6389, USA
+fpeter,bcpierceg@cis.upenn.edu
+
+Technical report MS-CIS-99-09
+
+April 6, 1999
+
+Abstract
+Semistructured databases are treated as dynamically typed: they come equipped with no independent
+schema or type system to constrain the data. Query languages that are designed for semistructured data,
+even when used with structured data, typically ignore any type information that may be present. The
+consequences of this are what one would expect from using a dynamic type system with complex data:
+fewer guarantees on the correctness of applications. For example, a query that would cause a type error
+in a statically typed query language will silently return the empty set when applied to a semistructured
+representation of the same data.
+
+Much semistructured data originates in structured data. A semistructured representation is useful
+when one wants to add data that does not conform to the original type or when one wants to combine
+sources of different types. However, the deviations from the prescribed types are often minor, and we
+believe that a better strategy than throwing away all type information is to preserve as much of it as
+possible. We describe a system of untagged union types that can accommodate variations in structure
+while still allowing a degree of static type checking.
+
+A novelty of this system is that it involves non-trivial equivalences among types, arising from a law of
+distributivity for records and unions: a value may be introduced with one type (e.g., a record containing
+a union) and used at another type (a union of records). We describe programming and query language
+constructs for dealing with such types, prove the soundness of the type system, and develop algorithms
+for subtyping and typechecking.
+
+1 Introduction
+Although semistructured data has, by definition, no schema, there are many cases in which the data obviously
+possesses some structure, even if it has mild deviations from that structure. Moreover it typically has this
+structure because it is derived from sources that have structure. In the process of annotating data or
+combining data from different sources one needs to accommodate the irregularities that are introduced by
+these processes. Because there is no way of describing "mildly irregular" structure, current approaches
+start by ignoring the structure completely, treating the data as some dynamically typed object such as a
+labelled graph and then, perhaps, attempting to recover some structure by a variety of pattern matching
+and data mining techniques [NAM97, Ali99]. The purpose of this structure recovery is typically to provide
+optimization techniques for query evaluation or efficient storage storage structures, and it is partial. It is
+not intended as a technique for preserving the integrity of data or for any kind of static type-checking of
+applications.
+
+1
+
+When data originates from some structured source, it is desirable to preserve that structure if at all possible.
+The typical cases in which one cannot require rigid conformance to a schema arise when one wants to
+annotate or modify the database with unanticipated structure or when one merges two databases with slight
+differences in structure. Rather than forgetting the original type and resorting to a completely dynamically
+type, we believe a more disciplined approach to maintaining type information is appropriate. We propose
+here a type system that can "degrade" gracefully if sources are added with variations in structure, while
+preserving the common structure of the sources where it exists.
+
+The advantages of this approach include:
+
+ffl The ability to check the correctness of programs and queries on semistructured data. Current semistructured query languages [AQM+96, BDHS96, DFF+] have no way of providing type errors - they typically
+return the empty answer on data whose type does not conform to the type assumed by the query.
+
+ffl The ability to create data at one type and query it at another (equivalent) type. This is a natural
+
+consequence of using a flexible type system for semistructured data.
+
+ffl New query language constructs that permit the efficient implementation of "case" expressions and
+
+increase the expressive power of a OQL-style query languages.
+
+As an example, biological databases often have a structure that can be expressed naturally using a combination of tuples, records, and collection types. They are typically cast in special-purpose data formats,
+and there are groups of related databases, each expressed in some format that is a mild variation on some
+original format. These formats have an intended type, which could be expressed in a number of notations.
+For example a source (source1) could have type
+
+set[ id : Int,
+
+description : Str,
+bibl : set[ title: Str , authors: list[name: Str, address: Str], year : Int. . . ],
+. . . ]
+
+A second source (source2) might yield a closely related structure:
+
+set[ id : Int,
+
+description : Str,
+bibl : set[ title: Str , authors: list[fn: Str , ln: Str, address: Str], year : Int . . . ],
+. . . ]
+
+This differs only in the way in which author names are represented. (This example is fictional, but not far
+removed from what happens in practice.)
+
+The usual solution to this problem in conventional programming languages is to represent the union of the
+sources using some form of tagged union type:
+
+set(h tag1 : [ id : Int; : : : ]; tag2 : [ id : Int; : : : ] i):
+The difficulty with this solution is that a program such as
+
+for each x in source1 do print(x:description) (1)
+that worked on source1 must now be modified to
+
+foreach x in source1 union source2 do
+
+case x of
+
+h tag1 = y1 i ) print(y1:description)
+j h tag2 = y2 i ) print(y2:description)
+
+2
+
+in order to work on the union of the sources, even though the two branches of the case statement contain
+identical code! This is also true for the (few) database query languages that deal with tagged union types
+[BLS+94].
+
+Contrast this with a typical semi-structured query:
+
+select [ description = d ; title = t ]
+where [ description = d ; bibl = [ Title = t ] ]  source1
+
+(2)
+
+This query works by pattern matching based on the (dynamically determined) structure of the data. Thus
+the same query works equally well against either of the two sources, and hence also against their union. The
+drawback of this approach, however, is that incorrect queries - for example, queries that use a field that
+does not exist in either source - yield the empty set rather than an error.
+
+In this paper we define a system that combines the advantages of both approaches, based on a system of
+type-safe untagged union types. As a first example, consider the two forms of the author field in the types
+above. We may write the union of these types as:
+
+[ name: Str; address: Str ] . [ ln: Str; fn: Str ; address: Str ]
+It is intuitively obvious that an address can always be extracted from a value of such a type. To achieve
+this formally, we begin by expressing a multi-field record type [l1 : T1; l2 : T2; : : :] as a product of single-field
+record types: [l1 : T1] \Theta  [l2 : T2] \Theta  : : :. In this more basic form, the union type above is:
+
+([ name: Str ] \Theta  [ address: Str ]) . ([ ln: Str ] \Theta  [ fn: Str ] \Theta  [ address: Str ])
+We now invoke a distributivity law that allows us to treat
+
+[a : Ta] . ([b : Tb] \Theta  [c : Tc]) and ([a : Ta] \Theta  [b : Tb]) . ([a : Ta] \Theta  [c : Tc])
+as equivalent types. Using this, the union type above rewrites to:
+
+([ name: Str ] . [ fn: Str \Theta  ln: Str ]) \Theta  [ address: Str ]
+In this form, it is evident that the the selection of the address field is an allowable operation.
+Type-equivalences like this distributivity rule allow us to introduce a value at one type and operate on
+it another type. Under this system both the program (1) and the query (2) above will type-check when
+extended to the union of the two sources. On the other hand, queries that reference a field that is not in
+either source will fail to type check.
+
+Some care is needed in designing the operations for manipulating values of union types. Usually, the interrogation operation for records is field selection and the corresponding operation for unions is a case
+expression. However it is not enough simply to use these two operations. Consider the type ([a1 : T1] . [b1 :
+U1]) \Theta  : : : \Theta  ([an : Tn] . [bn : Un]). The form of this type warrants neither selecting a field nor using a case
+expression. We can, if we want, use distributivity to rewrite it into a disjunct of products, but the size of this
+disjunct is exponential in n and so, presumably, would be the corresponding case expression. We propose,
+instead, an extended pattern matching syntax that allows us to operate on the type in its original, compact,
+form.
+
+More sophisticated pattern matching operations may be useful additions even to existing semistructured
+query languages. Consider the problem of writing a query that produces a uniform output from a single
+source that contains two representations of names:
+
+( select [ description = d ; name = n ]
+
+3
+
+where [ description = d ; bibl = [ author = [ name = n ] ] ]  source )
+union
+( select [ description = d ; name = string-concat(f; l) ]
+
+where [ description = d ; bibl = [ author = [ ln = l ; fn = f ] ] ]  source )
+
+This is the only method known to the authors of expressing this query in current semistructured query
+languages. It suggests an inefficient execution model and may not have the intended semantics when, for
+example, the source is a list and one wants to preserve the order. Thus some enhancement to the syntax is
+desirable.
+
+This paper develops a type system based on untagged union types along with operations to construct and
+deconstruct these types. In particular, we define a syntax of patterns that may be used both for an extended
+form of case expression and as an extension to existing query languages for semi-structured data. We should
+remark that we cannot capture all aspects of semistructured query languages. For example, we have nothing
+that corresponds to "regular path expressions" [BDHS96, AQM+96]. However, we believe that for most
+examples of "mildly" semistructured data - especially the forms that arise from the integration of typed
+data sources - a language such as proposed here will be adequate. Our main technical contribution is a proof
+of the decidabiliity of subtyping for this type system (which is complicated by the non-trivial equivalences
+involving union and record types).
+
+To our knowledge, untagged union types never been formalized in the context of database programming
+languages. Tagged union types have been suggested in several papers on data models [AH87, CM94] but
+have had minimal impact on the design of query languages. CPL [BLS+94], for example, can match on only
+one tag of a tagged union, and this is one of the few languages that makes use of union types. Pattern
+matching has been recently exploited in languages for semi-structured data and XML [BDHS96, DFF+].
+In the programming languages and type theory communities, on the other hand, untagged union types
+have been studied extensively from a theoretical perspective [Pie91, BDCd95, Hay91, Dam94, DCdP96,
+etc.], but the interactions of unions with higher-order function types have been shown to lead to significant
+complexities; the present system, on the other hand, provides only a very limited form of function types (like
+most database query languages), and remains reasonably straightforward. .
+
+Section 2 develops our language for programming with record and union types, including pattern matching
+primitives that can be used in both case expressions and query languages. Section 3 describes the system
+formally and demonstrates the decidability of subtyping and type equivalence. Proofs will be provided in
+the full paper. Section 4 offers concluding remarks.
+
+2 Programming with Union Types
+In this section we shall develop a syntax for the new programming constructs that are needed to deal with
+union types. The presentation is informal for the moment - more precise definitions appear in Section 3.
+We start with operations on records and extend these to work with unions of records; we then deal with
+operations on sets. Taken in conjunction with operations on records, these operations are enough to define
+a simple query language. We also look at operations on more general union types and give examples of a
+"typecase" operation.
+
+2.1 Record formation
+Just as we defined a record type [ l1 : T1; : : : ; ln : Tn ] as the product [ l1 : T1 ] \Theta  : : : \Theta  [ ln : Tn ] of elementary
+or "singleton" record types, we define a record value as the disjoint concatenation of singleton records.
+The operations for creating records are the empty record [ ], the singleton record [ l = e ] (where e is an
+expression), and the disjoint concatenation of records e#e. We use [ l1 = e1; : : : ; ln = en ] as shorthand for
+[ l1 = e1 ]# : : : #[ ln = en ].
+
+4
+
+Unlike typed systems with tagged unions, in our system there is no basic formation operation directly
+associated with the union type. However we may want to introduce operators such as "relaxed union,"
+which takes two sets of type set(t1) and set(t2) and return a set of type set(t1 . t2).
+
+2.2 Case expressions
+Records are decomposed through the use of case expressions. These allow us to take alternative actions
+based on the structure of values. We shall also be able to use components of the syntax of case expressions
+in the development of matching constructs for query languages. The idea in developing a relatively complex
+syntax for the body of case expressions is that the structure of the body can be made to match the expected
+structure of the type of the value on which it is operating. There should be no need to "flatten" the type
+into disjunctive normal form and write a much larger case expression at that type.
+
+We start with a simple example:
+
+case e of [ fn = f :Str; ln = l :Str ] ) string-concat(f; l)
+
+j [ name = n:Str ] ) n
+
+This matches the result r of evaluating e to one of two record types. If r is a record with fn and ln
+fields, the variables f and l are bound and the right-hand side of the first clause is evaluated. If the first
+pattern does not match, the second clause is tried. This case expression will work provided r has type
+[ fn: Str; ln: Str ] . [ name: Str ].
+
+We should note that pattern matching introduces identifiers such as l; f; n in this example, and we shall make
+a short-sighted assumption that identifiers are introduced when they are associated with a type (x : T ). This
+ignores the possibility of type inference. See [BLS+94] for a more sophisticated syntax for introducing
+identifiers in patterns.
+
+Field selection is given by a one-clause case expression: case e of [ l = x :T ] ) x.
+We shall also allow case expressions to dispatch on the run-time type of an argument:
+
+case e of x :Int ) x
+
+j y:set(Int) ) sum(y)
+
+This will typecheck when e : Int . set(Int)
+The clauses of a case expression have the form p ) e, where p is a pattern that introduces (binds) identifiers
+which may occur free in the expression e. Thus each clause defines a function. Two or more functions can
+be combined by writing p1 ) e1 j p2 ) e2 j : : : to form another function. The effect of the case expression
+case e of f is to apply this function to the result of evaluating e.
+
+Now suppose we want to extract information from a value of type
+
+([ name: Str ] . [ ln: Str; fn: Str ]) \Theta  [ age: Int ] (2)
+The age field may be extracted using field selection using a one-clause case expression as described above.
+However information from the left-hand component cannot be extracted by extending this case expression.
+What we need is need something that will turn a multi-clause function back into a pattern that binds a new
+identifier. We propose the syntax x : T as f , in which f is a multi-clause function. In the evaluation of
+x as f , f is applied to the appropriate structure and x is bound to the result.
+
+case e of
+
+x as ([ fn = f :Str; ln = l :Str ] ) string-concat(f; l) j [ name = n:Str ] ) n)
+# [ name = a:Int ]
+) [ name = x ; age = a + 1 ]
+
+5
+
+could be applied to an expression e of type (2) above. Note the use of # to combine two patterns so that
+they match on a product type. This symbol is used to concatenate patterns in the same way that it is used
+to concatenate record values.
+
+2.3 Sets
+We shall follow the approach to collection types given in [BNTW95]. It is known that both relational and
+complex-object languages can be expressed using this formalism. The operations for forming sets are: fg
+(empty set), feg (singleton set) and e union e (set union). For "iterating" over a set we use the form
+
+collect e where p  e0.
+Here, e and e0 are both expressions of set type, and p is a pattern as described above. The meaning of this
+is (informally) Sfoe(e) j oe(p) 2 e0g, in which oe is a substitution that binds the variables of p to match an
+element of e0.
+
+These operations, taken in conjunction with the record operations described above and an equality operation,
+may be used as the basis of practical query languages. Conditionals and booleans may be added, but they
+can also be simulated with case expressions and some appropriately chosen constants.
+
+2.4 Examples
+We conclude this section with some remarks on high-level query languages. A typical form of a query that
+makes use of pattern matching is:
+
+select e
+where p1  e1;
+
+p2  e2;
+: : :
+condition
+
+Here the pi are patterns and the expressions e1; : : : ; ei have set types. Variables introduced in pattern pi
+may be used in expression ej and (as constants) in pattern pj where j ? i. They may also be used in the
+expression e and the condition, which is simply a boolean expression. This query form can be implemented
+using the operations described in the previous section.
+
+As an example, here is a query based on the example types in the introduction. We make use of the syntax
+of patterns as developed for case expressions, but here we are using them to match on elements of one or
+more input sets.
+
+select [ description = d ; authName = a; address = s ]
+where [ description = d :Str; bibl = b:BT ]  source1 union source2;
+
+[ authors = aa:AT ; year = y:Int ]  b;
+a as ([ fn = f :Str; ln = l:Str ] ) string-concat(f; l) j [ name = n:Str ] ) n)  aa;
+y ? 1991
+
+Note that we have assumed a "relaxed" union to combine the two sources. In the interests of consistency
+with the formal development, we have also inserted all types for identifiers, so AT and BT are names for
+the appropriate fragments of the expected source type. In many cases such types can be inferred.
+
+Here are two examples that show the use of paterns in matching on types rather than record structures.
+Examples of this kind are commomly used to illustrate the need for semistructured data.
+
+6
+
+select x
+where x as (s : set(Num) ) average(s) j r : Num ) r)  source
+
+select s
+where s as (n : Str ) n j [ fn = f :Str; ln = l :Str ] ) string-concat(f; l))  source0
+
+In the first case we have a set source that may contain both numbers and sets of numbers. In the second
+case we have a set that may contain both base types and record types. Both of these can be statically
+type-checked. If, for example, in the first query, s has type set(Str), the query would not type-check.
+
+To demonstrate the proposed syntax for the use of functions in patterns, here is one last (slightly contrived)
+example. We want to calculate the mass of a solid object that is either rectangular or a sphere. Each measure
+of length can be either integer or real. The type is
+
+[ density: Real ]
+\Theta 
+( [ intRadius: Int ] . [ realRadius: Real ]
+
+.
+( ([ intHeight: Int ] . [ realHeight : Real ])
+
+\Theta 
+([ intWidth: Int ] . [ realWidth: Real ])
+\Theta 
+([ intDepth: Int ] . [ realDepth: Real ]) ) )
+
+The following case expression makes use of matching based on both unions and products of record structures.
+Note that the structure of the expression follows that of the type. It would be possible to write an equivalent
+case expression for the disjunctive normal form for the type and avoid the use of the form x asf , but such
+an expression would be much larger than the one given here.
+
+case e of
+
+[ density = d :Real ]
+#
+v as
+
+( r as ([ intRadius = ir :Int ] ) float(ir ) j [ realRadius = rr :Real ] ) rr )
+
+) r\Lambda \Lambda 3)
+j
+( h as ([ intHeight = ih:Int ] ) float(ih) j [ realHeight = rh:Real ] ) rh)
+
+#
+w as ([ intWidth = iw :Int ] ) float(iw) j [ realWidth = rw :Real ] ) rw )
+#
+d as ([ intDepth = id :Int ] ) float(id ) j [ realDepth = rd :Real ] ) rd )
+
+) h \Lambda  w \Lambda  d)
+) d \Lambda  v
+
+3 Formal Development
+With the foregoing intuitions and examples in mind, we now proceed to the formal definition of our language,
+its type system, and its operational semantics. Along the way, we establish fundamental properties such as
+run-time safety and the decidability of subtyping and type-checking.
+
+7
+
+3.1 Types
+We develop a type system that is based on conventional complex object types, those that are constructed
+from the base types with record (tuple) and set constructors. As described in the introduction, the record
+constructors are [ ], the empty record type, [ l : t ], the singleton record type, and R \Theta  R, the disjoint
+concatenation of two records types. (By disjoint we mean that the two record types have no field names in
+common.) Thus a conventional record type [ l1 : T1; : : : ; ln : Tn ] is shorthand for [ l1 : Y1 ] \Theta  : : : \Theta  [ ln : Tn ].
+To this we add an untagged union type T . T . We also assume a single base type B and a set type set(T ).
+Other collection types such as lists and multisets would behave similarly,
+
+The syntax of types is described by the following grammar:
+
+T ::= B base type
+
+[ ] empty record type
+[ l : T ] labeling (single-field record type)
+T1 \Theta  T2 record type concatenation
+T1 . T2 union type
+set(T ) set type
+
+3.2 Kinding
+We have already noted that certain operations on types are restricted. For example, we cannot take the
+product of two record types with a common field name. This in turn means that any operation on records
+whose typing rules make improper use of a type constructor is also illegal. In order to control the formation
+of types we introduce a system of kinds. This consists of the kind of all types, Type, and a subkind Rcd(L),
+which is the kind of all record types whose labels are included in the label set L.
+
+K ::= Type kind of all types
+
+Rcd(L) kind of record types with (at most) labels L
+
+The kinding relation is defined as follows:
+
+B 2 Type (K-Base)
+[ ] 2 Rcd(fg) (K-Empty)
+
+T 2 Type
+[ l : T ] 2 Rcd(flg) (K-Field)
+
+S 2 Rcd(L1) T 2 Rcd(L2) L1 " L2 = ;
+
+S \Theta  T 2 Rcd(L1 [ L2) (K-Rcd)
+
+S 2 K T 2 K
+
+S . T 2 K (K-Union)
+
+T 2 Type
+set(T ) 2 Type (K-Set)
+
+T 2 Rcd(L1)
+T 2 Rcd(L1 [ L2) (K-Subsumption-1)
+
+T 2 Rcd(L)
+
+T 2 Type (K-Subsumption-2)
+
+8
+
+There are two important consequences of these rules. First, record kinds extend to the union type. For
+example, ([ A : t ] \Theta  [ B : t ]) \Theta  ([ C : t ] . [ D : t ]) has kind Rcd(fA; B; C; Dg). Second, the kinding rules
+require the labels in a concatenation of two record types to be disjoint. (However the union type constructor
+is not limited in the same way; Int . Str and Int . [a : Str] are well-kinded types.)
+
+3.3 Subtyping
+As usual, the subtype relation written S !: T captures a principle of "safe substitutibility": any element of
+S may safely be used in a context expecting an element of T .
+
+For sets and records, the subtyping rules are the standard ones: set(S) !: set(T ) if S !: T (e.g., a set of
+employees can be used as a set of people), and a record type S is a subtype of a record type T if S has
+more fields than T and the types of the common fields in S are subtypes of the corresponding fields in T .
+This effect is actually achieved by the combination of several rules below. This "exploded presentation" of
+record subtyping corresponds to our presentation of record types in terms of separate empty set, singleton,
+and concatenation constructors.
+
+For union types, the subtyping rules are a little more interesting. First, we axiomatize the fact that S . T
+is the least upper bound of S and T - that is, S . T is above both S and T , and everything that is above
+both S and T is also above their union (rules S-Union-UB and S-Union-L below). We then have two rules
+(S-Dist-Rcd and S-Dist-Field) showing how union distributes over records.
+
+Formally, the subtype relation is the least relation on well-kinded types closed under the following rules.
+
+T !: T (S-Refl)
+R !: S S !: T
+
+R !: T (S-Trans)
+
+[ l : T ] !: [ ] (S-Rcd-FE)
+
+S \Theta  T !: S (S-Rcd-RE)
+S \Theta  T !: T \Theta  S (S-Rcd-Comm)
+S \Theta  (T \Theta  U ) !: (S \Theta  T ) \Theta  U (S-Rcd-Assoc)
+
+S !: S \Theta  [ ] (S-Rcd-Ident)
+
+S !: T
+[ l : S ] !: [ l : T ] (S-Rcd-DF)
+
+S1 !: T1 S2 !: T2
+
+S1 \Theta  S2 !: T1 \Theta  T2 (S-Rcd-DR)
+
+S !: T
+set(S) !: set(T ) (S-Set)
+
+R !: T S !: T
+
+R . S !: T (S-Union-L)
+
+S !: S . T (S-Union-UB)
+
+9
+
+R \Theta  (S . T ) !: (R \Theta  S) . (R \Theta  T ) (S-Dist-Rcd)
+
+[ l : S . T ] !: [ l : S ] . [ l : T ] (S-Dist-Field)
+
+Note that we restrict the subtype relation to well-kinded types: S is never a subtype of T if either S or T
+is ill-kinded. (The typing rules will be careful only to "call" the subtype relation on types that are already
+known to be well kinded.)
+
+If both S !: T and T !: S, we say that S and T are equivalent and write S , T . Note, for example, that the
+distributive laws S-Dist-Rcd and S-Dist-Field are actually equivalences: the other directions follow from
+the laws for union (plus transitivity). Also, note the absence of the "other" distributivity law for unions and
+records: P . (Q \Theta  R) , (P . Q) \Theta  (P . R). This law doesn't make sense here, because it violates the kinding
+constraint that products of record types can only be formed if the two types have disjoint label sets.
+
+The subtype relation includes explicit rules for associativity and commutativity of the operator \Theta . Also, it
+is easy to check that the associativity, commutativity and idempotence of . follow directly from the rules
+given. We shall take advantage of this fluidity in the following by writing both records and unions in a
+compound, n-ary form:
+
+[ l1 : T1; : : : ; ln : Tn ] def= [ l1 : T1 ] \Theta  \Delta  \Delta  \Delta  \Theta  [ ln : Tn ]W
+
+(T1; : : : ; Tn) def= T1 . \Delta  \Delta  \Delta  . Tn
+
+We often write compound unions using a simple comprehension notation. For example,
+
+.(
+
+A\Theta B j A 2 A1.A2. : : : .Am and B 2 B1.B2. : : : .Bn)
+
+denotes
+
+A1\Theta B1 . A1\Theta B2 . : : : . A1\Theta Bn . A2\Theta B1 . : : : . Am\Theta Bn:
+
+3.4 Properties of Subtyping
+For proving properties of the subtype relation, it is convenient to work with types in a more constrained
+syntactic form:
+
+3.4.1 Definition: The sets of normal (N ) and simple (A) types are defined as follows:
+
+N ::= W(A1; : : : ; An)
+A ::= B
+
+[ l1 : A1; : : : ; ln : An ]
+set(N )
+
+Intuitively, a simple type is one in which unions only appear (immediately) inside of the set constructor; a
+normal type is a union of simple types. Note that every simple type is also normal. \Lambda 
+
+The restricted form of normal and simple types can be exploited to give a much simpler subtyping relation,
+written S !:T , in terms of the following "macro rules":
+
+B !: B (SA-Base)
+
+10
+
+N !:M
+set(N ) !:set(M ) (SA-Set)
+
+fk1; : : : ; kmg ` fl1; : : : ; lng for all ki 2 fk1; : : : ; kmg, Aki !:Bki
+
+[ l1 : Al1; : : : lm : Alm ] !:[ k1 : Bk1; : : : ; km : Bkm ] (SA-Rcd)
+
+8i ^ m: 9j ^ n: Ai !:BjW
+(A1; : : : ; Am) !:W(B1; : : : ; Bn) (SN-Union)
+
+3.4.2 Fact: N !:M is decidable. \Lambda 
+Proof: The macro rules can be read as a pair of algorithms, one for subtyping between simple types and one
+for subtyping between normal types. Both of these algorithms are syntax directed and obviously terminate
+on all inputs (all recursive calls reduce the size of the inputs). \Lambda 
+
+3.4.3 Lemma: N !:N , for all N . \Lambda 
+3.4.4 Lemma: If N !:M and M !:L then N !:L. \Lambda 
+Proof: By induction on the total size of L; M; N . First suppose that all of L; M; N are simple. The
+induction hypothesis is immediately satisfied for SA-Base and SA-Set. For SA-Rcd use the transitivity
+of set inclusion and induction on the appropriate subterms.
+
+If at least one of L; M; N is (non-trivially) normal, use the transitivity of the functional relationship expressed
+by the SN-Union rule and induction on the appropriate subterms. \Lambda 
+
+To transfer the property of decidability from !: to !:, we first show how any type may be converted to an
+equivalent type in disjunctive normal form.
+
+3.4.5 Definition: The disjunctive normal form (dnf) of a type T is defined as follows:
+
+dnf(B) = B
+dnf([ ]) = [ ]
+dnf(P \Theta  Q) = W(Ai \Theta  Bj j Ai 2 dnf(P ); Bj 2 dnf(Q)) (a)
+dnf([ l : P ]) = W([ l : Ai ] j Ai 2 dnf(P )) (b)
+dnf(P . Q) = dnf(P ) . dnf(Q) (c)
+dnf(set(P )) = set(dnf(P )) (d) \Lambda 
+
+3.4.6 Fact: dnf(P ) , P . \Lambda 
+3.4.7 Fact: dnf(P ) is a normal type, for every type P . \Lambda 
+3.4.8 Fact: N !:M implies N !: M \Lambda 
+3.4.9 Lemma: S !: T iff dnf(S) !:dnf(T ) \Lambda 
+Proof: (() By 3.4.6 we have derivations of S !: dnf(S) and dnf(T ) !: T , and by 3.4.8 we have a derivation
+of dnf(S) !: dnf(T ). Use transitivity to build a derivation of S !: T .
+
+()) By induction on the height of the derivation of S !: T . We consider the final rule in the derivation. By
+induction we assume we can build a derivation of the normal forms for the antecedents, and now we consider
+all possible final rules.
+
+We start with the axioms.
+
+11
+
+(S-Refl) By reflexivity of !: (3.4.3).
+(S-Rcd-FE) dnf([ l : T ]) = [ l : dnf(T ) ], and [ l : dnf(T ]) !:[ ] by SA-Rcd.
+(S-Rcd-RE) dnf(S \Theta  T ) = W(Si \Theta  Tj j Si 2 dnf(S); Tj 2 dnf(T )). Now dnf(Si) \Theta  dnf(Tj) !: dnf(Si) by
+
+SA-Rcd, and the result follows from SN-Union.
+
+(S-Rcd-Comm) If dnf(S) and dnf(T ) are simple then dnf(S) \Theta  dnf(T ) !: dnf(T ) \Theta  dnf(S) by SA-Rcd. If
+
+not, use SN-Union first.
+
+(S-Rcd-Assoc) As for S-Rcd-Comm.
+(S-Rcd-Ident) As for S-Rcd-Comm.
+(S-Union-UB) By SN-Union.
+(S-Dist-Rcd) dnf(R \Theta  (S . T )) = W(Ri \Theta  Uj j Ri 2 dnf(R); Uj 2 dnf(S . T ))
+
+= W(Ri \Theta  Sj j Ri 2 dnf(R); Uj 2 dnf(S)) .W
+
+(Ri \Theta  Tk j Ri 2 dnf(R); Tk 2 dnf(T ))
+= dnf((R \Theta  S) . (R \Theta  T ))
+
+(S-Dist-Field) dnf([ l : S . T ]) = W([ l : Ui ] j Ui 2 dnf(S . T ))
+
+= W([ l : Si ] j Si 2 dnf(S)) . W([ l : Ti ] j Ti 2 dnf(T ))
+= dnf([ l : S ]) . dnf([ l : T ])
+= dnf([ l : S ] . [ l : T ])
+
+Now for the inference rules. The premises for all the rules are of the form S !: T and our inductive hypothesis
+is that for the premises of the final rule we have obtained a derivation using SA-* and SN-Union rules of the
+corresponding dnf(S) !:dnf(T ) Without loss of generality we may assume that the final rule in the derivation
+of each such premise is SN-Union. We examine the remaining inference rules.
+
+(S-Trans) By Lemma 3.4.4.
+(S-Rcd-DF) Since dnf(S) !: dnf(T ) was derived by SN-Union we know that for each Ai 2 dnf(S) there
+
+is a Bj 2 dnf(T ) such that Ai !: Bj. Therefore, for each such Ai, we may use SA-Rcd to derive
+[ l : Ai ] !: [ l : Bj ]. These derivations may be combined using SN-Union to obtain a derivation of
+dnf([ l : S ]) !:dnf([ l : T ]).
+
+(S-Rcd-DR) For each A1i
+
+1 2 dnf(S1) and each A
+
+2i
+
+2 2 dnf(S2) there exist B
+
+1j
+
+1 2 dnf(T1) and B
+
+2j
+
+2 2 dnf(T2)such that we have a derivations of
+
+A1i
+
+1 !: B
+
+1
+j1 and A
+
+2
+i2 !:B
+
+2
+j2 . For each such pair we can therefore use SARcd to derive A1i
+
+1 \Theta  A
+
+2i
+
+2 !:B
+
+1j
+
+1 \Theta  B
+
+2j
+
+2 and then use SN-Union to derive dnf(S1 \Theta  S2) !:dnf(T1 \Theta  T2).
+
+(S-Set) Immediate, by SA-Set.
+
+(S-Union-L) For each Ai 2 dnf(R) there is a Cj 2 dnf(T ) such that Ai !: Cj and for each Bk 2 dnf(S)
+
+there is a Cl 2 dnf(T ) such that Bk !: Cl. From these dnf(R . S) !: dnf(T ) can be derived directly
+using SN-Union. \Lambda 
+
+3.4.10 Theorem: The subtype relation is decidable. \Lambda 
+Proof: Immediate from Lemmas 3.4.9 and 3.4.2. \Lambda 
+We do not yet have any results on the complexity of checking subtyping (or equivalence). (The proof strategy
+we have adopted here leads to an algorithm with running time exponential in the size of its inputs.)
+
+The structured form of the macro rules can be used to derive several inversion properties, which will be
+useful later in reasoning about the typing relation.
+
+12
+
+3.4.11 Corollary: If S !: set(T1), then S = set(S1), with S1 !: T1. \Lambda 
+3.4.12 Corollary: If W !: U , with
+
+W = [ l1 : W1 ] \Theta  : : : \Theta  [ lm : Wm ] \Theta  : : : \Theta  [ ln : Wn ]
+U = [ l1 : U1 ] \Theta  : : : \Theta  [ lm : Um ];
+
+then Wk !: Uk for each k ^ m. \Lambda 
+Proof: From the definition of disjunctive normal forms, we know that dnf(W ) = W([ l1 : Wi1 ] \Theta  : : : \Theta 
+[ lm : Wim ] \Theta  : : : \Theta  [ ln : Win ] j Wi1 : : : Wim : : : Win 2 dnf(W1) : : : dnf(Wm) : : : dnf(Wn)) and dnf(U ) =W
+
+([ l1 : Uj1 ] \Theta  : : : \Theta  [ lm : Ujm ] j Uj1 : : : Ujm 2 dnf(U1) : : : dnf(Um)). By SN-Union,
+
+for each Ai = [ l1 : Wi1 ] \Theta  : : : \Theta  [ lm : Wim ] \Theta  : : : \Theta  [ ln : Win ] 2 dnf(W )
+
+there is some Bj = [ l1 : Uj1 ] \Theta  : : : \Theta  [ lm : Ujm ] 2 dnf(U )
+
+with Ai !: Bj:
+
+This derivation must be an instance of Sm-Rcd, with Wik !: Ujk. In other words, for each Wik 2 dnf(Wk)
+there is some U jk 2 dnf(Uk) with Wik !: Ujk. By SN-Union, dnf(Wk) !: dnf(Uk). The desired result,
+Wk !: Uk now follows by Lemma 3.4.9. \Lambda 
+
+3.4.13 Corollary: If S is a simple type and S !: T1 . T2, then either S !: T1 or else S !: T2. \Lambda 
+
+3.5 Terms
+The sets of programs, functions, and patterns are described by the following grammar:
+
+e ::= b base value
+
+x variable
+[ l1 = e1; : : : ; ln = en ] record construction
+e1 # e2 record concatenation
+case e of f pattern matching
+f e1; : : : ; en g set
+e1 union e2 union of sets
+collect e1 where p  e2 set comprehension
+
+p ::= x : T variable pattern (typecase)
+
+[ l1 = p1; : : : ; ln = pn ] record pattern
+x as f function nested in pattern
+
+f ::= p ) e base function
+
+f1 j f2 compound function
+
+3.6 Typing
+The typing rules are quite standard.
+Expressions (\Gamma  ` e 2 T )
+
+\Gamma  ` b 2 B (T-Base)
+
+13
+
+\Gamma  ` x 2 \Gamma (x) (T-Var)
+\Gamma  ` ei 2 Ti all the li are distinct
+\Gamma  ` [ l1 = e1; : : : ; ln = en ] 2 [ l1 : T1 ] \Theta  \Delta  \Delta  \Delta  \Theta  [ ln : Tn ] (T-Rcd)
+
+\Gamma  ` e1 2 T1 \Gamma  ` e2 2 T2 T1 \Theta  T2 2 K
+
+\Gamma  ` e1 # e2 2 T1 \Theta  T2 (T-Concat)
+
+\Gamma  ` f 2 S!T \Gamma  ` e 2 R R !: S
+
+\Gamma  ` case e of f 2 T (T-Case)
+
+\Gamma  ` ei 2 Ti for each i
+\Gamma  ` f e1; : : : ; en g 2 set(T1 . \Delta  \Delta  \Delta  . Tn) (T-Set)
+
+\Gamma  ` e1 2 set(T1) \Gamma  ` e2 2 set(T2)
+
+\Gamma  ` e1 union e2 2 set(T1 . T2) (T-Union)
+
+\Gamma  ` e2 2 set(S) \Gamma  ` p 2 U ) \Gamma 0 S !: U
+
+\Gamma ; \Gamma 0 ` e1 2 set(T )
+
+\Gamma  ` collect e1 where p  e2 2 set(T ) (T-Collect)
+
+Functions (\Gamma  ` f 2 S!T )
+
+\Gamma  ` p 2 S ) \Gamma 0 \Gamma ; \Gamma 0 ` e 2 T
+
+\Gamma  ` p ) e 2 S!T (TF-Pat)
+
+\Gamma  ` f1 2 S1!T1 \Gamma  ` f2 2 S2!T2
+
+\Gamma  ` f1 ) f2 2 S1 . S2!T1 . T2 (TF-Alt)
+
+Patterns (\Gamma  ` p 2 T ) \Gamma 0)
+
+T 2 K
+\Gamma  ` x : T 2 T ) x : T (TP-Var)
+
+\Gamma  ` pi 2 Ti ) \Gamma 0i the \Gamma 0i all have disjoint domains
+\Gamma  ` [ l1 = p1; : : : ; ln = pn ] 2 [ l1 : T1 ] \Theta  \Delta  \Delta  \Delta  \Theta  [ ln : Tn ] ) \Gamma 01; : : : ; \Gamma 0n (TP-Rcd)
+
+\Gamma  ` f 2 S!T
+\Gamma  ` x ) f 2 S ) x : T (TP-As)
+
+3.7 Properties of Typing
+3.7.1 Proposition: The typing relation is decidable. \Lambda 
+
+Proof: Immediate from the decidability of subtyping and the syntax-directedness of the typing rules. \Lambda 
+3.7.2 Definition: We say that a substitution oe satisfies a context \Sigma  if they have the same domain and, for
+each x in their common domain, we have ` oe(x) 2 Sx for some Sx with Sx !: \Sigma (x). \Lambda 
+
+14
+
+3.7.3 Definition: We say that a typing context \Gamma  refines another context \Gamma 0, written \Gamma  !: \Gamma 0, if their
+domains are the same and, for each x 2 dom(\Gamma ), we have \Gamma (x) !: \Gamma 0(x). \Lambda 
+
+3.7.4 Fact [Narrowing]: If \Gamma  ` e 2 T and \Gamma  !: \Gamma 0, then \Gamma 0 ` e 2 T . \Lambda 
+3.7.5 Lemma [Substitution preserves typing]:
+
+1. If \Sigma  j= oe and \Sigma ; \Delta  ` e 2 Q then \Delta  ` oe(e) 2 P , for some P !: Q.
+2. If \Sigma  j= oe and \Sigma ; \Delta  ` f 2 S ! Q then \Delta  ` oe(f ) 2 S ! P , for some P !: Q.
+3. If \Sigma  j= oe and \Sigma ; \Delta  ` p 2 U ) \Delta 0 then \Delta  ` oe(p) 2 U ) \Delta 00, for some \Delta 00 !: \Delta . \Lambda 
+
+Proof: By simultaneous induction on derivations. The arguments are all straightforward, using previously
+established facts. (For the second property, note that substitution into a pattern only affects functions that
+may be embedded in the pattern, since all other variables mentioned in the pattern are binding occurrences.
+Moreover, by our conventions about names of bound variables, we must assume that the variables bound in
+an expression, function, or pattern are distinct from those defined by oe.) \Lambda 
+
+3.8 Evaluation
+The operational semantics of our language is again quite standard: we define a relation e + v, read "(closed)
+expression e evaluates to result v," by a collection of syntax-directed rules embodying a simple abstract
+machine.
+
+3.8.1 Definition: We will use the metavariables v and w to range over values - closed expressions not
+involving case, union, concatenation, or collect.
+
+v ::= b
+
+[ l1 = v1; : : : ; ln = vn ]
+f v1; : : : ; vn g
+
+We write _v as shorthand for a set of values v1; :::; vn. \Lambda 
+3.8.2 Definition: A substitution oe is a finite function from variables to values. When oe1 and oe2 have
+disjoint domains, we write oe1 + oe2 for their combination. \Lambda 
+
+Reduction (e + v, for closed terms e)
+
+b + b (E-Base)
+ei + vi
+[ l1 = e1; : : : ; ln = en ] + [ l1 = v1; : : : ; ln = vn ] (E-Rcd)
+
+e1 + [ l1 = v1; : : : ; lm = vm ] e2 + [ j1 = w1; : : : ; jn = wn ]
+
+fl1; : : : ; lmg " fj1; : : : ; jng = ;
+
+e1 # e2 + [ l1 = v1; : : : ; lm = vm; j1 = w1; : : : ; jn = wn ] (E-Concat)
+
+e + v match(v; f ) ) v0
+
+case f of e + v0 (E-Case)
+
+15
+
+ei + vi
+f e1; : : : ; en g + f v1; : : : ; vn g (E-Set)
+
+e1 + f _v1 g e2 + f _v2 g
+
+e1 union e2 + f _v1 [ _v2 g (E-Union)
+
+e2 + f v1; : : : ; vn g
+for each i, match(vi; p) ) oei and oei(e1) + f _wi g
+
+collect e1 where p  e2 + f _w1 [ \Delta  \Delta  \Delta  [ _wn g (E-Collect)
+
+Function matching (match(v; f ) ) v0)
+
+match(v; p) ) oe oe(e) + v0
+
+match(v; p ) e) ) v0 (EF-Pat)
+
+match(v; f1) ) v0
+match(v; f1 j f2) ) v0 (EF-Alt1)
+
+:(match(v; f1)) match(v; f2) ) v0
+
+match(v; f1 j f2) ) v0 (EF-Alt2)
+
+Matching (match(v; p) ) \Gamma )
+
+` v 2 T
+match(v; x : T ) ) x = v (EP-Var)
+
+match(vi; pi) ) oei the oei have disjoint domains
+match([ l1 = v1; : : : ; lm = vm; : : : ; ln = vn ]; [ l1 = p1; : : : ; lm = pm ])
+
+) oe1 + : : : + oem
+
+(EP-Rcd)
+
+match(v; f ) ) v0
+match(v; x ) f ) ) x = v0 (EP-As)
+
+3.9 Properties of Evaluation
+3.9.1 Fact: If v is a value and ` v 2 V , then V is a simple type. \Lambda 
+
+3.9.2 Theorem [Subject reduction]:
+
+1. If e + v
+
+` e 2 Q;
+then ` v 2 V
+
+V !: Q:
+
+2. If match(v; f ) ) v0
+
+` f 2 U !V
+` v 2 W
+W !: U;
+then ` v0 2 X
+
+X !: V:
+
+16
+
+3. If match(v; p) ) oe
+
+` v 2 W
+` p 2 U ) \Sigma 
+W !: U;
+then \Sigma  j= oe. \Lambda 
+
+Proof: By simultaneous induction on evaluation derivations.
+
+1. Straightforward, using part (2) of the induction hypothesis for the interesting case (E-Case).
+2. Consider the final rule in the given derivation.
+
+Case EF-Pat: f = p ) e
+
+match(v; p) ) oe
+oe(e) + v0
+
+From ` f 2 U !V , we know ` p 2 U ) \Sigma  and \Sigma  ` e 2 V . By part (3) of the induction hypothesis,
+\Sigma  j= oe. By Lemma 3.7.5, ` oe(e) 2 V . Now, by the induction hypothesis, ` v0 2 X and X !: V , as
+required.
+
+Case EF-Alt1: f = f1 j f2
+
+match(v; f1) ) v0
+
+From rule TF-Alt, we see that ` f1 2 U1!V1 and ` f2 2 U2!V2, with U = U1 . U2 and V = V1 . V2.
+The induction hypothesis yields ` v0 2 X with X !: V1, from which the result follows immediately by
+S-Union.
+
+Case EF-Alt2: f = f1 j f2
+
+:(match(v; f1))
+match(v; f2) ) v0
+
+Similar.
+
+3. Consider the final rule in the given derivation.
+
+Case EP-Var: p = (x : T )
+
+` v 2 T
+oe = (x = v)
+\Sigma  = (x : T )
+
+Immediate.
+
+Case EP-Rcd: v = [ l1 = v1; : : : ; lm = vm; : : : ; ln = vn ]
+
+p = [ l1 = p1; : : : ; lm = pm ]
+match(vi; pi) ) oei
+oe = oe1 + : : : + oe + m
+
+From T-Rcd, we have W = [ l1 : W1 ] \Theta  : : : \Theta  [ ln : Wn ] and ` vi 2 Wi for each i. Similarly, by
+TP-Rcd, we have U = [ l1 : U1 ] \Theta  : : : \Theta  [ lm : Wm ] with ` pi 2 Ui ) \Sigma i. Finally, by Corollary 3.4.12,
+we see that Wi !: Ui. Now, by the induction hypothesis, \Sigma i j= oei for each i. But this means that
+\Sigma  j= oe, as required.
+
+Case EP-As: p = x ) f
+
+match(v; f ) ) v0
+oe = (x = v0)
+
+By TP-As, ` f 2 U !V and \Sigma  = (x : V ). By part (2) of the induction hypothesis, ` v0 2 X for some
+X !: V . So (x = v0) j= (x : V ) by the definition of satisfaction. \Lambda 
+
+3.9.3 Theorem [Safety]:
+
+17
+
+1. If ` e 2 T , then e + v for some v. (That is, the evaluation of a closed, well-typed expression cannot
+
+lead to a match-failure or otherwise "get stuck.")
+
+2. If ` f 2 S ! T and ` v 2 R !: S, then match(v; f ) ) v0 with ` v0 2 T 0 !: T .
+3. If ` p 2 U ) \Gamma 0 and ` v 2 S !: U , then match(v; p) ) oe with \Gamma 0 j= oe. \Lambda 
+
+Proof: Straightforward induction on derivations. \Lambda 
+
+4 Conclusions
+We have described a type system that may be of use in checking programs or queries that apply to semistructured data. Unlike other approaches to the problem, it is a "relaxed" version of a conventional system that
+can handle the kinds of irregular types that occur in semistructurd data.
+
+Although we have established the basic properties of the type system, a good deal of work remains to be
+done. First, there are some extensions that we do not see as problematic. These include:
+
+ffl Both strict and relaxed unions. (In the former case the two types are constrained to be equivalent.)
+
+Similarly, one can imagine strict and relaxed case expressions.
+
+ffl Equality. Both "absolute" equality and "equality at type T " fit with this scheme.
+ffl A "top" type. Such a type would be completely dynamic and would be analyzed by typecase expressions. One could also add type inspection primitives along the lines described for Amber [Carrk]
+
+ffl An "otherwise" or "fall-through" branch in case expressions.
+
+A number of more significant problems also remain to be addressed.
+
+ffl Complexity. The obvious method of checking whether two types are equivalent or whether one is a
+
+subtype of the other involves first reducing both to disjunctive normal form. As we have observed, this
+process may be exponential in the size of the two type expressions. We conjecture that equivalence
+(and subtyping) can be checked faster, but we have not been able to show this.
+
+Even if these problems turn out to be intractable in general, it does not necessarily mean that this
+approach to typing semistructured data is pointless. Type inference in ML, for example, is known to
+be exponential [KTU94], yet the forms of ML programs that are the cause of this complexity never
+occur in practice. Here, it may be the case that types that types that only have "small" differences
+will not give rise to expensive transformations.
+
+ffl Recursive types. The proof of the decidability of subtyping (3.4.10) works by induction on the
+
+derivation tree of a type, which is closely related to the structure of the type. We do not know whether
+the same result holds in the presence of recursive types.
+
+ffl Relationship with other typing schemes. There may be some relationship between the typing
+
+scheme proposed here and those mentioned earlier [NAM97, Ali99] that work by inferring structure from
+semi-structured data. Simulation, for example, gives rise to something like a subtyping relationship
+[BDFS97]; but it is not clear what would give rise to union types.
+
+ffl Applications. Finally, we would like to think that a system like this could be of practical benefit.
+
+We mentioned that there is a group of biological data formats that are all derived from a common
+basic format. We should also mention that the pattern matching constructs introduced in section 2.2,
+independently of any typing issues, might be used to augment other query languages such as XML-QL
+[DFF+] that exploit pattern matching.
+
+18
+
+5 Acknowledgements
+The idea of using untagged unions to type semistructured data started when Peter Buneman was on a visiting
+research fellowship provided by the Japanese Society for the Promotion of Science. He is grateful to Atsushi
+Ohori for stimulating discussions. Benjamin Pierce is supported by the National Science Foundation under
+Career grant CCR-9701826.
+
+References
+[AH87] Serge Abiteboul and Richard Hull. IFO: A formal semantic database model. ACM Transactions
+
+on Database Systems, 12(4):525-565, December 1987.
+
+[Ali99] Alin Deutsch and Mary Fernandez and Dan Suciu. Storing semistructured data with STORED.
+
+In Proceedings of ACM SIGMOD International Conference on Management of Data, June 1999.
+
+[AQM+96] S. Abiteboul, D. Quass, J. McHugh, J. Widom, and J. Wiener. The lorel query language for
+
+semistructured data. Journal on Digital Libraries, 1(1), 1996.
+
+[BDCd95] Franco Barbanera, Mariangiola Dezani-Ciancaglini, and Ugo de'Liguoro. Intersection and union
+
+types: Syntax and semantics. Information and Computation, 119(2):202-230, June 1995.
+
+[BDFS97] P. Buneman, S. Davidson, M. Fernandez, and D. Suciu. Adding structure to unstructured data.
+
+In Proc. ICDT, 1997.
+
+[BDHS96] P. Buneman, S. Davidson, G. Hillebrand, and D. Suciu. A query language and optimization
+
+techniques for unstructured data. In ACM-SIGMOD, pages 505-516, 1996.
+
+[BLS+94] P. Buneman, L. Libkin, D. Suciu, V. Tannen, and L. Wong. Comprehension syntax. SIGMOD
+
+Record, 23(1):87-96, March 1994.
+
+[BNTW95] Peter Buneman, Shamim Naqvi, Val Tannen, and Limsoon Wong. Principles of programming
+
+with complex objects and collection types. Theoretical Computer Science, 149(1):3-48, September 1995.
+
+[Carrk] L. Cardelli. Amber. In B. Robinet G. Cousineau, P.L. Curien, editor, Combinators and Functional
+
+programming languages, page 1986. Springer-Verlag, New-York.
+
+[CM94] M. Consens and T. Milo. Optimizing queries on files. In Proc. ACM Sigmod, Minneapolis, 1994.
+[Dam94] Flemming M. Damm. Subtyping with union types, intersection types and recursive types. In
+
+Masami Hagiya and John C. Mitchell, editors, Theoretical Aspects of Computer Software, volume
+789 of Lecture Notes in Computer Science, pages 687-706. Springer-Verlag, April 1994.
+
+[DCdP96] M. Dezani-Ciancaglini, U. de'Liguoro, and A. Piperno. Filter models for conjunctive-disjunctive
+
+*-calculi. Theoretical Computer Science, 170(1-2):83-128, December 1996.
+
+[DFF+] A. Deutsch, M. Fernandez, D. Florescu, A. Levy, and D. Suciu. Xml-ql: A query language for
+
+xml. http://www.w3.org/TR/NOTE-xml-ql.
+
+[Hay91] Susumu Hayashi. Singleton, union and intersection types for program extraction. In T. Ito and
+
+A. R. Meyer, editors, Theoretical Aspects of Computer Software (Sendai, Japan), number 526
+in Lecture Notes in Computer Science, pages 701-730. Springer-Verlag, September 1991. Full
+version in Information and Computation, 109(1/2):174-210, 1994.
+
+[KTU94] A. J. Kfoury, J. Tiuryn, and P. Urzyczyn. An analysis of ML typability. Journal of the ACM,
+
+41(2):368-398, March 1994.
+
+19
+
+[NAM97] S. Nestorov, S. Abiteboul, and R. Motwani. Inferring structure in semistructured data. In
+
+Proceedings of the Workshop on Management of Semi-structured Data, 1997. Available from
+http://www.research.att.com/~suciu/workshop-papers.html.
+
+[Pie91] Benjamin C. Pierce. Programming with intersection types, union types, and polymorphism.
+
+Technical Report CMU-CS-91-106, Carnegie Mellon University, February 1991.
+
+20

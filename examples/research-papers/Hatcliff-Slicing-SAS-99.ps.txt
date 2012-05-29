@@ -1,0 +1,1102 @@
+
+
+A Formal Study of Slicing for Multi-threaded
+Programs with JVM Concurrency Primitives
+
+?
+
+John Hatcliff1, James Corbett2, Matthew Dwyer1, Stefan Sokolowski1, and
+
+Hongjun Zheng1
+
+1 SAnToS Laboratory, Kansas State University? ? ?
+
+2 University of Hawaiiy
+
+Abstract. Previous work has shown that program slicing can be a useful
+step in model-checking software systems. We are interested in applying
+these techniques to construct models of multi-threaded Java programs.
+Past work does not address the concurrency primitives found in Java,
+nor does it provide the rigorous notions of slice correctness that are necessary for reasoning about programs with non-deterministic behaviour
+and potentially infinite computation traces.
+In this paper, we define the semantics of a simple multi-threaded language with concurrency primitives matching those found in the Java
+Virtual Machine, we propose a bisimulation-based notion of correctness
+for slicing in this setting, we identify notions of dependency that are
+relevant for slicing multi-threaded Java programs, and we use these dependencies to specify a program slicer for the language presented in the
+paper. Finally, we discuss how these dependencies can be refined to take
+into account common programming idioms of concurrent Java software.
+
+1 Introduction
+Program slicing is a program reduction technique that has been widely applied
+in software engineering, static analysis, and debugging applications [12]. In previous work [3], we showed how backward static slicing can be used as a component in constructing finite-state models of sequential software systems. Existing model-checking tools can check automatically these models against software
+specifications (written in various temporal logics). The main idea is that slicing
+can throw away portions of the program that are irrelevant to the specification
+being verified. This often reduces the size of the software model and reachable
+state-space. Thus, it often reduces the time required for model-checking.
+
+The previous work provides part of the foundational theory for a set of tools
+that we are building for model-checking Java programs called the Bandera Tool
+Set. In essence, Bandera is a pipeline of tools that compile Java source code to
+inputs of existing model-checking tools such as SMV [9] and SPIN [5].
+
+? This work supported in part by NSF under grants CCR-9633388, CCR-9703094,
+
+CCR-9708184, and CCR-9701418 and DARPA/NASA under grant NAG 21209.
+? ? ? 234 Nichols Hall, Manhattan KS, 66506, USA. fhatcliff,dwyer,stefan,
+
+zhengg@cis.ksu.edu
+y corbett@mit.edu
+
+The goal of the present work is to scale up our previous slicing-based modelconstruction techniques to the concurrency mechanisms of Java. We give a formal semantics for a small core language that contains the concurrency primitives
+found in the Java Virtual Machine (Section 2). We describe how the notion of
+weak-bisimulation from concurrency theory can be adapted to define a notion of
+correctness for slicing that is relevant for multi-threaded programs with infinite
+execution traces (Section 3). Building on various notions of dependency found in
+earlier work on slicing sequential and multi-thread programs, we introduce additional notions of dependency that arise when considering Java's concurrency
+primitives, and dependencies that arise when trying to preserve the semantics
+of programs with infinite execution traces. We discuss how these dependencies
+stem from assumptions that may be overly pessimistic when one considers constructing finite-state models for typical Java source code, and explain how these
+dependencies can be refined (Section 4). After a discussion of related work (Section 5), we conclude with a brief discussion of our experiments with a prototype
+implementation applied to concurrent Java software (Section 6).
+
+2 Concurrent FCL
+Bandera is built on top of the Soot Java compiler framework developed by Laurie
+Hendren's Sable group at the University of McGill. In the Soot framework, Java
+programs are translated to an intermediate language called Jimple. Jimple is essentially a language of control-flow graphs where (a) statements appear in threeaddress-code form (the explicit stack manipulation inherent in JVM instructions
+has been removed by introducing temporary variables), and (b) various Java
+constructs such as method invocations and synchronized statements are represented in terms of their virtual machine counterparts (such as invokevirtual,
+and monitorenter, monitorexit).
+
+For our formal study of slicing in this setting, we define a language called
+CFCL (Concurrent FlowChart Language) that captures the essence of Jimple
+control-flow graphs and focuses tightly on the JVM instructions for thread synchronization including wait, notify, notifyall, start, and join. For simplicity, we consider evaluation of assignment statements to be atomic. Thus, we do
+not treat the two-level storage model for JVM threads [8, Ch. 8]. Due to the
+focus on concurrency issues, we omit features such as method calls, dynamic
+object creation and exceptions.
+
+Figure 1 presents the syntax of CFCL, and Figure 2 gives a simple CFCL
+program. A CFCL program begins with a declaration of variables x\Lambda  (each variable is implicitly typed as nat). To model the implicit lock associated with each
+Java object, the variable list is followed by a list of lock identifiers k\Lambda  that can
+be used in synchronization primitives.
+
+The body of a CFCL-program is a series d+ of one or more thread declarations. A thread declaration consists of a thread identifier t and the label l of
+the initial block to be executed within the thread, followed by a list b+ of basic
+blocks.
+
+2
+
+p 2 Programs
+d 2 Threads
+b 2 Blocks
+l 2 Block-Labels
+
+a 2 Assignments
+s 2 Syncs
+x 2 Variables
+k 2 Locks
+
+t 2 Thread-identifiers
+e 2 Expressions
+c 2 Constants
+j 2 Jumps
+o 2 Operations
+
+p ::= (x\Lambda ) (k\Lambda ) d+
+d ::= begin-thread t (l) b+ end-thread;
+b ::= l : a\Lambda  j j l : s goto l;
+
+a ::= x := e;
+s ::= enter-monitor k; j exit-monitor k; j wait k; j notify k; j notify-all k;
+e ::= c j x j o(e\Lambda )
+j ::= goto l; j return; j if e then l1 else l2;
+
+Fig. 1. Syntax of CFCL
+
+There are two kinds of basic blocks: (1) a block containing a list of assignments followed by a jump, or (2) a synchronization block containing a single
+synchronization statement and an unconditional jump. The assignment statements operate on variables shared between all threads. Each synchronization
+construct operates with respect to a particular lock k (the semantics will be
+explained) below. For conditional tests, any non-zero value represents true and
+zero represents false. The target of jump j must appear in the same thread as j.
+
+In the presentation of slicing, we need to reason about nodes in a statementlevel control-flow graph (i.e., a graph where there is a separate node n for each
+assignment, synchronization statement, and jump) for given thread t. We will
+assume that each statement has a unique index i within each block, and that
+each block label is unique across the entire program. Then, a node n can be
+uniquely identified by a pair [l:i] where l is block label and i is an index value.
+In Figure 2, statement indices are given as annotations in brackets [\Delta ] (ignore
+the * annotations for now -- they are used to indicate the results of slicing later
+on). For example, the first assignment in the prod-put block has the unique
+identifier (or node number) [prod-put.1].
+
+A flow graph G = (N; E; s; e) consists of a set N of statement nodes, a
+set E of directed control-flow edges, a unique start node s, and unique end
+node e such that all nodes in N are reachable from s, and e is reachable from
+all nodes in N . The inverse G\Gamma 1 of a flowgraph (N; E; s; e) is the flowgraph
+(N; E\Gamma 1; e; s) (i.e., all edges are reversed and start/end states are swapped).
+Node n dominates node m in G (written dom(n; m)) if every path from the
+start node s to m passes through n (note that this makes the dominates relation
+reflexive). Node n post-dominates node m in G (written post-dom(n; m)) if every
+path from node m to the end node e passes through n (equivalently, dom(n; m)
+in G\Gamma 1). A CFG back edge is an edge whose target dominates its source in G
+[11, p. 191]. Given a back edge m ! n in G, the natural loop of m ! n is the
+
+3
+
+(count total prod cons) /* shared variables */
+(buffer tally) /* lock identifiers */
+
+/* producer code */ /* consumer code */
+begin-thread producer begin-thread consumer
+(prod.obtain.lock) (cons.obtain.lock)
+prod.obtain.lock: cons.obtain.lock:
+
+enter-monitor buffer; [1] enter-monitor buffer; [1]
+goto prod.check; [2] goto cons.check; [2]
+prod.check: cons.check:
+
+if =(count 2) [1] if =(count 0) [1]
+
+then prod.wait then cons.wait
+else prod.put; else cons.get;
+prod.wait: cons.wait:
+
+wait buffer; [1] wait buffer; [1]
+goto prod.check; [2] goto cons.check; [2]
+prod.put: cons.get:
+
+count := +(count 1); [1] count := -(count 1); [1]
+if =(count 1) [2] if =(count 1) [2]
+
+then prod.wakeup then cons.wakeup
+else prod.release.lock; else cons.release.lock;
+prod.wakeup: cons.wakeup:
+
+notify buffer; [1] notify buffer; [1]
+goto prod.release.lock; [2] goto cons.release.lock; [2]
+prod.release.lock: cons.release.lock:
+
+exit-monitor buffer; [1] exit-monitor; [1]
+goto prod.enter.tally; [2] goto cons.enter.tally; [2]
+prod.enter.tally: * cons.enter.tally: *
+
+enter-monitor tally; [1]* enter-monitor tally; [1]*
+goto prod.update.tally; [2]* goto cons.update.tally; [2]*
+prod.update.tally: * cons.update.tally: *
+
+total := +(total 1); [1]* total := +(total 1); [1]*
+goto prod.exit.tally; [2]* goto cons.exit.tally; [2]*
+prod.exit.tally: * cons.exit.tally: *
+
+exit-monitor tally; [1]* exit-monitor tally; [1]*
+goto prod.cycle; [2]* goto cons.cycle; [2]*
+prod.cycle: cons.cycle:
+
+prod := +(prod 1); [1] cons := +(cons 1); [1]*
+if 1 [2] if 1 [2]
+
+then prod.obtain.lock then cons.obtain.lock
+else exit.prod; else exit.cons;
+exit.prod: return; [1] exit.cons: return; [1]
+end-thread; end-thread;
+
+Fig. 2. A CFCL producer/consumer control system with buffer size 2
+
+4
+
+subgraph consisting of the set of nodes containing n and all nodes from which
+m can be reached in the flowgraph without passing through n and the edge set
+connecting all the nodes in the subgraph [11, p. 191]. Node n is called the loop
+header. A CFG G = (N; E; s; e) is reducible (or well-structured ) if E can be
+partitioned into disjoint sets Ef (the forward edge set) and Eb (the back edge
+set) such that (N; Ef ) forms a DAG in which each node can be reached from the
+entry node and all edges in Eb are back edges in G. Muchnick [11, p. 196] notes
+that this implies that in a reducible flowgraph all the loops are natural loops
+characterized by their back edges and vice versa. It follows from the definition
+of reducible flowgraph that there are no jumps into the middle of loops - each
+loop is entered only through its header.
+
+The syntax of Jimple allows arbitrary control-flow because it was originally
+designed to be the target of a byte-code decompiler. However, we are using
+it as the target of a Java compiler front-end. Thus we can impose several constraints on the control-flow structure of each CFCL thread corresponding to constraints/properties of Java source code. Since Java only allows well-structured
+control-flow (no goto's), the control structure of each CFCL thread is required
+to form a reducible flow graph. Since the enter-monitor k and exit-monitor k
+constructs arise from compiling Java synchronized blocks, we assume that
+enter-monitor k and exit-monitor k come in "matching pairs". In addition,
+they are the unique start node and unique end node of a sub-flow-graph appearing in the containing thread's flow-graph. Thus, for each monitor delimiter
+we are able to a obtain a CFG corresponding to the monitor's critical region.
+Based on this condition, we define a function CR that maps each node n to the
+inner-most critical region in which it appears. That is, if CR(n) = (m1; m2)
+then m1 is a enter-monitor k command with a matching exit-monitor k at
+m2 and these two nodes form the inner-most critical region in which n appears.
+Our compiler front-end annotates each conditional with the type of source construct that gave rise to it. For example, we can tell if a conditional arises from
+a conditional in the source code, or if it is the exit conditional of loop (e.g., a
+for, or while). Since it is impossible to tell in general whether a Java loop will
+terminate (even for for loops), we will refer to all exit conditionals of loops as
+pre-divergence points.
+
+The remaining hitch in generating CFG's satisfying these constraints is that
+some threads do not satisfy the "unique end node" property required by the
+definition of flowgraph. Specifically, the thread may (a) have no return, or (b)
+have multiple return's. The first case appears if the thread contains one or
+more loops with no exit conditional (this guarantees an infinite loop). Since all
+our flowgraphs are reducible, each such loop is a natural loop (as defined above)
+uniquely characterized by its back edge. For simplicity, at such end nodes we will
+replace the nonconditional goto l jump associated with the back edge with the
+conditional jump if 1 then l else return. To work around the second case, we
+assume that when we extract the CFG from a thread t, we insert an additional
+node labeled halt that has no successors and its predecessors are all the return
+nodes from t. Given a program p, we will refer to the set of thread CFGs from
+
+5
+
+v 2 Values = f0; 1; 2; : : :g
+l 2 Labels = Block-Labels [ fhaltg
+oe 2 Stores = Variables * Values
+pc 2 PCs = Thread-identifiers * Nodes
+R 2 Runnable = Thread-identifiers * ftrue; falseg
+B 2 Blocked-Sets = Locks \Theta  Thread-identifiers * Lock-Counts
+W 2 Wait-Tables = Locks \Theta  Thread-identifiers * Lock-Counts
+L 2 Lock-Tables = Locks[FCL]* (Thread-identifiers \Theta  f1; 2; 3; : : :g [ ffalseg)
+m 2 Lock-Counts = f0; 1; 2; : : :g
+
+Fig. 3. Operational semantics of CFCL programs (semantic values)
+
+p as p's CFG (technically, this is a misnomer since a set of control-flow graphs
+is not a control-flow graph itself).
+
+To access code at particular program points within a given CFCL-program
+p, we use the following functions. A code map function code maps a CFG node
+n to the code for the statement that it labels. For example, code([prod-put:1])
+yields the assignment count := +(count 1);. A function first maps a label
+l of p to the first CFG node occurring in the block labeled l. For example,
+first(prod-put) = [prod-put:1]. A function def maps each node to the set of
+variables defined (i.e., assigned to) at that node (always a singleton or empty
+set), and ref maps each node to the set of variables referenced at node n. A
+thread map ` maps a CFG node n to a thread identifier to which n belongs. For
+example, `([prod-put:1]) = producer.
+
+Synchronization in Java is achieved using wait and notify monitors [8]. Figure 2 illustrates the use of monitors to achieve proper synchronization in a simple
+producer/consumer system. Note that the example omits the actual manipulation of a shared buffer and instead gives only the code that properly controls
+buffer access. The implicit lock that would be associated with the Java buffer
+object is represented by the CFCL lock buffer.
+
+Consider the producer process of the example (recall that all variables have
+a default value of 0). The process begins by trying to acquire the buffer lock
+in prod obtain lock (until the process acquires the lock, it is held in a blocked
+set associated with the lock). Once the lock is aquired, the producer will check
+to see if the buffer is already full (i.e., if the buffer count is 2). If the buffer is
+full, the producer will release the lock and suspend itself by executing a wait
+instruction (this causes the process to be placed in a wait set associated with
+the lock); otherwise it will increment the count of items in the buffer. If the
+increment causes the buffer to move from a empty to a non-empty state, the
+producer notifies the consumer (which may have been waiting due to an empty
+buffer). When a process executes a notify k, it continues to hold the lock, but
+a process that has been waiting is moved from the wait set for k to the blocked
+set for k. Finally, the producer releases the buffer lock with the exit-monitor
+instruction in block, and tries to obtain the tally lock. Once the tally lock
+
+6
+
+is acquired, the producer increments the total number of produce/consume
+actions thus far, and then releases the lock. Finally, the producer increments
+the total number of produce actions thus far, and begins the cycle again. The
+actions of the consumer process are symmetric.
+
+To formalize these notions, the semantics of an CFCL program p is expressed
+as transitions on configurations of the form hpc; oe; R; B; W; Li: Figure 3 gives the
+formal definition for each of the configuration components. The program counter
+pc assigns to each thread t, the next node of t to be executed. The store oe maps
+each variable to a value. The run state table R maps each thread t to either
+true (signifying that t is in a runnable state -- its next instruction given by the
+pc can be immediately executed) or false (signifying that t is blocked waiting
+to gain access to a lock, or it has suspended itself via a wait instruction, or
+it has successfully terminated by executing a return instruction). The blocked
+table B assigns to each pair hk; ti, the number of times thread t needs to acquire
+lock k once it is unblocked. Following the semantics of the JVM, each thread
+may acquire a lock multiple times [8, p. 376]. Bhk; ti = 0 signifies that thread t
+is not blocked on lock k. The lock waiting table W assigns to each pair hk; ti, the
+number of times thread t needs to acquire lock k once it is awakened. Whk; ti = 0
+signifies that thread t is not waiting on lock k. The lock table L maps each held
+lock k to a pair ht; ni where t is the thread that currently holds k, and n is the
+number of times that t has acquired the lock (i.e., n is the difference between
+the number of preceding enter-monitor k and exit-monitor k instructions
+executed by t). If no thread holds lock k, then L(k) = false. Formally, the set of
+configurations is defined as follows
+
+Configurations = (PCs \Theta  Stores \Theta  Runnable \Theta  Blocked-Sets
+
+\Theta  Wait-Tables \Theta  Lock-Tables) [ fbad-monitorg
+
+Our set of configurations includes an exception configuration bad-monitor that
+is meant to model the raising of an IllegalMonitorState-Exception by the
+JVM [8, p. 376]. The semantics will be defined so that no transitions are possible
+once an exception configuration has been reached.
+
+Figure 4 gives rules that define a CFCL-program indexed transition relation
+7\Gamma !p on configurations. The program p that indexes the relation gives rise to the
+code map code and thread identifiers used in the semantics. We will omit the
+program index when writing the relation since it will always be clear from the
+context.
+
+Execution of a program p begins with an initial configuration
+
+hpc; oe; R; B; W; Li:
+where
+
+- 8t : pc(t) = ninit where ninit is the start node in the CFG for t,
+- 8x : oe(x) = 0,
+- 8t : R(t) = true,
+- 8k;t : Bhk; ti = 0,
+
+7
+
+oe `tassign a ) oe0
+hpc; oe; R; B; W; Li 7\Gamma ! hpc[t 7! n0]; oe0; R; B; W; Li
+
+if R(t) = true
+and pc(t) = n
+and code(n) = a
+where n0 = succ(n)
+
+R; B; W; L `tsync s ) R0; B0; W0; L0
+hpc; oe; R; B; W; Li 7\Gamma ! hpc[t 7! n0]; oe; R0; B0; W0; L0i
+
+if R(t) = true
+and pc(t) = n
+and code(n) = s
+where n0 = succ(n)
+
+R; B; W; L `tsync s ) bad-monitor
+hpc; oe; R; B; W; Li 7\Gamma ! bad-monitor
+
+if R(t) = true
+and pc(t) = n
+and code(n) = s
+
+oe `tjump j ) l
+hpc; oe; R; B; W; Li 7\Gamma ! hpc[t 7! n0]; oe; R; B; W; Li
+
+if R(t) = true
+and pc(t) = n
+and code(n) = j
+where n0 = first(l)
+
+oe `tjump j ) halt
+hpc; oe; R; B; W; Li 7\Gamma ! hpc[t 7! n0]; oe; R[t 7! false]; B; W; Li
+
+if R(t) = true
+and pc(t) = n
+and code(n) = j
+where n0 = halt
+
+Fig. 4. Operational semantics of CFCL programs (transitions)
+
+- 8k;t : Whk; ti = 0, and
+- 8k : L(k) = false.
+
+In general, a transition occurs when there exists a runnable thread as indicated by R. A runnable thread t is arbitrarily chosen (giving rise to nondeterminism) and the program counter pc and code map are consulted to find the next
+command of t to evaluate. There is a separate transition rule for each syntactic
+category of command. Each rule relies on an auxiliary judgement that defines
+the semantics for the particular command category.
+
+The intuition behind the rules for these judgements is as follows. oe `texpr e )
+v means that under store oe, expression e in t evaluates to value v. Note that
+expression evaluation cannot change the value of the store. oe `tassign a ) oe0
+means that under store oe, the assignment a yields the updated store oe0. oe `tjump
+j ) l means that under the store oe, jump j will cause a transition to the block
+labeled l. R; B; W; L `tsync s ) R0; B0; W0; L0 means that, given the run state
+map R, blocked set map B, wait set map W, and lock map L, execution of
+the synchronization statement s in thread t may produce updated versions of
+each of these structures. Figure 5 gives the rules that define the relation for
+
+8
+
+synchronization statements (the rules for expressions, assignments, and jumps
+are straightforward and are omitted).
+
+For enter-monitor k when lock k is not held, the lock table for k is changed
+to show that thread t has acquired the lock once. When the lock is held already
+by t, its acquisition count is incremented. When another thread t0 holds the lock,
+t is placed in the blocked set (with its current acquisition count), and its run
+status is changed to "not runnable".
+
+For exit-monitor k, if thread t's lock count for k is greater than one, the
+count is simply decremented (the lock is not released). If thread t's lock count
+for k is equal to one, then the lock is relinquished. If the set of threads blocked
+on k is non-empty, then another thread t0 is chosen non-deterministically from
+the blocked set and is given the lock.
+
+For wait k, if thread t holds the lock, then it is relinquished and t is placed in
+the wait set (along with its lock count). Another thread t0 is non-deterministically
+chosen from those blocked on k and is given the lock (and its run state is set to
+runnable).
+
+For notify k, if thread t holds the lock and the wait set is empty, then the
+command has the same effect as a no-op. If the wait set is not empty, one thread
+(and associated lock count) is non-deterministically removed from the wait set
+and added to the block set.
+
+For notify-allk, if thread t holds the lock and the wait set is empty, then the
+command has the same effect as a no-op (the current block set is unioned with
+the empty set). If the wait set is not empty, then all threads (and associated lock
+count) are removed from the wait set and added to the block set.
+
+Finally, if a thread executes a exit-monitor, rawwait, notify, notify-all
+on lock k which it does not holdk, then an exception is raised [8, p. 376].
+
+Returning to the definition of transitions, the "normal final configuration" is
+where the run state of all threads is false, and where all thread program counters
+yield halt. From Figure 4 it is clear that each transition c1 7\Gamma ! c2 executes
+exactly one command at some node n. We write c1 n7\Gamma ! c2 when c1 7\Gamma ! c2 by
+
+executing the command at node n, c1 N7\Gamma ! c2 when c1 7\Gamma ! c2 by executing the
+command at some node n 2 N , and c1
+
+:N7\Gamma ! c
+
+2 when c1 7\Gamma ! c2 by executing the
+
+command at some node n 62 N .
+
+3 Correctness of Multi-threaded Program Slicing
+A program slice consists of the parts of a program p that (potentially) affect the
+variable values that are referenced at some program points of interest [12]. The
+program "points of interest" traditionally are called the slicing criterion.
+
+Definition 1 (slicing criterion). A slicing criterion C for a program p is a
+non-empty set of nodes fn1; : : : ; nkg where each ni is a node in p's statement
+flow-graph.
+
+In many cases in the slicing literature, the desired correspondence between
+the source program and the slice is not formalized, and this also leads to subtle
+
+9
+
+L(k) = false
+R; B; W; L `tsync enter-monitor k ) R; B; W; L[k 7! ht; 1i]
+
+L(k) = ht; ni
+R; B; W; L `tsync enter-monitor k ) R; B; W; L[k 7! ht; n + 1i]
+
+L(k) = ht0; ni where t 6= t0
+R; B; W; L `tsync enter-monitor k ) R[t 7! false]; B[hk; ti 7! 1]; W; L
+
+L(k) = ht; ni where n ? 1
+R; B; W; L `tsync exit-monitor k ) R; B; W; L[k 7! ht; n \Gamma  1i]
+
+L(k) = ht; 1i
+R; B; W; L `tsync exit-monitor k ) R0; B0; W; L0
+
+where R0; B0; L0 =
+
+8??!
+
+??:
+
+R; B; L[k 7! false] if 8t Bhk; ti = 0
+
+R[t0 7! true];
+B[hk; t0i 7! 0];
+L[k 7! ht0; ni]
+
+9=
+; if 9t
+
+0 Bhk; t0i = n ? 0
+
+L(k) = ht; ni
+R; B; W; L `tsync wait k ) R0; B0; W[hk; ti 7! n]; L0
+
+where R0; B0; L0 =
+
+8??!
+
+??:
+
+R[t 7! false]; B; L[k 7! false] if 8t Bhk; ti = 0
+
+R[t 7! false; t0 7! true];
+B[hk; t0i 7! 0];
+L[k 7! ht0; mi]
+
+9=
+; if 9t
+
+0 Bhk; t0i = m ? 0
+
+L(k) = ht; ni
+R; B; W; L `tsync notify k ) R; B0; W0 L
+
+where B0; W0 = ae B; W if 8t Whk; ti = 0B[hk; t0i 7! n]; W[hk; t0i 7! 0] if 9
+
+t0 Whk; t0i = n ? 0
+
+L(k) = ht; ni
+R; B; W; L `tsync notify-all k ) R; B0; W0; L
+
+where 8k0;t0 B0hk0; t0i; W0hk0; t0i = ae Bhk; t
+
+0i + Whk; t0i; 0 if k = k0
+
+Bhk0; t0i; Whk0; t0i if k 6= k0
+
+(L(k) = ht0; ni where t 6= t0) . (L(k) = false)
+
+R; B; W; L `tsync s ) bad-monitor
+where s 2 fexit-monitor k; wait k; notify k; notify-all kg
+
+Fig. 5. Operational semantics of CFCL programs (synchronization statements)
+
+10
+
+differences between presentations. When a notion of "correct slice" is given, it
+is often stated using the notion of projection for finite deterministic (i.e., nonbranching) execution traces. Clearly, when moving to the concurrent setting,
+notions of correctness need to be generalized to handle non-deterministic execution as well as possibly infinite execution semantics of reactive programs that
+are designed to run indefinitely.
+
+For our model-checking applications, typically we are given some program
+p and some temporal logic specification  to check. In the ideal case we would
+like the slicer to produce an executable program ps where  holds for ps if and
+only if  holds for p. The key point here is that the slicer needs only to preserve
+the semantics for the parts of p that influence the satisfaction of . Intuitively,
+there are nodes/actions in the program that are observable with respect to 
+(they influence the satisfaction of ), but other nodes/actions that correspond
+to silent moves or non-observables with respect to .
+
+The discussion above suggests that appropriate notions of correctness for slicing concurrent programs can be derived from the notion of weak-bisimulation
+found in concurrency theory. Intuitively, the notion of projection can be generalized to a notion of weak-bisimulation where actions associated with the nodes
+in the slicing criterion C are considered "observable"; otherwise the actions can
+be considered "silent" (analogous to o/ -moves in CCS [10]).
+
+The following definition (analogous to the CCS notion of derivative) describes
+the situation where a program can do zero or more non-observable moves, then
+one observable move, followed by zero or more non-observable moves. In addition,
+the definition forces the values for variables referenced at the observable node to
+match the values contained in a given store oe. This will allow us to maintain a
+correspondence between the store manipulated by p and ps.
+
+Definition 2 ((n; oe)-derivative). Let C be a slicing criterion for p, and let
+n 2 C and oe be a store where domain(oe) = ref (n). Then define the relation
+
+c1 n;oe=)C c2 to hold when there exist configurations c01, c02 such that c1
+
+:C7\Gamma !
+
+\Lambda 
+
+c01 n7\Gamma ! c02
+
+:C7\Gamma !
+
+\Lambda  c2 and for all x 2 ref (n), oe(x) = oe0
+
+1(x) where oe
+
+0
+1 is the storefrom configuration c
+0
+1.
+
+Based on the notion of (n; oe)-derivative, the following definition specifies what
+it means for two programs to simulate each other with respect to the observable
+actions given in the slicing criterion.
+
+Definition 3 (C-bisimulation). Given two programs p1 and p2, let C be a
+slicing criterion for p1 and C ` N2 where N2 is the set of nodes in p2's CFG. A
+binary relation S ` Configurations[p1] \Theta  Configurations[p2] is a C-bisimulation
+if whenever (c1; c2) 2 S then
+
+(i) for any n 2 C and store oe, if c1 n;oe=)C c01 in p1 then there exists a c02 such
+
+that c2 n;oe=)C c02 in p2 and (c01; c02) 2 S, and
+(ii) for any n 2 C and store oe, if c2 n;oe=)C c02 in p2 then there exists a c01 such
+
+that c1 n;oe=)C c01 in p1 and (c01; c02) 2 S.
+
+11
+
+Two configurations are C-bisimilar if they are related by a C-bisimulation.
+Definition 4 (C-bisimilarity). Let C be a slicing criterion for p1 and p2, and
+let c1 and c2 be p1 and p2 configurations, respectively. Then c1 and c2 are Cbisimilar (written c1 ssC c2) if there exists a C-bisimulation S and (c1; c2) 2 S.
+In other words, ssC = S fS j S is a C-bisimulationg:
+
+Now, ps is said to be a correct slice of p with respect to C if their initial configurations are C-bisimilar.
+
+Definition 5 (program slice). Let C be a slicing criterion for p. Program
+ps is a slice of p with respect to C if c ssC cs where c and cs are the initial
+configurations for p and ps, respectively.
+
+Note that if p consists of a single thread and has a finite execution trace,
+the notion of bisimulation gives the same relation between p and ps as the usual
+definition of projection (e.g., as originally defined by Weiser [13]).
+
+4 Computing Multi-threaded Program Slices
+Given a slicing criterion C = fn1; : : : ; nkg, computing a slice of p involves
+finding the nodes in p upon which the statements at nodes ni depend. These
+nodes are often referred to a relevant nodes. Relevant variables are variables that
+are defined or referenced at relevant nodes. In the slicing literature, constructing
+the set of relevant nodes is often performed in two stages. In the first stage, one
+builds a program dependence graph (PDG) that captures various dependencies
+between the nodes in p's control-flow graph. In the second stage, the nodes
+upon which the ni depend are found by computing the transitive closure of the
+dependences in the PDG with respect to the ni.
+
+We begin by describing each of the types of dependence relations that are required for slicing CFCL programs. Data-dependence [12] is related to the notion
+of reaching definition: a node n is data-dependent on node m if, for a variable v
+referenced at n, a definition of (i.e., an assignment to) v at m reaches n. Thus,
+node n depends on node m because the assignment at m can influence a value
+computed at n.
+
+Definition 6 (data dependence). Node n is data-dependent on m (written
+n
+
+dd! m) if there is a variable v such that (1) there exists a non-trivial path p
+
+from m to n such that for every node m0 2 p \Gamma  fm; ng, v =2 def (m0), and (2)
+v 2 def (m) " ref (n).
+
+For example, In Figure 2 [prod put:2]
+
+dd! [prod put:1], [prod check:1] dd!
+
+[prod put:1], [prod put:1]
+
+dd! [prod put:1], [prod update tally:1] dd!
+
+[prod update tally:1], [prod cycle:1]
+
+dd! [prod cycle:1], and similarly for the
+
+consumer thread.
+
+Control dependence [12] information identifies the conditionals that may affect execution of a node in the slice.
+
+12
+
+Definition 7 (control dependence). Node n is control-dependent on m
+(written n
+
+cd! m) if (1) there exists a non-trivial path p from m to n such
+
+that every node m0 2 p \Gamma  fm; ng is post-dominated by n, and (2) m is not
+post-dominated by n.
+
+For a node n to be control-dependent on m, m must have at least two immediate
+successors in CFG (i.e., m must be a conditional), and there must be two paths
+that connect m with e such that one contains n and the other does not. For
+example, in Figure 2, [prod-wakeup.1] is control-dependent on [prod-put.2],
+but [prod-release-lock.1] is not (since it post-dominates [prod-put.2]).
+
+We noted above that in existing work on slicing, the goal is to construct slices
+that preserve the (projection) semantics of terminating program executions. To
+preserve semantics of non-terminating executions, one needs to make sure that
+the slice includes any program points lying alongs paths to relevant nodes that
+could cause non-termination.
+
+Definition 8 (divergence dependence). Node n is divergence-dependent on
+node m (written n \Omega 
+
+d! m) if (1) m is a pre-divergence point, and (2) there exists
+
+a non-trivial path p from m to n such that no node m0 2 p \Gamma  fm; ng is a predivergence point.
+
+Note that this definition will allow slicing to remove infinite loops that cannot
+infinitely delay the execution of a relevant node. For the producer thread in
+Figure 2, the pre-divergence points are [prod check.1] and [prod cycle.2]. Since
+all the nodes in the producer thread are reachable from these two nodes, all nodes
+in the thread are divergence-dependent on them.1
+
+We now consider dependencies that arise due to concurrent execution in
+CFCL. Interference dependence [1] captures the situation where definitions to
+shared variables can "reach" across threads.
+
+Definition 9 (interference dependence). A node n is interferencedependent on node m (written n
+
+id! m), if `(n) 6= `(m), and there is a variable
+
+v, such that v 2 def(m) and v 2 ref (n).
+
+For example, in Figure 2, references of count at [prod check.1], [prod put.1],
+and [prod put.2], are all interference dependent on the definition of count at
+[cons get.1].
+
+If a relevant variable is defined at node n inside of some critical region, then
+the locking associated with that region must be preserved (i.e., the corresponding
+enter-monitor and exit-monitor commands must appear in the slice). Omitting the monitor might allow shared variable interference that was not present
+in the original program. In this situation, we say that n is synchronizationdependent on the inner-most enclosing enter-monitor and exit-monitor nodes
+
+1 One might imagine a conservative analysis that can distinguish simple cases where
+
+loops are guaranteed to converge, and thus eliminate exit conditionals of these loops
+from the set of pre-divergence points.
+
+13
+
+(dependence in the case of nested critical regions will be captured by the transitive closure of this relation).
+
+In Figure 2, if the variable count is a relevant variable for a slicing criterion
+C, then the buffer monitors are relevant as well -- thus, preventing concurrent
+increments and decrements of count from interfering with each other.
+
+Definition 10 (synchronization dependence). A node n is
+synchronization-dependent on node m (written n
+
+sd! m), if CR(n) = (m
+
+1; m2)
+
+and m 2 fm1; m2g.
+
+Just as we introduced divergence dependence to capture the situation where
+an infinite loop may prevent the execution of some observable node, we now
+introduce the notion of ready dependence. Informally, a statement n is readydependent on a statement m if m's failure to complete (either because it is never
+reached or because, for wait, the notify never occurs) can make `(n) block
+before reaching or completing n -- thus delaying n's execution indefinitely. The
+following definition for ready dependence is fairly conservative and we will discuss
+in the following section how it can be refined based on the notion of safe lock.
+
+Definition 11 (ready dependence). A node n is ready-dependent on node
+m (written n
+
+rd! m), if
+
+1. `(n) = `(m) and n is reachable from m in the CFG of `(m) and code(m) =
+
+enter-monitor k, or
+2. `(n) 6= `(m) and code(n) = enter-monitor k and code(m) =
+
+exit-monitor k, or
+3. `(n) = `(m) and n is reachable from m and code(m) = wait k, or
+4. `(n) 6= `(m) and code(n) = wait k and code(m) 2 fnotify k ; notify-all kg.
+
+Some of the ready dependences in Figure 2 are as follows: all nodes in the
+producer thread are reachable from the wait at [prod wait.1], so all nodes in
+the thread are ready-dependent on it (by condition 3); all nodes in the thread
+are ready-dependent on the enter-monitor tally at line [prod enter tally.1]
+(by condition 1); the wait buffer at [prod wait.1] is ready-dependent on the
+notify buffer at [cons wakeup.1] (by condition 4).
+
+Given a program p, define the relation
+
+d! with respect to p to be the union
+
+of the relations defined above with respect to p (i.e., the union of
+
+dd!, cd!, \Omega d!, id!,
+
+sd!, rd!). The PDG P for p consists of the nodes of the CFG G for p with edges
+
+formed by the relation
+
+d!.
+
+In the PDG approach to slicing, constructing the program slice proceeds by
+finding the set of nodes SC (called the slice set) in p's CFG that are reachable
+
+(via
+
+d!) from the nodes in C.
+
+Definition 12 (slice set). Let C be a slicing criterion for program p and P be
+the PDG for p. Then the slice set SC of p with respect to C is defined as follows:
+
+SC = fm j n 2 C and n
+
+d!
+
+\Lambda  mg:
+
+14
+
+In addition to the nodes in SC, the residual program must contain other nodes
+(such as goto's and matching enter-monitor/exit-monitor commands) to be
+well-formed. Given C and the slice set SC, we briefly sketch how the residual program is constructed (for details see extended version of the paper). If an assignment or synchronization statement is in SC, then it must appear in the residual
+program. If an enter-monitor or its matching exit-monitor appears in SC,
+then it must appear in the residual program (and vice versa for exit-monitor).
+All goto and return jumps must appear in the residual program. However, if
+an if is not in SC, then no node in SC is control dependent upon it. Therefore,
+it doesn't matter if execution follows the true branch or the false branch. In
+this case, one can replace the conditional with a jump to the point where the
+two branches merge. All other source statements can be omitted from residual
+program. This process yields a residual program p that contains "trivial" blocks
+(blocks containing no assignments and a goto 62 SC as the jump). Unshared
+trivial blocks (i.e., those that are not the target of two or more jumps) can be
+removed in a simple post-processing phase.
+
+As an example, consider slicing the program of Figure 2 using the criterion
+C = f[prod cycle:1]g. Since the threads of the example are tightly coupled, the
+slicing algorithm correctly identifies that all statements except the assignments
+to total and cons must appear in the residual program. In general, ready dependences on wait statements end up causing a large amount of the synchronization
+structure to be included in the slice. Intuitively, this is because it is impossible
+in general to tell staticly if the conditions for a thread to be "notified" will
+eventually occur. However, one might expect that monitors that contain only
+notify commands and/or assignments to irrelevant variables (such as the tally
+monitor in the example) could be removed. In fact, the tally monitor can be
+removed using the refinements based on safe locks presented below. Of course,
+monitors containing wait can also be removed in certain situations where there
+are no relevant nodes reachable from them.
+
+Theorem 1 (correctness of slicing). Let C by a slicing criteria for program
+p. Let ps be the residual program constructed wrt p and C according to process
+outlined above. Then program ps is a slice of p, i.e., the initial configurations of
+p and ps are C-bisimilar.
+
+We have identified several common programming idioms in which ready dependence can cause an overly-large slice to be produced. We now describe how
+relatively inexpensive static analyses over the program flow graph can be applied to refine ready dependences and consequently reduce the size of a slice
+while preserving its correctness.
+
+The example of Figure 2 contains a common coding pattern for program
+threads: the threads have a main loop with regions in the loop body protected
+by locks. Consider that the loop back-edge in such a thread t will force each node
+in the loop body to be ready-dependent on each enter-monitor command in the
+body. Each occurrence of enter-monitor k for some lock k is ready-dependent
+on exit-monitor k commands in the other program threads t0 6= t. The resultant dependencies will force all k-monitor related commands in all threads
+
+15
+
+to be included in the slice (however, if k0 does not occur in t, k0-monitor commands in threads other than t might be removed). Recall that ready dependence is implying that one of these enter-monitor commands may cause the
+other k-monitor commands to be infinitely delayed. Since locks in most threaded
+programs will not be held indefinitely, the presence of these dependencies will
+usually be unnecessary (since we assume the JVM implementation guarantees
+scheduling fairness).
+
+We define a safe lock to be one which will never be held indefinitely. We
+do not attempt to compute the exact set of safe locks, rather we focus on an
+easily identified subset of the safe locks. A lock is safe if all paths between
+matching enter-monitor k/exit-monitor k commands contain (1) no waitfree loops, (2) no wait commands for other locks, and (3) no enter-monitor
+or exit-monitor commands on unsafe locks. A wait-free loop is a loop which
+has some path through its body that does not include a wait command. Lock
+safety can be computed by a depth-first marking of the program flow graph
+fragments rooted at enter-monitor commands; this results in a boolean lock
+function safe(k).
+
+For example, both the locks in Figure 2 satisfy the safety conditions above.
+The count lock will eventually be released at monitor exits, or at the wait on
+each iteration of the inner loop (e.g., the loop with header prod check). It is
+easy to see that the tally-monitors in both the producer and consumer are
+guaranteed to release the lock because each contains only a single assignment.
+
+Using lock safety information, we can refine Definition 11 by stating the ready
+dependencies only arise from conditions (1) and (2) in Definition 11 if lock k is
+unsafe (i.e., :safe(k)). Slicing the example program of Figure 2 on criterion
+f[prod cycle:1]g now removes the tally monitors in both the producer and
+the consumer since (a) [prod cycle.1] no longer ready-depends on the producer
+tally-monitor nor does it depend on any statement within the tally-monitor.
+On the other hand, the buffer-monitors in both the producer and consumer
+are still included in the slice since [prod cycle.1] is ready-dependent on the
+wait buffer command (which will end up cause the entire buffer synchronization structure from both threads to be included). In Figure 2, the * annotations
+indicate the statements that are removed from the program when slicing on
+f[prod cycle:1]g using the safe-lock refinement (note that post-processing will
+retarget the goto's in prod release lock and cons release lock to jump to
+prod cycle and cons cycle respectively).
+
+Formally speaking, individual thread actions that correspond to blocking on
+an enter-monitor command are unobservable. The only way that such blocking can influence the observable behavior of a slice is if it is indefinite. Ready
+dependence for unsafe locks preserves such indefinite blocking in the slice. For
+safe locks, finite-duration blocking is equivalent to a finite-sequence of unobservable moves in the blocked thread, which is bisimilar to a system with no such
+unobservable moves.
+
+16
+
+5 Related Work
+Static slicing of concurrent programs: Cheng [1] presents an approach to
+static and dynamic slicing of concurrent programs based on a generalization of
+PDG's which he calls program dependence nets (PDN). PDN's include edges for
+what Cheng calls synchronization dependence, communication dependence and
+selection dependence. His synchronization dependence roughly corresponds to
+the synchronization dependence in our work. Interprocess communication is his
+setting is channel-based, and his notion of communication dependence is analogous to interference dependence. His selection dependence is a generalization of
+control dependence to the non-deterministic choice operators appearing in his
+language. As Tip notes [12], Cheng does not state or prove any property of the
+slices computed by his algorithm.
+
+Zhao [14] addresses static slicing of Java programs using thread depedence
+graphs (TDGs). Although TDGs are able to handle method calls, they do not
+incorporate notions such divergence dependence nor what we call synchronization dependence (synchronized methods are handled, but not synchronized statements). Of our ready dependencies, only dependencies associated with component (4) are handled by TDGs, and they do not incorporate the notion of safe
+lock. Finally, there is no notion of correctness defined.
+
+Krinke [7] considers static slicing of multi-threaded programs with shared
+variables, and focuses on issues associated with interference dependence. He
+notes that considering interference dependence to be transitive (as we have done)
+can result in slice that can be viewed as overly-imprecise. Krinke uses the notion
+of a witness (a sequence of configurations that can be extracted from a valid execution trace of the program) to filter out situations where transitive inference
+dependencies give imprecise results. The filtering has worst-case exponential behavior in the number of transitive dependence edges. While this approach to
+more precise slices is intriguing, it is unclear to us if it has significant practical
+benefits which would outweigh the extra conceptual overhead in the description
+of slicing as well as the associated computational cost.
+
+In Krinke's language (which includes threads with fork/join operations),
+there is no explicit synchronization mechanism, so he does not include notions
+analogous to synchronization dependence or ready dependence. Also, he does
+not consider the notion of divergence dependence, and does not state or prove
+any property of the slices computed by his algorithm.
+
+Slicing as a tool for model construction: Millett and Teitelbaum [6]
+study static slicing of Promela (the model description language for the modelchecker SPIN [5] and its application to model checking, simulation, and protocol
+understanding, based on the extension and modification of Cheng's work. They
+emphasize that even imprecise slices can give useful reductions for model checking. However, they do not formalize the semantics of concurrency in Promela
+nor their slicing methods.
+
+Clarke et al.[2] present a tool for slicing VHDL programs with dependence
+graphs. Their PDG approach is based on data and control dependence along
+with a new notion called signal dependence, which is similar to synchronization
+
+17
+
+dependence. Their slicer integrates other transformations based on properties
+that appear in hardware design languages. They briefly discuss relationships
+between slicing and model-checking optimizations.
+
+6 Conclusions and Future Work
+We have constructed a prototype implementation that processes a subset of the
+Jimple intermediate language using the ideas presented in this paper. Based
+on preliminary experiments with real Java systems, it appears that the safelock refinements presented in Section 4 are crucial for slicing away significant
+amounts of synchronization activity [4]. For example, in one real Java application
+which consisted of five threads (organized into a pipeline topology), slicing the
+system directed by an LTL formula that specifies appropriate shutdown of one
+thread yielded a residual program with the other threads removed. However, the
+unrefined slicing algorithm that did not take safe locks into account was only able
+to slice away a very small portion of the code, because they threads were coupled
+through wait-notify related ready dependences. Although the examples that we
+have examined contain many of the common idioms of concurrent Java systems,
+more experiments across a broad range of concurrent software architectures are
+needed to confirm the effectiveness of this approach.
+
+We are scaling up our previous formal study of modal-logic-directed slicing
+[3] to the language features of the present work. Obviously, more work is needed
+to treat features of Java that we have not addressed.
+
+A Documentation on the JVM synchronization
+
+primitives
+
+The following is taken from Inside the Java Virtual Machine.
+
+The form of monitor used by the JVM is called a Wait and Notify monitor (it is also called a Signal and Continue monitor). In this kind of
+monitor, a thread that currently owns the monitor (lock) can suspend
+itself inside the monitor by executing a wait command. When a thread
+executes a wait, it releases the monitor (lock) and enters a wait set. The
+thread will stay suspended in the wait set until some time after another
+thread executes a notify command inside the monitor. When a thread
+executes a notify, it continues to own the monitor until it releases the
+monitor of its own accord, either by executing a wait or by completing
+the critical section (e.g., executing a exit-monitor command). After
+the notifying thread has released the monitor, the waiting thread will be
+resurrected and will reacquire the monitor (very roughly speaking).
+
+In addition to having a wait set, it is clear that each lock should be associated
+with a set of blocked threads that are waiting to acquire the lock. The following
+is taken from The Java Virtual Machine Specification and gives more detail
+about what should be happening with the enter-monitor and exit-monitor
+instructions. [8, p. 376].
+
+18
+
+Let t be a thread, and let k be a lock. There are certain constraints on
+the operations performed by t with respect to k:
+
+- A lock operation by t on k may occur only if, for every thread t0
+
+other than t, the number of preceding unlock operations by t0 on
+k equals the number of preceding lock operations by t on k. (Less
+formally: only one thread at a time is permitted to lay claim to a
+lock; moreover, a thread may acquire the same lock multiple times
+and does not relinquish ownership of it until a matching number of
+unlock operations have been performed.)
+- An unlock operation by thread t on lock k may occur only if the
+
+number of preceding unlock operations by t on k is strictly less than
+the number of preceding lock operations by t on k. (Less formally: a
+thread is not permitted to unlock a lock it does not own).
+
+So it is not clear from this discussion what should happen if a thread executes
+exit-monitork when it does not hold the lock k: should an exception be raised,
+or should the instruction be interpreted as a no-op? In our language, this situation will never arise since we assume enter-monitor and exit-monitor to
+come in matching pairs.
+
+The following is taken from The Java Virtual Machine Specification [8, p.
+387] and gives more details about the wait set and the associated count of lock
+acquisitions by particular threads.
+
+Every object, in addition to having an associated lock, has an associated
+wait set, which is a set of threads. When an object is first created, its
+wait set is empty.
+Wait sets are used by the methods wait, notify, and notifyall of class
+Object. These methods also interact with the scheduling mechanism for
+threads.
+The method wait should be invoked for an object only when the current
+thread (call it t) has already locked the object's lock. Suppose that thread
+t has in fact performed n lock operations that have not been matched by
+unlock operations. The wait method then adds the current thread to the
+wait set for the object, disables the current thread for thread scheduling
+purposes, and performs n unlock operations to relinquish the lock. The
+thread t then lies dormant until one of three things happens:
+
+- Some other thread invokes the notify method for that object, and
+
+thread t happens to be the one arbitrarily chosen as the one to notify.
+- Some other thread invokes the notifyall method for that object.
+- If the call by t to the wait method specified a time-out interval, then
+
+the specified amount of real-time has elapsed.
+The thread t is then removed from the wait set and re-enabled for thread
+scheduling. It locks the object again (which may involve competing in the
+usual manner with other threads); once it has gained control of the lock,
+it performs n \Gamma  1 additional lock operations and then returns from the
+invocation of the wait method. Thus, on return from the wait method,
+
+19
+
+the state of the object's lock is exactly as it was when the wait method
+was invoked.
+The notify method should be invoked for an object only when
+the current thread has already locked the object's lock, or an
+IllegalMonitorState-Exception will be thrown. If the wait set for the
+object is not empty, then some arbitrarily chosen thread is removed from
+the wait set and re-enabled for thread scheduling. (Of course, that thread
+will not be able to proceed until the current thread relinquishes the object's
+lock).
+The notifyall method should be invoked for an object only when
+the current thread has already locked the object's lock, or an
+IllegalMonitorState-Exception will be thrown. Every thread in the
+wait set for an object is removed from the wait set and re-enabled for
+thread scheduling. (Of course, those threads will not be able to proceed
+until the current thread relinquishes the object's lock).
+
+References
+
+1. Jingde Cheng. Slicing concurrent programs -- a graph-theoretical approach. In
+
+Proceedings of the First International Workshop on Automated and Algoritmic
+Debugging, number 749 in LNCS, pages 223-240, 1993.
+2. E.M. Clarke, M. Fujita, S.P. Rajan, T.Reps, S. Shankar, and T. Teitelbaum. Program slicing for design automation: An automatic technique for speeding-up hardware design, simulation, testing, and verification. Technical report, 1999.
+3. Matthew Dwyer and John Hatcliff. Slicing software for model construction. In
+
+Olivier Danvy, editor, Proceedings of the 1999 ACM Workshop on Partial Evaluation and Program Manipulation (PEPM'99), January 1999. BRICS Notes Series
+NS-99-1.
+4. Matthew B. Dwyer, James C. Corbett, John Hatcliff, Stefan Sokolowski, and
+
+Hongjun Zheng. Slicing multi-threaded java programs : A case study. Technical
+Report 99-7, Kansas State University, Department of Computing and Information
+Sciences, March 1999.
+5. G.J. Holzmann. The model checker spin. IEEE Transactions on Software Engineering, 23(5):279-294, May 1997.
+6. Lynette I.Millett and Tim Teitelbaum. Slicing promela and its applications to
+
+model checking, simulation, and protocol understanding. In Proceedings of the 4th
+International SPIN Workshop, 1998.
+7. Jens Krinke. Static slicing of threaded programs. In Proc. ACM SIGPLAN/SIGFSOFT Workshop on Program Analysis for Software Tools and Engineering (PASTE'98), pages 35-42, 1998.
+8. Tim Lindholm and Frank Yellin. The Java Virtual Machine Specification. AddisonWesley, 1997.
+9. K.L. McMillan. Symbolic Model Checking. Kluwer Academic Publishers, 1993.
+10. Robin Milner. Communication and Concurrecy. Prentice Hall, 1989.
+11. S.S. Muchnick. Advanced Compiler Design and Implementation. Morgan Kaufmann Publishers, 1997.
+12. F. Tip. A survey of program slicing techniques. Journal of programming languages,
+
+3:121-189, 1995.
+
+20
+
+13. Mark Weiser. Program slicing. IEEE Transaction on Software Engineering, 1984.
+14. Jianjun Zhao. Slicing concurrent java programs. In Proceedings of the Seventh
+
+IEEE International Workshop on Program Comprehension, pages 126-133, may
+1999.

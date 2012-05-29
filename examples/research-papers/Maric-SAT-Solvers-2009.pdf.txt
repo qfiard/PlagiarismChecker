@@ -1,0 +1,1330 @@
+
+
+J Autom Reasoning (2009) 43:81-119DOI 10.1007/s10817-009-9127-8
+Formalization and Implementation of ModernSAT Solvers
+Filip Mari'c
+
+Received: 17 March 2008 / Accepted: 3 March 2009 / Published online: 4 April 2009(C) Springer Science + Business Media B.V. 2009
+Abstract Most, if not all, state-of-the-art complete SAT solvers are complex variations of the DPLL procedure described in the early 1960's. Published descriptions
+of these modern algorithms and related data structures are given either as high-level
+state transition systems or, informally, as (pseudo) programming language code. The
+former, although often accompanied with (informal) correctness proofs, are usually
+very abstract and do not specify many details crucial for efficient implementation.
+The latter usually do not involve any correctness argument and the given code
+is often hard to understand and modify. This paper aims to bridge this gap by
+presenting SAT solving algorithms that are formally proved correct and also contain
+information required for efficient implementation. We use a tutorial, top-down, approach and develop a SAT solver, starting from a simple design that is subsequently
+extended, step-by-step, with a requisite series of features. The heuristic parts of
+the solver are abstracted away, since they usually do not affect solver correctness
+(although they are very important for efficiency). All algorithms are given in pseudocode and are accompanied with correctness conditions, given in Hoare logic style.
+The correctness proofs are formalized within the Isabelle theorem proving system
+and are available in the extended version of this paper. The given pseudo-code served
+as a basis for our SAT solver argo-sat.
+
+Keywords SAT solving u* DPLL u* Software verification u* Algorithms u* Data structures
+
+1 Introduction
+The propositional satisfiability problem (SAT) is the problem of deciding if there is a
+truth assignment under which a given propositional formula (in conjunctive normal
+
+This work was partially supported by Serbian Ministry of Science grant 144030.
+F. Mari'c (B)Faculty of Mathematics, University of Belgrade, Belgrade, Serbia
+
+e-mail: filip@matf.bg.ac.rs
+
+82 F. Mari'c
+form) evaluates to true. It is a canonical NP-complete problem [7] and it holds a central position in the field of computational complexity. The SAT problem is also important in many practical applications such as electronic design automation, software
+and hardware verification, artificial intelligence, and operations research. Thanks to
+their recent advances, SAT solvers are becoming a tool suitable for attacking more
+and more practical problems. Some of the solvers are complete, while others are
+stochastic. For a given SAT instance, complete SAT solvers can either find a solution
+(i.e., a satisfying variable assignment) or show that no solution exists. Stochastic
+solvers, on the other hand, cannot prove that an instance is unsatisfiable, although
+they may be able to find a solution for certain kinds of large satisfiable instances
+quickly. The majority of the state-of-the-art complete SAT solvers are based on
+the branch and backtrack algorithm called Davis-Putnam-Logemann-Loveland, or
+DPLL [8, 9]. Starting with the work on the GRASP and SATO systems [21, 27], and
+continuing with Chaff, BerkMin and MiniSAT [10, 12, 19], spectacular improvements
+in the performance of DPLL-based SAT solvers achieved in the last few years are due
+to (i) several conceptual enhancements of the original DPLL procedure, aimed at
+reducing the amount of explored search space, such as backjumping, conflict-driven
+lemma learning, and restarts, and (ii) better implementation techniques, such as the
+two-watch literals scheme for unit propagation. These advances make it possible to
+decide the satisfiability of industrial problems with tens of thousands of variables and
+millions of clauses.
+
+While SAT solvers have become complex, describing their underlying algorithms
+and data structures has become a nontrivial task. Some papers describe higher
+level concepts, while other some papers describe system level architecture with
+smart implementation techniques and tricks. Unfortunately, there is still a large gap
+between these two approaches. Higher level presentations, although clean and accompanied with correctness proofs, omit many details that are vital to efficient solver
+implementation. Lower level presentations usually give SAT solver algorithms in a
+form of pseudo-code. In a sense, open source SAT solvers are themselves the most
+detailed presentations and specifications of SAT solving techniques. The success
+of MiniSAT [10], and the number of its re-implementations, indicate that detailed
+descriptions of SAT solvers are needed and welcome in the community. However,
+in order to achieve the highest possible level of efficiency, these descriptions are
+far from the abstract, algorithmic level. Often, one procedure in the code contains
+several higher level concepts or one higher level algorithm is spread across several
+code procedures. The resulting pseudo-code, although almost identical to the award
+winning solvers, is, in our opinion, hard to understand, modify, and reason about.
+This paper is an attempt to bring these two approaches together. We claim that SAT
+solvers can be implemented so that (i) the code follows higher level descriptions
+that make the solver easy to understand, maintain, modify, and to prove correct,
+and (ii) it contains lower level implementation tricks, and therefore achieves higher
+efficiency. This claim is supported by (i) our SAT solver argo-sat, that represents
+a rational reconstruction of MiniSAT, obeying the given two requirements, and
+(ii) our correctness proofs (formalized in Isabelle) for the presented algorithms,
+accompanying our SAT solver.1
+
+1Web page of argo-sat is http://argo.matf.bg.ac.rs/.
+
+Formalization and Implementation of Modern SAT Solvers 83
+
+Complicated heuristics (e.g., for literal selection, for determining the appropriate
+clause database size, for restarting) are important parts of modern SAT solvers
+and are crucial for solver efficiency. While great effort is put into developing new
+heuristics and researchers compete to find more and more effective ones, we argue
+that these can be abstracted from the core part of the solver (the DPLL algorithm
+itself) and represented as just a few additional function calls (or external classes in an
+object-oriented setting). No matter how complicated these heuristics are, they do not
+affect the solver correctness as long as they meet several, usually trivial, conditions.
+Separating the core DPLL algorithm from complicated, heuristic parts of the solver
+leads to a simpler solver design, and to more reliable and flexible solvers.
+
+In the rest of the paper, we develop the pseudo-code of a SAT solver from
+scratch and outline its correctness arguments along the way. We take a top-down
+approach, starting with the description of a very simple solver, and introduce
+advanced algorithms and data structures one by one. The partial correctness of the
+given code is proved using the proof system Isabelle [23] (in the Hoare style). Isabelle
+proof documents containing the proofs of correctness conditions are available in [18].
+An extended version of this paper, available from http://argo.matf.bg.ac.rs, contains
+these proofs presented in a less formal, but more readable manner. In this paper
+termination issues are not dealt with.2
+
+Overview of the paper In Section 2 the DPLL algorithm is briefly described, two
+rule-based SAT solver descriptions are presented, and the basics of program verification and Hoare logic are described. In Section 3 the background theory is introduced
+in which the properties of a modern SAT solver are formalized and proven. Also, the
+pseudo-code language used to describe the implementation is specified. The bulk of
+the paper is in Section 4: this contains descriptions of SAT solver algorithms and data
+structures and outlines their correctness proofs. We start from the basic backtrack
+search (Section 4.1), then introduce unit propagation (Section 4.2), backjumping,
+clause learning and firstUIP conflict analysis (Section 4.3), conflict clause minimization (Section 4.4), clause forgetting (Section 4.5), restarting (Section 4.6), exploiting
+literals asserted at zero level of assertion trail (Section 4.7), and introduce efficient
+detection of conflict and unit clauses using watch literals (Section 4.8, Section 4.9). In
+Section 5 a short history of SAT solver development is given, and in Section 6 final
+conclusions are drawn.
+
+2 Background
+Davis-Putnam-Logemann-Loveland (DPLL) algorithm Most of the complete
+modern SAT solvers are based on the DPLL algorithm [8, 9]. Its recursive version
+is shown in the Fig. 1, where F denotes a set of propositional clauses, tested for
+satisfiability, and F[l \Theta  \Lambda ] denotes the formula obtained from F by substituting the
+literal l with \Lambda , its opposite literal l with \Xi , and simplifying the formula afterwards.
+A literal is pure if it occurs in the formula, but its opposite does not. A clause a is unit
+
+2Formal termination proofs of rule-based systems on which our implementation is based are
+available in [18].
+
+84 F. Mari'c
+Fig. 1 DPLLalgorithm--recursive
+definition
+
+if it contains only one literal. This recursive implementation is practically unusable
+for larger formulae and therefore it will not be used in the rest of this paper.
+
+Rule-based SAT solver descriptions During the last few years, two state transition
+systems which model the DPLL-based SAT solvers and related SMT solvers have
+been published [17, 22]. These descriptions define the top-level architecture of
+solvers as a mathematical object that can be grasped as a whole and fruitfully
+reasoned about. Both systems are accompanied with pen-and-paper correctness
+and termination proofs. Although they succinctly and accurately capture all major
+aspects of the solvers' global operation, they are high level and far from the actual
+implementations. Both systems model the solver behaviour as transitions between
+states. States are determined by the values of the solver's global variables. These
+include the set of clauses F and the corresponding assertion trail M. Transitions
+between states are performed only by using precisely defined rules. The solving
+process is finished when no more transition rules apply (i.e., when final states are
+reached).
+
+The system given in [22] is very coarse. It can capture many different strategies
+seen in state-of-the art SAT solvers, but this comes at a price--several important
+aspects still have to be specified in order to build an implementation based on the
+given set of rules.
+
+The system given in [17] gives a more detailed description of some parts of the
+solving process (particularly the conflict analysis phase) than the one given in [22].
+Since the system of [17] is used as a basis of the implementation given in this paper,
+its transition rules are listed in Fig. 2. Together with the formula F and the trail M,
+the state of the solver is characterized by the conflict analysis set C which is either
+a set of literals, or the distinguished symbol no_cflct. The input to the system is
+an arbitrary set of clauses F0. Solving starts from the initial state in which F = F0,
+
+M = [ ], and C = no_cflct. The rules have a guarded assignment form: above the
+line is the condition that enables the rule application, below the line is the update to
+the state variables.
+
+Formalization and Implementation of Modern SAT Solvers 85
+Fig. 2 Rules of dpll as givenin [17]. (
+
+li \Pi  lj denotes that theliteral l
+
+i precedes lj in M, and
+M[m] denotes the prefix of Mup to the level m)
+
+Formal Proofs Over the last years, in all areas of mathematics and computer
+science, machine checkable formal proofs have gained more and more importance.
+There are growing efforts in this direction, with many extremely complex theorems
+formally proved and with many software tools used for producing and checking
+formal proofs. Some of them are Isabelle, HOL, Coq, PVS, Mizar, etc. A comparison
+of these tools can be found in [26].
+
+Program Verification Program verification is the process of formally proving that
+a computer program meets its specification (that formally describes the expected
+program behaviour). Following lessons from major software failures, an increasing
+amount of effort has been being invested in this field. Many fundamental algorithms
+and properties of data structures have been formalized and verified. Also, a good
+deal of work has been devoted to the formalization of compilers, program semantics,
+communication protocols, security protocols, etc. Formal verification is important
+for SAT and SMT solvers and the first steps towards this direction have been made
+[1, 17, 22].
+
+Hoare Logic Verification of imperative programs is usually done in Floyd-Hoare
+logic [14], a formal system that provides a set of logical rules in order to reason
+about the correctness of computer programs with the rigor of mathematical logic.
+The central object in Hoare logic is Hoare triple that describes how the execution
+of a piece of code changes the state of a computation. A Hoare triple is of the form
+{P} code {Q}, where P (the precondition) and Q (the postcondition) are formulae
+of a meta-logic and code is a programming language code. A Hoare triple should be
+read as: "Given that the assertion P holds at the point before the code is executed,
+and the code execution terminates, the assertion Q will hold at the point after the
+code was executed".
+
+86 F. Mari'c
+3 Notation and Definitions
+In this section the notation and definitions that will be used in the rest of the paper
+shall be introduced.
+
+3.1 Background Theory
+In order to reason about the correctness of SAT solver implementations, the notions
+we are reasoning about must be formally defined. This formalization will be made
+in the higher-order logic of the system Isabelle. Formulae and logical connectives
+of this logic (\Sigma , \Upsilon , ~, \Phi , \Psi ) are written in the usual manner. The symbol =
+denotes syntactical identity of two expressions. Function and predicate applications
+are written in the prefix form, as in (f x1 . . . xn). Existential quantifiers are written as\Omega 
+
+and universal quantifiers as ff.
+
+It is assumed that the background theory that is being defined includes the built-in
+theory of lists and (finite) sets. The syntax of these operations is summarized in the
+first column of the Fig. 3, and their semantics is informally described in the second
+column.
+
+Basic types The logic used is typed, and we define the basic types.
+
+Fig. 3 List and set operations
+
+Formalization and Implementation of Modern SAT Solvers 87
+Definition 1
+
+Boolean true or false
+Nat natural number
+Variable natural number.
+Literal either a positive variable (+vbl) or a negative variable (-vbl)
+Clause a list of literals
+Formula a list of clauses
+Valuation a list of literals
+
+Although typed logic has been used, for the sake of readability, we sometimes
+have omitted sorts and have used the following naming convention: Literals (i.e.,
+variables of the type Literal) are denoted by l (e.g. l, lfi, l0, l1, l2, . . .), variables by
+vbl, clauses by c, formulae by F, and valuations by v.
+
+Most of the following definitions are formalized using primitive recursion, but,
+in order to simplify presentation and improve readability, we give them as natural
+language descriptions.
+
+Definition 2 The opposite literal of a literal l, denoted l, is defined by: +vbl = -vbl,-
+
+vbl = +vbl.
+
+We abuse the notation and overload some symbols. For example, the symbol fl
+denotes both set membership and list membership. It is also used to denote that a
+literal occurs in a formula.
+
+Definition 3 A formula F contains a literal l (i.e., a literal l occurs in a formula F),
+denoted l fl F, iff \Omega c. c fl F \Sigma  l fl c.
+
+Symbol vars is also overloaded and denotes the set of variables occurring in a
+clause, formula, or valuation.
+
+Definition 4 The set of variables that occur in a clause c is denoted by (vars c). The
+set of variables that occur in a formula F is denoted (vars F). The set of variables that
+occur in a valuation v is denoted (vars v).
+
+The semantics (satisfaction and falsification relations) is defined by:
+Definition 5 A literal l is true in a valuation v, denoted v \Theta  l, iff l fl v.
+
+A clause c is true in a valuation v, denoted v \Theta  c, iff \Omega l. l fl c \Sigma  v \Theta  l.
+A formula F is true in a valuation v, denoted v \Theta  F, iff ffc. c fl F \Phi  v \Theta  c.
+
+v \Theta  l denotes that l is not true in v, v \Theta  c denotes that c is not true in v, and v \Theta  F
+denotes that F is not true in v.
+
+Definition 6 A literal l is false in a valuation v, denoted v \Theta ~ l, iff l fl v.
+
+A clause c is false in a valuation v, denoted v \Theta ~ c, iff ffl. l fl c \Phi  v \Theta ~ l.
+A formula F is false in a valuation v, denoted v \Theta ~ F, iff \Omega c. c fl F \Sigma  v \Theta ~ c.
+
+88 F. Mari'c
+
+v \Theta ~ l denotes that l is not false in v, v \Theta ~ c denotes that c is not false in v, and
+v \Theta ~ F denotes that F is not false in v. It is said that l (or c, or F) is unfalsified in v.
+
+Definition 7 A valuation v is inconsistent, denoted (inconsistent v), iff it contains
+both literal and its opposite i.e., \Omega l. v \Theta  l \Sigma  v \Theta  l. A valuation is consistent, denoted
+(consistent v), iff it is not inconsistent.
+
+Definition 8 A model of a formula F is a consistent valuation under which F is true.
+A formula F is satisfiable, denoted (sat F) iff it has a model i.e., \Omega v. (consistent v) \Sigma 
+v \Theta  F.
+
+Definition 9 A formula F entails a clause c, denoted F \Theta  c, iff c is true in every model
+of F. A formula F entails a literal l, denoted F \Theta  l, iff l is true in every model of
+
+F. A formula F entails valuation v, denoted F \Theta  v, iff it entails all its literals i.e.,ff
+
+l. l fl v \Phi  F \Theta  l. A formula F1 entails a formula F2 denoted F1 \Theta  F2, if every model
+of F1 is a model of F2.
+
+Definition 10 Formulae F1 and F2 are logically equivalent, denoted F1 ffi F2, if any
+model of F1 is a model of F2 and vice versa, i.e., if F1 \Theta  F2, and F2 \Theta  F1.
+
+Definition 11 A clause c is unit in a valuation v with a unit literal l, denoted
+(isUnit c l v) iff l fl c, v \Theta  l, v \Theta ~ l and v \Theta ~ (c \ l) (i.e., fflfi. lfi fl c \Sigma  lfi ffl= l \Phi  v \Theta ~ lfi).
+
+Definition 12 A clause c is a reason for propagation of literal l in valuation v, denoted
+(isReason c l v) iff l fl c, v \Theta  l, v \Theta ~ (c \ l), and for each literal lfi fl (c \ l), the literal
+lfi precedes l in v.
+
+Definition 13 The resolvent of clauses c1 and c2 over the literal l, denoted
+(resolvent c1 c2 l) is the clause (c1 \ l)@(c2 \ l).
+
+Assertion Trail In order to build a non-recursive implementation of the dpll
+algorithm, the notion of valuation should be slightly extended. During the solving
+process, the solver should keep track of the current partial valuation. In that
+valuation, some literals are called decision literals. Non-decision literals are called
+implied literals. These check-pointed sequences that represent valuations with
+marked decision literals are represented by the data structure called assertion trail.
+All literals that belong to the trail will be called the asserted literals. The assertion
+trail operates as a stack and literals are always added and removed from its top. The
+background theory is extended with the following type:
+
+Definition 14
+
+Trail a list of literals, with some of them marked as decision literals.
+
+A trail can be implemented, for example, as a list of (Literal, Boolean)
+ordered pairs. Trails will be denoted by M (e.g. M, Mfi, M0, . . .).
+
+Formalization and Implementation of Modern SAT Solvers 89
+Example 1 A trail M could be [+1, ---2, +6, --+5, -3, +4, ---7]. The decision literals
+are marked with the symbol -- on their left hand sides.
+
+Definition 15 (decisions M) is the list of all marked elements (i.e., of all decision
+literals) from a trail M.
+
+Definition 16 (lastDecision M) is the last element in a trail M that is marked.
+Definition 17 (decisionsTo M l) is the list of all marked elements from a trail M that
+precede the first occurrence of the element l, including l if it is marked.
+
+Example 2 For the trail given in Example 1, (decisions M) = [-2, +5, -7],
+(lastDecision M) = -7, (decisionsTo M + 4) = [-2, +5], (decisionsTo M - 7) =[-
+
+2, +5, -7].
+
+Definition 18 The current level for a trail M, denoted (currentLevel M), is the
+number of marked literals in M, i.e., (currentLevel M) = (length (decisions M)).
+
+Definition 19 The decision level of a literal l in a trail M, denoted (level l M), is the
+number of marked literals in the trail that precede the first occurrence of l, including
+l if it is marked, i.e., (level l M) = (length (decisionsTo M l)).
+
+Definition 20 (prefixToLevel M level) is the prefix of a trail M containing all elements
+of M with levels less or equal to level.
+
+Definition 21 (prefixBeforeLastDecision M) is the prefix of a trail M up to the last
+element that is marked, not including that element.3
+
+Example 3 For the trail in Example 1, (level + 1 M) = 0, (level + 4 M) = 2,
+(level - 7 M) = 3, (currentLevel M) = 3, (prefixToLevel M 1) = [+1, --+2, +6],
+(prefixBeforeLastDecision M) = [+1, ---2, +6, --+5, -3, +4].
+
+Definition 22 The last asserted literal of a clause c, denoted (lastAssertedLiteral c M),
+is the literal from c that is in M, such that no other literal from c comes after it in M.
+
+Definition 23 The maximal decision level for a clause c in a trail M, denoted
+(maxLevel c M), is the maximum of all decision levels of all literals from c that belong
+to M, i.e., (maxLevel c M) = (level (lastAssertedLiteral c M) M).
+
+Example 4 Let c is [+4, +6, -3], and M is the trail from the Example 1. Then,
+(maxLevel c M) = 2, and (lastAssertedLiteral c M) = +4.
+
+3Note that some of the defined functions are partial, and are not defined for all trails. For example,
+(prefixBeforeLastDecision M) is defined only for trails that contain a decision literal.
+
+90 F. Mari'c
+3.2 Pseudo-code Language
+All algorithms in the following text will be specified in a pascal-like pseudocode language. An algorithm specification consists of a program state declaration,
+followed by a series of function definitions.
+
+The program state is specified by a set of global variables given in the following
+form (where Typei can be any type of the background theory).
+
+Function definitions are given in the following form, where Typei is the type of
+the argument argi, and Type is the return type of the function. If a function does
+not return a value, then its return type is omitted.
+
+A statement is one of the following:
+
+Statements are separated by semicolons, and block structure is determined by indentation. Conditions and expressions can include variables, functions calls, and even
+background theory expressions.
+
+Parameters are passed by value. A function returns a value by assigning it to a
+special variable ret. An explicit return statement is also supported. Functions
+marked as const do not change the program state. In order to save some space,
+local variable declarations will be omitted when their type is clear from the context.
+
+The use of meta-logic expressions within our algorithm specifications is allowed.
+The reason for this is twofold. First, we want to simplify the presentation by avoiding
+the need for explicit implementation of some trivial concepts. For example, we
+assume that lists are supported in the language and we directly use the meta-logic
+notation for the list operations, keeping in mind that their correct implementation
+can be easily provided. Second, during the algorithm development, we intentionally
+leave some conditions at a high level and postpone their implementation. In such
+cases, we use meta-logic expressions in algorithm descriptions to implicitly specify the
+intended (post)conditions for the unimplemented parts of the code. For example, if
+
+then can be written without specifying how the test for M \Theta  F should effectively be implemented. These unimplemented parts of the code will be .
+Alternatively, a function satisfies(M : Trail, F : Formula) : Boolean
+
+Formalization and Implementation of Modern SAT Solvers 91
+could be introduced, which would have the postcondition -ret i\Phi  M \Theta  F"". The
+above test would then be replaced by if satisfies(M, F) then.
+
+4 SAT Solver Algorithms and Data Structures
+In this section, SAT solver algorithms and data structures are presented, and their
+correctness proofs are outlined. Our implementation will follow the rules of the
+framework described in [17]. Several variants of a SAT solver are given, labelled
+as SAT solver v.n. To save space, instead of giving the full code for each SAT solver
+variant, we will only print changes in respect to the previous version of code. These
+changes will be marked: added lines by + and chaned lines by * on their right hand
+side. Each solver variant contains a function:
+
+function solve (F0 : Formula) : {SAT, UNSAT}
+which determines whether the given formula F0 is satisfiable or unsatisfiable. This
+function sets the global variable satFlag and returns its value.
+
+The partial correctness of the SAT solver v.n is formalized by the following
+soundness theorem:
+
+Theorem 1 SAT solver v.n satisfies the Hoare triple:-\Lambda "" solve
+
+(F0) -(satFlag = U NSAT \Sigma  ~sat F0) \Upsilon  (satFlag = SAT \Sigma  M \Theta  F0)""
+
+This theorem will usually be proved by proving two lemmas:
+1. Soundness for satisfiable formulae states that if the solver returns the value SAT,
+
+then the formula F0 is satisfiable.
+2. Soundness for unsatisfiable formulae states that if the solver returns the value
+
+U NSAT, then the formula F0 is unsatisfiable.
+
+Notice that, under the assumption that the solver is terminating (which is not proved
+in this paper), these two soundness lemmas imply solver completeness.
+
+To prove soundness, a set of conditions that each solver variant satisfies will be
+formulated. Also, preconditions that have to be satisfied before each function call
+will be given. All proofs that these conditions are invariants of the code and that
+preconditions are met before each function call are available in the extended version
+of this paper.
+
+4.1 Basic Backtrack Search
+The simplest, but still sound and complete, SAT solver can be implemented using
+the truth-table method which enumerates and checks all valuations. In this section,
+a solver based on an iterative backtrack search is described. The only improvement
+over the truth-table satisfiability checking is the use of early search-tree pruning. The
+following code can also be seen as a non-recursive implementation of a simplified
+DPLL algorithm (pure literal and unit clause rules are omitted). All successive
+solver refinements are based on this simple code, so we will present it and prove
+its correctness for methodological reasons.
+
+92 F. Mari'c
+
+First an informal description of the solver will be given. Formula F0 is tested for
+satisfiability. The trail M represents the current partial valuation. Initially it is empty.
+Literals are then added to the trail and marked as decision literals. Whenever a literal
+is added to the trail, F0 is checked for inconsistency. When F0 is inconsistent with the
+current trail, a conflict has occurred. The clause c fl F0, such that M \Theta ~ c is called a
+conflict clause. When a conflict occurs, the last decision literal on the trail is flipped,
+i.e., it and all literals after it are backtracked, and its opposite is added to the trail, but
+this time as a non-decision literal. If a conflict occurs with no decision literals on the
+trail, then we say that a conflict at decision level zero occurred and F0 is determined
+to be unsatisfiable. If M contains all variables that occur in F0 and a conflict does not
+occur, then F0 is determined to be satisfiable and M is its model.
+
+SAT Solver v.1
+
+Formalization and Implementation of Modern SAT Solvers 93
+
+Almost all meta-logic expressions used in the given pseudo-code can be easily
+made effective and implemented in a real programming language. For instance, the
+test (decisions M) = [ ] can be changed to the equivalent test (currentLevel M) = 0.
+An exception is a test for . Due to the fact that it is not trivial to make its
+efficient implementation, we shall postpone addressing this issue until Section 4.8.
+
+The function selectLiteral is left undefined, and it is only required to satisfy the
+Hoare triple specification:
+
+-vars M ffl= vars F0"" selectLiteral() -var ret fl vars F0 \Sigma  var ret /fl vars M""
+The selection of decision literals is irrelevant for the solver's correctness, as long as
+this condition is met, although, the literal selection strategy is usually crucial for the
+solver's efficiency. Many different strategies have been developed [20, 28] and all of
+them meet the given condition. Since these strategies can be implemented relatively
+independently from the rest of the solver, this issue will not be further investigated
+further.
+
+Example 5 Let F0 = [[-1, 2], [-3, 4], [-1, -3, 5], [-2, -4, -5], [-2, 3, 5, -6],[-
+
+1, 3, -5, -6], [1, -6], [1, 7]]. Figure 4 lists one possible execution trace (where
+by trace we mean the list of steps applied accompanied with the program states).
+Since a concrete literal selection strategy is not provided, this is only one of the many
+possible execution traces. Since applyBacktrack is called only in a conflict situation,
+a conflict clause has been printed with each of its calls. Note that this conflict clause
+need not be unique.
+
+Correctness First some of the conditions that hold at each line of the code and
+therefore are its invariants are formulated:
+
+InvariantconsistentM: (consistent M)--ensures that M is always in a consistent state
+so it is a potential model of a formula.
+
+Fig. 4 Execution trace for the Example 5
+
+94 F. Mari'c
+
+InvariantuniqueM: (unique M)--ensures that there are no duplicate literals in the
+trail (which is important for termination).
+
+InvariantvarsM: (vars M) j (vars F0)--ensures that the trail does not contain variables that do not occur in the formula (which is important for termination). As
+a consequence of this invariant, the test (vars M) ` (vars F0) can be replaced by--vars
+
+M-- = --vars F0-- which is easier to implement.
+
+InvariantimpliedLiterals: ffl. l fl M =\Phi  F0 @ (decisionsTo M l) \Theta  l--ensures that all
+implied literals on the trail are entailed from the formula F0 and all decision literals
+that precede them.
+
+The non-trivial preconditions for function calls are:applyDecide
+
+(vars M) ffl= (vars F0)applyBacktrack
+
+M \Theta ~ F0, (decisions M) ffl= [ ]
+
+Now the soundness proof shall be outlined. The variable satFlag is initialized to
+UNDEF and it is changed only in two lines of code. The following lemmas ensure
+that this is the case only when the formula F0 is determined to be satisfiable or
+to be unsatisfiable. From this, it is easy to prove that the required postcondition -(satFlag = U NSAT \Sigma  ~(sat F0)) \Upsilon  (satFlag = SAT \Sigma  M \Theta  F0)"" defined in
+Theorem 1 holds.
+
+In a case when F0 is not false in M and when all variables from F0 have
+been assigned (when M \Theta ~ F0 and (vars M) = (vars F0)), satFlag is set to SAT.
+
+InvariantconsistentM ensures that in this case F0 is satisfiable and its model has been
+found, hence the procedure is sound for satisfiable formulae:
+
+Lemma 1 If
+(a) InvariantconsistentM holds,
+(b) M \Theta ~ F0 ,
+
+(c) (vars M) = (vars F0),
+
+then M is a model for F0.
+
+Proof Since M is a total valuation with respect to the variables from F0, the formula
+
+F0 is either true (i.e., M \Theta  F0) or false (i.e., M \Theta ~ F0) in it. Since M \Theta ~ F0, it must be
+the case that M \Theta  F0. Since the condition (consistent M) holds, M is a model for F0,
+hence F0 is satisfiable. '^
+
+When a conflict at decision level zero occurs (when (decisions M) = [] and
+M \Theta ~ F0), satFlag is set to U NSAT. Then, InvariantimpliedLiterals ensures that F0 is
+unsatisfiable, so the procedure is sound for unsatisfiable formulae:
+
+Lemma 2 If
+(a) InvariantimpliedLiterals holds,
+(b) M \Theta ~ F0 ,
+
+(c) (decisions M) = [ ],
+
+then F0 is not satisfiable, i.e., ~(sat F0).
+
+Formalization and Implementation of Modern SAT Solvers 95
+Proof Since (decisions M) = [ ], it holds that (decisionsTo M l) = [ ] and for all
+literals l such that l fl M, it holds that F0 \Theta  l. Thus, the formula F0 is false in a
+valuation it entails, so it is unsatisfiable. '^
+
+4.2 Unit Propagation
+The simple implementation given in the previous section is based entirely on a search
+and does not use any inference to find a satisfying assignment. For example, in the
+previous trace, a decision -4 was made, even though 3 was on the trail and there was
+a clause [-3, 4] in F0. For this clause to be true, the literal 4 must be true when the
+literal 3 is asserted, and 4 should be asserted as an implied literal immediately after
+3 was asserted. If 3 is asserted in the trail M, and neither 4 nor -4 are, then [-3, 4]
+is a unit clause in M with the unit literal 4, i.e., (isUnit [-3, 4] 4 M). Exploiting unit
+clauses leads to huge reductions of the search space. In order to achieve this, the code
+from the previous section can be changed in the following way.
+
+SAT Solver v.2
+
+Example 6 Let F0 be as in Example 5. A possible execution trace is given in Fig. 5.
+
+Again, most meta-logic expressions can be easily implemented in a real programming language. An exception is the test , used to
+detect unit clauses. Addressing this issue is postponed until Section 4.9.
+
+Correctness Unit propagation does not compromise the code correctness, as the
+code preserves all invariants listed in Section 4.1. The proofs of Lemmas 1 and 2
+still apply.
+
+96 F. Mari'c
+Fig. 5 Execution trace for the Example 6
+4.3 Backjumping and Learning
+A huge improvement in SAT solver development was gained when simple backtracking was replaced by conflict driven backjumping and learning. Namely, two problems
+are visible from the trace given in Example 6:
+
+1. The series of steps taken after the decision 7 was made have shown that neither 3
+
+nor -3 are compatible with previous decisions. Due to this, the backtrack operation implied that -7 must hold. Then, exactly the same series of steps were
+performed to show that, again, neither 3 nor -3 are compatible with previous
+decisions. Finally, the backtrack operation implied that -6 must hold. A careful analysis of the steps that produced the inconsistency would show that the
+variable 7 is totally irrelevant for the conflict, and the repetition of the process
+with 7 flipped to -7 was a waste of time. This redundancy was the result of
+the fact that the backtrack operation always undoes only the last decision
+made, regardless of the actual reason that caused the inconsistency. The
+operation of conflict-driven backjumping which is a form of more advanced,
+non-chronological backtracking, allows solvers to undo several decisions at
+once, down to the latest decision literal that actually participated in the conflict.
+This eliminates unnecessary redundancies in the execution trace.
+2. In several steps, the decision 3 was made after the literal 1 was already on the
+
+trail. The series of steps taken afterwards showed that these two are incompatible. Notice that this occurred in two different contexts (both under the assumption 6, and under the assumption -6). The fact that 1 and 3 are incompatible can
+be represented by the clause [-1, -3], which is a logical consequence of F0. If this
+clause was a part of the formula F, then it would participate in unit propagation
+and it would imply the literal -3 immediately after 1 occurred on the trail. The
+
+Formalization and Implementation of Modern SAT Solvers 97
+
+clause learning mechanism allows solvers to extend the clause set of the formula
+during the search process with (redundant) clauses implied by F0.
+
+Backjumping is guided by a backjump clause4 (denoted in that which follows
+by C), which is a consequence of the formula F0 and which corresponds to the
+variable assignment that leads to the conflict. When a backjump clause is constructed,
+the top literals from the trail M are removed, until the backjump clause becomes a
+unit clause in M. From that point, its unit literal is propagated and the search process
+continues. Backjump clauses are constructed in the process called conflict analysis.
+This process is sometimes described using a graph-based framework and backjump
+clauses are constructed by traversing the implication graph [30]. The conflict analysis
+process can be also described as a backward resolution process that starts from the
+conflict clause and performs a series of resolutions with clauses that are reasons for
+the propagation of conflict literals [28].Notice that backtracking can be seen as a special case of backjumping. This
+
+happens when an advanced conflict analysis is not explicitly performed, but the
+backjump clause always contains the opposites of all decision literals from M. This
+clause becomes unit when the last decision literal is backtracked, and then it implies
+the opposite of the backtracked last decision literal.There are several strategies for conflict analysis [25, 28, 30]. Their variations
+
+include different ways of choosing the clause that guides backjumping and that is
+usually learnt. Some strategies allow multiple clauses to be learnt from a single
+conflict. Still, most conflict analysis strategies are based on the following technique:
+
+- The conflict analysis process starts with a conflict clause itself (the clause of F
+
+that is false in M), and the backjump clause C is initialized to it.
+- Each literal contained in the current backjump clause C is false in the current
+
+trail M and is either a decision made by the search procedure, or the result of
+some propagation. For each propagated literal l, there is a clause c that had
+forced this propagation to occur. These clauses are called reason clauses, and
+(isReason c l M) holds. Propagated literals from the current backjump clause
+C are then replaced (explained) by other literals from reason clauses, continuing
+
+the analysis backwards. The explanation step can be seen as a resolution between
+the backjump and reason clauses.
+- The procedure is repeated until a termination condition is fulfilled, resulting in
+
+the final backjump clause.
+
+Different strategies determine termination conditions for the conflict analysis
+process. We will only describe the one called the first unique implication point
+(firstUIP), since it is used in most leading SAT solvers and since it outperforms other
+strategies on most benchmarks [28]. Using the firstUIP strategy, the learning process
+is terminated when the backjump clause contains exactly one literal from the current
+decision level.The following version of the solver works similarly to the SAT solver v.2 up
+
+to the point where M \Theta ~ F i.e., when a conflict occurs. Then, the conflict analysis
+is performed, implemented through applyConflict and applyExplain functions. The
+function applyConflict initializes the backjump clause C to a conflict clause. The
+function applyExplain resolves out a literal l from C by performing a single resolution
+
+4Sometimes also called the assertive clause.
+
+98 F. Mari'c
+step between C and a clause that is the reason for propagation of l. When the conflict
+is resolved, the solver continues to work as SAT solver v.2.
+
+If a conflict occurs at a decision level other than zero, then a backjump clause is
+constructed using the function applyExplainUIP. It iteratively resolves out the last
+asserted literal of C using the applyExplain function until C satisfies the firstUIP
+condition. The function applyLearn adds the constructed backjump clause C to the
+current clause set F. The function applyBackjump backtracks literals from the trail
+
+M until C becomes a unit clause, and after this asserts the unit literal of C. Notice that
+this last step does not have to be done by applyBackjump, but it can be handled by the
+function applyUnitPropagate. Therefore, some implementations of applyBackjump
+omit its last two lines given here.
+
+If a conflict at decision level zero occurs, then the empty clause C is effectively
+constructed using the function applyExplainEmpty. It always resolves out the last asserted literal from C by calling applyExplain, until C becomes empty. It is possible to
+extend the solver with the possibility of generating resolution proofs for unsatisfiability and this explicit construction of an empty clause makes this process more uniform.
+
+SAT Solver v.3
+
+Formalization and Implementation of Modern SAT Solvers 99100 F. Mari'c
+
+Fig. 6 Execution trace for the Example 7
+
+The function getConflictClause returns an arbitrary clause of F that is false in M.
+It satisfies the Hoare triple {M \Theta ~ F} getConflictClause() {M \Theta ~ ret}.
+
+All non-decision literals are asserted as a result of unit propagation or backjumping, and the reason clauses are memorized in the mapping reason using the functionsetReason
+
+.5 The function getReason retrieves the clause that caused the assertion
+of a given implied literal. It satisfies the Hoare triple {l fl M \Sigma  l /fl (decisions M)}
+getReason(l) {ret fl F \Sigma  (isReason ret l M)}.
+
+Example 7 Let F0 be as in Example 5. One possible execution trace is shown in
+Fig. 6. Resolution trees corresponding to conflict analyses from Example 7 are shown
+in Fig. 7.
+
+5In a real programming language implementation, one would store only the pointers to clauses
+instead of clauses themselves.
+
+Formalization and Implementation of Modern SAT Solvers 101
+Fig. 7 Resolution treescorresponding to conflict
+analyses in Example 7
+
+Correctness The partial correctness proof for the SAT solver v.3 is more involved.
+The soundness theorem (Theorem 1) needs to be proved again.
+
+Along with InvariantconsistentM, InvariantuniqueM, InvariantvarsM, and
+InvariantimpliedLiterals the code also satisfies the following conditions:
+
+Invariantequiv: F ffi F0--ensures that when new clauses are learnt, the current
+formula F remains equivalent to the initial formula F0.
+
+InvariantvarsF: (vars F) j (vars F0)--ensures that clauses in F do not introduce
+new variables.
+
+InvariantreasonClauses: ffl. l fl M \Sigma  l /fl (decisions M) =\Phi  \Omega  c. c fl F \Sigma  (isReason
+c l M) -- ensures that there is a reason clause for each propagated literal in M.
+
+During the conflict analysis process (in the if M \Theta ~ F then branch) the following conditions hold.
+
+InvariantCfalse: M \Theta ~ C--ensures that C becomes an assertive clause (i.e., unit in
+the prefix) after backtracking.
+
+InvariantCimplied: F0 \Theta  C--is used to support Invariantequiv, since C is the clause
+that is being learnt.
+
+These conditions are preserved by applyConflict and applyExplain functions.
+The non-trivial preconditions for function calls are:applyConflict
+
+M \Theta ~ FapplyExplainUIP
+M \Theta ~ C, (decisions M) ffl= [ ]applyExplainEmpty
+M \Theta ~ C, (decisions M) = [ ]applyExplain
+(l) M \Theta ~ C, l fl C, l /fl (decisions M)applyLearn
+
+F \Theta  C, C /fl FapplyBackjump
+(isUIP C M), C fl FisUIP
+
+M \Theta ~ CgetBackjumpLevel
+(isUIP C M)getReason
+(l) l fl M, l /fl (decisions M)setReason
+(l, c) (isReason c l M)
+
+The soundness for satisfiable formulae follows from the following analogue of
+Lemma 1.
+
+102 F. Mari'c
+Lemma 3 If
+
+(a) InvariantconsistentM, InvariantvarsF, and Invariantequiv hold,
+(b) M \Theta ~ F,
+
+(c) (vars M) = (vars F0),
+
+then M is a model for F0.
+
+Proof Since (vars F) j (vars F0) and (vars M) = (vars F0), it holds that (vars F) j
+(vars M), and M is a total valuation with respect to variables from F. So, the formula
+
+F is either true (i.e., M \Theta  F) or false (i.e., M \Theta ~ F) in it. Since M \Theta ~ F, it must be the
+case that M \Theta  F. Since the condition (consistent M) holds, M is a model for F. Since
+
+F and F0 are logically equivalent by Invariantequiv, M is also a model for F0. '^
+
+Regarding the soundness for unsatisfiable formulae, an analogue of Lemma 2
+could be formulated and proved. However, we shall give a simpler, alternative proof
+of soundness for unsatisfiability, that does not use InvariantimpliedLiterals (in contrast
+to the given proof of Lemma 2). After a conflict at the decision level zero has been
+detected (when M \Theta ~ F and (decisions M) = [ ]), the function applyExplainEmpty
+is called. It performs a series of applications of the explain rule, and resolves out
+all the literals from the conflict clause, leaving the empty clause C. In this case, the
+procedure reports the unsatisfiability of the formula, if and only if an empty clause
+has been derived. The postcondition of applyExplainEmpty guarantees that C = [ ],
+and the soundness is a consequence of InvariantCimplied (i.e., F0 \Theta  C), as stated in the
+following trivial lemma (given without proof).
+
+Lemma 4 If the following conditions hold
+
+(a) C = [ ],
+(b) F0 \Theta  C (i.e., InvariantCimplied holds),
+
+then F0 is unsatisfiable.
+
+Soundness for satisfiability and soundness for unsatisfiability together imply
+Theorem 1 for SAT Solver v.3.
+
+4.3.1 Efficient Data Structures
+The code given in Section 4.3 leaves the function resolvent unspecified. We will
+now describe how it can be efficiently implemented, roughly following MiniSAT
+[10]. Without a great loss of generality, it is assumed that the conflict clause
+(and therefore the clause C) contains a literal from the current decision level i.e.,
+(currentLevel M) = (maxLevel C M). This holds true whenever there is a guarantee
+that no new decisions are made when M \Theta ~ F, and, clearly, this is the case in the
+implementation provided.6 It is also reasonable to require that the clause C does
+
+6This is also an important requirement for the correctness of the two-watch literal propagation
+scheme that we explain in Section 4.9.
+
+Formalization and Implementation of Modern SAT Solvers 103
+not contain repeated elements. Therein, in each resolvent step, when a union of two
+clauses is created, duplicates have to be removed. In order to achieve an efficient
+implementation, instead of an ordinary list of literals, a more suitable representation
+for the clause C must be used. We use a map CH that maps literals to Booleans
+such that CH(l) = true iff l fl C. This representation allows a constant time check
+for whether a literal is contained in the clause C, hence it is suitable for a range of
+operations performed with this clause. When the conflict analysis process is done,
+the list of literals contained in the clause C can be constructed by traversing the map
+CH looking for literals which are true in it. However, this expensive traversal can be
+
+avoided using the fact that during the firstUIP conflict analysis only the literals from
+the highest decision level of C (i.e., the current decision level of M) are explained.
+So, when a literal from a decision level lower than the current decision level of M
+is added into the clause C, it cannot become removed from it until the end of the
+firstUIP resolution process. Also, since the UIP condition is met at the end of the
+resolution process, the backjump clause contains exactly one literal from the current
+(highest) decision level. Therefore, it is useful to keep the list CP of the literals from
+the lower decision levels from C and the last asserted literal Cl of C, because these
+two can give the list of literals contained in the clause C at the end, avoiding the
+traversal of CH. In order to optimize isUIP check, the procedure also keeps track of
+the number Cn of literals from the highest decision level (that is (currentLevel M)).
+
+The list of literals C from Section 4.3 used in SAT solver v.3, and the variables CH,
+CP, Cl and Cn used in SAT solver v.4 are related as follows:
+
+CH(l) = true \Psi  l fl C
+
+Cl = (lastAssertedLiteral C M)
+l fl CP \Psi  l fl C \Sigma  (level l M) < (maxLevel C M)
+
+Cn = ---l : l fl C \Sigma  (level l M) = (maxLevel C M)""--
+
+The following code is a modification of SAT solver v.3 adapted to use the data
+structures just described. The clause C (i.e., its components CH, CP, Cn) can be
+changed only by the functions addLiteral and removeLiteral, while Cl is set byfindLastAssertedLiteral
+
+.
+
+SAT Solver v.4
+
+104 F. Mari'cFormalization and Implementation of Modern SAT Solvers 105
+Fig. 8 The conflict analysis using efficient data-structures
+
+Example 8 Figure 8 show one conflict analysis trace, from Example 7, for M =[--
+
+6, 1, 2, --7, --3, 4, 5].
+
+Notice that some minor optimizations can be made in the given code. For example,
+the function resolve is always called with a current level literal as the clashing literal.
+Therefore, the call to the generic removeLiteral function, could be replaced by a call
+to function removeCurrentLevelLiteral that would always be called for a literal at the
+current level. This would save a check of the level of the literal that is being removed.
+Also, it is possible to change the map CH, so that it maps variables instead of literals
+to booleans. In this case, l fl C would imply that CH(var l) must hold. This change
+is possible, because invariants (consistent M) and M \Theta ~ C imply that C can not be
+a tautological clause i.e., it can not contain both a literal and its opposite. Since it
+holds that l fl C \Psi  CH(l) = true, for each literal l it must hold that CH(l) = true \Phi 
+CH(l) = f alse.
+
+4.4 Conflict Clause Minimization
+In some cases, clauses obtained by the firstUIP heuristic can further be minimized.
+Smaller clauses prune larger parts of the search tree and lead to faster unit propagation. Several clause minimization techniques have been proposed; as an illustration,
+we present the subsumption resolution of [10]. In Example 7, the learnt backjump
+clause is [-1, -2, -3], but since 2 is implied by 1 (because of the clause [-1, 2]), one
+more resolution step could be performed to get a smaller backjump clause [-1, -3].
+
+7For simplicity, literals that map to \Xi  are omitted.
+
+106 F. Mari'c
+
+This variant of a SAT solver augments SAT solver v.3.
+SAT Solver v.5
+
+The subsumption check has to be carefully implemented so that it does not
+become the bottleneck of this part of the solver. An implementation that uses the
+efficient conflict analysis clause representation given in Section 4.3.1 is available in
+the extended version of this paper.
+
+A more advanced conflict clause minimization, based on subsumption, can also be
+performed. Namely, the subsumption check fails if the reason clause for l contains
+at least one literal lfi different from l that is not in C. However, by following the
+reason graph backwards for lfi, we might find that lfi became true as a consequence of
+assigning only literals present in the conflict clause, in which case lfi can be ignored.
+If this is true for all literals lfi of the reason clause that are not in C, then the literal l
+can still be explained.
+
+4.5 Forgetting
+During a solving process with clause learning, the number of clauses in F increases.
+If the number of clauses becomes too large, then the boolean constraint propagation becomes unacceptably slow and some (redundant) clauses from F should be
+removed. It is necessary to take special care and ensure that the reduced formula
+is still equivalent with the initial formula F0 (i.e., that Invariantequiv is preserved).
+Solvers usually ensure this by allowing only the removal of learnt clauses while
+the initial clauses never become removed. It is also required that clauses which
+are reasons for propagation of some literals in M are not to be removed (i.e., that
+
+InvariantreasonClauses is preserved).
+
+Formalization and Implementation of Modern SAT Solvers 107
+
+The following modifications can be made to any given SAT solver that supports
+clause learning (solvers after variant 3).
+
+SAT Solver v.6
+
+The function isLearnt is left unspecified. Its implementation can be very simple.
+For example, the list F can be naturally split into the initial clauses F0 and the learnt
+clauses Fl.
+
+The function isReason can be implemented as checking if c is the reason for
+propagation of its last asserted literal.
+
+The function shouldForget determines when to apply the forget rule and the
+function shouldForget determines which clauses to forget. Together, they form a
+forget strategy. Usually, a forget strategy is based on the number of learnt clauses,
+but other criteria (e.g., the total number of literals in the clause database) can be
+used. Clauses are usually forgotten as a result of their poor activity in conflicts and in
+unit propagation, or as a result of their length.
+
+4.6 Restarting
+Another important feature of state-of-the-art SAT solvers are restarts. From time
+to time, solvers start the search from scratch by backtracking the trail M down to
+the decision level zero, but keeping all the knowledge accumulated in the learnt
+clauses. This can improve performance, because it can lead the solver to a new
+
+108 F. Mari'c
+(usually easier) search path. It has been shown that clause learning, as practiced
+in today's SAT solvers, assuming unlimited restarts, corresponds to a proof system
+exponentially more powerful than that of DPLL [4]. However, unlimited restarts
+can jeopardize termination. For this reason strategies that determine when to restart
+must be carefully designed. There is strong experimental evidence that clause
+learning SAT solvers could benefit substantially from a carefully designed restart
+policy [16].
+
+The following modification can be made to any given solver variant that uses
+clause learning.
+
+SAT Solver v.7
+
+The function shouldRestart() is intentionally left unspecified and it represents the
+restart strategy of the solver. For a survey of restart strategies see, for instance, [16].
+
+4.7 Zero Level Literals
+Since (level l M) = 0 =\Phi  (decisionsTo M l) = [ ], the InvariantimpliedLiterals ensures
+that literals at the decision level zero are consequences of the formula itself. These
+literals have a special role during the solving process.
+
+4.7.1 Single Literal Clauses
+Under the assumption that literals from the decision level zero never get removed
+from the trail, adding single literal clauses [l] to the current clause set F can be
+avoided. Instead, their literals l are added to the decision level zero of the trail M.
+This change helps in the implementation of the two-watch literals scheme that will be
+described in Section 4.9. The initialization instruction F := F0 in the previous code,
+should be changed in a way that guarantees that all clauses in F are at least two-literal
+clauses. The SAT solver v.8 is based on the SAT solver v.5 regardless of whether the
+modifications from v.6 or v.7 have been made, and is given through several function
+modifications.
+
+Formalization and Implementation of Modern SAT Solvers 109
+SAT Solver v.8
+
+The given initialization procedure also ensures that no clause in F contains
+duplicate literals or both a literal and its negation. This property is preserved
+throughout the code and is another invariant.
+
+110 F. Mari'c
+
+Learning should be changed so that it is performed only for clauses with at least
+two (different) literals:
+
+Since learning is not performed for single literal clauses, for some zero level
+literals there is no reason clause stored in F. This means that those literals cannot
+be explained and removed from C using the applyExplain function (it is still safe
+to call getReason(l) for all non-decision literals asserted at higher decision levels). To handle this, backjump clauses are generated so that they do not contain
+literals from the decision level zero. These literals are skipped during the conflict
+analysis process and applyExplain is modified so that after its application C becomes
+
+(resolvent C c l) \ (prefixToLevel M 0). When using the efficient representation of
+conflict analysis clause, defined in Section 4.3.1, the function addLiteral is modified in
+the following way.
+
+Notice that this change complicates the generating of unsatisfiability proofs,
+because some literals are removed from C without the explicit call of applyExplain.
+
+Correctness If single literal clauses are not added to F, then Invariantequiv does
+necessarily hold anymore. Instead, the condition
+
+Invariantequivfi : F @ (prefixToLevel M 0) ffi F0
+holds.
+
+Also InvariantreasonClauses does not necessarily hold anymore because reason
+clauses are not stored in F for some literals at decision level zero. Instead,
+
+InvariantreasonClausesfi : ffl. l fl M \Sigma  l /fl (decisions M) \Sigma  (level l M) > 0 =\Phi \Omega 
+
+c. c fl F \Sigma  (isReason c l M)
+
+holds. Because of this, the precondition for applyExplain is strengthened with the
+condition (level l M) > 0.
+
+Soundness lemmas must be modified since their original proofs rely on the
+invariants that had to be modified.
+
+Again, a lemma similar to Lemma 1 and Lemma 3 shows that M is a model for F0
+when satFlag is set to SAT.
+
+Formalization and Implementation of Modern SAT Solvers 111
+Lemma 5 If
+(a) InvariantconsistentM, InvariantvarsF, and Invariantequivfi hold,
+(b) M \Theta ~ F,
+
+(c) (vars M) = (vars F0),
+
+then M is a model for F0.
+
+Proof Since (vars F) j (vars F0) and (vars M) = (vars F0), it holds that (vars F) j
+(vars M), and M is a total valuation with respect to variables from F. Therefore, the
+formula F is either true (i.e., M \Theta  F) or false (i.e., M \Theta ~ F) in it. Since M \Theta ~ F, it
+must be the case that M \Theta  F. Since the condition (consistent M) holds, M is a model
+for F. Since M is trivially a model for (prefixToLevel M 0), it holds that M is a
+model for F @ (prefixToLevel M 0) which is logically equivalent to F0, so M is also a
+model for F0. '^
+
+Lemma 4 still holds and it shows that F0 is not satisfiable when satFlag is set to
+UNSAT. Therefore, Theorem 1 holds.
+
+4.7.2 Clause Set Simplification
+Whenever a literal l is added to the decision level zero of M, to reduce memory
+consumption, a clause set simplification can be performed. All clauses that contain
+l can be removed as they are satisfied. Further, the literal l can be removed
+
+from all remaining clauses. However, solvers usually do not readily perform these
+simplifications, but only do this from time to time. Details of this technique are
+available in the extended version of this paper.
+
+4.8 The One-Watch Literal Scheme
+To get a functional solver, the meta-logic condition M \Theta ~ F has to be effectively
+implemented. A naive implementation which evaluates each clause from F would
+be extremely inefficient. A clause is false in a valuation M if and only if all of its
+literals are false in M. If a clause c contains a literal l which is unfalsified in M (i.e.,
+
+M \Theta ~ l), then c cannot be false in M, whatever values of its other literals are. This
+property motivates the one-watch literal scheme. The idea is to "put a watch" to an
+arbitrary unfalsified literal in each clause of F. When a literal l gets asserted in M,
+to check if M \Theta ~ F it is sufficient to check only the clauses which have l as their
+watched literal (because if their watch is another literal lfi, it would remain unfalsified
+after asserting l). The question that remains is how to find clauses from F that have
+l as their watched literal. The traversal of all clauses and checking their watch literal
+
+would be expensive. Instead, watch lists are used to index and store this information.
+The watch list of a literal l contains all clauses in which the literal l is the watched
+literal.
+
+This scheme is not used in state-of-the-art solvers, because it is subsumed by a
+more powerful, but more complicated, two-watch literals scheme that also allows
+efficient and complete detection of unit clauses. We mention it here as an aid to
+understand the two-watch literals scheme. More details on the one-watch scheme
+can be found in the extended version of this paper.
+
+112 F. Mari'c
+4.9 The Two-Watch Literals Scheme
+For an efficient unit propagation implementation, the test \Omega c.\Omega l. c fl F \Sigma 
+(isUnit c l M) has to be made effective and efficient. Again, a straightforward
+
+checking of each clause in F for the presence of unit literals is out of question,
+for efficiency reasons. The two-watch literals scheme, which efficiently detects both
+falsified and unit clauses, follows the ideas from Section 4.8. A clause c cannot be
+unit in a valuation v if it contains a true literal or contains at least two unfalsified
+literals. Therefore, two different literals from each clause are marked as its watched
+literals, and the clause has to be checked only when one of its watches becomes
+falsified.
+
+Watched literals are determined by a mapping that maps clauses to their watched
+literals. Still, most implementations do not store watches in a separate map. Usually,
+either the data type Clause is augmented and is a record containing both the list of
+literals and the watched literals, or, more often, the convention is that the first and
+second literal in the clause are its watches. Regardless of the actual watch literal
+representation, we will denote them by (watch1 c) and (watch2 c). As described
+in Section 4.7, the current set of clauses F can contain only clauses with two or
+more literals, which significantly simplifies implementation. Its unit clauses and the
+corresponding unit literals found by this procedure are put in the unit propagation
+queue Q, from where they are picked and asserted. The flag conflictFlag is used to
+notify if a conflict has been detected.
+
+Clauses are accessed only when one of their watched literals becomes falsified,
+and then their other literals are examined to determine if the clause has become
+a unit, falsified, or (in the meanwhile) satisfied. If neither of this is the case, then
+its watch literals are updated. To simplify implementation, if (watch1 c) becomes
+falsified, then watches are swapped, thus it can be assumed that the falsified literal is
+always (watch2 c). The following cases are possible:
+
+1. If it can be quickly detected that the clause contains a true literal t, there is no
+
+need to change the watches. The rationale for this being the following: for this
+clause to become unit or false t must be backtracked from M. At this point,
+since the watch became false after t, it would also become unfalsified. It still
+remains open how to check if a true literal t exists. Older solvers checked only if
+(watch1 c) is true in M. Newer solvers cache some arbitrary literals and check if
+they are true in M. These literals are stored in a separate data structure that is
+most of the time present in the cache. This avoids accessing the clause itself and
+leads to significantly better performance.
+2. If a quick check did not detect a true literal t, then other literals are examined.
+
+(a) If a non-watched literal l not false in M exists, then it becomes the new
+
+(watch2 c). At this point, (watch1 c) cannot be false in M. Indeed, if it was
+false, at the time when it became falsified, then it would be first swapped
+with (watch2 c) (which could not be false for the same reasons), and then l
+would become (watch2 c).
+(b) If all non-watched literals are false in M, but (watch1 c) is undefined, then
+
+the clause just became a unit clause and (watch1 c) is enqueued in Q for
+propagation. Watches are not changed. The rationale for this is that after
+the unit propagation watches would be the last two literals that defined in
+
+Formalization and Implementation of Modern SAT Solvers 113
+Table 1 The effect of the notifyWatches function
+Before assert(M) After assert(Mfi) After notify(Mfi) Effect
+(w1 c) (w2 c) Other (w1 c) (w1 c) Other (w1 c) (w2 c) Other
+
+T U U/T T F U/T T F U/T
+U T U/T F T U/T T F U/T swap
+U U U/T U F U/T U U/T ? (w2 c) := other
+U U U/T F U U/T U U/T ? swap, (w2 c) := other
+
+T U F T F F T F F
+U T F F T F T F F swap
+U U F U F F U F F Q := Q @ (w1 c)
+U U F F U F U F F swap, Q := Q @ (w1 c)
+U F F F F F F F F swap, conflictFlag := true
+
+M and for this clause to become a unit or falsified again, the trail must be
+backtracked, and the watches will become undefined.
+(c) If all non-watched literals and (watch1 c) are false in M, then the whole
+
+clause is false and conflictFlag is raised. Watches are not changed. The
+rationale for this the same as in the previous case.
+
+Under the assumption that unit propagation is eagerly performed and no decisions
+are made after a conflict clause is detected, after taking the prefix of the trail during
+the backjump operation, there would be no falsified clauses and the only unit clause
+would be the backjump clause that is being learned. This is an important feature of
+this scheme, as it allows constant-time backjumping.
+
+Table 1 summarizes the effect of the notifyWatches function. Letters T, F and U
+denote true, false and undefined literals, respectively.
+
+The described process is the essence of the notifyWatches procedure given in the
+pseudo-code that follows.
+
+SAT Solver v.9
+
+114 F. Mari'cFormalization and Implementation of Modern SAT Solvers 115
+
+Some implementations treat the unit propagation queue Q as an unprocessed part
+of the trail M. This modification leads to an earlier detection of conflicts. It could be
+implemented by replacing all tests of the type M \Theta  and M \Theta ~ in the code of SAT
+solver v.9 with M @ Q \Theta  and M @ Q \Theta ~ , respectively. We shall not do this, however,
+in order to avoid complicating the proofs.
+
+Correctness The invariants that describe conflictFlag and Q are:
+
+InvariantconflictFlag : conflictFlag i\Phi  M \Theta ~ F
+InvariantunitQueue : ~conflictFlag =\Phi  \Theta ffl. l fl Q i\Phi  \Omega c. c fl F \Sigma  (isUnit c l M)\Lambda 
+
+Note that the InvariantunitQueue also guarantees the completeness of the unit
+propagation which is not needed for correctness but, however, is important for
+efficiency.
+
+In order to prove that InvariantconflictFlag and InvariantunitQueue hold, several other
+invariants are formulated. First, two watched literals have to be different:
+
+InvariantwatchesDif fer : ff c. c fl F =\Phi  (watch1 c) ffl= (watch2 c)
+All clauses in F satisfy Invariantwatch (with (watch_i c) set both to (watch1 c) and
+(watch2 c)):
+
+M \Theta ~ (watch_i c) =\Phi 
+
+(\Omega l. M \Theta  l \Sigma  level l <= level (watch_i c)) \Upsilon 
+(ffl. l ffl= (watch1 c) \Sigma  l ffl= (watch2 c) =\Phi  M \Theta ~ l \Sigma  level l <= level (watch_i c))
+
+These invariants can become temporarily invalid when a literal is asserted in M,
+but they are restored after the notifyWatches function call. The precondition of theassertLiteral
+
+(l, d) function call is that decisions are made only if there are no false
+or unit clauses in F in regard to M, i.e., d =\Phi  ~conflictFlag \Sigma  Q = [ ]. The proofs
+of soundness lemmas from the previous sections remain valid and the Theorem 1
+holds.
+
+116 F. Mari'c
+4.9.1 Watch Lists
+In order to make an efficient implementation, watch lists are used:
+
+SAT Solver v.10
+
+When a literal stops being watched, its watch list must be updated, and the
+corresponding clause should be removed from the list. In one notifyWatches function
+call, this list is traversed and many such remove operations can occur. Since it turns
+out that it is more efficient to regenerate the watch list of the falsified literal, than to
+perform these remove operations, the clauses for which this watch did not change,
+are reinserted in the watch list newWl. This appears to be as a strange solution, but is
+in fact an important feature. Being the heart of boolean constraint propagation, thenotifyWatches
+
+function is crucial for the solver's efficiency, because the solver can
+spend up to 80% of time in it [10].
+
+Correctness The invariant that describes watch lists is:
+
+InvariantwatchLists : c fl W(l) \Psi  c fl F \Sigma  ((watch1 c) = l \Upsilon  (watch2 c) = l)
+
+Formalization and Implementation of Modern SAT Solvers 117
+5 Related Work
+Detailed surveys of SAT solver development can be found in [3, 11, 28]. There is
+about forty-five years of research invested in DPLL-based SAT solvers. Earlier SAT
+solvers based on DPLL include Tableau (NTAB), POSIT, 2cl and CSAT, among
+others [11]. In the last fifteen years, there has been a significant growth and success
+in SAT solver research based on the DPLL framework. Many practical applications
+emerged, which pushed these solvers to their limits and provided a strong motivation
+for finding even more efficient algorithms. In the mid 1990's, this led to a new
+generation of solvers such as SATO [27], Chaff [19], and BerkMin [12] which pay
+a lot of attention to optimizing various aspects of the DPLL algorithm. Annual
+SAT competitions have led to the development of dozens of clever implementations
+of such solvers, the exploration of many new techniques, and the creation of an
+extensive suite of real-world instances as well as challenging hand-crafted benchmark
+problems. Some of the most successful DPLL-based solvers in recent competitions
+are Rsat [24], Picosat [2], Minisat [10], Tinisat [15], etc. SAT4J (http://sat4j.org) is a
+solver implemented in JAVA in which attention has been paid to the code design.
+
+Non-chronological backtracking (conflict-directed backjumping), was proposed
+first in the Constraint Satisfaction Problem (CSP) domain [3]. This, together with
+conflict-driven learning were first incorporated into a SAT solver in the mid 1990's
+by Silva and Sakallah in GRASP [21], and by Bayardo and Schrag in rel_sat [6].
+Conflict clause minimization was introduced by Ee'n and So"rensson [10] in their
+solver Minisat. Randomized restarts were introduced by Gomes et al. [13] and
+further developed by Baptista and Marques-Silva [5]. The watch literals scheme by
+Moskewicz et al. was introduced in their solver zChaff [19], and is now a standard
+method used by most SAT solvers for efficient constraint propagation.
+
+The first correctness proof of DPLL with clause learning is given in [29]. The
+given proof is informal and omits a lot of important details. Formal descriptions of
+SAT solvers in a form of state-transition systems were given in [17, 22], together
+with descriptions of related SMT Solvers. These papers contain correctness proofs,
+although presented systems hide many important implementation aspects.
+
+6 Conclusions
+In this paper we have developed the core of a SAT solver implementation based
+on a modified DPLL algorithm. We have tried to make a clean separation between
+different concepts, and all techniques, algorithms, and data-structures have been
+introduced one-by-one, in separate sections. The code follows higher level solver descriptions [17] and is, in our opinion, easier to understand, modify and reason about
+than the code available in existing presentations (e.g., [10]). Heuristic components of
+the solver were not investigated. We hope that this methodological approach makes
+this paper usable as a tutorial and that it could significantly help interested readers in
+understanding and learning details of modern SAT solver implementation, especially
+to researchers that are new to this field. The solver descriptions, although given in
+pseudo-code, could be converted to a real programming language implementation.
+
+The main part of the paper also provides conditions that have to be proved to
+ensure a solver's partial correctness. Proofs of correctness conditions are available
+
+118 F. Mari'c
+in the extended version of this paper and original Isabelle proof documents [18]. To
+the best of our knowledge, this paper gives the first formalization and correctness
+proof for some low-level implementation techniques, most notably the two-watch
+literal scheme. We hope that these proofs could help in better understanding what
+conditions are sufficient for solver correctness. For example, in [22] the paper [29]
+is criticized for claiming that new decisions should not be made in the presence of
+conflict or unit clauses. From our formalization, it is clear that this is an important
+invariant of the two-watch literal propagation scheme, and that, although it need not
+hold for the more abstract rule-based system, it has to hold to ensure correctness if
+the two-watch literal propagation is used.
+
+Acknowledgements The author would like to thank Dr. Predrag Jani^ci'c and anonymous reviewersfor carefully reading the manuscript and giving their valuable advice and suggestions.
+
+References
+
+1. Barrett, C.: Checking validity of quantifier-free formulas in combinations of first-order theories.Ph.D. thesis, Stanford University (2003)
+2. Biere, A.: PicoSAT essentials. JSAT 4, 75-97 (2008)3. Bordeaux, L., Hamadi, Y., Zhang, L.: Propositional satisfiability and constraint programming: a
+
+comparative survey. ACM Comput. Surv. 38(4) (2006)4. Beame, P., Kautz, H., Sabharwal, A.: Towards understanding and harnessing the potential of
+clause learning. JAIR 22, 319-351 (2004)5. Baptista, L., Marques-Silva, J.P.: Using randomization and learning to solve hard real-world
+instances of satisfiability. In: CP '00. LNCS 1894, pp. 489-494, Singapore, 18-22 September 20006. Bayardo, R.J. Jr., Schrag, R.C.: Using CSP look-back techniques to solve real-world SAT
+instances. In: 14th AAAI, pp. 203-208, Providence, 27-31 July 19977. Cook, S.A.: The complexity of theorem-proving procedures. In: 3rd STOC, pp. 151-158. ACM,
+New York (1971)8. Davis, M., Logemann, G., Loveland, D.: A machine program for theorem-proving. Commun.
+ACM 5(7), 394-397 (1962)9. Davis, M., Putnam, H.: A computing procedure for quantification theory. J. ACM 7(3), 201-215
+(1960)10. Een, N., Sorensson, N.: An extensible SAT solver. In: Ligure, S.M. (ed.) SAT '03. LNCS 2919,
+pp. 502-518. Springer, New York (2003)11. Gomes, C.P., Kautz, H., Sabharwal, A., Selman, B.: Satisfiability solvers. In: Handbook of
+Knowledge Representation. Elsevier, Amsterdam (2007)12. Goldberg, E., Novikov, Y.: Berkmin: a rast and robust SAT solver. In: DATE'02, pp. 142-149.
+Paris (2002)13. Gomes, C., Selman, B., Kautz, H.: Boosting combinatorial search through randomization. In:
+15th AAAI, pp. 431-437, Madison, 26-30 July 199814. Hoare, C.A.R.: An axiomatic basis for computer programming. Commun. ACM 12(10), 576-580
+(1969)15. Huang, J.: A case for simple SAT solvers. In: CP '07. LNCS 4741, pp. 839-846, Providence,
+September 200716. Huang, J.: The effect of restarts on the efficiency of clause learning. In: IJCAI '07, pp. 2318-2323,
+Hyderabad, 6-12 January 200717. Krsti'c, S., Goel, A.: Architecting solvers for SAT modulo theories: Nelson-Oppen with DPLL.
+In: FroCos '07. LNCS 4720, pp. 1-27, Liverpool, 10-12 September 200718. Mari'c, F.: SAT solver verification. The archive of formal proofs. http://afp.sf.net/entries/
+SATSolverVerification.shtml (2008)19. Moskewicz, M., Madigan, C., Zhao, Y., Zhang, L., Malik, S.: Chaff: engineering an efficient SAT
+solver. In: DAC '01, pp. 530-535, Las Vegas, 18-22 June 200120. Marques-Silva, J.P.: The impact of branching heuristics in propositional satisfiability algorithms.
+In: EPIA '99. LNCS 1695, pp. 62-74, E'vora, September 1999
+
+Formalization and Implementation of Modern SAT Solvers 119
+21. Marques-Silva, J.P., Sakallah, K.A.: Grasp: a search algorithm for propositional satisfiability.IEEE Trans. Comput. 48(5), 506-521 (1999)
+22. Nieuwenhuis, R., Oliveras, A., Tinelli, C.: Solving SAT and SAT modulo theories: from anabstract Davis-Putnam-Logemann-Loveland procedure to DPLL(T). J. ACM 53(6), 937-977
+
+(2006)23. Nipkow, T., Paulson, L.C., Wenzel, M.: Isabelle/HOL--A Proof Assistant for Higher-Order
+Logic, LNCS 2283. Springer, New York (2002)24. Pipatsrisawat, K., Darwiche, A.: A lightweight component caching scheme for satisfiability
+solvers. In: SAT '07. LNCS 4501, pp. 294-299, Lisbon, May 200725. Marques Silva, J.P., Sakallah, K.A.: Conflict analysis in search algorithms for satisfiability. In: 8th
+ICTAI, pp. 467-469, Toulouse, 16-19 November 199626. Wiedijk, F.: Comparing mathematical provers. In: MKM 03. LNCS 2594, pp. 188-202, Bertinoro,
+February 200327. Zhang, H.: SATO: an efficient propositional prover. In: CADE-14. LNCS 1249, pp. 272-275,
+Townsville (1997)28. Zhang, L., Malik, S.: The quest for efficient Boolean satisfiability solvers. In: CAV '02. LNCS
+2404, pp. 17-36, Copenhagen (2002)29. Zhang, L., Malik, S.: Validating SAT solvers using independent resolution-based checker. In:
+DATE '03, pp. 10880-10885, Mu"nich (2003)30. Zhang, L., Madigan, C.F., Moskewicz, M.H., Malik, S.: Efficient conflict driven learning in a
+Boolean satisfiability solver. In: ICCAD '01, pp. 279-285, San Jose (2001)

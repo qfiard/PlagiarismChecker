@@ -1,0 +1,1440 @@
+
+
+Concurrent Abstract Predicates
+Thomas Dinsdale-Young1, Mike Dodds2, Philippa Gardner1,Matthew Parkinson
+
+2, and Viktor Vafeiadis2
+
+1 Imperial College, London, {td202,pg}@doc.ic.ac.uk
+2 University of Cambridge, {md466,mjp41,vv216}@cl.cam.ac.uk
+
+Abstract. Abstraction is key to understanding and reasoning about
+large computer systems. Abstraction is simple to achieve if the relevant
+data structures are disjoint, but rather difficult when they are partially
+shared, as is often the case for concurrent modules. We present a program logic for reasoning abstractly about data structures that provides a
+fiction of disjointness and permits compositional reasoning. The internal
+details of a module are completely hidden from the client by concurrent
+abstract predicates. We reason about a module's implementation using
+separation logic with permissions, and provide abstract specifications for
+use by client programs using concurrent abstract predicates. We illustrate our abstract reasoning by building two implementations of a lock
+module on top of hardware instructions, and two implementations of a
+concurrent set module on top of the lock module.
+
+1 Introduction
+When designing physical systems, we use abstraction and locality to hide irrele-vant details. For example, when building a house in London, we do not consider
+the gravitational forces on individual brick molecules, nor what the weather islike in Paris. Similarly, we use abstraction and locality when designing and reasoning about large computer systems. Locality allows us to consider small partsof a system in isolation. Abstraction gives us a structured view of the system,
+because components can be represented by their abstract properties.With locality, we can directly provide some degree of abstraction. Using separation logic [16], we can prove that a module operates only on a particular datastructure, not accessed by other modules. If the structure is manipulated only by
+module functions, it can be represented just in terms of its abstract properties,using abstract predicates [21]. For example, we can give a specification for a set
+using an abstract predicate to assert that "the set is {5, 6}". A client can thenreason about the set without reasoning about its internal implementation: given
+"the set is {5, 6}", the client can infer, after deleting 6, that "the set is {5}".This combination of abstract predicates with the low-level locality from separation logic supports coarse-grained reasoning about modules, where each datastructure is represented by a single abstract predicate. However, we often need
+to reason about modules in a fine-grained manner, where many abstract predi-cates refer to properties of the same data structure. For example, a fine-grained
+
+specification for the set module would allow element 6 to be manipulated sepa-rately from the rest of the set. Fine-grained reasoning of this sort is advocated
+by context logic [3].
+
+Fine-grained abstractions often cannot be achieved using traditional abstractpredicates. This is because separation in the abstraction (union, in the case of
+
+the set module) need not correspond to separation in the implementation [7].If the set module is implemented using an array, and each element of the set is
+represented with a disjoint element of the array, then the high-level and low-levelseparation correspond. However, if the set module is implemented as a singlylinked list, then the implementation must traverse the global list to manipulateindividual set elements. Individual set elements are not represented disjointly in
+the implementation, and fine-grained reasoning is not possible with traditionalabstract predicates combined with separation logic.
+
+In this paper, we present a program logic that allows fine-grained abstractionin the presence of sharing, by introducing concurrent abstract predicates. These
+predicates present a fiction of disjointness [7]; that is, they can be used as ifeach abstract predicate represents disjoint resource, whereas in fact resources are
+shared between predicates. For example, given a set implemented by a linked listwe can write abstract predicates asserting "the set contains 5, which I control"
+and "the set contains 6, which I control". Both predicates assert properties aboutthe same shared structure, and both can be used at the same time by separate
+threads: for example, elements can be deleted concurrently from a set.
+
+Concurrent abstract predicates capture information about the permittedchanges to the shared structure. In the case of the set predicates, each predicate gives the thread full control over a particular element of the set. Only thethread owning the predicate can remove this element. We implement this control using resource permissions [8], with the property that the permissions mustensure that a predicate is self-stable: that is, immune from interference from
+the surrounding environment. Predicates are thus able to specify independentproperties about the data, even though the data are shared.
+
+With our program logic, a module implementation can be verified against ahigh-level specification expressed using concurrent abstract predicates. Clients
+of the module can then be verified purely in terms of this high-level specifica-tion, without reference to the module's implementation. We demonstrate this by
+presenting two implementations of a lock module satisfying the same abstractlock specification, and using this specification to build two implementations of
+a concurrent set satisfying the same abstract set specification. At each level,we reason entirely abstractly, avoiding reasoning about the implementation of
+the preceding level. Hence, concurrent abstract predicates provide the necessaryabstraction for compositional reasoning about concurrent systems.
+
+2 Informal Development
+We develop our core idea, to define abstract specifications for concurrent modulesand prove that concrete module implementations satisfy these specifications.
+
+We motivate our work using a lock module, one of the simplest examples ofconcurrent resource sharing. We define an abstract specification for locks, and
+give two implementations satisfying the specification.
+2.1 Lock Specification
+A typical lock module has the functions lock(x) and unlock(x). It also has amechanism for constructing locks, such as
+
+makelock(n), which allocates a lockand a contiguous block of memory of size
+n. We specify these functions as:{
+
+isLock(x)} lock(x) {isLock(x) * Locked(x)}{
+Locked(x)} unlock(x) {emp}
+
+{emp} makelock(n) ae 9x. ret = x ^ isLock(x) * Locked(x)* (x + 1) 7! * . . . * (x + n) 7! oe
+This abstract specification, which is presented by the module to the client, isindependent of the underlying implementation.
+
+3 The assertions isLock(x) and
+
+Locked(x) are abstract predicates. isLock(x) asserts that the lock at x can beacquired by the thread with this assertion, while
+
+Locked(x) asserts that thethread holds the lock. We use the separating conjunction, *, from separation
+
+logic: p * q asserts that the state can be split disjointly into two parts, onesatisfying
+
+p and the other satisfying q. Later, we give a concrete interpretationof these predicates for a simple compare-and-swap lock.
+
+The module presents the following abstract predicate axioms to the client:
+
+isLock(x) () isLock(x) * isLock(x) (1)
+
+Locked(x) * Locked(x) () false (2)
+The first axiom allows the client to share freely the knowledge that x is a lock.4The second axiom implies that a lock can only be locked once. With the separation logic interpretation of triples (given in $4.5), the client can infer that,if
+
+lock(x) is called twice in succession, then the program will not terminate asthe post-condition is not satisfiable.
+
+2.2 Example: A Compare-and-Swap Lock
+Consider a simple compare-and-swap lock implementation.
+
+lock(x) {
+
+local b;
+do hb := ~CAS(&x, 0, 1)i
+while(b)
+}
+
+unlock(x) {h
+
+[x] := 0i
+}
+
+makelock(n) {
+
+local x := alloc(n+1);
+[x] := 1;
+return x;
+}
+
+(Here angle brackets denote atomic statements.)
+
+3 This specification resembles those used in the work of Gotsman et al. [11] and Hobor
+
+et al. [15] on dynamically-allocated locks.
+4 We do not record the splittings of isLock(x), although we could use permissions [2]
+
+to explicitly track this information.
+
+Interpretation of Abstract Predicates. We relate the lock implementation to ourlock specification by giving a concrete interpretation of the abstract predicates.
+The predicates are not just interpreted as assertions about the internal state ofthe module, but also as assertions about the internal interference of the module:
+that is, how concurrent threads can modify shared parts of the module state.To describe this internal interface, we extend separation logic with two assertions, the shared region assertion P rI(~x) and the permission assertion [A]rss. The
+shared region assertion P rI(~x) specifies that there is a shared region of memory,
+identified by label r, and that the entire shared region satisfies P . The sharedstate is indivisible so that all threads maintain a consistent view of it. This is
+
+expressed by the logical equivalence P rI(~x) * Q rI(~x) , P ^ Q rI(~x). The possible
+actions on the state are declared by the environment I(~x).The permission assertion [
+
+A]rss specifies that the thread has permission ss toperform action
+A over region r, provided the action is declared in the environ-ment. Following Boyland [2], the permission
+
+ss can be the fractional permission,
+ss 2 (0, 1), denoting that both the thread and the environment can do the ac-tion, or the full permission,
+
+ss = 1, denoting that the thread can do the actionbut the environment cannot.
+
+5 We now have the machinery to interpret our lock
+
+predicates concretely:
+
+isLock(x) j 9r. 9ss. [Lock]rss * (x 7! 0 * [Unlock]r1) . x 7! 1 rI(r,x)
+Locked(x) j 9r. [Unlock]r1 * x 7! 1 rI(r,x)
+
+The abstract predicate isLock(x) is interpreted by the concrete, implementation-specific assertion on the right-hand side. This specifies that the local state contains the permission [Lock]rss, meaning that the thread can acquire the lock. Italso asserts that the shared region satisfies the module's invariant: either the
+lock is unlocked (x 7! 0) and the region holds the full permission [Unlock]r1 tounlock the lock; or the lock is locked (
+
+x 7! 1) and the unlocking permission isgone (the thread that acquired the lock has it).
+
+Meanwhile, the abstract predicate Locked(x) is interpreted as the permissionassertion [
+
+Unlock]r1 in the local state, giving the current thread full permissionto unlock the lock in region
+
+r, and the shared region assertion, stating that thelock is locked (
+x 7! 1).The actions permitted on the lock's shared region are declared in
+
+I(r, x).Actions describe how either the current thread or the environment may modify
+
+the shared state. They have the form A : P  Q, where assertion P describesthe part of the shared state required to do the action and
+
+Q describes the partof the state after the action. The actions for the lock module are
+
+I(r, x) def=  Lock : x 7! 0 * [Unlock]
+
+r1  x 7! 1,
+
+Unlock : x 7! 1  x 7! 0 * [Unlock]r1 !
+5 The state model also contains a zero permission, 0, denoting that the thread may
+
+not do the action but the environment may.
+
+The Lock action requires that the shared region contains the unlocked lock (x 7!0) and full permission [
+
+Unlock]r1 to unlock the lock. The result of the action is tolock the lock (
+x 7! 1) and to move the full unlock permission to the thread's localstate ([
+Unlock]r1 has gone from the shared state). The movement of [Unlock]r1into local state allows the locking thread to release the lock afterwards. Note
+
+that local state is not explicitly represented in the action; since interference onlyhappens on shared state, actions do not need to be prescriptive about local state.
+
+The Unlock action requires that the shared region r contains the locked lock(
+x 7! 1). The result of the action is to unlock the lock (x 7! 0) and move the[
+Unlock]r1 permission into the shared state. The thread must have [Unlock]r1in its local state in order to move it to the shared state as a result of the action.
+
+Notice that Unlock is self-referential. The action moves exclusive permissionon itself out of local state. Consequently, a thread can only apply
+
+Unlock once(intuitively, a thread can only release a lock once without locking it again). In
+
+$4.2, we discuss how our semantics supports such self-referential actions.The abstract predicates must be self-stable with respect to the actions: that
+is, for any action permitted by the module (actions in I(r, x)), the predicate mustremain true. Self-stability ensures that a client can use these predicates without
+having to consider the module's internal interference. For example, assume thatthe predicate
+
+Locked(x) is true. There are two actions the environment canperform that can potentially affect the location
+
+x:
+
+- Lock, but this action does not apply, as x has value 1 in the shared stateof
+
+Locked(x); and-
+Unlock, but this action also does not apply, as full permission on it is inthe local state of
+
+Locked(x).
+
+The implementer of the module must show that the concrete interpretation ofthe predicates satisfies the axioms presented to the client. In our example, axiom
+
+1, that only a single Locked(x) can exist, follows from the presence in the localstate of full permission on
+
+Unlock. Axiom 2, that isLock(x) can be split, followsfrom the fact that non-exclusive permissions can be arbitrarily subdivided and
+
+that * behaves additively on shared region assertions.
+Verifying the Lock Implementation. Given the definitions above, the lock imple-mentation can be verified against its specification; see Fig. 1 and Fig. 2.
+
+For the unlock case, the atomic update h[x] := 0i is allowed, because it can beviewed as performing the
+
+Unlock action, full permission for which is in the localstate. The third assertion specifies that the permission [
+
+Unlock]r1 has movedfrom the local state to the shared region
+r as stipulated by the unlock action.This assertion is not, however, stable under interference from the environment
+
+since another thread could acquire the lock. It does imply the fourth assertion,which is stable under such interference. The semantics of assertions allows us to
+forget about the shared region, resulting in the post-condition, emp.For the
+
+lock case, the key proof step is the atomic compare-and-swap com-mand in the loop. If successful, this command updates the location referred to
+
+by x in the shared state region from 0 to 1. This update is allowed because of
+
+*isLock(x)_
+
+lock(x) {8<:9
+
+r. ss. [Lock]rss *
+(x 7! 0 * [Unlock]r1) . x 7! 1
+
+r
+
+I(r,x)9=;
+local b;
+do(9
+
+r. ss. [Lock]rss *
+
+(x 7! 0 * [Unlock]r1) . x 7! 1
+
+r
+
+I(r,x))h
+b := ~CAS(&x,0,1)i;8><>
+
+:
+
+9r. ss. " x 7! 1
+
+r
+
+I(r,x) * [Lock]
+
+rss * [Unlock]r1 * b = false " ."
+
+(x 7! 0 * [Unlock]r1) . x 7! 1
+
+r
+
+I(r,x) * [Lock]
+
+rss * b = true "9>=>;
+
+while(b)n9
+
+r. x 7! 1
+
+r
+
+I(r,x) * [Lock]
+
+rss * [Unlock]r1 * b = falseo
+
+}*
+
+isLock(x) * Locked(x)_
+
+*Locked(x)_
+
+unlock(x) {n9
+
+r. [Unlock]r1 * x 7! 1
+
+r
+
+I(r,x)oh
+[x] := 0i;n9
+
+r. x 7! 0 * [Unlock]r1
+
+r
+
+I(r,x)o
+// Stabilise the assertion.(
+
+9r. (x 7! 0 * [Unlock]
+
+r1).
+
+x 7! 1
+
+r
+
+I(r,x))
+} *emp_
+
+Fig. 1. Verifying the compare-and-swap lock implementation: lock and unlock.
+the permission [Lock]rss in the local state and the action in I(r, x). The post-condition of the CAS specifies that either location
+
+x has value 1 and the unlockpermission has moved into the local state as stipulated by the
+
+Lock action, ornothing has happened and the pre-condition is still satisfied. This post-condition
+
+is stable and so the Hoare triple is valid.For the
+
+makelock case, the key proof step is the creation of a fresh sharedregion and its associated permissions. Our proof system includes repartitioning
+
+operator, denoted by jV, which enables us to repartition the state betweenregions and to create regions. In particular, we have that:
+
+P jV 9r. P rI(~x) * all(I(~x))
+which creates the fresh shared region r and full permission for all of the actionsdefined in
+
+I(~x) (denoted by all(I(~x))). In our example, we have
+
+x 7! 1 jV 9r. x 7! 1 rI(r,x) * [Lock]r1 * [Unlock]r1
+
+The final post-condition results from the definitions of isLock(x) and Locked(x).
+
+2.3 The Proof System
+We give an informal description of the proof system, with the formal details givenin $4. Judgements in our proof system have the form
+
+\Delta ; \Gamma  ` {P }C{Q}, where \Delta contains predicate definitions and axioms, and
+\Gamma  presents abstract specificationsof the functions used by
+C. The local Hoare triple {P }C{Q} has the fault-avoiding partial-correctness interpretation advocated by separation logic: if the
+
+*emp_
+
+makelock(n) {
+
+local x := alloc(n + 1);*
+
+x 7! * (x + 1) 7! * . . . * (x + n) 7! _
+[x] := 1;*
+
+x 7! 1 * (x + 1) 7! * . . . * (x + n) 7! _
+// Create shared lock region.n9
+
+r. x 7! 1 rI(r,x) * [Lock]r1 * [Unlock]r1 * (x + 1) 7! * . . . * (x + n) 7! o
+
+return x;
+}*9
+
+x. ret = x ^ isLock(x) * Locked(x) * (x + 1) 7! * . . . * (x + n) 7! _
+
+Fig. 2. Verifying the compare-and-swap lock implementation: makelock.
+
+program C is run from a state satisfying P then it will not fault, but will eitherterminate in a state satisfying
+
+Q or not terminate at all.The proof rule for atomic commands is
+
+`SL {p} C {q} \Delta  ` P jV{p}{q} Q \Delta  ` stable(P, Q)
+
+\Delta ; \Gamma  ` {P } h C i {Q} (Atomic)
+
+The bodies of atomic commands do not contain other atomic commands, nor dothey contain parallel composition. They can thus be specified using separation
+
+logic. The first premise, `SL {p} C {q}, is therefore a triple in sequential sep-aration logic, where
+
+p, q denote separation logic assertions that do not specifypredicates, shared regions or interference.
+
+The second premise, \Delta  ` P jV{p}{q} Q, says that the interference allowedby
+P enables the state to be repartitioned to Q, given the change to memoryspecified by {
+
+p}{q}. In our example, when the CAS performs the update thechange is {
+x 7! 0}{x 7! 1}. We also require that P and Q are stable, so thatthey cannot be falsified by concurrently executing threads. Pre-condition and
+
+post-condition stability is a general requirement that our proof rules have, whichfor presentation purposes we keep implicit in the rest of the paper.
+
+The repartitioning arrow P jV Q used earlier for constructing a new regionis a shorthand for
+
+P jV{emp}{emp} Q, i.e. a repartitioning where no concrete statechanges. We use this repartitioning in the rule of consequence to move resources
+
+between regions. The operator jV includes conventional implication, so this ruleof consequence subsumes the traditional one.
+
+\Delta  ` P jV P 0 \Delta ; \Gamma  ` {P 0} C {Q0} \Delta  ` Q0 jV Q
+
+\Delta ; \Gamma  ` {P } C {Q} (Conseq)
+
+We now introduce a rule that allows us to combine a verified module with averified client to obtain a complete verified system. The idea is that clients of
+
+the module are verified with respect to the specification of the module, withoutreference to the internal interference and the concrete predicate definitions.
+
+Our proof system for programs includes abstract specifications for functions.In previous work on verifying fine-grained concurrent algorithms [23], interference had to be specified explicitly for each function. Here we can prove a spec-ification for a module and then represent the specification abstractly without
+mentioning the interference internal to the module.As we have seen, our predicates can describe the internal interference of a
+module. Given this, we can define high-level specifications for a module whereabstract predicates correspond to invariant assertions about the state of the
+module (that is, they are `self-stable'). As these abstract assertions are invariant,we can hide the predicate definitions and treat the specifications as abstract.
+
+The following proof rule expresses the combination of a module with a client,hiding the module's internal predicate definitions.
+
+\Delta  ` {P1}C1{Q1} * * * \Delta  ` {Pn}Cn{Qn}
+\Delta  ` \Delta 0 \Delta 0; {P1}f1{Q1}, . . . , {Pn}fn{Qn} ` {P }C{Q}` {
+
+P } let f1 = C1 . . . fn = Cn in C {Q}
+
+This rule defines a module consisting of functions f1 . . . fn and uses it to verifya client specification {
+
+P }C{Q}.
+
+If - the implementation Ci of fi satisfies the specification {Pi}Ci{Qi} underpredicate assumptions
+
+\Delta , for each i;- the axioms exposed to the client in
+
+\Delta 0 are satisfied by the predicate as-sumptions
+\Delta ; and- the specifications {
+
+P1}f1{Q1}, . . . , {Pn}fn{Qn} and just the predicate as-sumptions
+\Delta 0 can be used to prove the client {P }C{Q};then the composed system satisfies {
+
+P } let f1 = C1 . . . fn = Cn in C {Q}.
+
+Using this rule, we can define an abstract module specification and use thisspecification to verify a client program. Any implementation satisfying the specification can be used in the same place. We are only required to show that themodule implementation satisfies the specification.
+
+2.4 Example: A Ticketed Lock
+We now consider another, more complex lock algorithm: a lock that issues ticketsto clients contending for the lock. This algorithm is used in current versions of
+
+Linux, and provides fairness guarantees for threads contending for the lock. De-spite the fact that the ticketed lock is quite different from the compare-and-swap
+lock, we will show this module also implements our abstract lock specification.The lock operations are defined as follows:
+
+lock(x) {h
+
+int i := INCR(x.next);i
+while(hi 6= x.owneri) skip;
+}
+
+unlock(x) {h
+
+x.owner++;i
+}
+
+makelock(n) {
+
+local x := alloc(n+2);
+(x+1).owner := 0;
+(x+1).next := 1;
+return (x+1);
+}
+
+Here field names are encoded as offsets (.next = 0, .owner = -1).
+
+The implementation assumes an atomic operation INCR that increments astored value and returns the original value. To acquire the lock, a client atomically increments x.next and reads it to a variable i. The value of i becomes theclient's ticket. The client waits for x
+
+.owner to equal its ticket value i. Once this isthe case, the client holds the lock. The lock is released by incrementing x
+
+.owner.
+The algorithm is correct because (1) each ticket is held by at most one clientand (2) only the thread holding the lock can increment x
+
+.owner.
+
+Interpretation of Abstract Predicates. The actions for the ticketed lock are:
+
+T (t, x) def=  Take : 9k. ([ Next(k) ]
+
+t1 * x.next 7! k  x.next 7! (k + 1)),
+
+Next(k) : x.owner 7! k  x.owner 7! (k + 1) * [Next(k)]t1 !
+
+Intuitively, Take corresponds to taking a ticket value from x.next, and Next(k)corresponds to releasing the lock when x
+
+.owner = k. The shared state containspermissions on
+Next(k) for all the values of k not currently used by activethreads. Note the 9
+
+k is required to connect the old and new values of the nextfield in the
+Take action.
+The concrete interpretation of the predicates is as follows:
+
+isLock(x) j 9t. 9ss. 9k, k0. x.owner 7! k * x.next 7! k0 *k <= k0 * ik00 >= k0. [Next(k00)] t
+
+1 * true
+
+t
+
+T (t,x)* [
+
+Take] tss
+
+Locked(x) j 9t, k. x.owner 7! k * true tT(t,x) * [Next(k)] t1
+(i is the lifting of * to sets; it is the multiplicative analogue of 8.)
+
+isLock(x) requires values x.next and x.owner to be in the shared state, andthat a permission on
+
+Next(k) is in the shared state for each value greater thanthe current ticket x
+.next. It also requires a permission on Take to be in the localstate.
+Locked(x) requires just that there is an exclusive permission on Next(k)in local state for the current value,
+
+k, of x.owner.
+Self-stability of Locked(x) is ensured by the fact that the predicate holdsfull permission on the action
+
+Next(k), and the action Take cannot affect the
+x.owner field. Self-stability for isLock(x) is ensured by the fact that its definitionis invariant under the action
+
+Take.
+The axioms follow trivially from the predicate definitions, as in the CAS lock.
+
+Verifying the Lock Implementation. Given the definitions above, the ticketedlock implementation can be verified against the lock specification, as shown in
+Fig. 3. The proofs follow the intuitive structure sketched above for the actions.That is,
+
+lock(x) pulls a ticket and a permission out of the shared state, and
+unlock(x) returns it to the shared state. (We omit the proof of makelock, whichis similar to the previous example.)
+
+*isLock(x)_
+
+lock(x) {8>>><
+
+>>>:
+
+9t, ss. [Take]tss *9
+
+k, k0. k <= k0 *
+x.owner 7! k * x.next 7! k0 *i
+
+k00 >= k0. [Next(k00)]t1 * true
+
+t
+
+T(t,x)
+
+9>>>=>
+>>;
+hint i := INCR(x.next);i8>>><
+
+>>>:
+
+9t, ss. [Take]tss * [Next(i)]t1 *9
+
+k, k0. k <= i < k0 *
+x.owner 7! k * x.next 7! k0 *i
+
+k00 >= k0. [Next(k00)]t1 * true
+
+t
+
+T(t,x)
+
+9>>>=>
+>>;
+while(hi 6= x.owneri) skip;(
+
+9t, ss. [Take]tss * [Next(i)]t1 * 9k0. i < k0 * x.owner 7! i * x.next 7! k0* ik00 >= k0. [Next(k00)]t
+
+1 * true
+
+t
+
+T(t,x))
+}*
+
+isLock(x) * Locked(x)_
+
+*Locked(x)_
+
+unlock(x) {(9
+
+t, k. x.owner 7! k * true
+
+t
+
+T(t,x)*
+[Next(k)]t1)h
+x.owner++;i(
+
+9t. 9k. x.owner 7! (k + 1)*[Next(k)]t
+
+1 * true
+
+t
+
+T(t,x))
+}*
+
+emp_
+
+Fig. 3. Proofs for the ticketed lock module operations: lock and unlock.
+3 Composing Abstract Specifications
+In the previous section we showed that our system can be used to present abstractspecifications for concurrent modules. In this section we show how these specifications can be used to verify client programs, which may themselves be modulessatisfying abstract specifications. We illustrate this by defining a specification
+and two implementations for a concurrent set. The implementations assume alock module satisfying the specification presented in the previous section.
+
+3.1 A Set Module Specification
+A typical set module has three functions: contains(h, v), add(h, v) and remove(h, v).These functions have the following abstract specifications:
+
+{in(h, v)} contains(h, v) {in(h, v) * ret = true}{
+out(h, v)} contains(h, v) {out(h, v) * ret = false}{
+own(h, v)} add(h, v) {in(h, v)}{
+own(h, v)} remove(h, v) {out(h, v)}
+
+Here in(h, v) is an abstract predicate stating that the set at h contains v. Cor-respondingly
+
+out(h, v) says that the set does not contain v. We define own(h, v)as a shorthand for the disjunction of these two predicates.
+
+These assertions not only capture knowledge about the set, but also exclusivepermission to alter the set by changing whether
+
+v belongs to it. Consequently,
+
+out(h, v) is not simply the negation of in(h, v). The exclusivity of permissions iscaptured by the module's axiom:
+
+own(h, v) * own(h, v) =) false
+
+{own(h, v1) * own(h, v2)}{
+own(h, v1)} {own(h, v2)}
+remove(h, v1) remove(h, v2){
+
+out(h, v1)} {out(h, v2)}{
+
+out(h, v1) * out(h, v2)}
+
+Fig. 4. Proof outline for the setmodule client.
+
+We can reason disjointly about set predicates,even though they may be implemented by a
+single shared structure.
+
+remove(h, v1) k remove(h, v2)
+For example, the above command should suc-ceed if it has the permissions to change the
+
+values v1 and v2 (where v1 6= v2), and itshould yield a set without
+
+v1 and v2. This in-tuition is captured by the proof outline shown
+
+in Fig. 4.
+
+3.2 Example: The Coarse-grained Set
+Consider a coarse-grained set implementation, based on the lock module de-scribed in $2.1 and the sequential set operations
+
+scontains(h, v), sadd(h, v)and
+sremove(h, v).
+
+contains(h,v) {
+
+lock(h.lock);
+r := scontains(h.set,v);
+unlock(h.lock);
+return r;
+}
+
+add(h,v) {
+
+lock(h.lock);
+sadd(h.set,v);
+unlock(h.lock);
+}
+
+remove(h,v) {
+
+lock(h.lock);
+sremove(h.set,v);
+unlock(h.lock);
+}
+
+Interpretation of Abstract Predicates. We assume a coarse-grained sequential setpredicate
+
+Set(y, xs) that asserts that the sequential set at location y containsvalues
+xs. The predicate Set cannot be split, and so must be held by one threadat once. This enforces sequential behaviour. The sequential set operations have
+
+the following specifications with respect to Set:{
+
+Set(h, vs)} scontains(h, v) {Set(h, vs) * ret = (v 2 vs)}{
+Set(h, vs)} sadd(h, v) {Set(h, {v} [ vs)}{
+Set(h, vs)} sremove(h, v) {Set(h, vs \ {v})}
+
+In the set implementation, the predicate Set is held in the shared state when thelock is not locked. Then when the lock is acquired by a thread, the predicate is
+
+pulled into the thread's local state so that it can be modified according to thesequential set specification. When the lock is released, the predicate is returned
+to the shared state. The actions for the set module are
+
+C(s, h) def= 0BB@SChange(v): 0@
+
+9vs, ws. Set(h.set, vs)* [
+
+SGap(ws)]s1 ^
+vs \ {v} = ws \ {v} 1A 
+
+Locked(h.lock)
+
+SGap(ws): Locked(h.lock)  Set(h.set, ws) * [SGap(ws)]s1
+
+1CCA
+
+The SGap(ws) action allows the thread to return the set containing ws to theshared state. The
+
+SChange(v) action allows a thread to acquire the set from theshared state. To do so, the thread must currently hold the lock. It gives up the
+
+permission to release the lock in exchange for the set. The thread also acquiresthe permission [
+
+SGap(ws)]s1, which allows it to re-acquire the lock permissionby relinquishing the set, having only changed whether or not
+
+v is in the set.
+We first define the auxiliary predicates allgaps(s), P2(h, v, s) and P/2(h, v, s):
+
+allgaps(s) j iws. [SGap(ws)]s1
+P/(h, v, s) j 9vs. v / vs ^ `(allgaps(s) * Set(h.set, vs)). Locked(h.lock) * ([SGap(vs)]s
+
+1 -~ allgaps(s))'where
+
+/ = 2 or / = /2
+
+allgaps defines the set of all SGap permissions. P2(h, v, s) is used to assert thatthe shared state contains either the set with contents
+
+vs, where v 2 vs, and allpossible
+SGap permissions; or it contains the Locked predicate and is missingone of the
+
+SGap permissions. The missing SGap permission records the contentsof the set when it is released.
+
+P/2(h, v, s) defines the case where v /2 vs.
+The concrete definitions of in(h, v) and out(h, v) are as follows:
+
+in(h, v) j 9s. isLock(h.lock) * [SChange(v)]s1 * P2(h, v, s) sC(s,h)
+out(h, v) j 9s. isLock(h.lock) * [SChange(v)]s1 * P/2(h, v, s) sC(s,h)
+
+The in(h, v) predicate gives a thread the permissions needed to acquire the lock,
+isLock(h.lock), and to change whether v is in the set, [SChange(v)]s1. The sharedstate is described by the predicate
+
+P2(h, v, s). The out(h, v) predicate is definedanalogously to
+in(h, v), but with /2 in place of 2.
+in(h, v) and out(h, v) are self-stable. For in(h, v), the only actions available toanother thread are
+
+SChange(w), where w 6= v, and SGap(vs), where v 2 vs.The assertion
+P2(h, v, s) is invariant under both of these changes: SChange(w)requires the disjunct
+
+allgaps * Set(h.set, vs) to hold and leaves the disjunct
+Locked(h.lock)*([SGap(vs)]1 -~allgaps(s)) holding; SGap(vs) does the reverse.Similar arguments hold for
+
+out(h, v).
+The predicate axiom holds as a consequence of the fact that exclusive per-missions cannot be combined.
+
+Verifying the Set Implementation. Given the definitions above, we can verify theimplementations of the set module. Fig. 5 shows a proof of
+
+add(h, v) when thevalue is not in the set. The case where the value is in the set, and the proofs of
+
+remove and contains follow a similar structure.
+
+The most interesting steps of this proof are those before and after the op-eration
+
+sadd(h.set, v), when the permissions [SChange(v)]s1 and [SGap(vs)]s1are used to repartition between shared and local state. These steps are purely
+
+logical repartitioning of the state.
+
+*out(h, v)_
+
+add(h,v)n9
+
+s. isLock(h.lock) * [SChange(v)]s1 * P/2(h, v, s) sC(s,h)o
+
+lock(h.lock);n9
+
+s. isLock(h.lock) * Locked(h.lock) * [SChange(v)]s1 * P/2(h, v, s)
+
+s
+
+C(s,h)o
+// use SChange to extract Set predicate and SGap permission.(9
+
+s, vs. isLock(h.lock) * [SGap(vs [ {v})]s1 * [SChange(v)]s1 * Set(h.set, vs)*
+
+Locked(h.lock) * ([SGap(vs [ {v})]s1 -~ allgaps(s)) sC(s,h))
+sadd(h.set,v);(9
+
+s, vs. isLock(h.lock) * [SGap(vs [ {v})]s1 * [SChange(v)]s1 * Set(h.set, vs [ {v})*
+
+Locked(h.lock) * ([SGap(vs [ {v})]s1 -~ allgaps(s)) sC(s,h))
+// use SGap permission to put back Set and SGap permission.n9
+
+s. isLock(h.lock) * Locked(h.lock) * [SChange(v)]s1 * P2(h, v, s)
+
+s
+
+C(s,h)o
+unlock(h.lock);n9
+
+s. isLock(h.lock) * [SChange(v)]s1 * P2(h, v, s)
+
+s
+
+C(s,h)o
+}*
+
+in(h, v)_
+
+Fig. 5. Proof of the add(h, v) specification for the coarse-grained set module.
+
+3.3 Example: The Fine-grained Set
+Our previous implementation of a concurrent set used a single global lock. Wenow consider a set implementation that uses a sorted list with one lock per node
+
+in the list. Our algorithm (adapted from [13, $9.5]) is given in Fig. 6. We omit
+contains for space reasons.The three module functions use the function
+
+locate(h, v) that traverses thesorted list from the head
+h up to the position for a node holding value v, whetheror not such a node is present. It begins by locking the initial node of the list. It
+
+then moves down the list by hand-over-hand locking. The algorithm first locksthe node following its currently held node, and then releases the previously-held
+lock. The following diagram illustrates this pattern of locking:
+
+   . . .
+No thread can access a node locked by another thread, or traverse past a lockednode. Consequently, a thread cannot overtake any other threads accessing the
+
+list. Nodes can be added and removed from locked segments of the list. If athread locks a node, then a new node can be inserted directly after it, as long as
+it preserves the sorted nature of the list. Also, if a thread has locked two nodesin sequence, then the second can be removed.
+
+Proof sketch We can verify this algorithm with our logic. The details are givenin the technical report [5]. Here, we just present the intuition behind the proof.
+
+add(h, v) {
+
+local p, c, z;
+(p, c) := locate(h, v);
+if (c.val 6= v) {
+
+z := makelock(2);
+unlock(z);
+z.value := v;
+z.next := c;
+p.next := z;
+}
+unlock(p);
+}
+
+remove(h,v) {
+
+local p, c, z;
+(p, c) := locate(h, v);
+if (c.val == v) {
+
+lock(c);
+z := c.next;
+p.next := z;
+disposelock(c, 2);
+}
+unlock(p);
+}
+
+locate(h, v) {
+
+local p, c;
+p := h;
+lock(p);
+c := p.next;
+while (c.val < v) {
+
+lock(c);
+unlock(p);
+p := c;
+c := p.next;
+}
+return(p, c);
+}
+
+Fig. 6. Lock-coupling list algorithm.
+
+As with the course-grained example, we have actions LChange and LGap,parameterised by value
+
+v. An LChange permission allows a thread to takelocked parts of the list out of the shared state into its local state, acquiring
+
+LGap permissions and giving up the appropriate Locked predicates. These LGappermissions allow the thread to return the parts of the list it acquired, having
+possibly inserted or removed a node with value v, and to regain the Lockedpredicates. We can then give the definition for
+
+in(h, v), or for out(h, v), as sharedregions where the list starting at
+h contains, or does not contain, the value
+v, respectively. Both predicates include the full permission for LChange on v.The list definition must track gaps for the currently locked segments. These gaps
+
+correspond to missing LGap permissions.
+
+4 Semantics and Soundness
+We present the model for interpreting our assertions and program judgements,and sketch a proof of soundness of our logic. Details of the proof are given in [5].
+
+4.1 Assertion Syntax
+Recall from $2.3 that our proof judgements have the form \Delta , \Gamma  ` {P } C {Q}.Here,
+
+P and Q are assertions in the set Assn. We also define a set of basicassertions,
+
+BAssn, which omit permissions, regions and predicates. Regions inassertions are annotated by interference assertions in the set
+
+IAssn. \Delta  is anaxiom definition in the set
+Axioms. Finally, \Gamma  is a function specification in theset
+Triples. The syntax is defined as follows:
+
+(Assn) P, Q ::= emp | E1 7! E2 | P * Q | P -~ Q | false | P ) Q | 9x. P |
+
+[ fl(E1, . . . , En) ]rss | P rI | ff(E1, . . . , En) | ix. P
+
+(BAssn) p, q ::= emp | E1 7! E2 | p * q | p -~ q | false | p ) q | 9x. p | ix. P
+(IAssn) I ::= fl(~x) : 9~y. (P  Q) | I1, I2
+
+(Axioms) \Delta  ::= ? | 8~x. P =) Q | 8~x. ff(~x) j P | \Delta 1, \Delta 2
+(Triples) \Gamma  ::= ? | \Gamma , {P }f{Q}
+In the above definitions, fl ranges over the set of action names, AName; ff rangesover the set of abstract predicate names,
+
+PName; x and y range over the setof logical variables,
+Var; and f ranges over the set of function names, FName.We assume an appropriate syntax for expressions,
+
+E, r, ss 2 Expr, including basicarithmetic operators.
+
+4.2 Assertion Model
+Let (Heap, ], ;) be any separation algebra [4] representing machine states (orheaps). Typically, we take
+
+Heap to be the standard heap model: the set of fi-nite partial functions from locations to values, where ] is the union of partial
+
+functions with disjoint domains. We let h denote a heap.Our assertions include permissions which specify the possible interactions
+with shared regions. Hence, we define LState, the set of logical states, which pairheaps with permission assignments (elements of
+
+Perm, defined below).
+
+l 2 LState def= Heap * Perm
+Assertions make an explicit (logical) division between shared state, which can beaccessed by all threads, and thread-local state, which is private to a thread and
+cannot be subject to interference. Shared state is divided into regions. Intuitively,each region can be seen as the internal state of a single shared structure, i.e. a
+single lock, set, etc. Each region is identified by a region name, r, from the set
+RName. A region is also associated with a syntactic interference assertion, fromthe set
+
+IAssn, that determines how threads may modify the shared region. Ashared state in
+
+SState is defined to be a finite partial function mapping regionnames to logical states and interference assertions:
+
+s 2 SState def= RName fin* (LState * IAssn)
+A world in World is a pair of a local (logical) state and a shared state, subject toa well-formedness condition. Informally, the well-formedness condition ensures
+that all parts of the state are disjoint and that each permission corresponds toan appropriate region; we defer the formal definition of well-formedness:
+
+w 2 World def= {(l, s) 2 LState * SState | wf(l, s)}
+Given a logical state l, we write lH and lP to stand for the heap and permissionassignment components respectively. We also write
+
+wL and wS to stand for thelocal and shared components of the world
+w respectively.Recall from $2.2 that actions can be self-referential. For example, the action
+
+Unlock moves the permission [Unlock]r1 from local to shared state. Our se-mantics breaks the loop by distinguishing between the syntactic representation
+
+of an action and its semantics. Actions are represented syntactically by tokens,consisting of the region name, the action name and a sequence of value parameters (e.g. the permission [SChange(v)]s1 pertains to the token (s, SChange, v)):
+
+t, (r, fl, ~v) 2 Token def= RName * AName * Val*
+The semantics of a token is defined by an interference environment (see $4.4).Permission assignments in
+
+Perm associate each token with a permission valuefrom the interval [0
+, 1] determining whether the associated action can occur.
+
+pr 2 Perm def= Token ! [0, 1]
+Intuitively, 1 represents full, exclusive permission, 0 represents no permission,and the intermediate values represent partial, non-exclusive permission.
+
+6
+
+The composition operator \Phi  on [0, 1] is defined as addition, with the provisothat the operator is undefined if the two permissions add up to more than 1.
+
+Composition on Perm is the obvious lifting: pr \Phi pr0 def= *t. pr(t)\Phi pr0(t). Compo-sition on logical states is defined by lifting composition for heaps and permission
+assignments: l \Phi  l0 def= (lH ] l0H, lP \Phi  l0P). Composition on worlds is defined bycomposing local states and requiring that shared states be identical:
+
+w \Phi  w0 def= ((wL \Phi  w0L, wS) if wS = w0S? otherwise.
+We write 0Perm for the empty permission assignment (which assigns zero permis-sion value to every token, i.e.
+
+*t.0), and [t 7! ss] for the permission mapping thetoken
+t to ss and all other tokens to 0.We define the operator b(
+
+l, s)c which collapses a pair of a logical state l andshared state
+s to a single logical state, and the operator T(l, s)U which gives theheap component of b(
+
+l, s)c; we use L, the natural lifting of \Phi  to sets:
+
+b(l, s)c def= l \Phi  iLr2dom(s) s(r)j T(l, s)U def= (b(l, s)c)H
+The action domain of an interference assertion, adom(I), is the set of actionnames and their appropriate parameters:
+
+adom(fl(x1, . . . , xn) : 9~y. (P  Q)) def= {(fl, (v1, . . . , vn)) | vi 2 Val)}
+
+adom(I1, I2) def= adom(I1) [ adom(I2)
+We are finally in a position to define well-formedness of worlds, wf(l, s):
+
+wf(l, s) def() b(l, s)c is defined ^8
+
+r, fl, ~v. b(l, s)cP(r, fl, ~v) > 0 =) 9l0, I. s(r) = (l0, I) ^ (fl, ~v) 2 adom(I)
+6 This is the fractional permission model of Boyland [2]. With minimal changes we
+
+could add a deny permission prohibiting both the environment and thread from
+performing the action (see Dodds et al. [8]). We can achieve much the same effect
+in the Boyland-style system by placing a full permission in the shared state.
+
+(|-|)-,- : Assn * PEnv * Interp ! P(LState * SState)
+(|E1 7! E2|)ffi,i def= j(l, s) dom(lH) = {JE1Ki} ^ lH(JE1Ki) = JE2Ki^ l
+
+P = 0Perm ^ s 2 SState ff
+
+(|emp|)ffi,i def= {((;, 0Perm), s) | s 2 SState}
+(|P1 * P2|)ffi,i def= {w1 \Phi  w2 | w1 2 (|P1|)ffi,i ^ w2 2 (|P2|)ffi,i}
+(|P1 -~ P2|)ffi,i def= {w | 9w1, w2. w2 = w \Phi  w1 ^ w1 2 (|P1|)ffi,i ^ w2 2 (|P2|)ffi,i}",,,i
+
+x. P ,,,"
+
+ffi,i
+
+def= S
+
+W nLv W(v),,, 8v. W(v) 2 (|P |)ffi,i[x7!v]o
+
+(|[fl(E1, . . . En)]rss|)ffi,i def= j((;, [(fl, JrKi , JE1Ki , . . . , JEnKi) 7! JssKi]), s) s 2 SState ^JssK
+
+i 2 (0, 1] ff",,,
+
+P rI,,,"
+
+ffi,i
+
+def= {((;, 0
+
+Perm), s) | 9l. (l, s) 2 (|P |)ffi,i ^ s(JrKi) = (l, JIKi)}
+
+(|ff(E1, . . . , En)|)ffi,i def= ffi(ff, JE1Ki , . . . , JEnKi)J
+
+-K-,- : Assn * PEnv * Interp ! P(World)J
+
+P Kffi,i def= {(l, s) 2 (|P |)ffi,i | wf((l, s))}
+
+Fig. 7. Semantics of assertions. The cases for conjunction, implication, existential, etc.
+are standard, simply distributing over the local and shared state.
+
+4.3 Assertion Semantics
+Fig. 7 presents the semantics of assertions, JP Kffi,i. We first define a weakersemantics (|
+
+P |)ffi,i that does not enforce well-formedness, then define JP Kffi,i byrestricting it to the set of well-formed worlds. The semantics of assertions depends on the semantics of expressions, J-K- : Expr * Interp ! Val. We havenot formally defined this, and just assume an appropriate semantics. The semantics of IAssns can also depend on the semantics of free variables. We defineJ-K
+
+- : IAssns * Interp ! IAssns to replace the free variables with their values.The semantics is parameterised by a predicate environment, ffi, mapping abstract predicates to their semantic definitions, and an interpretation, i, mappinglogical variables to values:
+
+ffi 2 PEnv def= PName * Val* ! P(World) i 2 Interp def= Var ! Val
+We assume that RName [ (0, 1] ae Val, so that variables may range over regionnames and fractions.
+
+The cell assertion 7!, the separating star * and the existential separatingimplication -~ are standard. The quantifier i is the iterated version of *; that
+is, the finite, multiplicative analogue of 8. The empty assertion emp asserts thatthe local state and permission assignment are empty, but that the shared state
+can contain anything.Abstract predicates,
+
+ff(E1, . . . , En), are used to encapsulate concrete prop-erties. For example, in the lock specification ($2.1), we used
+
+Locked(x) to assertthat
+x is held by the current thread. The meaning of an abstract predicate issimply given by the predicate environment,
+
+ffi.
+
+The permission assertion [fl(E1, . . .)]rss states that the token (JrKi , fl, JE1Ki . . .)is associated with permission value J
+
+ssKi.
+
+A shared-state assertion P rI asserts that P holds for region JrKi in the sharedstate, and that the region's interference is given by the interference assertion,J
+
+IKi. For example, in the compare-and-swap lock implementation ($2.2), P as-serts that the shared state for a lock is either locked or unlocked, and
+
+I definesthe meaning of actions
+Lock and Unlock. We use JIKi to bind the location xand region
+r to the correct values.Separating conjunction behaves as conventional (non-separating) conjunction
+
+between shared-state assertions over the same region: that is, P rI * Q rI ()
+
+P ^ Q rI . We permit nesting of shared-state assertions. However, nested asser-tions can always be rewritten in equivalent unnested form:
+
+P rI * Q
+
+r0
+
+I0 () P
+
+r
+I * Q
+
+r0
+I0
+
+In this paper, we only use nesting to ensure that shared and unshared elementscan be referred to by a single abstract predicate. In the future, nesting may be
+
+useful for defining mutually recursive modules.
+
+4.4 Environment Semantics
+An interference assertion defines the actions that are permitted over a region.For example, in the compare-and-swap lock implementation ($2.2), the assertion
+
+I(r, x) defines the action Lock as x 7! 0 * [Unlock]r1  x 7! 1.Semantically, an interference assertion defines a map from tokens to sets of
+shared-state pairs (what we call an interference environment):J
+
+-K- : IAssn * PEnv ! Token ! P(SState * SState)
+A primitive interference assertion defines an interference environment that mapsthe token (
+
+r, fl, ~v) to an action relation corresponding to transitions from statessatisfying
+P rI to Q rI. The relation does not involve local state, and only theregion
+r of the shared state changes. The action Lock defines a relation fromshared states where the lock region is unlocked, to ones where it is locked. Composition of interference assertions is defined by union of relations.J
+
+I1, I2Kffi(r, fl, ~v) def= JI1Kffi(r, fl, ~v) [ JI2Kffi(r, fl, ~v)
+
+Jfl(~x) : 9~y. (P  Q)Kffi(r, fl0, ~v) def=
+
+8??????!
+
+??????:(s, s0)
+
+fl0 = fl ^ (8r0 6= r. s(r0) = s0(r0))^ 9
+
+l, l0, l0, I. s(r) = (l \Phi  l0, I) ^
+
+s0(r) = (l0 \Phi  l0, I) ^9
+~v0. (l, s) 2 (|P |)ffi,[~x7!~v,~y7!~v0] ^
+
+(l0, s0) 2 (|Q|)ffi,[~x7!~v,~y7!~v0]
+
+9??????=
+??????;
+Given a region name r and an interference assertion I, all(I, r) is the logical stateassigning full permission to all tokens with region
+
+r defined in I.
+
+all(I, r) def= i;, L(fl,~v)2 adom(I)[(r, fl, ~v) 7! 1]j
+The guarantee Gffi describes which updates, from world w to w0, the thread isallowed to perform. A thread can update its local state as it pleases, but any
+change to a shared region, r, must correspond to an action, fl(~v), for which thethread has sufficient permission, (
+
+wL)P(r, fl, ~v) > 0. For example, in the CAS lockproof ($2.2), the thread must hold permission 1 on
+
+Unlock before unlocking.Without this restriction, other threads could potentially unlock the lock.
+
+It is important that each update preserves the total amount of permission inthe world, that is, b
+
+wcP = bw0cP , so that threads cannot acquire permissionsout of thin air. This does not hold for heaps, as we permit memory allocation.
+
+Moreover, the thread can create a new region by giving away some of its localstate and gaining full permission on the newly created region. This is described
+by Gc. Conversely, it can destroy any region that it fully owns and grab ownershipof the state it protects (cf. (
+
+Gc)-1).
+
+Gc def= ae(w, w0) 9r, I, `1, `2. r /2 dom(wS) ^ w0S = wS[r 7! (`1, I)] ^w
+
+L = `1 \Phi  `2 ^ w0L = `2 \Phi  all(I, r) oe
+
+Gffi def= ae(w, w0) ((9r, fl, ~v. (wS, w0S) 2 J(wS(r))2Kffi(r, fl, ~v) ^(w
+
+L)P(r, fl, ~v) > 0) . wS = w0S) ^ bwcP = bw0cPoe [ G
+
+c [ (Gc)-1
+
+Some permitted updates do not modify the heap, but simply repartition it between shared regions. This is captured by Gffi def= Gffi " {(w, w0) | TwU = Tw0U}. Inpractice, we allow an unlimited number of repartitionings in a single step, only
+
+one of which actually modifies the heap. This is captured by bGffi, defined as:b
+
+Gffi def= (Gffi)*; Gffi; (Gffi)*
+We now define the notion of repartitioning with respect to an update from p to
+q, written P jV{p}{q}ffi Q. This asserts any world w1 satisfying P can be collapsedto a heap T
+
+w1U that has a subheap h1 satisfying the separation logic assertion
+p; furthermore, when this subheap is replaced with any subheap h2 that satisfies
+q, the resulting heap can be reconstructed into a world w2 that satisfies Q andfor which the transition from
+
+w1 to w2 is permitted by the guarantee, bGffi. Theguarantee limits the repartitioning that takes place between the regions.
+
+Definition 1 (Repartitioning). P jV{p}{q}ffi Q holds iff, for every variable in-terpretation
+
+i and world w1 in JP Kffi,i, there exists a heap h1 in JpKi and a residualheap
+h0 such that
+
+- h1 \Phi  h0 = Tw1U; and
+- for every heap h2 in JqKi, there exists a world w2 in JQKffi,i such that*
+
+h2 \Phi  h0 = Tw2U; and*
+the update is allowed by the guarantee, i.e. (w1, w2) 2 bGffi.
+
+Note that, if p = q = emp, then the repartitioning preserves the concrete state,and only allows the world to be repartitioned. We write
+
+P jVffi Q as a shorthand
+
+for P jV{emp}{emp}ffi Q. Recall from the proof of the compare-and-swap lock im-plementation ($2.2) that repartitioning was used to create a new shared regions
+
+when making a lock.The rely
+
+Rffi describes the possible world updates that the environment cando. Intuitively, it models interference from other threads. At any point, it can
+
+update the shared state by performing one of the actions in any one of the sharedregions
+
+r, provided that the environment potentially has permission to performthat action. For this to be possible, the world must contain less than the total
+
+permission (bwcP(r, fl, ~v) < 1). This models the fact that some other thread'slocal state could contain permission
+
+ss > 0 on the action.In addition, the environment can create a new region (cf.
+
+Rc) or can destroyan existing region (cf. (
+Rc)-1) provided that no permission for that region existselsewhere in the world.
+
+Rc def= ae(w, w0) 9r, `, I. r /2 dom(wS) ^ w0L = wL ^ w0S = wS[r7!(`, I)] ^bw0c defined ^ (8fl, ~v. bw0c
+
+P(r, fl, ~v) = 0) oe
+
+Rffi def= ae(w, w0) 9r, fl, ~v. (wS, w0S) 2 J(wS(r))2Kffi(r, fl, ~v) ^w
+
+L = w0L ^ bwcP(r, fl, ~v) < 1 oe [ R
+
+c [ (Rc)-1
+
+These definitions allow us to define stability of assertions. We say that an asser-tion is stable if and only if it cannot be falsified by the interference from other
+threads that it permits.
+Definition 2 (Stability). stableffi(P ) holds iff for all w, w0 and i, if w 2 JP Kffi,iand (
+
+w, w0) 2 Rffi, then w0 2 JP Kffi,i.
+
+Similarly, we say that a predicate environment is stable if and only if all thepredicates it defines are stable.
+
+Definition 3 (Predicate Environment Stability). pstable(ffi) holds iff forall
+
+X 2 ran(ffi), for all w and w0, if w 2 X and (w, w0) 2 Rffi, then w0 2 X.
+
+A syntactic predicate environment, \Delta , is defined in the semantics as a set ofstable predicate environments:J
+
+?K def= {ffi | pstable(ffi)} J\Delta 1, \Delta 2K def= J\Delta 1K " J\Delta 2KJ8
+~x. ff(~x) j P K def= {ffi | pstable(ffi) ^ 8~v. ffi(ff, ~v) = JP Kffi,[~x7!~v]}J8
+
+~x. P ) QK def= {ffi | pstable(ffi) ^ 8~v. JP Kffi,[~x7!~v] ` JQKffi,[~x7!~v]}
+
+4.5 Programming Language and Proof System
+We define a proof system for deriving local Hoare triples for a simple concurrentimperative programming language of commands:
+
+(Cmd) C ::= skip | c | f | hCi | C1; C2 | C1 + C2 | C* | C1kC2 |let
+
+f1 = C1 . . . fn = Cn in C
+
+`SL {p} C {q} \Delta  ` P jV{p}{q} Q
+
+\Delta ; \Gamma  ` {P } h C i {Q} (Atomic) `
+
+SL {p} C {q}
+\Delta ; \Gamma  ` {p} C {q} (Prim)
+
+\Delta ; \Gamma  ` {P1} C1 {Q1} \Delta ; \Gamma  ` {P2} C2 {Q2}
+
+\Delta ; \Gamma  ` {P1 * P2} C1 k C2 {Q1 * Q2} (Par) {
+
+P } f {Q} 2 \Gamma 
+\Delta ; \Gamma  ` {P } f {Q} (Call)
+
+\Delta ; \Gamma  ` {P } C {Q}
+
+\Delta  ` stable(R)
+
+\Delta ; \Gamma  ` {P * R} C {Q * R} (Frame)
+
+\Delta ; \Gamma  ` {P 0} C {Q0}
+\Delta  ` P jV P 0 \Delta  ` Q0 jV Q
+
+\Delta ; \Gamma  ` {P } C {Q} (Conseq)
+
+\Delta  ` \Delta 0 \Delta 0; \Gamma  ` {P }C{Q}
+
+\Delta ; \Gamma  ` {P }C{Q} (Pred-I)
+
+\Delta  ` stable(R) ff /2 \Delta , \Gamma , P, Q
+\Delta , (8~x. ff(~x) j R); \Gamma  ` {P }C{Q}
+
+\Delta ; \Gamma  ` {P }C{Q} (Pred-E)
+
+\Delta ; \Gamma  ` {P1} C1 {Q1} . . . \Delta ; \Gamma  ` {Pn} Cn {Qn}
+\Delta ; {P1} f1 {Q1}, . . . , {Pn} fn {Qn}, \Gamma  ` {P } C {Q}
+
+\Delta ; \Gamma  ` {P } let f1 = C1 . . . fn = Cn in C {Q} (Let)
+
+Fig. 8. Selected proof rules.
+
+We require that atomic statements hCi are not nested and that function names
+f1 . . . fn for a let are distinct. Here c stands for basic commands, modelled se-mantically as subsets of P(
+
+Heap * Heap) satisfying the locality conditions of [4].
+
+Judgements about such programs have the form \Delta ; \Gamma  ` {P } C {Q}. Thisjudgement asserts that, beginning in a state satisfying
+
+P , interpreted underpredicate definitions satisfying
+\Delta , the program C using procedures specified by
+\Gamma  will not fault and, if it terminates, the final state will satisfy Q.
+
+A selection of the proof rules for our Hoare-style program logic are shown inFig. 8. These rules are modified from RGSep [23] and deny-guarantee [8]. All of
+
+the rules in our program logic carry an implied assumption that the pre- andpost-conditions of their judgements are stable.
+
+The judgement `SL {p} C {q} appearing in Atomic and Prim is a judge-ment in standard sequential separation logic. The other minor judgements are
+defined semantically to quantify over all ffi 2 J\Delta K: \Delta  ` P jV{p}{q} Q means8
+
+ffi 2 J\Delta K . P jV{p}{q}ffi Q (and similarly without a superscript); \Delta  ` stable(P )means 8
+
+ffi 2 J\Delta K . stableffi(P ); and \Delta  ` \Delta 0 means J\Delta K ` J\Delta 0K.
+
+To reason about predicate assumptions, we introduce two rules, Pred-I and
+Pred-E. The Pred-I rule allows the assumptions about the predicate defini-tions to be weakened. If a triple is provable with assumptions
+
+\Delta 0, then it mustbe provable under stronger assumptions
+\Delta . The Pred-E rule allows the intro-duction of predicate definitions. For this to be sound, the predicate name
+
+ff mustnot be used anywhere in the existing definitions and assertions. We require that
+
+recursively-defined predicate definitions are satisfiable; otherwise the premise
+
+of a proof rule could be vacuously true. We ensure this by requiring that alloccurrences of the predicate in its definition are positive.
+
+The Par rule is the key rule for disjoint concurrency. In this rule we exploitour fiction of disjointness to prove safety for concurrent programs. Our set-up
+allows us to define a simple parallel rule while capturing fine-grained interactions.The
+
+Atomic and Conseq rule were discussed in $2.3. That section also discusseda rule for modules, which can be derived using
+
+Pred-I, Let and Pred-E.
+
+4.6 Judgement Semantics and Soundness
+We define the meaning of judgements in our proof system with respect to a transition relation C, h j! C0, h0 defining the operational semantics of our language.The transition is parameterised with a function environment,
+
+j, mapping function names to their definitions. We also define a faulting relation C, h j! fault.
+
+j 2 FEnv def= FName ! Cmd-! 2
+
+OpTrans def= P(FEnv * Cmd * Heap * Cmd * Heap)-!
+fault 2 OpFault def= P(FEnv * Cmd * Heap)
+
+To define the meaning of judgements, we first define the notion of a logicalconfiguration (
+
+C, w, j, ffi, i, Q) being safe for at least n steps:
+
+Definition 4 (Configuration safety). C, w, j, ffi, i, Q safe0 always holds; and
+C, w, j, ffi, i, Q safen+1 iff the following four conditions hold:
+
+1. 8w0, if (w, w0) 2 (Rffi)* then C, w0, j, ffi, i, Q safen;
+2. ~((C, TwU) j! fault);
+3. 8C0, h0, if (C, TwU) j! (C0, h0), then there 9w0 such that (w, w0) 2 bGffi, h0 =T
+
+w0U and C0, w0, j, ffi, i, Q safen; and
+
+4. if C=skip, then 9w0 such that TwU=Tw0U, (w, w0) 2 bGffi, and w0 2 JQKffi,i.
+
+This definition says that a configuration is safe provided that: (1) changing theworld in a way that respects the rely is still safe; (2) the program cannot fault;
+
+(3) if the program can make a step, then there should be an equivalent step inthe logical world that is allowed by the guarantee; and (4) if the configuration
+has terminated, then the post-condition should hold. The use of bGffi in the thirdand fourth conjuncts allows the world to be repartitioned.
+
+Definition 5 (Judgement Semantics). \Delta ; \Gamma  |= {P } C {Q} holds iff
+
+8i, n. 8ffi 2 J\Delta K . 8j 2 J\Gamma  Kn,ffi,i . 8w 2 JP Kffi,i . C, w, j, ffi, i, Q safen+1 ,
+
+where J\Gamma  Kn,ffi,i def= {j | 8{P }f {Q} 2 \Gamma . 8w 2 JP Kffi,i . j(f ), w, j, ffi, i, Q safen}.
+Theorem 1 (Soundness). If \Delta ; \Gamma  ` {P } C {Q}, then \Delta ; \Gamma  |= {P } C {Q}.
+
+Proof is by by structural induction. Most interesting is Par, which embodies thecompositionality of our logic. The proof requires the following lemma.
+Lemma 1 (Abstract state locality).
+If (C, Tw1 \Phi  w2U) j! (C0, h) and C, w1, j, ffi, i, Q safen, then 9w01, w02 such that
+(C, Tw1U) j! (C0, Tw01U), h = Tw01 \Phi  w02U, (w1, w01) 2 bGffi, and (w2, w02) 2 (Rffi)*.
+
+Proof. We require that basic commands obey a concrete locality assumption.We must prove that the rely and guarantee obey similar locality lemmas. The
+
+lemma then follows from the definition of configuration safety. \Lambda 
+This lemma shows that program only affects the resources required for it to runsafely: that is, programs are safely contained within their abstract footprints.
+
+The soundness of Par follows immediately.
+
+5 Conclusions and Related Work
+Our program logic allows fine-grained abstraction in a concurrent setting. Itbrings together three streams of research: (1) abstract predicates [21] for abstracting the internal details of a module or class; (2) deny-guarantee [8] for rea-soning about concurrent programs; and (3) context logic [3, 7] for fine-grained
+reasoning at the module level.Our work on concurrent abstract predicates has been strongly influenced by
+O'Hearn's concurrent separation logic (CSL) [19]. CSL takes statically allocatedlocks as a primitive. With CSL, we can reason about programs with locks as
+if they are disjoint from each other, even though they interfere on a sharedstate. CSL therefore provides a key example of the fiction of disjointness. The
+CSL approach has been extended with new proof rules and assertions to dealwith dynamically-allocated locks [11, 15] and re-entrant locks [12]. Parkinson et
+al. [20] have shown how the CSL approach can be used to reason about con-current algorithms that do not use locks. However, representing the concurrent
+interactions in an invariant can require intractable auxiliary state.Jacobs and Piessens [17] have developed an approach to reasoning abstractly
+that is based on CSL for dynamically allocated locks [11]. Their logic uses auxil-iary state to express the temporal nature of interference. To deal modularly with
+auxiliary state they add a special implication that allows the auxiliary state tobe changed in any way that satisfies the invariant. This implication is similar
+to our repartitioning operator jV. Unlike our operator, theirs can be used in amodule specification, allowing a client's auxiliary state to be updated during the
+module's execution. Our operator could be extended with this technique, whichmay simplify the use of the lock specification in the set algorithms.
+
+An alternative to using invariants is to abstract interference over the sharedstate by relations modelling the interaction of different threads: the rely-guarantee
+method [18]. There have been two recent logics that combine RG with separationlogic: RGSep [23] and SAGL [10]. Both allow more elegant proofs of concurrent
+algorithms than the invariant-based approaches, but they have the drawback
+
+that interference on the shared state cannot be abstracted. Feng's Local Rely-Guarantee [9] improves the locality of RGSep and SAGL by scoping interference
+with a precise footprint, but this approach still has no support for abstrac-tion. Many of our ideas on abstraction originated in Dinsdale-Young, Gardner
+and Wheelhouse's work on using RGSep to analyse a concurrent B-tree algo-rithm [6, 22].
+
+We have combined RGSep with resource permissions, as first introduced fordeny-guarantee reasoning [8]. Deny-guarantee is a reformulation of rely-guarantee allowing reasoning about dynamically scoped concurrency. Deny-guaranteereasoning is related to the `state guarantees' of Bierhoff et al. [1] in linear logic,
+which are also splittable permissions describing how a state can be updated.We have also used ideas from context logic [3], a high-level logic for finegrained local reasoning about program modules. Recent work in context logichas shown how implementations of modules can be verified, by relating local
+reasoning about module specifications with the low-level reasoning about imple-mentations [7]. As presented here, these implementations break away from the
+fiction of disjointness presented by the module specifications.Proofs in our proof system are slightly more complex in practice than RGSep
+and SAGL, as can be seen by comparing the lock-coupling list proof with theRGSep one [23]. This may be the penalty that we pay for having greater modularity although, as we acquire more experience with doing proofs using concurrentabstract predicates, we expect to be able to reduce this complexity.
+
+An alternative approach to abstracting concurrent algorithms is to use lin-earisability [14]. Linearisability provides a fiction of atomicity allowing "reason[ing] about properties of concurrent objects given just their (sequential) spec-ifications" [14]. With linearisability, we are forced to step outside the program
+logic at module boundaries and fall back on operational reasoning. In contrast,with concurrent abstract predicates we are able to write modular proofs within
+a single logical formalism.
+Acknowledgements Thanks to Richard Bornat, Alexey Gotsman, Peter O'Hearn,Suresh Jagannathan, Mohammad Raza, Noam Rinetzky, Mark Wheelhouse,
+John Wickerson and the anonymous referees for useful feedback. This work wassupported by an EPSRC DTA (Dinsdale-Young), an EPSRC Programme Grant
+EP/H008373/1 (Dinsdale-Young and Gardner), an EPSRC grant EP/F019394/1(Dodds and Parkinson), an RAEng/EPSRC research fellowship (Parkinson) and
+a Microsoft Research Cambridge/RAEng senior research fellowship (Gardner).
+
+References
+
+[1] K. Bierhoff and J. Aldrich. Modular typestate checking of aliased objects. In
+
+OOPSLA, pages 301-320, 2007.
+[2] J. Boyland. Checking interference with fractional permissions. In SAS, 2003.
+[3] C. Calcagno, P. Gardner, and U. Zarfaty. Local reasoning about data update. Festschrift Computation, Meaning and Logic: Articles dedicated to Gordon
+Plotkin, 172, 2007.
+
+[4] C. Calcagno, P. W. O'Hearn, and H. Yang. Local action and abstract separation
+
+logic. In Symp. on Logic in Comp. Sci. (LICS'07), pages 366-378, 2007.
+[5] T. Dinsdale-Young, M. Dodds, P. Gardner, M. Parkinson, and V. Vafeiadis. Concurrent abstract predicates. Technical Report 777, University of Cambridge Computer Laboratory, 2010.
+[6] T. Dinsdale-Young, P. Gardner, and M. Wheelhouse. Local reasoning about a
+
+concurrent B*-list algorithm. Talk and unpublished report, see http://www.doc.
+ic.ac.uk/,pg/, 2009.
+[7] T. Dinsdale-Young, P. Gardner, and M. Wheelhouse. Locality refinement. Technical Report DTR10-8, Imperial College London, 2010.
+[8] M. Dodds, X. Feng, M. Parkinson, and V. Vafeiadis. Deny-guarantee reasoning.
+
+In ESOP, 2009.
+[9] X. Feng. Local rely-guarantee reasoning. In POPL, 2009.
+[10] X. Feng, R. Ferreira, and Z. Shao. On the relationship between concurrent separation logic and assume-guarantee reasoning. In ESOP, 2007.
+[11] A. Gotsman, J. Berdine, B. Cook, N. Rinetzky, and M. Sagiv. Local reasoning for
+
+storable locks and threads. In APLAS, 2007.
+[12] C. Haack, M. Huisman, and C. Hurlin. Reasoning about Java's Reentrant Locks.
+
+In APLAS, pages 171-187, 2008.
+[13] M. Herlihy and N. Shavit. The Art of Multiprocessor Programming. Elsevier,
+
+2008.
+[14] M. P. Herlihy and J. M. Wing. Linearizability: a correctness condition for concurrent objects. TOPLAS, 12(3):463-492, 1990.
+[15] A. Hobor, A. W. Appel, and F. Z. Nardelli. Oracle semantics for concurrent
+
+separation logic. In ESOP, 2008.
+[16] S. S. Ishtiaq and P. W. O'Hearn. BI as an assertion language for mutable data
+
+structures. In POPL, pages 14-26, Jan. 2001.
+[17] B. Jacobs and F. Piessens. Modular full functional specification and verification
+
+of lock-free data structures. Technical Report CW 551, Katholieke Universiteit
+Leuven, Department of Computer Science, June 2009.
+[18] C. B. Jones. Annoted bibliography on rely/guarantee conditions. http://
+
+homepages.cs.ncl.ac.uk/cliff.jones/ftp-stuff/rg-hist.pdf, 2007.
+[19] P. W. O'Hearn. Resources, concurrency and local reasoning. TCS, 2007.
+[20] M. Parkinson, R. Bornat, and P. O'Hearn. Modular verification of a non-blocking
+
+stack. In POPL, pages 297-302, Jan. 2007.
+[21] M. J. Parkinson and G. M. Bierman. Separation logic and abstraction. In POPL,
+
+pages 247-258, 2005.
+[22] P. Pinto. Reasoning about BLink trees. Advanced masters ISO project, Imperial
+
+College London, 2010. Supervised by Dinsdale-Young, Gardner and Wheelhouse.
+[23] V. Vafeiadis and M. Parkinson. A marriage of rely/guarantee and separation logic.
+
+In CONCUR, pages 256-271, 2007.

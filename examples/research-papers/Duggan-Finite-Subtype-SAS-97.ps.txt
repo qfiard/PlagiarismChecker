@@ -1,0 +1,764 @@
+
+
+Finite Subtype Inference With Explicit Polymorphism
+
+Dominic Duggan
+Department of Computer Science,
+
+Stevens Institute of Technology,Castle Point on the Hudson,
+
+Hoboken, New Jersey 07030.
+dduggan@cs.stevens-tech.edu
+
+Abstract. Finite subtype inference occupies a middle ground between HindleyMilner type inference (as in ML) and subtype inference with recursively constrained types. It refers to subtype inference where only finite types are allowedas solutions. This approach avoids some open problems with general subtype inference, and has practical motivation where recursively constrained types are not
+appropriate. This paper presents algorithms for finite subtype inference, includingchecking for entailment of inferred types against explicitly declared polymorphic
+
+types. This resolves for finite types a problem that is still open for recursively
+constrained types. Some motivation for this work, particularly for finite types andexplicit polymorphism, is in providing subtype inference for first-class container
+
+objects with polymorphic methods.
+
+1 Introduction
+Type inference is the process of statically type-checking a program where some orall of the type information has been omitted from the program text. ML and Haskell
+are examples of programming languages where type inference has been a spectacularsuccess. The particular flavor of type inference used by ML and Haskell is HindleyMilner type inference [14]. The type-checker accumulates equality constraints via atree walk of the abstract syntax tree, and then uses a unification algorithm to compute a
+(most general) unifying substitution for these constraints.
+
+More recently attention has been focused on subtype inference [2,3,17,7,19,22].With this work, the type-checker accumulates subtype constraints while traversing the
+
+abstract syntax tree, and then applies a constraint solver to check these constraints forconsistency. Pottier [19] and Smith and Trifonov [22] have considered the problem of
+entailment in these type systems, which is important for example in interface match-ing. Subtype inference continues to be an important avenue of research, particularly in
+simplifying inferred types to make them practically useful.
+
+Hindley-Milner type inference and subtype inference represent two extremes in thetype inference continuum:
+
+G. Levi (Ed): Static Analysis Symposium 1998, pp. 1-16, 1998.c
+fl Springer-VerlagBerlin Heidelberg 1998
+
+2 Dominic Duggan
+
+Hindley-Milner Finite Subtype Subtype
+Equality Subtyping SubtypingFinite types Finite types Infinite types
+
+Inferred monotypes Inferred monotypes Inferred monotypes
+Inferred polytypes ae Inferred polytypesSpecified polytypes\Lambda  oe Inferred polytypes
+
+Between these two extremes, there is an intermediate point: finite subtype inference.While this alternative allows subtyping and type subsumption, it does not assume that
+types are potentially infinite trees (as with the most recent work on subtype inference).
+
+Why should we consider subtype inference with finite types? It is worth recallingwhy ML for example does not allow circular types (types as potentially infinite trees).
+
+The problem was pointed out by Solomon [21]: the problem of deciding the equalityof parameterized recursive types is equivalent to the problem of deciding the equality
+of deterministic context-free languages (DCFLs), which is still after several decades anopen problem. This problem is avoided in ML type inference by making the folding
+and unfolding of recursive types explicit (using data constructors and pattern-matching,respectively), so that circular types are not needed.
+
+A motivation for infinite types in subtype inference is to support objects with recur-sive interfaces. However the problem discovered by Solomon also holds for recursive
+interfaces for container objects. Consider for example a set object with interface:
+set(a) = fmap : 8b:(a ! b) ! set(b),
+
+product : 8b:set(b) ! set(a \Lambda  b),
+power : 8b:unit ! set(set(a))
+
+All of the methods in this interface are examples of non-regular recursion in the objectinterface. In a companion paper [5], we have developed an object design for ML-like
+languages that avoids this problem. The approach there is to again make the folding andunfolding of recursive object interfaces explicit, in object creation and method invocation, respectively. This work introduces the possibility that circular types for recursiveobject interfaces, while useful for simple objects, may not be so useful for container
+objects.
+
+Early work on subtype inference considered atomic subtyping with finite types[15,12,9]. However there are non-trivial differences between finite subtype inference
+
+with atomic subtyping and with record containment. For example even checking forfiniteness is markedly different, as elaborated upon in Sect. 5.
+
+Another design point is whether polymorphic types should be inferred or specified.All of the work so far assumes that polymorphic types are inferred. The disadvantage
+of these approaches is that the inferred types are large and complex, diminishing theirpractical usefulness, despite recent work on simplifying inferred types [7,19,22]. One
+way to avoid this problem is to require that the programmer provide explicit interfacesfor polymorphic functions. This approach introduces fresh technical complications of
+its own. In Hindley-Milner type inference, mixed-prefix unification has been used tocontrol scoping of type variables with explicit polymorphic type declarations (an idea
+originally used by Leroy and Mauny [11], and subsequently rediscovered by Odersky
+
+Finite Subtype Inference With Explicit Polymorphism 3
+and L"aufer [16]). In this paper we extend subtype inference with constraint-solving
+under a mixed prefix, in order to support subtype inference with explicit polymorphism.
+
+Explicit polymorphism also derives motivation from our work on container objectswith recursive interfaces [5]. We avoid the problems with first-class polymorphism in
+
+Hindley-Milner type inference, by requiring explicit type specifications on polymorphicmethods. This is similar to the use of universal types to incorporate impredicativity into
+Hindley-Milner type inference [20,16,10], but tied to the object system instead of todatatypes (again because we are concerned with container objects with polymorphic
+methods).
+
+Even if we are not concerned with polymorphic methods, explicit polymorphism isrequired if we wish to provide a type-checking algorithm for the Abadi and Cardelli object type system, for example [1]. In that type system, the type rule for method update isstructural [1, Sect. 16.2], meaning that the new method definition must be parametric in
+the type of self (the type of self is a type parameter constrained by the object interface).
+
+Explicit polymorphism requires that it be possible to check for entailment of in-ferred types from declared types. For infinite types this is problematic. Although incomplete algorithms have been published [19,22], the decidability of entailment re-mains open [22]. In this paper we demonstrate that entailment is decidable for finite
+subtyping, giving further motivation for our approach.
+
+Sect. 2 introduces our type system. We do not overburden the paper with any detailsof the object system mentioned earlier [5], but present a familiar ML-like language with
+
+record-based subtyping and explicit polymorphism. Sect. 3 provides the type inferencealgorithm. Sect. 4 provides algorithms for checking consistency and entailment; these
+algorithms must be defined mutually recursively. Sect. 5 considers the check for finitesolutions; perhaps surprisingly, this check must be done after consistency and entailment checking. Sect. 6 considers the use of mixed prefix constraint-solving to checkthat there are well-scoped solutions. Finally Sect. 8 considers further related work and
+provides conclusions.
+
+2 Type System
+The mini-language we consider is a language with functions, pairs and records. Sub-typing is based on containment between record types. This is extended contravariantly
+to function types and covariantly to product types. Polymorphic types allow quantifiedtype variables to be constrained by upper bounds. We use
+
+8an !: tn:t generically for asequence of quantifiers where all, none or some of the variables may have upper bounds.
+
+t ::= a j t j t1 ! t2 j t1 \Lambda  t2 j fl1 : t1; : : :; ln : tng
+s ::= 8a:s j 8a !: t:s j t
+
+e ::= x j lx:e j (e1 e2) j (e1; e2) j fst e j snd e j
+
+let x : s = e1 in e2 j fl1 = e1; : : :; ln = eng j e:l
+
+The type rules are specified in Fig. 1 using judgements of the form \Gamma ; A ` e : t.
+A is a sequence of program variable bindings (x : s), while \Gamma  is a sequence of type
+
+4 Dominic Duggan
+variable bindings ((a !: t), or just a where there is no upper bound specified in a typeannotation).
+
+The main construct of interest is the let construct. This allows generalization oftypes to polymorphic types, but requires an explicit type annotation. This is demonstrated by the LET type rule in Fig. 1. It is also possible to define a monomorphicversion of the let, that does not require a type annotation:
+
+letmono x = e1 in e2 j (lx:e2) e1
+
+A(x) = 8an !: tn:t \Gamma  ` t0i !: ft0i\Gamma 1=ai\Gamma 1gti for i = 1;::: ;n
+
+\Gamma ;A ` x : ft0n=angt (VAR)
+
+\Gamma ;A ` e1 : (t2 ! t1) \Gamma ;A ` e2 : t2
+
+\Gamma ;A ` (e1 e2) : t1 (APP)
+
+\Gamma ;A;x : t1 ` e : t2
+\Gamma ;A ` (lx:e) : (t1 ! t2) (ABS)
+
+\Gamma ;A ` e1 : t1 \Gamma ;A ` e2 : t2
+
+\Gamma ;A ` (e1;e2) : (t1 \Lambda  t2) (PAIR)
+
+\Gamma ;A ` e : (t1 \Lambda  t2)
+
+\Gamma ;A ` fst e : t1 (FST)
+
+\Gamma ;A ` e : (t1 \Lambda  t2)
+
+\Gamma ;A ` snd e : t2 (SND)
+
+\Gamma ;A ` e1 : t1 ::: \Gamma ;A ` en : tn
+\Gamma ;A ` fl1 = e1;::: ;ln = eng : fl1 : t1;::: ;ln : tng (RECORD)
+
+\Gamma ;A ` e : fl : tg
+
+\Gamma ;A ` e:l : t (SELECT)
+
+\Gamma ;an !: tn;A ` e1 : t1 \Gamma ;A;x : (8an !: tn:t1) ` e2 : t2
+
+\Gamma ;A ` (let x : (8an !: tn:t1) = e1 in e2) : t2 (LET)
+
+\Gamma ;A ` e : t \Gamma  ` t !: t0
+
+\Gamma ;A ` e : t0 (SUB)
+
+Fig. 1. Type Rules
+
+Although we are primarily concerned with finite types and finite solutions to con-straint sets, we will need to be able to reason about infinite solutions to constraint sets.
+For reasons of space, we omit the details and refer to Pottier [19]. We only summarizethat a type (tree) can be considered as a mapping from
+
+paths p to types (subterms). Pathsare sequences from the alphabet
+fd; r; f ; sg [FieldName. d and r denote the domain andrange, respectively, of a function type, while
+
+f and s denote the first and second comFinite Subtype Inference With Explicit Polymorphism 5
+
+\Gamma  = \Gamma 1;a !: t;\Gamma 2
+
+\Gamma  ` a !: t (SUBAX)
+
+\Gamma  ` t !: t (SUBREFL)
+
+\Gamma  ` t1 !: t2 \Gamma  ` t2 !: t3
+
+\Gamma  ` t1 !: t3 (SUBTRANS)
+
+\Gamma  ` t01 !: t1 \Gamma  ` t2 !: t02
+
+\Gamma  ` (t1 ! t2) !: (t01 ! t02) (SUBFUN)
+
+\Gamma  ` t1 !: t01 \Gamma  ` t2 !: t02
+
+\Gamma  ` (t1 \Lambda  t2) !: (t01 \Lambda  t02) (SUBPAIR)
+
+\Gamma  ` ti !: t0i for i = 1;::: ;n where m * n
+
+\Gamma  ` flm : tmg !: fln : t0ng (SUBREC)
+
+Fig. 2. Subtype Rules
+
+ponent types, respectively, of a product type. dom(t) = fp j t(p) is definedg. A type tis finite if
+
+dom(t) is finite, and infinite otherwise.
+
+3 Type Inference
+The type inference algorithm is provided in Fig. 3. It uses judgements of the formQ ;
+
+A ` e : t j Q 0; C. Q and Q 0 are quantifier prefixes, while C is a constraint set,described by:
+
+Q ::= 9a j 8a j 8a !: t j Q 1:Q 2
+
+C ::= fg j ft1 !: t2g j C1 [C2
+
+The quantifier prefix records "flexible" (existential) and "rigid" (universal) variablesintroduced during type inference, while the relative ordering records the scope of the
+
+type variables (existential a can be instantiated to a type containing universal b only ifb is quantified to the left of a in the quantifier prefix).
+
+The inputs to the algorithm are Q , A and e. The outputs are the inferred type t, aset of constraints
+
+C constraining instantiations of A and t, and an extension Q 0 of thequantifier prefix Q .
+
+We will need to reason about satisfying substitutions for constraints under a mixedprefix. We use the following technical device (introduced by Duggan [6], and extending
+the unification logic originally introduced by Miller [13]):
+Definition 1 (Constraint Logic With Substitutions). A term F of the constraint logicis a pair Q
+
+C where Q is a quantifier prefix, and where C is a set of constraints. Deriv-ability for the judgement form q
+
+j= \Gamma  ` F is defined by the following rules:
+
+\Gamma  ` C
+q j= \Gamma  ` C
+
+6 Dominic Duggan
+
+A(x) = 8am !: tm:t Q 0 = Q ;9am
+Q ;A ` x : t j Q 0; fai !: ti j i = 1;::: ;mg (VAR)
+
+Q ;9a;A;x : a ` e : t j Q 0; C
+Q ;A ` (lx:e) : (a ! t) j Q 0; C (ABS)
+
+Q ;A ` e1 : t1 j Q 1; C1 Q 1;A ` e2 : t2 j Q 2; C2
+Q ;A ` (e1 e2) : a j (Q 2;9a); C1 [C2 [ ft1 !: (t2 ! a)g (APP)
+
+Q ;A ` e1 : t1 j Q 1; C1 Q 1;A ` e2 : t2 j Q 2; C2
+
+Q ;A ` (e1;e2) : (t1 \Lambda  t2) j Q 2; C1 [C2 (PAIR)
+
+Q ;A ` e : t j Q 0; C
+Q ;A ` (fst e) : a j (Q 0;9a;9b); C [ ft !: (a \Lambda  b)g (FST)
+
+Q ;A ` e : t j Q 0; C
+Q ;A ` (snd e) : b j (Q 0;9a;9b); C [ ft !: (a \Lambda  b)g (SND)
+
+Q 0 = Q Q i\Gamma 1;A ` ei : ti j Q i; Ci for i = 1;::: ;n
+Q ;A ` fl1 = e1;::: ;ln = eng : fl1 : t1;::: ;ln : tng j Q n; C1 [ \Delta \Delta \Delta  [Cn (RECORD)
+
+Q ;A ` e : t j Q 0; C
+Q ;A ` e:l : a j (Q 0;9a); C [ ft !: fl : agg (SELECT)
+
+(Q ;8an !: tn);A ` e1 : t1 j Q 1; C1 Q 1;A;x : (8an !: tn:t) ` e2 : t2 j Q 2; C2
+
+Q ;A ` (let x : (8an !: tn:t) = e1 in e2) : t2 j Q 2; C1 [C2 [ ft1 !: tg (L
+
+ET)
+
+Fig. 3. Type Inference
+a =2 dom(q) [ dom(\Gamma ) q j= \Gamma ; a !: t ` F
+
+q j= \Gamma  ` (8a !: t:F )
+
+a 2 dom(q) FV (q(a)) ` dom(\Gamma ) q j= \Gamma  ` fq(a)=agF
+
+q j= \Gamma  ` (9a : c:F )
+
+Unification logic was originally introduced by Miller [13] in order to reason aboutthe correctness of unification under a mixed prefix. Miller used a complicated mechanism based on decomposing a substitution into the composition of a sequence of single-variable substitutions. Our construction takes a simpler approach, essentially applying
+the ideas of the Curry-Howard isomorphism to extend the unification logic to a typesystem for reasoning about the correctness of satisfying substitutions. In particular the
+third rule requires that, in the substitution for an existental variable a, this substitutiononly contains as free variables those variables that are universally quantified to the left
+of a.
+Definition 2 (Satisfiability). Given a quantifier prefix Q and constraint formula C. q
+satisfies Q and C if q j= fg ` Q C. Denote this by q j= Q C. Q and C are satisfiable if
+
+Finite Subtype Inference With Explicit Polymorphism 7
+there is some substitution q such that q j= Q C. Denote that Q and C are satisfiable by
+j= Q C.
+
+4 Containment and Entailment
+The first step in constraint-checking is to verify that there is a satisfying substitutionfor the accumulated constraints, ignoring finiteness and well-scoping in the satisfying
+substitution. We need to check that the constraints are consistent, and are entailed bythe hypothetical bounds on the universally quantified variables.
+
+Definition 3 (Entailment Algorithm). The containment and entailment algorithm is
+provided in Fig. 4. Define Q C
+
+\Lambda =)Q 0C0 to denote the repeated application of the algorithm to Q C until it reaches a fixed point Q 0C0. Let Q C #!: denote Q 0C0, the result ofapplying the algorithm to Q
+
+C.
+
+Rules (1)-(4) are the usual subtype closure, combining transitive closure with down-ward closure conditions, and check for containment in the original constraint set. The
+latter conditions must be satisfied for the original subtype constraints to be satisfied.
+
+The remaining transitions check for entailment of the accumulated constraints fromthe hypotheses. Rule (5) checks that an upper bound on a universal variable can be satisfied. Rules (6) and (7) check for compatibility of upper and lower bounds on existentialvariables. "Compatibility" means that we do not have incompatible non-variable bounds
+on variables, such as ((t1 \Lambda  t2) !: b); ((t01 ! t02) !: b) 2 C. We also need to check forcompatibility of universal variables with other types in lower and upper bounds, for
+example ((a \Lambda  t1) !: b); ((t0 \Lambda  t2) !: b) 2 C where a is universal (with upper bound t)and b existential.
+
+The predicates t u t0 and t t t0 are used to check for compatibility. They are gen-erated by Rules (6) and (7), and analyzed by Rules (8)-(17). Rules (15) and (16) are
+used to check compatibility of universal variables with non-variable types. For exam-ple, given:
+
+Q = Q 1:8a !: t:Q 2 and C ' fa !: b; t0 !: bg
+where b is existential and t0 non-variable, compability of the latter two constraints re-quires that
+
+(t !: b) and (t0 !: b) be compatible, as checked by Rule (15). For Rule (16),compatibility of
+
+(b !: a) and (b !: t0) requires that t !: t0. Rule (17) uses the defini-tion:
+
+Definition 4. Define Q ` a !: b if one of the following holds:
+
+1. a = b; or
+2. Q = Q 1:8a !: b:Q 2; or
+3. Q ` a !: g and Q ` g !: b for some g.
+
+Define Q ` a u b to be: Q ` a !: b or Q ` b !: a.
+
+8 Dominic Duggan
+
+Rule (5) and Rule (16) are noteworthy for the fact that they generate new subtypeconstraints, and this is the reason that the containment and entailment algorithms must
+be defined mutually recursively. Consider for example:
+
+8a !: (fx : intg \Lambda  fx : intg):9b:9g:fa !: (b \Lambda  g); b !: fx : intg; g !: fy : intgg
+Entailment generates the constraint:
+
+(fx : intg \Lambda  fx : intg) !: (b \Lambda  g)
+and containment generates the constraints:
+
+fx : intg !: b; fx : intg !: g; fx : intg !: fx : intg; fx : intg !: fy : intg
+and the last of these constraints violates containment.
+
+Q C =) Q (C [ f(t1 !: t2)g) if (t1 !: a);(a !: t2) 2 C (1)
+Q C =) Q (C [ f(t01 !: t1);(t2 !: t02)g) if ((t1 ! t2) !: (t01 ! t02)) 2 C (2)
+Q C =) Q (C [ f(t1 !: t
+
+01);(t2 !: t02)g) if ((t1 \Lambda  t2) !: (t01 \Lambda  t02)) 2 C (3)
+
+Q C =) Q (C [ f(ti !: t0i) j i = 1;::: ;ng) if (flm : tmg !: fln : t0ng) 2 C and m * n (4)
+
+Q C =) Q (C [ ft !: t0g) if Q = Q 18a !: tQ 2 and (a !: t0) 2 C; t0 =2 EV(Q ) (5)
+Q C =) Q (C [ ft u t0g) if (t !: b);(t0 !: b) 2 C; b 2 EV (Q ); t;t0 =2 EV(Q ) (6)
+Q C =) Q (C [ ft t t0g) if (b !: t);(b !: t0) 2 C; b 2 EV (Q ); t;t0 =2 EV(Q ) (7)
+
+Q C =) Q (C [ ft01 t t1;t2 u t02g) if ((t1 ! t2) u (t01 ! t02)) 2 C (8)
+Q C =) Q (C [ ft1 u t
+
+01;t2 u t02g) if ((t1 \Lambda  t2) u (t01 \Lambda  t02)) 2 C (9)
+
+Q C =) Q (C [ ft01 u t1;t2 t t02g) if ((t1 ! t2) t (t01 ! t02)) 2 C (10)
+Q C =) Q (C [ ft1 t t01;t2 t t02g) if ((t1 \Lambda  t2) t (t01 \Lambda  t02)) 2 C (11)
+Q C =) Q (C [ f(ti t t0j) j li = l0jg) if (flm : tmg t fln : t0ng) 2 C (12)
+
+Q C =) Q (C [ ft u t
+
+0g) if a 2 EV(Q ) and (a u t0);(t !: a) 2 C (13)
+
+Q C =) Q (C [ ft t t0g) if a 2 EV(Q ) and (a t t0);(a !: t) 2 C (14)
+Q C =) Q (C [ ft u t0g) if Q = Q 18a !: tQ 2 and (a u t0) 2 C; t0 =2 TyVar (15)
+Q C =) Q (C [ ft !: t0g) if Q = Q 18a !: tQ 2 and (a t t0) 2 C; t0 =2 TyVar (16)
+Q C =) Q (C [ ft u t0g) if (a u b) 2 C; (8a !: t);(8b !: t0) 2 Q ; and Q 6` a u b (17)
+
+Fig. 4. Entailment Algorithm
+
+To reason about correctness of the algorithm, we need to add the predicates t u t0and t
+
+t t0 to the constraint logic with substitutions.
+
+Finite Subtype Inference With Explicit Polymorphism 9
+Definition 5 (Constraint Logic with u and t). Extend the definition of constraint setsto include:
+
+C ::= : : : j ft u t0g j ft t t0g
+Extend the inference rules for the subtype logic in Fig. 2 (and therefore the constraintlogic rules in Def. 1) with:
+
+\Gamma  ` t !: t00 \Gamma  ` t0 !: t00
+
+\Gamma  ` t u t
+
+0 (SUBGLB)
+
+\Gamma  ` t00 !: t \Gamma  ` t00 !: t0
+
+\Gamma  ` t t t0 (SUBLUB)
+
+Lemma 6 (Termination). The algorithm in Def. 3 is guaranteed to terminate.
+
+PROOF: Clearly this requires a loop-check; we run the algorithm until it reaches a fixedpoint, taking care not to redo computations. Since all constraints contain subterms of
+
+the types in the original types, and type expressions have finite height and there are afinite number of type variables, this process is guaranteed to terminate.
+
+ut
+
+Lemma 7 (Soundness). Suppose Q C=)Q 0C0. Then q j= Q C if and only if q j= Q 0C0
+
+PROOF SKETCH: The "if" part is trivial. For the "only if" part, for Rule (5) for ex-ample, we need to show that if q
+
+j= Q (a !: t0) then q j= Q (t !: t0) (where q j= Q C).We verify this by induction on the height of t
+
+0, using the fact that uses of transitivity
+
+in the derivation of a !: q(t0) can be pushed to the leaves of the derivation tree. Anysuch derivation must then be a use of S
+
+UBAX (for a !: q(t)), and a subderivation forq
+(t) !: q(t0), followed by the use of transitivity. ut
+
+Lemma 8 (Containment Check). Given Q , C. Then Q C is not satisfiable if any of the
+following is contained in Q C #!:, but no rule of the entailment algorithm is applicable
+to that constraint:
+
+1. (t !: t0), (t u t0) or (t t t0) 2 C where t; t0 =2 TyVar
+2. (a !: b) 2 C where a; b 2 UV (Q ), and Q 6` a !: b; or (a u b) or (a t b) 2 C
+
+where a; b 2 UV (Q ), Q 6` a u b; or
+3. (t !: a), (a u t) or (a t t) 2 C where a 2 UV (Q ); t =2 TyVar; or
+4. (a !: t) 2 C where Q = Q 18aQ 2 and t =2 EV (Q ) [ fag.
+
+5 Finite Satisfiability
+The conditions not checked for by subtype closure are (a) finiteness of solutions and (b)scoping of type variables. We are now going to define another form of closure for an
+
+10 Dominic Duggan
+inferred constraint set, that is used to perform checks for these conditions. The detailsof scope checking are provided in the next section.
+
+The subtype closure does nothing with constraints of the form a !: (a \Lambda  a) (forexample). In systems of recursive constraints, such constraints are satisfied by solutions involving infinite trees. Since we only allow finite solutions, the existence of suchconstraints in the subtype closure should flag an error. The subtype relation itself is
+insufficient for forming this check, consider for example:
+
+a !: b; (a \Lambda  a) !: b
+We need to define a relation that is related to subtyping, but includes symmetry. Mitchell[15] and Lincoln and Mitchell [12] use a variant of the unification algorithm to check for
+finite satisfiability, reflecting the fact that we need to augment subtyping with symmetryto perform the check. However they only consider subtyping between atomic types.
+With subtyping based on record or object interface containment, this is not sufficient.Consider these examples and their corresponding satisfying substitutions:
+
+fx : ag !: b; a !: b q(a) = fg; q(b) = fg
+fx : ag !: b; a !: b; b !: fx : gg q(a) = fx : fgg; q(b) = fx : fgg; q(g) = fg
+
+b !: fx : ag; b !: a q(a) = fg; q(b) = fx : fgg
+
+fx : ag !: a q(a) = fg
+a !: fx : bg; (a \Lambda  a) !: b q(a) = fx : fg \Lambda  fgg; q(b) = fg \Lambda  fg
+
+On the other hand the constraint (a !: fx : ag) is not finitely satisfiable. Similarly theconstraint
+
+((fx : ag ! int) !: a) is not finitely satisfiable. These examples demon-strate that we need to give special treatment to circularities in the subtype constraints
+
+involving record types. We first consider the easier case of circularities not involvingrecord types. We define a subterm relationship based on satisfying solutions for the
+subtype constraints:
+Definition 9 (Match Closure). Given a quantifier prefix Q and constraint formula C.Define the
+
+match closure of Q and C, denoted Q C #M, to be the least binary relation Msuch that:
+
+1. if (t !: t0) 2 Q C #!:, then (t M! t0) 2 M;
+2. (t M! t) 2 M;
+3. if (t M! t0) 2 M then (t0 M! t) 2 M;
+4. if (t1 M! a); (a M! t2) 2 M, then (t1 M! t2) 2 M;
+5. if ((t1 ! t2) M! (t01 ! t02) 2 M, then (t1 M! t01); (t2 M! t02) 2 M;
+6. if ((t1 \Lambda  t2) M! (t01 \Lambda  t02)) 2 M then (t1 M! t01); (t2 M! t02) 2 M;
+
+It will be noted that the definition of match closure does not contain the followingrule for record types:
+
+7. if (flm : tmg M! fl0n : t0ng) 2 M, then (ti M! t0j) 2 M for all i; j such that li = l0j.
+
+Finite Subtype Inference With Explicit Polymorphism 11
+The reason for this should be clear, given the above discussion.
+Definition 10 (Rigid Dependency). Given Q and C, M = Q C #M. Define that a 2
+EV (Q ) is rigid dependent on t with path p, written Q C `R a p\Gamma ! t, if the path p doesnot involve record types and one of the following holds:
+
+1. (a M! t) 2 M and p = e; or
+2. (a M! t0) 2 M and p = p1p2 and t0(p1) = b, for some b, and Q C `R b p2\Gamma ! t.
+
+Define t ! t to be: there exists a sequence of ground types t0; : : :; tn, and
+fR1; : : :; Rng ` f!:; :?g, such that t = t1, t0 = tn+1, and tiRiti+1 for i = 1; : : :; n.
+
+Lemma 11. Q C `R a p\Gamma ! t if and only if for all q such that q j= Q C, p 2 dom(q) andq
+
+(a)(p) ! q(t).
+
+For reasoning about circularities involving record types, we need a stronger condi-tion on the occurrences of variables.
+
+Definition 12. A path p is positive if the number of d symbols in the path is zero oreven. The path is
+
+negative otherwise.
+
+Definition 13 (Type Dependency). Given Q and C. Define that a 2 EV (Q ) is type
+dependent on t with path p, written Q `T a p\Gamma ! t, if there is a sequence of triples:
+
+(a1; p1; t1); : : :; (an; pn; tn)
+where a = a1 and t = tn, and for i = 1; : : :; n either:
+
+1. (ai !: ti) 2 Q C #!: and pi is a positive path, or2.
+
+(ti !: ai) 2 Q C #!: and pi is a negative path,
+
+and furthermore ti(pi) = ai+1 for i = 1; : : :; n \Gamma  1, and p = p1 : : :pn.
+
+Lemma 14. Q C `T a p\Gamma ! t if and only if for all q such that q j= Q C, p 2 dom(q) andq
+
+(a)(p) !: q(t).
+
+Define Q C ` a p\Gamma ! t to be: Q C `R a p\Gamma ! t or Q C `T a p\Gamma ! t
+Lemma 15 (Occurs Check). If Q C ` a p\Gamma ! a where p 6= e, then there is no finite
+substitution q such that q j= Q C.
+
+Although our mini-language does not allow existential variables in the upper boundsof universal variables, this may be useful in some contexts [5]. If this is allowed, the
+
+occurs check needs to be strengthened. Extended rigid dependency is defined similarlyto rigid dependency, with the additional clause:
+
+3. (a M! b) 2 M, Q = Q 1:8b !: t0:Q 2 and p = p1p2 and t0(p1) = g for some g and
+
+Q C `R g p2\Gamma ! t.
+
+Consider for example 9a:8b !: (a \Lambda  a):9g:fa !: g; b !: gg. To see why finiteness can-not be checked before entailment, consider the following constraints:
+
+9b:8a !: (fx : bg ! int):9g:fa !: (fx : gg ! int); b !: (g \Lambda  g)g
+
+12 Dominic Duggan
+6 Scoping of Type Variables
+In this section we consider the checking of scoping of type variables in the accumulatedconstraints. Consider the following example:
+
+letmono f = lxb:
+
+let g : (8g:g ! g) = ly: (if true then x else y; y)
+in (if true then x else 3; g 3; g true)
+in f
+
+The inner conditional requires that x and y have a common upper bound. Since g, thetype of
+
+y, ranges over all possible types, this bound must be g, so b must be instantiableto g. But then
+
+g cannot be polymorphic in g. In type-checking, this error is caught bythe fact that b is outside the scope of g. "Scope" is formalized by the use of a quantifier
+
+prefix, where b is introduced to the left of g in the prefix.More precisely type inference builds the quantifier prefix and constraint set:
+
+9b:8g:9d:fb !: d; g !: dg
+Any satisfying substitution for these constraints must instantiate b to g, which is impos-sible since g is introduced after b in the quantifier prefix. This dependency is detected
+
+by the match dependency: QC ` b e\Gamma ! g.Now consider the example:
+
+let f : (8a:a ! a) = lx:
+
+letmono g = lyb:
+
+let h : (8g !: a:g ! g) = lz:
+
+(if true then y else z; z)
+in y
+in x
+in f
+
+Apparently there is another scope violation (between b and g in this example). Howeverg has upper bound a, and b is within the scope of a. Therefore type subsumption can be
+
+used to replace g as a lower bound with g, effectively moving its scope out so that moreexistential variables are included in its scope. More formally we have the quantified
+constraint set:
+
+8a:9b:8g !: a:fb !: d; g !: dg
+
+Since g occurs positively in a lower bound, we can weaken the second constraint:
+
+8a:9b:8g !: a:9d:fb !: d; a !: dg
+where this step is justified by the fact that g !: d is derivable from g !: a and a !: d.Note that this transformation is not possible if we replace the original constraint set
+
+with:
+
+8a:9b:8g !: a:9d:fb !: d; (g ! g) !: dg
+
+In this example, the negative occurrence of g in a lower bound prevents the above trans-formation.
+
+Finite Subtype Inference With Explicit Polymorphism 13
+For the case of unification under a mixed prefix, if an existential variable a maycontain a variable b in its instantiation, the scope of the variable b is "moved out" (if
+necessary) so that the instantiation of a does not violate its scoping. For example theconstraint set:
+
+9a:8g:9b:fb = a; b = gg
+is transformed to:
+
+9a:9b:8g:fb = a; b = gg
+
+At this point, the second constraint violates scoping since b's scope has moved out tothe scope of a.
+
+This movement of quantifiers cannot be done with subtyping and bounds on quan-tified type variables. Consider for example:
+
+9a:8g !: t:9b:fb !: a; b !: gg
+Then fg=b; t=ag is a satisfying substitution. This would not be a satisfying substitutionif the scope of b were moved out to that of a.
+
+Corollary 16 (Scope Check). Q C is not satisfiable if there exist a and b such that
+either:
+
+1. Q = Q 1:9a:Q 2:8b !: t:Q 3 (or Q = Q 1:9a:Q 2:8b:Q 3) and a is type dependent
+
+on b; or2. Q
+
+= Q 1:9a:Q 2:8b:Q 3 and a is rigid dependent on b.
+
+The verification relies on Lemma 11 and Lemma 14 from the previous section.There we considered "false circularities" due to existential type variables in record field
+
+types that could be omitted through record type subsumption. Here we consider "falsescope violations" due to universal type variables that can be omitted by subsuming them
+with their upper bounds.If the scope check does not fail, the subtype constraints are well scoped. The following examples illustrate the rationale for this. Consider the quantified constraint sets:
+
+9a:8d !: t:fd !: ag
+9a:8d !: t:9b:9g:fb !: a; b !: g; g !: dg
+9a:8d !: t:9b:9g:fb !: a; b !: g; g !: d ! t0g
+All of these are examples where Q C `R a e\Gamma ! d, but where the dependency is not atype dependency. These examples are represented graphically as:
+
+d d ! t0
+a g
+
+OO
+
+a g
+
+OO
+
+a
+
+d
+
+OO
+
+b
+^^!!!!
+
+!!!!
+
+@@\Delta \Delta \Delta 
+\Delta \Delta \Delta \Delta 
+\Delta  b
+
+bbDDDDD
+
+DDDDD
+
+@@\Delta \Delta \Delta 
+\Delta \Delta \Delta \Delta 
+\Delta 
+
+14 Dominic Duggan
+The first of these corresponds to a positive occurrence of d in a lower bound for a. Thisconstraint can be instantiated by instantiating a to t. This is not possible if d occurs
+positively in an upper bound of a. The second example corresponds to Q C ` a e\Gamma !d, where the dependency path is through a path of subtype and supertype edges. The
+positive occurrence of d in upper bounds for g and b requires that these variables beinstantiated to d in any satisfying substitution. However because the dependency of a
+on d relies on the lower bound constraint (b !: a), it is possible to instantiate a to t.The third example demonstrates a negative occurrence of d in the upper bound for g and
+b. In this case it is possible to instantiate all of a, b and g to t ! t0.
+
+7 Correctness of Type Inference
+We finally consider the correctness of the type inference algorithm.
+Lemma 17. If Q C does not violate the entailment check, occurs check or scope check,
+then j= Q C.
+
+PROOF SKETCH: The proof is constructive, instantiating existential variables to theirleast upper bounds. Where a variable a has a dependency on a universal variable b to
+
+the right of it in the quantifier prefix, then the instantiation of a includes some upperbound of b that is in scope. This is possible because the dependency is not hard.
+
+ut
+
+Lemma 18. Given an execution of the type inference algorithm, and an application ofL
+
+ET in this execution that introduces universal variables fag, with outputs Q local and
+Clocal, while type-checking the definition in a let. Let Q global and Cglobal be the globaloutputs of the algorithm. Then for any b
+
+2 EV (Q global), a 2 fag, we have Q localClocal `
+
+b p\Gamma ! a if and only if Q globalCglobal ` b p\Gamma ! a.
+
+PROOF: Suppose Q localClocal 6` b\Gamma !a and Q globalCglobal ` b p\Gamma ! a. This must bedue to the addition of a subtype constraint that relates b to a or to some g such that
+Clocal ` g p\Gamma ! a. The former case cannot happen because fag are not free in the typeenvironment outside the scope of the
+
+let. In the latter case, g must be free in the environment outside the scope of the let. But since Q localClocal ` g p\Gamma ! a, g must alsobe free in the environment while type-checking the
+
+let. Therefore g must be to the leftof a in the quantifier prefix (since g was added to the environent before the
+
+let wastype-checked), which violates the scope check.
+
+ut
+
+We verify the following by induction on the execution of the type inference algo-rithm, using Lemma 17 and Lemma 18.
+
+Theorem 19. (SOUNDNESS OF TYPE INFERENCE) Given expression e, type environment A, and quantifier prefix Q . Suppose Q ; A ` e : t j Q 0; C. Let q be the satisfying
+substitution computed in the proof of Lemma 17. Let \Gamma  = fa !: t j (8a !: t) 2 Q g.
+Then \Gamma ; q(A) ` e : q(t).
+
+Finite Subtype Inference With Explicit Polymorphism 15
+Theorem 20. (COMPLETENESS OF TYPE INFERENCE) Given dom(q) ` EV (Q ). Given\Gamma ; q
+
+(A) ` e : t, and Q ; A ` e : t0 j Q 0; C. where dom(q) ` FV (A). Then there exists q0,q
+00 such that q0 = q00 ffi q and q0 j= (Q 0C) and \Gamma  ` q0(t0) !: t.
+
+8 Conclusions
+Finite subtype inference occupies a middle ground between Hindley-Milner type in-ference (as in ML) and subtype inference with recursively constrained types. We have
+presented algorithms for finite subtype inference, including checking for entailment ofinferred types against explicitly declared polymorphic types. This resolves for finite
+types a problem that is still open for recursively constrained types. Some motivationfor this work, particularly for finite types and explicit polymorphism, is in providing
+subtype inference for first-class container objects with polymorphic methods.
+
+Flanagan and Felleisen give algorithms for checking entailment of recursive set con-straints arising from data-flow analysis [8]. Although superficially similar to constraint
+
+systems for object-oriented languages, there are in fact subtle but significant differencesin the underlying languages, and it is not clear if their techniques can be adapted to solve
+the problem of entailment for recursive types.
+
+Bourdoncle and Merz [4] provide a type-checking algorithm for an ML dialectwhere subtyping is declared between class types. Their work is more related to earlier
+
+work on finite atomic subtyping than the current work, and they do not have a structuralnotion of subtyping.
+
+The other relevant work is that of Pierce and Turner [18] on local type inference.They work with an impredicative type system, and allow type annotations to be omitted where it is possible to infer the type from an "upper bound" type constraint. Thework presented here may be seen as a more flexible approach, where type annotations
+are only required for polymorphic function definitions. Pierce and Turner require thatit be possible (using meets and joins) to compute the specific type of every expression.
+Where a type variable occurs in invariant position (for example in the element type of amutable reference cell), their algorithm may fail to determine a type. Pottier reports that
+type variables in invariant position are reasonably common in practical subtype infer-ence. Although we have not elaborated upon it here, impredicativity can be incorporated
+using objects with polymorphic methods [5].Acknowledgements.
+
+Thanks to Scott Smith and Benjamin Pierce for helpful discus-sions.
+
+References
+
+1. Martin Abadi and Luca Cardelli. A Theory of Objects. Springer-Verlag, July 1996.
+2. A. Aiken and E. Wimmers. Solving systems of set constraints. In Proceedings of IEEE
+
+Symposium on Logic in Computer Science, pages 329-340, June 1992.
+3. A. Aiken and E. Wimmers. Type inclusion constraints and type inference. In Proceedings
+
+of ACM Symposium on Functional Programming and Computer Architecture, pages 31-41,Copenhagen, Denmark, June 1993.
+
+16 Dominic Duggan
+
+4. Francois Bourdoncle and Stephan Merz. Type checking higher-order polymorphic multimethods. In Proceedings of ACM Symposium on Principles of Programming Languages,1997.
+
+5. Dominic Duggan. Object type constructors. In preparation. A preliminary version appeared
+
+in the Workshop on Foundations of Object-Oriented Languages, New Brunswick, New Jer-sey, July 1996.
+
+6. Dominic Duggan. Unification with extended patterns. Theoretical Computer Science, 1997.
+
+To appear.7. Jonathan Eifrig, Scott Smith, and V. Trifonov. Type inference for recursively constrained
+
+types and its application to oop. In Proceedings of the Conference on Mathematical Foundations of Programming Semantics, Lecture Notes in Computer Science. Springer-Verlag,1995. To appear.
+
+8. Cormac Flanagan and Matthias Felleisen. Componential set-based analysis. In Proceedings of ACM SIGPLAN Conference on Programming Language Design and Implementation,1997.
+
+9. You-Chin Fuh and Prateek Mishra. Type inference with subtypes. Theoretical Computer
+
+Science, 73:155-175, 1990.10. Mark Jones. First-class polymorphism with type inference. In
+
+Proceedings of ACM Symposium on Principles of Programming Languages. ACM Press, January 1997.
+11. Xavier Leroy and Michel Mauny. Dynamics in ML. Journal of Functional Programming,3(4):431-463, 1993.
+
+12. Patrick Lincoln and John C. Mitchell. Algorithmic aspects of type inference with subtypes.
+
+In Proceedings of ACM Symposium on Principles of Programming Languages, pages 293-304. ACM Press, 1992.
+
+13. Dale Miller. Unification under a mixed prefix. Journal of Symbolic Computation, 14:321-
+
+358, 1992.14. Robin Milner. A theory of type polymorphism in programming.
+
+Journal of Computer and
+Systems Sciences, 17:343-378, 1978.
+15. John C. Mitchell. Type inference with simple subtypes. Journal of Functional Programming,1(3):245-286, July 1991.
+
+16. Martin Odersky and Konstantin L"aufer. Putting type annotations to work. In Proceedings of
+
+ACM Symposium on Principles of Programming Languages, 1996.17. Jens Palsberg. Efficient inference of object types. In
+
+Proceedings of IEEE Symposium on
+Logic in Computer Science, pages 186-195, Paris, France, July 1994. IEEE.
+18. Benjamin Pierce and David Turner. Local type inference. In Proceedings of ACM Symposium
+
+on Principles of Programming Languages, San Diego, California, January 1998. ACM Press.
+19. Francois Pottier. Simplifying subtyping constraints. In Proceedings of ACM International
+
+Conferenceon Functional Programming, Philadelpha, Pennsylvania, May 1996. ACM Press.20. Didier R'emy. Programming objects with ML-ART: An extension to ml with abstract and
+
+record types. In Masami Hagiya and John C. Mitchell, editors, International Symposium
+on Theoretical Aspects of Computer Software, pages 321-346, Sendai, Japan, April 1994.Springer-Verlag.
+
+21. Marvin Solomon. Type definitions with parameters. In Proceedings of ACM Symposium on
+
+Principles of Programming Languages, pages 31-38. ACM Press, 1978.22. Valery Trifonov and Scott Smith. Subtyping constrained types. In
+
+Static Analysis Symposium, number 1145 in lncs, pages 349-365, 1996.

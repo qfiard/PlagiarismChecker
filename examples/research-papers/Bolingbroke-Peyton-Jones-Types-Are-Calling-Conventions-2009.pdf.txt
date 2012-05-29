@@ -1,0 +1,1476 @@
+
+
+Types Are Calling Conventions
+Maximilian C. Bolingbroke
+
+University of Cambridge
+
+mb566@cam.ac.uk
+
+Simon L. Peyton Jones
+
+Microsoft Research
+simonpj@microsoft.com
+
+Abstract
+It is common for compilers to derive the calling convention of afunction from its type. Doing so is simple and modular but misses
+
+many optimisation opportunities, particularly in lazy, higher-orderfunctional languages with extensive use of currying. We restore the
+lost opportunities by defining Strict Core, a new intermediate lan-guage whose type system makes the missing distinctions: laziness
+is explicit, and functions take multiple arguments and return multi-ple results.
+
+Categories and Subject Descriptors D.3.1 [Programming Lan-guages]: Formal Definitions and Theory - Semantics; D.3.2 [Programming Languages]: Language Classifications - Applicative(functional) languages; D.3.4 [Programming Languages]: Processors - Optimization
+General Terms Languages, Performance
+
+1. Introduction
+In the implementation of a lazy functional programming language,imagine that you are given the following function:
+
+f :: Int ! Bool ! (Int, Bool)
+How would you go about actually executing an application of f totwo arguments? There are many factors to consider:
+
+* How many arguments are given to the function at once? One ata time, as currying would suggest? As many are as available at
+
+the application site? Some other answer?*
+How does the function receive its arguments? In registers? Onthe stack? Bundled up on the heap somewhere?
+
+* Since this is a lazy language, the arguments should be evaluatedlazily. How is this achieved? If
+
+f is strict in its first argument,can we do something a bit more efficient by adjusting
+
+f and itscallers?
+
+* How are the results returned to the caller? As a pointer to a
+
+heap-allocated pair? Or in some other way?
+
+The answers to these questions (and others) are collectively calledthe calling convention of the function
+
+f . The calling convention ofa function is typically determined by the function's type signature.
+
+This suffices for a largely-first-order language like C, but it imposes
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+Haskell'09, September 3, 2009, Edinburgh, Scotland, UK.Copyright cfl 2009 ACM 978-1-60558-508-6/09/09.. . $5.00
+
+unacceptable performance penalties for a language like Haskell,because of the pervasive use of higher-order functions, currying,
+polymorphism, and laziness. Fast function calls are particularlyimportant in a functional programming language, so compilers for
+these languages - such as the Glasgow Haskell Compiler (GHC) -typically use a mixture of ad hoc strategies to make function calls
+efficient.In this paper we take a more systematic approach. We outline
+a new intermediate language for a compiler for a purely functionalprogramming language, that is designed to encode the most important aspects of a function's calling convention directly in the typesystem of a concise lambda calculus with a simple operational semantics.
+
+* We present Strict Core, a typed intermediate language whose
+
+types are rich enough to describe all the calling conventionsthat our experience with GHC has convinced us are valuable
+
+(Section 3). For example, Strict Core supports uncurried func-tions symmetrically, with both multiple arguments and multiple
+results.*
+We show how to translate a lazy functional language likeHaskell into Strict Core (Section 4). The source language,
+
+which we call FH, contains all the features that we are inter-ested in compiling well - laziness, parametric polymorphism,
+higher-order functions and so on.*
+We show that the properties captured by the intermediate lan-guage expose a wealth of opportunities for program optimization by discussing four of them - definition-site and use-sitearity raising (Section 6.1 and Section 6.2), thunk speculation
+(Section 5.5) and deep unboxing (Section 5.6). These optimi-sations were awkward or simply inaccessible in GHC's earlier
+Core intermediate language.
+Although our initial context is that of lazy functional programminglanguages, Strict Core is a call-by-value language and should also
+be suitable for use in compiling a strict, pure, language such as Tim-ber [1], or a hybrid language which makes use of both evaluation
+strategies.No single part of our design is new, and we discuss related work
+in Section 7. However, the pieces fit together very nicely. For exam-ple: the symmetry between arguments and results (Section 3.1); the
+use of n-ary functions to get thunks "for free", including so-called"multi-thunks" (Section 3.4); and the natural expression of algorithms and data structures with mixed strict/lazy behaviour (Sec-tion 3.5).
+
+2. The challenge we address
+In GHC today, type information alone is not enough to get a defini-tive specification of a function's calling convention. The next few
+
+sections discuss some examples of what we lose by working with
+
+the imprecise, conservative calling convention implied by the typesystem as it stands.
+2.1 Strict arguments
+Consider the following function:
+
+f :: Bool ! Int
+f x = case x of True ! . . . ; False ! . . .
+
+This function is certainly strict in its argument x . GHC usesthis information to generate more efficient code for calls to
+
+f ,using call-by-value to avoid allocating a thunk for the argument.
+
+However, when generating the code for the definition of f , can wereally assume that the argument has already been evaluated, and
+hence omit instructions that checks for evaluated-ness? Well, no.For example, consider the call
+
+map f [fibonacci 10, 1234]
+Since map is used with both strict and lazy functions, map will notuse call-by-value when calling
+
+f . So in GHC today, f is conserva-tive, and always tests its argument for evaluated-ness even though
+
+in most calls the answer is `yes'.An obvious alternative would be to treat first-order calls (where
+the call site can "see" the definition of f , and you can statically seethat your use-site has as at least as many arguments as the definition
+site demands) specially, and generate a wrapper for higher-ordercalls that does the argument evaluation. That would work, but it is
+fragile. For example, the wrapper approach to a map call might dosomething like this:
+
+map (*x . case x of y ! f y) [. . .]
+Here, the case expression evaluates x before passing it to f ,to satisfy
+
+f 's invariant that its argument is always evaluated1.But, alas, one of GHC's optimising transformations is to rewrite
+
+case x of y ! e to e[x /y], if e is strict in x . This transfor-mation would break
+
+f 's invariant, resulting in utterly wrong be-haviour or even a segmentation fault - for example, if it lead to
+
+erroneously treating part of an unevaluated value as a pointer. GHChas a strongly-typed intermediate language that is supposed to be
+immune to segmentation faults, so this fragility is unacceptable.That is why GHC always makes a conservative assumption about
+evaluated-ness.The generation of spurious evaluated-ness checks represents an
+obvious lost opportunity for the so-called "dictionary" argumentsthat arise from desugaring the type-class constraints in Haskell.
+These are constructed by the compiler so as to be non-bottoming,and hence may always be passed by value regardless of how a
+function uses them. Can we avoid generated evaluated-ness checksfor these, without the use of any ad-hocery?
+
+2.2 Multiple arguments
+Consider these two functions:
+
+f x y = x + y
+g x = let z = factorial 10 in *y ! x + y + z
+
+They have the same type (Int ! Int ! Int), but we evaluateapplications of them quite differently -
+
+g can only deal with beingapplied to one argument, after which it returns a function closure,
+
+whereas f can and should be applied to two arguments if possible.GHC currently discovers this arity difference between the two
+functions statically (for first-order calls) or dynamically (for higher-order calls). However, the former requires an apparently-modest but
+
+1 In Haskell, a case expression with a variable pattern is lazy, but in GHC's
+current compiler intermediate language it is strict, and that is the semanticswe assume here.
+
+Shorthand Expansion
+
+xn , hx1, . . . , xni (n ? 0)
+
+x , hx1, . . . , xni (n ? 0)
+x , hxi Singleton
+x, y , hx1, . . . , xn, y1, . . . , ymi Concatenation
+
+Figure 1: Notation for sequences
+
+insidiously-pervasive propagation of ad-hoc arity information; andthe latter imposes a performance penalty [2].
+
+For the higher-order case, consider the well-known list-combiningcombinator
+
+zipWith, which we might write like this:
+
+zipWith = *f :: (a ! b ! c). *xs :: List a. *ys :: List b.
+
+case xs of
+
+Nil ! Nil
+(Cons x xs0) !
+case ys of
+
+Nil ! Nil
+(Cons y ys0) ! Cons (f x y) (zipWith f xs0 ys0)
+
+The functional argument f is always applied to two arguments,and it seems a shame that we cannot somehow communicate that
+
+information to the functions that are actually given to zipWithso that they might be compiled with a less pessimistic calling
+convention.
+2.3 Optionally-strict source languages
+Leaving the issue of compilation aside, Haskell's source-level typesystem is not expressive enough to encode an important class of
+
+invariants about how far an expression has been evaluated. Forexample, you might like to write a function that produces a list
+of certainly-evaluated Ints, which we might write as [!Int ]. We donot attempt to solve the issues of how to expose this functionality
+to the user in this paper, but we make a first step along this road bydescribing an intermediate language which is able to express such
+types.
+2.4 Multiple results
+In a purely functional language like Haskell, there is no directanalogue of a reference parameter, such as you would have in
+
+an imperative language like C++. This means that if a functionwishes to return multiple results it has to encapsulate them in a
+data structure of some kind, such as a tuple:
+
+splitList :: [Int ] ! (Int, [Int ])
+splitList xs = case xs of (y : ys) ! (y, ys)
+
+Unfortunately, creating a tuple means that you need to allocatea blob of memory on the heap - and this can be a real performance
+
+drag, especially when functions returning multiple results occur intight loops.
+
+How can we compile functions which - like this one - returnmultiple results, efficiently?
+
+3. Strict Core
+We are now in a position to discuss the details of our proposedcompiler intermediate language, which we call Strict Core
+
+ANF2.Strict Core
+ANF makes extensive use of sequences of variables,types, values, and terms, so we pause to establish our notation
+
+for sequences. We use angle brackets hx1, x2, . . . , xni to denote
+2 ANF stands for A-normal form, which will be explained further in Section 3.6
+
+a possibly-empty sequence of n elements. We often abbreviatesuch a sequence as
+
+xn or, where n is unimportant, as x. When noambiguity arises we abbreviate the singleton sequence h
+
+xi to just
+x. All this notation is summarised in Figure 1.We also adopt the "variable convention" (that all names are
+
+unique) throughout this paper, and assume that whenever the en-vironment is extended, the name added must not already occur in
+the environment - ff-conversion can be used as usual to get aroundthis restriction where necessary.
+
+3.1 Syntax of Strict CoreANF
+Strict CoreANF is a higher-order, explicitly-typed, purely-functional,call-by-value language. In spirit it is similar to System F, but it is
+
+slightly more elaborate so that its types can express a richer varietyof calling conventions. The key difference from an ordinary typed
+lambda calculus, is this:
+
+A function may take multiple arguments simultaneously,and (symmetrically) return multiple results.
+
+The syntax of types o/, shown in Figure 2, embodies this idea:a function type takes the form
+
+b ! o/, where b is a sequenceof binders (describing the arguments of the function), and
+
+o/ is asequence of types (describing its results). Here are three example
+
+function types:
+
+f1 : Int ! Int
+
+: h :Inti ! hInti
+
+f2 : hff:?, ffi ! ff
+
+: hff:?, :ffi ! hffi
+
+f3 : hff:?, Int, ffi ! hff, Inti
+
+: hff:?, :Int, :ffi ! hff, Inti
+
+f4 : ff:? ! Int ! ff ! hff, Inti
+
+: hff:?i ! hh :Inti ! hh :ffi ! hff, Intiii
+
+In each case, the first line uses simple syntactic abbreviations,which are expanded in the subsequent line. The first,
+
+f1 , takesone argument and returns one result3. The second,
+f2 , shows apolymorphic function: Strict Core uses the notation of dependent
+
+products, in which a single construct (here b ! o/) subsumesboth 8 and function arrow. However Strict Core is not dependently
+typed, so that types cannot depend on terms: for example, in thetype h
+
+x:Inti ! ho/i, the result type o/ cannot mention x. For thisreason, we always write value binders in types as underscores " ",
+
+and usually omit them altogether, writing hInti ! ho/i instead.The next example,
+
+f3 , illustrates a polymorphic function thattakes a type argument and two value arguments, and returns two
+
+results. Finally, f4 gives a curried version of the same function.Admittedly, this uncurried notation is more complicated than the
+unary notation of conventional System F, in which all functions arecurried. The extra complexity is crucial because, as we will see in
+Section 3.3, it allows us to express directly that a function takesseveral arguments simultaneously, and returns multiple results.
+
+The syntax of terms (also shown in Figure 2) is driven by thesame imperatives. For example, Strict Core
+
+ANF has n-ary applica-tion a g; and a function may return multiple results a. A possiblyrecursive collection of heap values may be allocated with valrec,where a heap value is just a lambda or constructor application. Finally, evaluation is performed by let; since the term on the right-hand side may return multiple values, the let may bind multiple
+values. Here, for example, is a possible definition of f3 above:
+
+f3 = *hff :?, x :Int, y :ffi. hy, x i
+In support of the multi-value idea, terms are segregated intothree syntactically distinct classes: atoms
+
+a, heap values v, and
+
+3 Recall Figure 1, which abbreviates a singleton sequence hInti to Int
+
+Variables x, y, z
+Type Variables ff, fi
+Kinds
+
+^ ::= ? Kind of constructed types|
+
+^ ! ^ Kind of type constructors
+
+Binders
+
+b ::= x:o/ Value binding|
+
+ff:^ Type binding
+
+Types
+
+o/, AE, oe ::= T Type constructors|
+
+ff Type variable references|
+
+b ! o/ Function types|
+o/ AE Type application
+
+Atoms
+
+a ::= x Term variable references|
+
+` Literals
+
+Atoms In Arguments
+
+g ::= a Value arguments|
+
+o/ Type arguments
+
+Multi-value Terms
+
+e ::= a Return multiple values| let
+
+x:o/ = e in e Evaluation| valrec
+
+x:o/ = v in e Allocation|
+a g Application|
+case a of p ! e Branch on values
+
+Heap Allocated Values
+
+v ::= *b. e Closures|
+
+C o/, a Constructed data
+
+Patterns
+
+p ::= Default case|
+
+` Matches exact literal value|
+C x :o/ Matches data constructor
+
+Data Types
+
+d ::= data T ff:^ = c | . . . | c Data declarations
+
+c ::= C o/ Data constructors
+
+Programs d, e
+Typing Environments
+
+\Gamma  ::= ffl Empty environment|
+
+\Gamma , x :o/ Value binding|
+\Gamma , ff :^ Type binding|
+
+\Gamma , C:b ! hT ffi Data constructor binding|
+\Gamma , T:^ Type constructor binding
+
+Syntactic sugar Shorthand Expansion
+
+Value binders o/ , :o/
+Thunk types {o/1, . . . , o/n} , hi ! ho/1, . . . , o/ni
+Thunk terms {e} , * hi . e
+
+Figure 2: Syntax of Strict CoreANF
+
+\Gamma  `^ o/ : ^
+T:^ 2 \Gamma 
+\Gamma  `^ T : ^ TYCONDATA
+
+B(T) = ^
+\Gamma  `^ T : ^ TYCONPRIM
+
+ff:^ 2 \Gamma 
+\Gamma  `^ ff : ^ TYVAR
+
+\Gamma  ` b : \Gamma 0 8i.\Gamma 0 `^ o/i : ?
+
+\Gamma  `^ b ! o/ : ? TYFUN
+\Gamma  `^ o/ : ^1 ! ^2 \Gamma  `^ AE : ^1
+
+\Gamma  `^ o/ AE : ^2 TYCONAPP
+
+Figure 3: Kinding rules for Strict CoreANF
+
+multi-value terms e. An atom a is a trivial term - a literal, variablereference, or (in an argument position) a type. A heap value
+
+v isa heap-allocated constructor application or lambda term. Neither
+
+atoms nor heap values require evaluation. The third class of termsis much more interesting: a multi-value term (
+
+e) is a term thateither diverges, or evaluates to several (zero, one, or more) values
+
+simultaneously.
+3.2 Static semantics of Strict CoreANF
+The static semantics of Strict CoreANF is given in Figure 3, Figure 4and Figure 5. Despite its ineluctable volume, it should present few
+
+surprises. The term judgement \Gamma  ` e : o/ types a multi-valued term
+e, giving it a multi-type o/. There are similar judgements for atoms
+a, and values v, except that they possess types (not multi-types). Animportant invariant of Strict Core
+
+ANF is this: variables and valueshave types o/, not multi-types o/. In particular, the environment \Gamma 
+
+maps each variable to a type o/ (not a multi-type).The only other unusual feature is the tiresome auxiliary judgement \Gamma  `app b ! o/ @ g : AE, shown in Figure 5, which computes
+the result type AE that results from applying a function of type b ! o/to arguments
+
+g.The last two pieces of notation used in the type rules are for
+
+introducing primitives and are as follows:
+
+L Maps literals to their built-in types
+B Maps built-in type constructors to their kinds - the do-main must contain at least all of the type constructors
+
+returned by L
+3.3 Operational semantics of Strict CoreANF
+Strict CoreANF is designed to have a direct operational interpreta-tion, which is manifested in its small-step operational semantics,
+
+given in Figure 7. Each small step moves from one configurationto another. A configuration is given by h
+
+H; e; \Sigma i, where H repre-sents the heap,
+e is the term under evaluation, and \Sigma  represents thestack - the syntax of stacks and heaps is given in Figure 6.
+
+We denote the fact that a heap H contains a mapping from x toa heap value
+
+v by H[x 7! v]. This stands in contrast to a patternsuch as
+H, x 7! v, where we intend that H does not include themapping for
+
+xThe syntax of Strict Core is carefully designed so that there is a
+
+1-1 correspondence between syntactic forms and operational rules:
+
+* Rule EVAL begins evaluation of a multi-valued term e1, pushingonto the stack the frame let
+
+x :o/ = * in e2. Although it is a purelanguage, Strict Core
+ANF uses call-by-value and hence evaluatese
+1 before e2. If you want to delay evaluation of e1, use a thunk(Section 3.4).
+
+* Dually, rule RET returns a multiple value to the let frame, bind-ing the
+
+x to the (atomic) returned values a. In this latter rule, thesimultaneous substitution models the idea that
+
+e1 returns mul-tiple values in registers to its caller. The static semantics (Sec\Gamma  `a a : o/
+x:o/ 2 \Gamma 
+\Gamma  `a x : o/ VAR
+
+L(`) = o/
+\Gamma  `a ` : o/ LIT
+
+\Gamma  ` e : o/8
+i.\Gamma  `a ai : o/i
+
+\Gamma  ` a : o/ MULTI
+
+\Gamma  ` e1 : o/ \Gamma , x:o/ ` e2 : oe
+
+\Gamma  ` let x:o/ = e1 in e2 : oe LET8
+
+j.\Gamma , x:o/ `v vj : o/j \Gamma , x :o/ ` e2 : oe
+
+\Gamma  ` valrec x :o/ = v in e2 : oe VALREC
+
+\Gamma  `a a : b ! o/ \Gamma  `app b ! o/ @ g : AE
+
+\Gamma  ` a g : AE APP
+\Gamma  `a a : o/scrut 8i.\Gamma  `alt pi ! ei : o/scrut ) o/
+
+\Gamma  ` case a of p ! e : o/ CASE
+
+\Gamma  `v v : o/
+\Gamma  ` b : \Gamma 0 \Gamma 0 ` e : o/
+
+\Gamma  `v *b.e : b ! o/ LAM
+
+C:b ! hT ffi 2 \Gamma 
+\Gamma  `app b ! hT ffi @ o/, a : hAEi
+
+\Gamma  `v C o/, a : AE DATA
+
+\Gamma  `alt p ! e : o/scrut ) o/
+
+\Gamma  ` e : o/
+\Gamma  `alt ! e : o/scrut ) o/ DEFALT
+
+L(`) = o/scrut \Gamma  ` e : o/
+\Gamma  `alt ` ! e : o/scrut ) o/ LITALT
+
+\Gamma , x :o/ `v C oe, x : hT oei
+
+\Gamma , x :o/ ` e : o/
+
+\Gamma  `alt C x:o/ ! e : T oe ) o/ CONALT
+
+\Gamma  ` d : \Gamma 
+\Gamma 0 = \Gamma , T:^1 ! . . . ! ^m ! ?8
+
+i.\Gamma i-1 ` ci : T ff :^m in \Gamma i
+
+\Gamma  ` data T ff:^m = c1 | . . . | cn : \Gamma n DATADECL
+
+\Gamma  ` c : T ff :^ in \Gamma 8
+i.\Gamma  `^ o/i : ?
+\Gamma  ` C o/ : T ff:^ in (\Gamma , C:ff :^, o/ ! hT ffi) DATACON
+
+` d, e : o/
+\Gamma 0 = ffl 8i.\Gamma i-1 ` di : \Gamma i \Gamma n ` e : o/`
+
+dn, e : o/ PROGRAM
+
+Figure 4: Typing rules for Strict CoreANF
+
+tion 3.2) guarantees that the number of returned values exactlymatches the number of binders.
+
+EVAL hH; let x:o/ = e1 in e2; \Sigma i  hH; e1; let x:o/ = * in e2. \Sigma i
+RET hH; a; let x:o/ = * in e2. \Sigma i  DH; e2[a/x]; \Sigma E
+
+ALLOC hH; valrec x:o/ = v in e; \Sigma i  DH, y 7! v[y/x]; e[y/x]; \Sigma E y 62 dom(H)
+BETA DH[x 7! *bn. e]; x an; \Sigma E  DH; e[a/b
+
+n]; \Sigma E (n > 0)
+
+ENTER hH, x 7! * hi . e; x hi ; \Sigma i  hH, x 7! ; e; update x. \Sigma i
+UPDATE hH; a; update x. \Sigma i  hH[x 7! IND a]; a; \Sigma i
+IND hH[x 7! IND a]; x hi ; \Sigma i  hH; a; \Sigma i
+CASE-LIT .H; case ` of . . . , ` ! e, . . .; \Sigma ,  hH; e; \Sigma i
+CASE-CON DH[x 7! C o/, an]; case x of . . . , C bn ! e, . . .; \Sigma E  DH; e[a/b
+
+n]; \Sigma E
+
+CASE-DEF hH; case a of . . . , ! e, . . .; \Sigma i  hH; e; \Sigma i If no other match
+
+Figure 7: Operational semantics of Strict CoreANF
+
+\Gamma  ` b : \Gamma 
+\Gamma  ` hi : \Gamma  BNDRSEMPTY
+
+\Gamma , ff:^ ` b : \Gamma 0
+\Gamma  ` ff:^, b : \Gamma 0 BNDRSTY
+
+\Gamma  `^ o/ : ? \Gamma , x:o/ ` b : \Gamma 0
+
+\Gamma  ` x:o/, b : \Gamma 0 BNDRSVAL
+
+\Gamma  `app b ! o/ @ g : AE
+\Gamma  `app hi ! o/ @ hi : o/ APPEMPTY
+\Gamma  `a a : oe \Gamma  `app b ! o/ @ g : AE
+
+\Gamma  `app ( :oe, b) ! o/ @ a, g : AE APPVAL
+\Gamma  `^ oe : ^ \Gamma  `app `b ! o/' [oe/ff] @ g : AE
+
+\Gamma  `app (ff:^, b) ! o/ @ oe, g : AE APPTY
+
+Figure 5: Typing rules dealing with multiple abstraction and appli-cation
+
+Heap values h ::= *b. e Abstraction|
+
+C o/, a Constructor|
+IND a Indirection|  Black hole
+
+Heaps H ::= ffl | H, x 7! h
+Stacks \Sigma  ::= ffl| update
+
+x. \Sigma | let
+x:o/ = * in e. \Sigma 
+
+Figure 6: Syntax for operational semantics of Strict CoreANF
+
+* Rule ALLOC performs heap allocation, by allocating one ormore heap values, each of which may point to the others. We
+
+model the heap address of each value by a fresh variable y thatis not already used in the heap, and freshen both the
+
+v and e toreflect this renaming.
+
+* Rule BETA performs fi-reduction, by simultaneously substitut-ing for all the binders in one step. This simultaneous substitution models the idea of calling a function passing several ar-guments in registers. The static semantics guarantees that the
+
+number of arguments at the call site exactly matches what thefunction is expecting.
+Rules CASE-LIT, CASE-CON, and CASE-DEF deal with patternmatching (see Section 3.5); while
+
+ENTER, UPDATE, and IND dealwith thunks (Section 3.4)
+
+3.4 Thunks
+Because Strict CoreANF is a call-by-value language, if we need todelay evaluation of an expression we must explicitly thunk it in
+
+the program text, and correspondingly force it when we want toactually access the value.
+
+If we only cared about call-by-name, we could model a thunkas a nullary function (a function binding 0 arguments) with type
+hi ! Int. Then we could thunk a term e by wrapping it in anullary lambda
+
+* hi . e, and force a thunk by applying it to hi. Thiscall-by-name approach would unacceptably lose sharing, but we
+
+can readily turn it into call-by-need by treating nullary functions(henceforth called thunks) specially in the operational semantics
+(Figure 7), which is what we do:
+
+* In rule ENTER, an application of a thunk to hi pushes onto
+
+the stack a thunk update frame mentioning the thunk name. Italso overwrites the thunk in the heap with a black hole (), to
+
+express the fact that entering a thunk twice with no interveningupdate is always an error [3]. We call all this entering, or
+forcing, a thunk.*
+When the machine evaluates to a result (a vector of atoms a),
+
+UPDATE overwrites the black hole with an indirection IND a,pops the update frame, and continues as if it had never been
+
+there.*
+Finally, the IND rule ensures that, should the original thunk beentered to again, the value saved in the indirection is returned
+
+directly (remember - the indirection overwrote the pointer tothe thunk definition that was in the heap), so that the body of
+the thunk is evaluated at most once.
+We use thunking to describe the process of wrapping a term e ina nullary function
+
+* hi . e. Because thunking is so common, weuse syntactic sugar for the thunking operation on both types and
+
+expressions - if something is enclosed in {braces} then it is athunk. See Figure 2 for details.
+
+An unusual feature is that Strict CoreANF supports multi-valuedthunks, with a type such as hi ! h
+
+Int, Booli, or (using our syntac-tic sugar) {
+Int, Bool}. Multi-thunks arose naturally from treatingthunks as a special kind of function, but this additional expressiveness turns out to allow us to do at least one new optimisation: deepunboxing (Section 5.6).
+
+Arguably, we should not conflate the notions of functions andthunks, especially since we have special cases in our operational
+semantics for nullary functions. However, the similarity of thunksand nullary functions does mean that some parts of the compiler
+can be cleaner if we adopt this conflation. For example, if thecompiler detects that all of the arguments to a function of type
+hInt, Booli ! Int are absent (not used in the body) then thefunction can be safely transformed to one of type hi !
+
+Int,but not one of type
+Int - as that would imply that the body isalways evaluated immediately. Because we conflate thunks and
+
+nullary functions, this restriction just falls out naturally as part ofthe normal code for discarding absent arguments rather than being
+a special case (as it is in GHC today).One potential side effect of this, for example, we may detect that
+the unit is absent in a function of type h()i ! Int and turn it intoone of type hi !
+
+Int. This might increase memory usage, as theresulting function has its result memoized! Although this is a bit
+
+surprising, it is at least not a property peculiar to our intermediatelanguage - this is actually the behaviour of GHC today, and the
+same issue crops up in other places too - such as when "floating"lets out of lambdas [4].
+
+3.5 Data types
+We treat Int and Char as built-in types, with a suitable family of(call-by-value) operations. A value of type
+
+Char is an evaluatedcharacter, not a thunk (ie. like ML, not like Haskell), and similarly
+
+Int. To allow a polymorphic function to manipulate values of thesebuilt-in types, they must be boxed (ie. represented by a heap pointer
+like every other value). A real implementation, however, mighthave additional unboxed (not heap allocated) types,
+
+Char#, Int#,which do not support polymorphism [5], but we ignore these issues
+
+here.All other data types are built by declaring a new algebraic
+data type, using a declaration d, each of which has a number ofconstructors (
+
+c). For example, we represent the (lazy) list data typewith a top-level definition like so:
+
+data List a :* = Nil | Cons h{a}, {List a}i
+Applications of data constructors cause heap allocation, and hence(as we noted in Section 3.3), values drawn from these types can
+
+only be allocated by a valrec expression.The operational semantics of
+
+case expressions are given inrules
+CASE-LIT, CASE-CON, and CASE-DEF, which are quite con-ventional (Figure 7). Notice that, unlike Haskell,
+
+case does notperform evaluation - that is done by let in
+EVAL. The only subtlety(present in all such calculi) is in rule
+CASE-CON: the constructor
+C must be applied to both its type and value arguments, whereasa pattern match for
+
+C binds only its value arguments. For the sakeof simplicity we restrict ourselves to vanilla Haskell 98 data types,
+
+but there is no difficulty with extending Strict Core to include exis-tentials, GADTs, and equality constraints [6].
+
+3.6 A-normal form and syntactic sugar
+The language as presented is in so-called A-normal form (ANF),where intermediate results must all be bound to a name before
+
+they can be used in any other context. This leads to a very clearoperational semantics, but there are at least two good reasons to
+avoid the use of ANF in practice:
+
+* In the implementation of a compiler, avoiding the use of ANF
+
+allows a syntactic encoding of the fact that an expression occursexactly once in a program. For example, consider the following
+
+program:
+
+(*hff :*, x :ffi. x ) hInt, 1i
+
+The compiler may manifestly see, using purely local informa-tion, that it can perform
+
+fi-reduction on this term, without theworry that it might increase code size. The same is not true in
+
+a compiler using ANF, because the ability to do fi-reductionwithout code bloat depends on your application site being the
+sole user of the function - a distinctly non-local property!*
+Non-ANFed terms are often much more concise, and tend to bemore understandable to the human reader.
+
+In the remainder of the paper we will adopt a non-ANFedvariant of Strict Core
+
+ANF which we simply call Strict Core, bymaking use of the following simple extension to the grammar and
+
+type rules:
+
+a ::= . . . | e | v
+
+\Gamma  ` e : ho/i
+
+\Gamma  `a e : o/ SING
+
+\Gamma  `v v : o/
+\Gamma  `a v : o/ VAL
+
+The semantics of the new form of atom are given by a stan-dard ANFing transformation into Strict Core
+
+ANF. Note that thereare actually several different choices of ANF transformation, corresponding to a choice about whether to evaluate arguments orfunctions first, and whether arguments are evaluated right-to-left
+or vice-versa. The specific choice made is not relevant to the se-mantics of a pure language like Strict Core.
+
+3.7 Types are calling conventions
+Consider again the example with which we began this paper. Hereare several different Strict Core types that express different calling
+
+conventions:
+
+f1 : Int ! Bool ! (Int, Bool)
+f2 : hInt, Booli ! (Int, Bool)
+f3 : (Int, Bool) ! hInt, Booli
+f4 : h{Int}, Booli ! (Int, Bool)
+
+Here f1 is a curried function, taking its arguments one at a time; f2takes two arguments at once, but returns a heap-allocated pair;
+
+f3takes a heap-allocated pair and returns two results (presumably in
+
+registers); while f4 takes two arguments at once, but the first is athunk. In this way, Strict Core
+
+ANF directly expresses the answers tothe questions posed in the Introduction.
+
+By expressing all of these operational properties explicitly inour intermediate language we expose them to the wrath of the
+optimiser. Section 5 will show how we can use this new informationabout calling convention to cleanly solve the problems considered
+in the introduction.
+3.8 Type erasure
+Although we do not explore it further in this paper, Strict CoreANFhas a simple type-erased counterpart, where type binders in
+
+*s,type arguments and heaps values have been dropped. A natural
+
+consequence of this erasure is that functions such as ha : *i !h
+
+Inti will be converted into thunks (like hi ! hInti), so theirresults will be shared.
+
+4. Translating laziness
+We have defined a useful-looking target language, but we havennot yet shown how we can produce terms in it from those of a
+
+more traditional lazy language. In this section, we present a simplesource language that captures the essential features of Haskell, and
+show how we can translate it into Strict Core.Figure 8 presents a simple, lazy, explicitly-typed source language, a kind of featherweight Haskell, or FH. It is designed to bea suitable target language for the desugaring of programs written in
+Haskell, and is deliberately similar to GHCs current intermediatelanguage (which we call Core). Due to space constraints, we omit
+
+Types
+
+o/, AE, oe ::= T Type constructors|
+
+ff Type variables|
+o/ ! o/ Function types| 8
+
+ff:^.o/ Quantification|
+o/ o/ Type application
+
+Expressions
+
+e ::= ` Unlifted literals|
+
+C Built-in data constructors|
+x Variables|
+e e Value application|
+e o/ Type application|
+*x:o/. e Functions binding values|
+\Lambda ff:^. e Functions binding types| let
+
+x:o/ = e in e Recursive name binding|
+case e of p ! e Evaluation and branching
+
+Patterns
+
+p ::= Default case / ignores eval. result|
+
+` Matches exact literal value|
+C x :o/ Matches data constructor
+
+Data Types
+
+d ::= data T ff:^ = c | . . . | c Data declarations
+
+c ::= C o/ Data constructors
+
+Programs d, e
+
+Figure 8: The FH language
+
+[[o/ : ^]] : ^
+[[T]] = T
+
+[[ff]] = ff
+[[o/1 ! o/2]] = {[[o/1]]} ! [[o/2]]
+
+[[8ff:^.o/]] = ff:^ ! [[o/]]
+
+[[o/1 o/2]] = [[o/1]] [[o/2]]
+
+Figure 9: Translation from FH to Strict Core types
+
+[[e : o/]] : h[[o/]]i
+[[`]] = `
+[[C]] = Cwrap
+
+[[x]] = x hi
+[[e o/]] = [[e]] [[o/]]
+[[\Lambda ff :^. e]] = *ff :^. [[e]]
+
+[[e1 e2]] = [[e1]] {[[e2]]}
+[[*x:o/. e]] = *x :{[[o/]]} . [[e]]
+
+[[let x:o/ = e in eb]] = valrec x :{[[o/]]} = {[[e]]} in [[eb]]
+[[case es of p ! e]] = case [[es]] of [[p]] ! [[e]]
+
+[[p]]
+[[`]] = `
+[[C x :o/]] = C x :{[[o/]]}
+
+[[ ]] =
+
+Figure 10: Translation from FH to Strict Core expressions
+
+D [[d]]D
+[[data T ff:^ = C1 o/1 | . . . | Cn o/n]]
+
+= data T ff:^ = C1 {[[o/]]}1 | . . . | Cn {[[o/]]}n
+
+W [[d]]W
+[[data T ff :^r = C1 o/m11 | . . . | Cn o/mnn ]]
+
+= 8>>><>>>:
+
+. . .
+Cwrapk = *ff1 :^1 . . . *ffr :^r.
+
+*x1 :{[[o/1,k]]} . . . *xmk :{[[o/mk,k]]} .
+Ck (ffr, xmk )
+. . . ^^
+
+d, e~~^^
+
+d, e~~ = D [[d]], valrec W [[d]] in [[e]]
+Figure 11: Translation from FH to Strict Core programs
+
+the type rules and dynamic semantics for this language - suffice tosay that they are perfectly standard for a typed lambda calculus like
+System F! [7].
+
+4.1 Type translation
+The translation from FH to Strict Core types is given by Figure 9.The principal interesting feature of the translation is the way it deals
+
+with function types. First, the translation makes no use of n-arytypes at all: both 8 and function types translate to 1-ary functions
+returning a 1-ary result.Second, function arguments are thunked, reflecting the callby-need semantics of application in FH, but result types are leftunthunked. This means that after being fully applied, functions
+eagerly evaluate to get their result. If a use-site of that functionwants to delay the evaluation of the application it must explicitly
+create a thunk.
+
+4.2 Term translation
+The translation from FH terms to those in Strict Core becomesalmost inevitable given our choice for the type translation, and is
+
+given by Figure 10. It satisfies the invariant:
+
+x :o/ `FH e : AE =) x:{[[o/]]} ` [[e]] : h[[AE]]i
+The translation makes extensive use of our syntactic sugar andability to write non-ANFed terms, because the translation to Strict
+
+CoreANF is highly verbose. For example, the translation for appli-cations into Strict Core
+
+ANF would look like this:
+
+[[e1 e2]] = let hfi = [[e1]] invalrec
+
+x = * hi . [[e2]] in f hxi
+
+The job of the term translation is to add explicit thunks to theStrict Core output wherever we had implicit laziness in the FH
+
+input program. To this end, we add thunks around the result of thetranslation in "lazy" positions - namely, arguments to applications
+and in the right hand side of let bindings. Dually, when we needto access a variable, it must have been the case that the binding
+site for the variable caused it to be thunked, and hence we need toexplicitly force variable accesses by applying them to hi.
+
+Bearing all this in mind, here is the translation for a simpleapplication of a polymorphic identity function to 1:
+
+[[(\Lambda ff:?. *x :ff. x ) Int 1]] = (*ff:?. *x :{ff}. x hi) Int {1}
+
+4.3 Data type translation
+In any translation from FH to Strict Core we must account for(a) the translation of data type declarations themselves, (b) the
+
+translation of constructor applications, and (c) the translation ofpattern matching. We begin with (a), using the following FH data
+type declaration for lists:
+
+data List ff:* = Nil | Cons ff (List ff)
+The translation D, shown in Figure 11 yields this Strict Core dec-laration:
+
+data List ff:* = Nil | Cons h{ff}, {List ff}i
+The arguments are thunked, as you would expect, but the construc-tor is given an uncurried type of (value) arity 2. So the types of the
+
+data constructor Cons before and after translation are:
+
+FH Cons : 8ff.ff ! List ff ! List ffStrict Core
+
+Cons : hff : ?, {ff} , {List ff}i ! hList ffi
+
+We give Strict Core data constructors an uncurried type to reflecttheir status as expressing the built-in notions of allocation and
+
+pattern matching (Figure 7). However, since the type of Strict-Core
+Cons is not simply the translation of the type of the FH Cons, wedefine a top-level wrapper function
+
+Conswrap which does have theright type:
+
+Conswrap = *ff :*. *x :{ff}. *xs :{List ff}. Cons hff, x , xsi
+Now, as Figure 10 shows, we translate a call of a data constructor
+C to a call of Cwrap. (As an optimisation, we refrain from thunkingthe definition of the wrapper and forcing its uses, which accounts
+
+for the different treatment of C and x in Figure 10.) We expect thatthe wrappers will be inlined into the program by an optimisation
+pass, exposing the more efficient calling convention at the originaldata constructor use site.
+
+The final part of the story is the translation of pattern match-ing. This is also given in Figure 10 and is fairly straightforward
+once you remember that the types of the bound variables must bethunked to reflect the change to the type of the data constructor
+functions.4Finally, the translation for programs, also given in Figure 11,
+ties everything together by using both the data types and expressiontranslations.
+
+4.4 The seq function
+A nice feature of Strict CoreANF is that it is possible to give astraightforward definition of the primitive
+
+seq function of Haskell:
+
+seq : {ff:* ! fi :* ! {ff} ! {fi} ! fi}
+
+= {*ff :*. *fi :*. *x :{ff}. *y :{fi}. let : ff = x hi in y hi}
+
+5. Putting Strict Core to work
+In this section we concentrate on how the features of Strict Core canbe of aid to an optimising compiler that uses it as an intermediate
+
+language. These optimisations all exploit the additional operationalinformation available from the types-as-calling-conventions correspondence in order to improve the efficiency of generated code.
+5.1 Routine optimisations
+Strict Core has a number of equational laws that have applicationsto program optimisation. We present a few of them in Figure 12.
+
+The examples we present in this section will usually alreadyhave had these equational laws applied to them, if the rewrite
+
+4 It is straightforward (albeit it fiddly) to extend this scheme with support
+for strict fields in data types, which is necessary for full Haskell 98 support.
+
+represents an improvement in their efficiency or readability. Foran example of how they can improve programs, notice that in the
+translation we give from FH, variable access in a lazy context (suchas the argument of an application) results in a redundant thunking
+and forcing operation. We can remove that by applying the j law:
+
+[[f y]] = [[f ]] h* hi . [[y]]i = f hi h* hi . y hii = f hi hyi
+
+5.2 Expressing the calling convention for strict arguments
+Let's go back to the first example of a strict function from Section 1:
+
+f :: Bool ! Int
+f x = case x of True ! . . . ; False ! . . .
+
+We claimed that we could not, while generating the code for f ,assume that the
+
+x argument was already evaluated, because that is afragile property that would be tricky to guarantee for all call-sites.
+
+In Strict Core, the evaluated/non-evaluated distinction is apparentin the type system, so the property becomes robust. Specficically,
+we can use the standard worker/wrapper transformation [8, 9] to fas follows:
+
+fwork :Bool ! Int
+fwork = *x :Bool. case x of True hi ! . . . ; False hi ! . . .
+
+f :{Bool} ! Int
+f = *x :{Bool}. fwork hx hii
+
+Here the worker fwork takes a definitely-evaluated argument of type
+Bool, while the wrapper f takes a lazy argument and forces itbefore calling
+
+f . By inlining the f wrapper selectively, we will oftenbe able to avoid the forcing operation altogether, by cancelling it
+
+with explicit thunk creation. Because every lifted (i.e. lazy) typein Strict Core has an unlifted (i.e. strict) equivalent, we are able
+to express all of the strictness information resulting from strictnessanalysis by a program transformation in this style. This is unlike
+the situation in GHC today, where we can only do this for producttypes; in particular, strict arguments with sum types such as
+
+Boolhave their strictness information applied in a much more ad-hoc
+
+manner.We suggested in Section 2 that this notion could be used to
+improve the desugaring of dictionary arguments. At this point,the approach should be clear: during desugaring of Haskell into
+Strict Core, dictionary arguments should not be wrapped in explicitthunks, ever. This entirely avoids the overhead of evaluatedness
+checking for such arguments.
+5.3 Exploiting the multiple-result calling convention
+Our function types have first-class support for multiple argumentsand results, so we can express the optimisation enabled by a constructed product result (CPR) analysis [10] directly. For example,translating
+
+splitList from Section 2.4 into Strict Core yields thefollowing program:
+
+splitList = {*xs :{List Int}. case xs hi of
+
+Cons hy :{Int}, ys :{List Int}i ! (, ) hInt, List Int, y, ysi}
+
+Here we assume that we have translated the FH pair type in thestandard way to the following Strict Core definition:
+
+data (, ) ff:* fi :* = (, ) h{ff}, {fi}i
+After a worker/wrapper transformation informed by CPR analysiswe obtain a version of the function that uses multiple results, like
+
+so:
+
+splitListwork = *xs :{List Int}. case xs hi of
+
+Cons hy :{Int}, ys :{List Int}i ! hy, ysi
+splitList = {*xs :{List Int}.let h
+
+y :{Int}, ys :{List Int}i = splitListwork xsin
+(, ) hInt, List Int, y, ysi}
+
+fi valrec x :o/ = *bn. e in x an = e[a/b
+
+n]
+
+j valrec x :o/ = *bn. y bn in e = let hx:o/i = hyi in elet let
+
+x :o/ = a in e = e[a/x]let-float let
+x:o/1 = (let y :oe2 = e1 in e2) in e3 = let y :oe2 = e1 in let x :o/1 = e2 in e3valrec-float let
+x:o/ = (valrec y :oe = e in e2) in e3 = valrec y :oe = e in let x :o/ = e2 in e3valrec-join valrec
+
+x :o/ = e in valrec y :oe = e in e = valrec x :o/ = e, y :oe = e in e
+
+case-constructor-elim valrec x :o/ = C o/, an in case x of . . . C bn ! e . . . = valrec x :o/ = C o/, an in e[a/b
+
+n]
+
+case-literal-elim case ` of . . . ` ! e . . . = e
+
+Figure 12: Sample equational laws for Strict CoreANF
+
+Once again, inlining the wrapper splitList at its call sites can oftenavoid the heap allocation of the pair (
+
+(, )).Notice that the worker is a multi-valued function that returns
+
+two results. GHC as it stands today has a notion of an "unboxedtuple" type supports multiple return values, but this extension has
+never fitted neatly into the type system of the intermediate lan-guage. Strict Core gives a much more principled treatment of the
+same concept.
+5.4 Redundant evaluation
+Consider this program:
+
+data Colour = R | G | B
+f x = case x of
+
+R ! . . .!
+
+. . . (case x of G ! . . . ; B ! . . .) . . .
+
+In the innermost case expression, we can be certain that x has al-ready been evaluated - and we might like to use this information
+
+to generate better code for that inner case split, by omitting evalu-atedness checks. However, notice that it translates into Strict Core
+like so:
+
+f = {*x . case x hi of
+
+R hi ! . . .!
+
+. . . (case x hi of G hi ! . . .
+
+B hi ! . . .) . . .}
+
+It is clear that to avoid redundant evaluation of x we can simplyapply common-subexpression elimination (CSE) to the program:
+
+f = {*x . let x 0 = x hi in
+
+case x 0 of R hi ! . . .!
+
+. . . (case x 0 of G hi ! . . .
+
+B hi ! . . .) . . .}
+
+This stands in contrast to GHC today, where an ad-hoc mechanismtries to discover opportunities for exactly this optimisation.
+
+5.5 Thunk elimination
+There are some situations where delaying evaluation by insertinga thunk just does not seem worth the effort. For example, consider
+
+this FH source program:
+
+let xs :List Int = Cons Int y ys
+The translation of this program into Strict Core will introduce awholly unnecessary thunk around
+
+xs, thus
+
+valrec xs :{List Int} = {Cons hInt, y, ysi}
+It is obviously stupid to build a thunk for something that is alreadya value, so we would prefer to see
+
+valrec xs :List Int = Cons hInt, y, ysi
+
+but now references to xs in the body of the valrec will be badly-typed! As usual, we can solve the impedence mis-match by adding
+an auxiliary definition:
+
+valrec xs0 :List Int = Cons hInt, y, ysi invalrec
+
+xs :{List Int} = {xs0}
+
+Indeed, if you think of what this transformation would look likein Strict Core
+
+ANF, it amounts to floating a valrec (for xs0) out ofa thunk, a transformation that is widely useful [4]. Now, several
+
+optimisations suggest themselves:
+
+* We can inline xs freely at sites where it is forced, thus (xs hi),
+
+which then simplifies to just xs0.*
+
+Operationally, the thunk * hi . xs0 behaves just like IND xs0,except that the former requires an update (Figure 7). So it would
+
+be natural for the code generator to allocate an IND directly fora nullary lambda that returns immediately.
+
+* GHC's existing runtime representation goes even further: sinceevery heap object needs a header word to guide the garbage
+
+collector, it costs nothing to allow an evaluated Int to be enter-able. In effect, a heap object of type
+
+Int can also be used torepresent a value of type {
+Int}, an idea we call auto-lifting.That in turn means that the binding for
+
+xs generates literally nocode at all - we simpy use
+xs0 where xs is mentioned.
+
+One complication is that thunks cannot be auto-lifted. Consider thisprogram:
+
+valrec f :{Int} = {?} in valrec g :{{Int}} = {f } in g hi
+Clearly, the program should terminate. However if we adopt-autolifting for thunks then at runtime
+
+g and f will alias and hence wewill cause the evaluation of ?! So we must restrict auto-lifting to
+
+thunks of non-polymorphic, non-thunk types. (Another alternativewould be to restrict the kind system so that thunks of thunks and
+instantiation of type variables with thunk types is disallowed, whichmight be an acceptable tradeoff.)
+
+5.6 Deep unboxing
+Another interesting possibility for optimisation in Strict Core isthe exploitation of "deep" strictness information by using
+
+n-arythunks to remove some heap allocated values (a process known as
+
+unboxing). What we mean by this is best understood by example:
+
+valrec f :{({Int}, {Int})} ! Int
+
+= *hpt : {({Int}, {Int})}i.valrec
+
+c :Bool = . . . in
+case c of True hi ! 1
+
+False hi ! case pt hi of (x , y) !
+
+(+) hx hi, y hii
+
+Typical strictness analyses will not be able to say definitivelythat
+
+f is strict in pt (even if c is manifestly False!). However,some strictness analysers might be able to tell us that if
+
+pt is
+
+ever evaluated then both of its components certainly are. Takingadvantage of this information in a language without explicit thunks
+would be fiddly at best, but in our intermediate language we canuse the worker/wrapper transformation to potentially remove some
+thunks by adjusting the definition of f like so:
+
+valrec fwork :{Int, Int} ! Int =
+
+*pt0 :{Int, Int}.valrec
+
+c :Bool = . . . in
+case c of True hi ! 1
+
+False hi ! let hx 0 :Int, y0 :Inti = pt0 hiin
+
+(+) hx 0, y0i,
+f :{({Int}, {Int})} ! Int =
+
+*(pt : {({Int}, {Int})}) !valrec
+
+pt0 :{Int, Int} ={
+case pt hi of (x , y) ! hx hi, y hii}in
+fwork pt0
+
+Once again, inlining the new wrapper function at the use siteshas the potential to cancel with pair and thunk allocation by the
+
+callers, avoiding heap allocation and indirection.Note that the ability to express this translation actually depended on the ability of our new intermediate language to expressmulti-thunks (Section 3.4) - i.e. thunks that when forced, evaluate
+to multiple results, without necessarily allocating anything on theheap.
+
+6. Arity raising
+Finally, we move on to two optimisations that are designed toimprove function arity - one that improves arity at a function by
+
+examining how the function is defined, and one that realises animprovement by considering how it is used. These optimisations
+are critical to ameliorating the argument-at-a-time worst case forapplications that occurs in the output of the naive translation from
+FH. GHC does some of these arity-related optimisations in anad-hoc way already; the contribution here is to make them more
+systematic and robust.
+6.1 Definition-site arity raising
+Consider the following Strict Core binding:
+
+valrec f :Int ! Int ! Int = *x :Int. *y :Int. e in f 1 2
+This code is a perfect target for one of the optimisations that StrictCore lets us express cleanly: definition-site arity raising. Observe
+
+that currently callers of f are forced to apply it to its arguments oneat a time. Why couldn't we change the function so that it takes both
+of its arguments at the same time?We can realise the arity improvement for
+
+f by using, once again,a worker/wrapper transformation. The wrapper, which we give this
+
+the original function name, f , simply does the arity adaptationbefore calling into a worker. The worker, which we call
+
+fwork, isthen responsible for the rest of the calculation of the function5:
+
+valrec fwork :hInt, Inti ! Int = *hx :Int, y :Inti. e
+
+f :Int ! Int ! Int = *x :Int. *y :Int. fwork hx , yiin
+f 1 2
+
+At this point, no improvement has yet occurred - indeed, we willhave made the program worse by adding a layer of indirection via
+
+the wrapper! However, once the wrapper is vigourously inlined atthe call sites by the compiler, it will often be the case that the
+wrapper will cancel with work done at the call site, leading to aconsiderable efficiency improvement:
+
+5 Since e may mention f , the two definitions may be mutually recursive.
+
+valrec fwork :hInt, Inti ! Int = *hx :Int, y :Inti. ein
+
+fwork h1, 2i
+
+This is doubly true in the case of recursive functions, because byperforming the worker/wrapper split and then inlining the wrapper
+
+into the recursive call position, we remove the need to heap-allocatea number of intermediate function closures representing partial
+applications in a loop.Although this transformation can be a big win, we have to be a
+bit careful about where we apply it. The ability to apply argumentsone at a time to a curried function really makes a difference to
+efficiency sometimes, because call-by-need (as opposed to call-by-name) semantics allows work to be shared between several
+invocations of the same partial application. To see how this works,consider this Strict Core program fragment:
+
+valrec g :Int ! Int ! Int
+
+= (*x :Int. let s = fibonacci x in*y :Int. . . .) inlet
+h :Int ! Int = g 5 in h 10 + h 20
+
+Because we share the partial application of g (by naming it h),we will only compute the application
+
+fibonacci 5 once. However,if we were to "improve" the arity of
+g by turning it into a functionof type h
+Int, Inti ! Int, then it would simply be impossible toexpress the desired sharing! Loss of sharing can easily outweigh
+
+the benefits of a more efficient calling convention.Identifying some common cases where no significant sharing
+would be lost by increasing the arity is not hard, however. Inparticular, unlike
+
+g, it is safe to increase the arity of f to 2, because
+f does no work (except allocate function closures) when applied tofewer than 2 arguments. Another interesting case where we might
+
+consider raising the arity is where the potentially-shared work doneby a partial application is, in some sense, cheap - for example, if
+the sharable expressions between the *s just consist of a boundednumber of primitive operations. We do not attempt to present a
+suitable arity analysis in this paper; our point is only that StrictCore gives a sufficiently expressive medium to express its results.
+
+6.2 Use-site arity raising
+This is, however, not the end of the story as far as arity raisingis concerned. If we can see all the call-sites for a function, and
+
+none of the call sites share partial applications of less than than
+n arguments, then it is perfectly safe to increase the arity of thatfunction to
+
+n, regardless of whether or not the function does workthat is worth sharing if you apply fewer than
+
+n arguments. Forexample, consider function
+g from the previous sub-section, andsuppose the the body of its valrec was
+
+. . . (g p q) . . . (g r s) . . .;that is, every call to
+g has two arguments. Then no sharing islost by performing arity raising on its definition, but considerable
+
+efficiency is gained.This transformation not only applies to valrec bound functions,
+but also to uses of higher-order functional arguments. After trans-lation of the
+
+zipWith function from Section 2.2 into Strict Core,followed by discovery of its strictness and definition-site arity properties, the worker portion of the function that remains might looklike the following:
+
+valrec zipWith :ha :*, b :*, c :*, {{a} ! {b} ! c},
+
+List a, List bi ! List c
+= *ha :*, b :*, c :*, f :{{a} ! {b} ! c},
+
+xs :List a, ys :List bi.
+case xs of Nil hi ! Nil c
+
+Cons hx :{a}, xs0 :{List a}i !
+case ys of Nil hi ! Nil c
+
+Cons hy :{b}, ys0 :{List b}i !
+Cons hc, f hi x y, zipWith ha, b, c, f , xs0 hi, ys0 hiii.
+
+Notice that f is only ever applied in the body to three arguments ata time - hi,
+
+x , and y (or rather hx i and hyi). Based on this observa-tion, we could re-factor
+
+zipWith so that it applied its function argu-ment to all these arguments (namely h
+
+x , yi) at once. The resultingwrapper would look like this (omitting a few types for clarity):
+
+valrec zipWith :ha :*, b :*, c :*, {{a} ! {b} ! c},
+
+List a, List bi ! List c
+= *ha :*, b :*, c :*, f , xs, ysi.valrec
+
+f 0 :h{a}, {b}i ! c = *hx , yi. f hi x yin
+zipWithwork ha, b, c, f 0, xs, ysi
+
+To see how this can lead to code improvement, consider a call
+zipWith hInt, Int, Int, g, xs, ysi, where g is the function fromSection 6.1. Then, after inlining the wrapper of
+
+zipWith we cansee locally that
+g is applied to all its arguments can can thereforebe arity-raised. Now, the wrapper of
+
+g will cancel with definitionof
+f 0, leaving the call we really want:
+
+zipWithwork hInt, Int, Int, gwork, xs, ysi
+
+6.3 Reflections on arity-raising
+Although the use-site analysis might, at first blush, seem to bemore powerful than the definition-site one, it is actually the case
+
+that the two arity raising transformations are each able to improvethe arities of some functions where the other cannot. In particular,
+for a compiler that works module-by-module like GHC, the use-site analysis will never be able to improve the arity of a top-level
+function as some of the call sites are unknown statically.The key benefits of the new intermediate language with regard
+to the arity raising transformation are as follows:
+
+* Arity in the intermediate language is more stable. It is almost
+
+impossible for a compiler transformation to accidentally reducethe arity of a function without causing a type error, whereas
+
+accidental reduction of arity is a possibility we must activelyconcern ourselves with avoiding in the GHC of today.
+
+* Expressing arity in the type system allows optimisations to be
+
+applied to the arity of higher-order arguments, as we saw inSection 6.2.
+
+* By expressing arity statically in the type information, it is possible that we could replace GHC's current dynamic arity discov-ery [2] with purely static arity dispatch. This requires that arity
+
+raising transformations like these two can remove enough of theargument-at-a-time worst cases such that we obtain satisfactory
+performance with no run-time tests at all.*
+If purely static arity discovery turns out to be too pessimisticin practice (a particular danger for higher order arguments), it
+
+would still be straightforward to adapt the dynamic discoveryprocess for this new core language, but we can avoid using it
+except in those cases where it could give a better result thanstatic dispatch. Essentially, if we appear to be applying at least
+two groups of arguments to a function, then at that point weshould generate code to dynamically check for a better arity
+before applying the first group.
+
+7. Related work
+Benton et al's Monadic Intermediate Language (MIL) [11] is simi-lar to our proposed intermediate language. The MIL included both
+
+n-ary lambdas and multiple returns from a function, but lacked atreatment of thunks due to aiming to compile a strict language. MIL
+also included a sophisticated type system that annotated the returntype of functions with potential computational effects, including divergence. This information could be used to ensure the soundness
+
+of arity-changing transformations - i.e. uncurrying is only sound ifa partial application has no computational effects.
+
+Both MIL and the Bigloo Scheme compiler [12] (which couldexpress
+
+n-ary functions), included versions of what we have calledarity definition-site analysis. However, the MIL paper does not
+
+seem to consider the work-duplication issues involved in the arityraising transformation, and the Bigloo analysis was fairly simple
+minded - it only coalesced manifestly adjacent lambdas, withoutallowing (for example) potentially shareable work to be duplicated
+as long as it was cheap. We think that both of these issues deserve amore thorough investigation. A simple arity definition-site analysis
+is used by SML/NJ [13], though the introduction of n-ary argu-ments is done by a separate argument flattening pass later on in the
+compiler rather than being made immediately manifest.In MIL, function application used purely static arity information. Bigloo used a hybrid static/dynamic arity dispatch scheme,but unfortunately do not appear to report on the cost (or otherwise)
+of operating purely using static arity information.The intermediate language discussed here is in some ways an
+extension an extension of the L2 language [14] which also exploredthe possibility of an optimising compiler suitable for both strict
+and lazy languages. We share with L2 an explicit representationof thunking and forcing operations, but take this further by additionally representing the operational notions of unboxing (throughmultiple function results) and arity. The L
+
+2 language shares withthe MIL the fact that it makes an attempt to support impure strict
+
+languages, which we do not - though impure operations could po-tentially be desugared into our intermediate language using a statetoken or continuation passing style to serialize execution.GRIN [15] is another language that used an explicit representation of thunks and boxing properties. Furthermore, GRIN uses afirst order program representation where the structure of closures
+is explicit - in particular, this means that unboxing of closures isexpressible.
+
+The FLEET language [16] takes yet another tack. Thunked andunthunked values have the same type, but can be distinguished by
+the compiler by inspecting flow labelling information attached toevery type - if the flow information includes no label from a thunk
+creation site, then the value must be in WHNF. A variant of thelanguage, CFleet, has
+
+n-ary abstraction but does not support n-aryresult types.
+
+The IL language [17] represents thunks explicitly by way ofcontinuations with a logical interpretation, and is to our knowledge
+the first discussion of auto-lifting in the literature. Their logic basedapproach could perhaps be extended to accommodate a treatment
+of arity and multiple-value expressions if "boxed" and "unboxed"uses of the ^ tuple type former were distinguished.
+
+Hannan and Hicks have previously introduced the arity use-siteoptimization under the name "higher-order uncurrying" [18] as a
+type-directed analysis on a source language. They also separatelyintroduced an optimisation called "higher-order arity raising" [19]
+which attempts to unpack tuple arguments where possible - thisis a generalisation of the existing worker/wrapper transformations
+GHC currently does for strict product parameters. However, theiranalyses only consider a strict language, and in the case of uncurrying does not try to distinguish between cheap and expensive com-putation in the manner we propose above. Leroy et al. [20] demonstrated a verified version of the framework which operates by coer-cion insertion, which is similar to our worker/wrapper approach.
+
+8. Conclusions and further work
+In this paper we have described what we believe to be an interest-ing point in the design space of compiler intermediate languages.
+
+By making information about a function's calling convention to-tally explicit in the intermediate language type system, we expose
+
+it to the optimiser - in particular we allow optimisation of decisionsabout function arity. A novel concept -
+
+n-ary thunks - arose nat-urally from the process of making calling convention explicit, and
+
+this in turn allows at least one novel and previously-inexpressibleoptimisation (deep unboxing) to be expressed.
+
+This lazy *-calculus FH we present is similar to System FC,GHC's current intermediate language. For a long time, a lazy language was, to us at least, the obvious intermediate language for alazy source language such as Haskell - so it was rather surprising
+to discover that an appropriately-chosen strict calculus seems to bein many ways better suited to the task!
+
+However, it still remains to implement the language in GHCand gain practical experience with it. In particular, we would like
+to obtain some quantitative evidence as to whether purely staticarity dispatch leads to improved runtimes compared to a dynamic
+consideration of the arity of a function such as GHC implementsat the moment. A related issue is pinning down the exact details
+of how a hybrid dynamic/static dispatch scheme would work, andhow to implement it without causing code bloat from the extra
+checks. We anticipate that we can reuse existing technology fromour experience with the STG machine [21] to do this.
+
+Although we have presented, by way of examples, a number ofcompiler optimisations that are enabled or put on a firmer footing
+by the use of the new intermediate language, we have not providedany details about how a compiler would algorithmically decide
+when and how to apply them. In particular, we plan to write apaper fully elucidating the details of the two arity optimisations
+(Section 6.2 and Section 6.1) in a lazy language and reporting onour practical experience of their effectiveness.
+
+There are a number of interesting extensions to the intermediatelanguage that would allow us to express even more optimisations.
+We are particularly interested in the possibility of using somefeatures of the
+
+\Pi \Sigma  language [22] to allow us to express even moreoptimisations in a typed manner. In particular, adding unboxed
+
+\Sigma types would address an asymmetry between function argument and
+
+result types in Strict Core - binders may not appear to the rightof a function arrow currently. They would also allow us to express
+unboxed existential data types (including function closures, shouldwe wish) and GADTs. Another
+
+\Pi \Sigma  feature - types that can dependon "tags" - would allow us to express unboxed sum types, but the
+
+implications of this feature for the garbage collector are not clear.We would like to expose the ability to use "strict" types to
+the compiler user, so Haskell programs can, for example, manip-ulate lists of strict integers (
+
+[!Int ]). Clean [23] has long supportedstrictness annotations at the top level of type declarations, (which
+
+have a straightforward transformation into Strict Core), but allow-ing strictness annotations to appear in arbitrary positions in types
+appears to require ad-hoc polymorphism, and it is not obvious howto go about exposing the extra generality in the source language in
+a systematic way.
+
+Acknowledgments
+This work was partly supported by a PhD studentship generouslyprovided by Microsoft Research. We would like to thank Paul Blain
+
+Levy for the thought provoking talks and discussions he gave whilevisiting the University of Cambridge which inspired this work.
+Thanks are also due to Duncan Coutts, Simon Marlow, DouglasMcClean, Alan Mycroft, Dominic Orchard, Josef Svenningsson
+and the anonymous reviewers for their helpful comments and sug-gestions.
+
+References
+
+[1] A. P. Black, M. Carlsson, M. P. Jones, D. Kieburtz, and J. Nordlander.Timber: a programming language for real-time embedded systems.
+
+Technical Report CSE-02-002, Oregon Health & Science University,2002.
+[2] S. Marlow and S. Peyton Jones. How to make a fast curry:push/enter vs eval/apply. In International Conference on Functional
+
+Programming, pages 4-15, September 2004.
+[3] J. Launchbury. A natural semantics for lazy evaluation. In Principlesof Programming Languages, pages 144-154. ACM, January 1993.
+
+[4] S. Peyton Jones, W. D Partain, and A. Santos. Let-floating: movingbindings to give faster programs. In International Conference on
+
+Functional Programming, 1996.
+[5] S. Peyton Jones and John Launchbury. Unboxed values as firstclass citizens in a non-strict functional language. In Functional
+
+Programming Languages and Computer Architecture, pages 636-666. Springer, 1991.
+
+[6] M. Sulzmann, M. Chakravarty, S. Peyton Jones, and K. Donnelly.System F with type equality coercions. In ACM SIGPLAN International Workshop on Types in Language Design and Implementation(TLDI'07). ACM, 2007.
+
+[7] J. Girard. The system F of variable types, fifteen years later.Theoretical Computer Science, 45(2):159-192, 1986.
+[8] S. Peyton Jones and A. Santos. A transformation-based optimiserfor Haskell. Science of Computer Programming, 32(1-3):3-47,
+
+September 1998.
+[9] A. Gill and G. Hutton. The worker/wrapper transformation. Journalof Functional Programming, 19(2):227-251, March 2009.
+
+[10] C. Baker-Finch, K. Glynn, and S. Peyton Jones. Constructed productresult analysis for haskell. Journal of Functional Programming,
+
+14(2):211-245, 2004.
+[11] N. Benton, A. Kennedy, and G. Russell. Compiling standard MLto Java bytecodes. In International Conference on Functional
+
+Programming, pages 129-140, New York, NY, USA, 1998. ACM.
+[12] M. Serrano and P. Weis. Bigloo: A portable and optimizing compilerfor strict functional languages. In International Symposium on Static
+
+Analysis, pages 366-381, London, UK, 1995. Springer-Verlag.
+[13] A. Appel. Compiling with Continuations. Cambridge UniversityPress, 1992.
+
+[14] S. Peyton Jones, M. Shields, J. Launchbury, and A. Tolmach. Bridgingthe gulf: a common intermediate language for ML and Haskell. In
+
+Principles of Programming Languages, pages 49-61, New York, NY,USA, 1998. ACM.
+
+[15] U. Boquist. Code Optimisation Techniques for Lazy FunctionalLanguages. PhD thesis, Chalmers University of Technology, April
+
+1999.
+[16] K. Fax'en. Flow Inference, Code Generation, and Garbage Collectionfor Lazy Functional Languages. PhD thesis, KTH Royal Institute Of
+
+Technology, June 1997.
+[17] B. Rudiak-Gould, A. Mycroft, and S. Peyton Jones. Haskell is notnot ML. In European Symposium on Programming, 2006.
+
+[18] J. Hannan and P. Hicks. Higher-order uncurrying. Higher OrderSymbolic Computation, 13(3):179-216, 2000.
+[19] J. Hannan and P. Hicks. Higher-order arity raising. In InternationalConference on Functional Programming, pages 27-38, New York,
+
+NY, USA, 1998. ACM.
+[20] Z. Dargaye and X. Leroy. A verified framework for higher-orderuncurrying optimizations. March 2009.
+
+[21] S. Peyton Jones. Implementing lazy functional languages on stockhardware: the Spineless Tagless G-machine. Journal of Functional
+
+Programming, 2:127-202, April 1992.
+[22] T. Altenkirch and N. Oury. PiSigma: A core language for dependentlytyped programming. 2008.
+
+[23] T. Brus, M. van Eekelen, M. van Leer, and M. Plasmeijer. Clean --a language for functional graph rewriting. Functional Programming
+
+Languages and Computer Architecture, pages 364-384, 1987.

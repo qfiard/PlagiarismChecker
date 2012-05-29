@@ -1,0 +1,896 @@
+
+
+Some Domain Theory and Denotational
+
+Semantics in Coq
+
+Nick Benton1, Andrew Kennedy1, and Carsten Varming2?
+
+1 Microsoft Research, Cambridge, UK
+
+{nick,akenn}@microsoft.com
+2 Carnegie-Mellon University, Pittsburgh, USA
+
+varming@cmu.edu
+
+Abstract. We present a Coq formalization of constructive !-cpos (extending earlier work by Paulin-Mohring) up to and including the inverselimit construction of solutions to mixed-variance recursive domain equations, and the existence of invariant relations on those solutions. We
+then define operational and denotational semantics for both a simplytyped CBV language with recursion and an untyped CBV language, and
+establish soundness and adequacy results in each case.
+
+1 Introduction
+The use of proof assistants in formalizing language metatheory and implementing
+certified tools has grown enormously over the last five years or so. Most current
+work on mechanizing language definitions and type soundness results, certified
+compilation, proof carrying code, and so on has been based on operational semantics. But in our work on both certified compilation and on the semantics of
+languages with state, we have often found ourselves wanting a Coq formalization
+of the kind of denotational semantics that we have grown accustomed to working
+with on paper.
+
+Mechanizing domain theory and denotational semantics has an illustrious
+history. Provers such as HOL, Isabelle/HOL and Coq can all trace an ancestral line back to Milner's LCF [16], which was a proof checker for Scott's PP*
+logic of cpos, continuous functions and admissible predicates. And although later
+systems were built on less domain-specific foundations, there have subsequently
+been dozens of formalizations of different notions of domains and bits of semantics, with examples in all the major provers. Few, however, have really gone
+far enough to be useful. This paper describes our Coq formalization of !-cpos
+and the denotational semantics of both typed and untyped versions of a simple
+functional language, going considerably further than previous work. A companion paper [8] describes a non-trivial compiler correctness theorem that has been
+formalized and proved using one of these denotational models.
+
+? Research supported in part by National Science Foundation Grants CCF-0541021,
+
+CCF-0429505.
+
+Our formalization is based on a Coq library for constructive pointed !-cpos
+and continuous functions written by Paulin-Mohring [20] as a basis for a semantics of Kahn networks, and of probabilistic programs [6]. Section 2 describes
+our slight generalization of Paulin-Mohring's library to treat predomains and
+a general lift monad. In Section 3, we then define a simply-typed call-by-value
+functional language, give it a denotational semantics using our predomains and
+prove the standard soundness and adequacy theorems, establishing the correspondence between the operational and denotational semantics. These results
+seem not to have been previously mechanized for a higher-order language.
+
+Section 4 is about solving recursive domain equations. We formalize Scott's
+inverse limit construction along the lines of work by Freyd [11, 12] and Pitts [22,
+23]. This approach characterizes the solutions as minimal invariants, yielding reasoning principles that allow one to construct and work with recursively-defined
+predicates and relations over the recursively-defined domains. In Section 5, we
+define the semantics of an untyped call-by-value language using a particular recursive domain, and use the associated reasoning principles to again establish
+soundness and adequacy theorems.
+
+2 Basic Domain Theory
+This first part of the development is essentially unchanged from the earlier work
+of Paulin-Mohring [20]. The main difference is that Paulin-Mohring formalized
+pointed cpos and continuous maps, with a special-case construction of flat cpos
+(those that arise from adding a bottom element under all elements of an otherwise discretely ordered set), whereas we use potentially bottomless cpos (`predomains') and formalize a general constructive lift monad.
+
+2.1 Complete Partial Orders
+We start by defining the type of preorders, comprising a carrier type tord (to
+which :> means we can implicitly coerce), a binary relation Ole (written infix
+as v), and proofs that Ole is reflexive and transitive:
+
+Record ord:= mk ord
+
+{tord :> Type;
+
+Ole : tord ! tord ! Prop;
+Ole refl : 8 x : tord, Ole x x;
+Ole trans : 8 x y z : tord, Ole x y ! Ole y z ! Ole x z }.
+Infix "v" := Ole.
+
+The equivalence relation == is then defined to be the symmetrisation of v:
+Definition Oeq (O : ord) (x y : O) := x v y ^ y v x.
+Infix "==" := Oeq (at level 70).
+
+Both == and v are declared as parametric Setoid relations, with v being
+a partial order modulo ==. Most of the constructions that follow are proved
+and declared to be morphisms with respect to these relations, which then allows
+convenient (in)equational rewriting in proofs.
+
+2
+
+The type of monotone functions between partial orders is a parameterized
+record type, comprising a function between the underlying types of the two order
+parameters and a proof that that function preserves order:
+
+Definition monotonic (O1 O2 : ord) (f : O1 ! O2) := 8 x y, x v y ! f x v f y.
+Record fmono (O1 O2 : ord) := mk fmono
+
+{fmonot :> O1 ! O2;
+
+fmonotonic: monotonic fmonot}.
+
+For any O1 O2 : ord, the monotonic function space O1 !m O2 : ord is defined
+by equipping fmono O1 O2 with the order inherited from the codomain, f v g
+iff f x v g x for all x.
+
+We define natO : ord by equipping the set of natural numbers, nat, with the
+usual `vertical' order, <=. If c : natO !m O for some O : ord, we call c a chain
+in O. Now a complete partial order is defined as a dependent record comprising
+an underlying order, tord, a function F for computing the least upper bound of
+any chain in tord, and proofs that this is both an upper bound (le lub), and less
+than or equal to any other upper bound (lub le):
+
+Record cpo:= mk cpo
+
+{tcpo :> ord;F
+
+: (natO!mtcpo) ! tcpo;
+le lub : 8 (c : natO!mtcpo) (n : nat), c n v Fc;
+lub le : 8 (c : natO!mtcpo) (x : tcpo), (8 n, c n v x) ! Fc v x}.
+
+This definition of a complete partial order is constructive in the sense that
+we require least upper bounds of chains not only to exist, but to be computable
+in Coq's logic of total functions.
+
+A monotone function f between two cpos, D1 and D2, is continuous if it
+preserves (up to ==) least upper bounds. One direction of this is already a
+consequence of monotonicity, so we just have to specify the other:
+
+Definition continuous (D1 D2 : cpo) (f : D1 !mD2) :=
+
+8 c : natO!mD1, f (Fc) v F(f ffic).
+
+Record fconti (D1 D2 : cpo) := mk fconti
+
+{fcontit : D1 !mD2;
+
+fcontinuous : continuous fcontit}.
+
+For any D1 D2 : cpo, the continuous function space D1 !c D2 : ord is
+defined by equipping the type fconti D1 D2 with the pointwise order inherited
+from D2. We then define D1 )c D2 : cpo by equipping D1 !c D2 with least
+upper bounds computed pointwise: if c : natO !m (D1 !c D2) is a chain, thenF
+
+c : (D1 !c D2) is *d1: F(*n:c n d1).
+
+If D : cpo, write ID D : D !c D for the continuous identity function on D.
+If f : D !c E and g : E !c F write g ffi f : D !c F for their composition.
+Composition of continuous maps is associative, with ID as a unit.
+
+Discrete cpos If X : Type then equipping X with the order x1 v x2 iff x1 = x2
+
+(i.e. Leibniz equality) yields a cpo that we write Discrete X.
+Finite products Write 1 for the one-point cpo, Discrete unit, which is terminal, in that for any f g : D !c 1, f == g. If D1 D2 : cpo then equipping
+
+3
+
+the usual product of the underlying types of their underlying orders with
+the pointwise ordering yields a product order. Equipping that order with a
+pointwise least upper bound operation F c = (F(fstffic); F(sndffic)) for c !m
+D1 * D2 yields a product cpo D1 * D2 with continuous ssi : D1 * D2 !c Di.
+We write hf; gi for the unique (up to ==) continuous function such that
+f == ss1 ffi hf; gi and g == ss2 ffi hf; gi.
+Closed structure We can define operations curry : (D * E !c F ) ! (D !c
+
+E )c F ) and ev : (E )c D) * E !c D such that for any f : D * E !c F ,
+curry(f ) is the unique continuous map such that f == ev ffi hcurry f ffi ss1; ss2i.
+We define uncurry : (D )c E )c F ) !c D * E )c F by uncurry =
+curry(ev ffihev ffihss1; ss1ffiss2i; ss2ffiss2i) and we check that uncurry(curry(f )) == f
+and curry(uncurry(h)) == h for all f and h.
+
+So our internal category CPO of cpos and continuous maps is Cartesian closed.
+We elide the details of other constructions, including finite coproducts, strict
+function spaces and general indexed products, that are in the formalization.
+Although our cpos are not required to have least elements, those that do are of
+special interest. We use Coq's typeclass mechanism to capture them:
+
+Class Pointed(D : cpo) := { ? : D; Pleast : 8 d : D, ? v d }.
+Instance DOne pointed : Pointed 1.
+Instance prod pointed A B { pa : PointedA} {pb : PointedB} : Pointed(A * B).
+Instance fun pointed A B {pb : PointedB} : Pointed(A )cB).
+
+Now if D is Pointed, and f : D !c D then we can define fixp f, the least
+fixed point of f in the usual way, as the least upper bound of the chain of iterates
+of f starting at ?. We define FIXP : (D )c D) !c D to be the `internalised'
+version of fixp.
+
+If D : cpo and P : D ! Prop, then P is admissible if for all chains c :
+natO !m D such that (8n: P (cn)), one has P (F c). In such a case, the subset
+type {d : D | P (d)} with the order and lubs inherited from D is a cpo. We can
+also prove the standard fixed point induction principle:
+
+Definition fixp ind D { pd : PointedD} : 8 (F : D !mD)(P : D! Prop),
+
+admissible P ! P ? ! (8 x, P x ! P (F x)) ! P (fixp F ).
+
+The main technical complexity in this part of the formalization is simply
+the layering of definitions, with (for example) cpos being built on ords, and
+D )c E being built on D !c E, which is built on D !m E, which is built on
+D ! E. Definitions have to be built up in multiple staged versions and there
+are many implicit coercions and hints for Coq's auto tactic, which are tricky to
+get right. There is also much boilerplate associated with morphism declarations
+supporting setoid rewriting, and there is some tension between the elementwise
+and `point-free' styles of working.
+
+2.2 The lift monad
+The basic order theory of the previous section goes through essentially as it
+does when working classically on paper. In particular, the definitions of lubs
+in products and function spaces are already constructive. But lifting will allow
+
+4
+
+us to express general partial recursive functions, which, in Coq's logic of total
+functions, is clearly going to involve some work. Our solution is a slight generalization of Paulin-Mohring's treatment of the particular case of flat cpos, which
+in turn builds on work of Capretta [9] on general recursion in type theory. We
+exploit Coq's support for coinductive datatypes [10], defining lifting in terms of
+a type Stream of potentially infinite streams:
+
+Variable D : cpo.
+CoInductive Stream := Eps : Stream ! Stream | Val : D ! Stream.
+
+An element of Stream is (classically) either the infinite Eps (Eps (Eps (: : : ))),
+or some finite sequence of Eps steps, terminated by Val d for some d : D,
+Eps (Eps (: : : Eps (Val d) : : :)). One can think of Stream as defining a resumptions monad, which we will subsequently quotient to define lifting. For x : Stream
+and n : nat, pred nth x n is the stream that results from removing the first n
+Eps steps from x. The order on Stream is coinductively defined by
+
+CoInductive DLle : Stream! Stream! Prop :=
+
+| DLleEps : 8 x y, DLle x y ! DLle (Eps x) (Eps y)
+| DLleEpsVal : 8 x d, DLle x (Val d) ! DLle (Eps x) (Val d)
+| DLleVal : 8 d d' n y, pred nth y n = Val d' ! d v d' ! DLle (Val d) y.
+
+which satisfies the following coinduction principle:
+Lemma DLle rec : 8 R : Stream! Stream! Prop,
+
+(8 x y, R (Eps x) (Eps y) ! R x y) !
+(8 x d, R (Eps x) (Val d) ! R x (Val d)) !
+(8 d y, R (Val d) y ! 9 n, 9 d', pred nth y n = Val d' ^ d v d' )
+! 8 x y, R x y ! DLle x y.
+
+The coinduction principle is used to show that DLle is reflexive and transitive,
+allowing us to construct a preorder DL ord : ord (and we now write the usual v
+for the order). The infinite stream of Eps 's, \Omega , is the least element of the order.
+
+Constructing a cpo from DL ord is slightly subtle. We need to define a function that maps chains c : (natO !m DL ord) to their lubs in DL ord. An
+important observation is that if some cn is non-\Omega , i.e. there exists a dn such
+that cn == Val dn, then for any m >= n, there is a dm such that cm == Val dm
+and that moreover, the sequence dn; dn+1; : : : ; forms a chain in D. Classically,
+the idea is that we look for such a cn; if we find one, then we can construct a
+chain in D and return Val applied to the least upper bound of that chain. If
+there's no such chain then the least upper bound is \Omega . But we cannot simply
+test whether a particular cn is \Omega  or not: we can only examine finite prefixes.
+So we make a `parallel' corecursive search through all the cns, which may be
+pictured something like this:3
+
+c0 = Eps
+
+fflffl
+
+Eps
+
+\Xi \Xi \Psi \Psi 
+
+\Psi \Psi 
+
+\Psi \Psi 
+
+\Psi \Psi 
+
+Eps * * *
+
+c1 = Eps
+
+::v
+vv
+
+Eps
+
+::v
+vv
+
+? ?
+
+c2 = Eps
+
+::v
+vv
+
+? ? ?
+
+3 In reality, the output stream `ticks' less frequently than the picture would suggest.
+
+5
+
+The output we are trying to produce is an element of DL ord. Each time our
+interleaving search finds an Eps , we produce an Eps on the output. So if every
+element of the chain is \Omega , we will end up producing \Omega  on the output. But should
+we find a Val d after outputting some finite number of Eps s, then we know all
+later elements of the chain are also non-\Omega , so we go ahead and build the chain
+in D that they form and compute its least upper bound using the lub operation
+of D. The details of this construction, and the proof that it does indeed yield
+the least upper bound of the chain c, involve interesting bits of constructive
+reasoning: going from knowing that there is a chain in D to actually having that
+chain in one's hand so as to take its lub uses (a provable form of) constructive
+indefinite description, for example. But at the end of the day, we end up with a
+constructive definition of D? : cpo, which is clearly Pointed.
+
+Lifting gives a strong monad [17] on CPO. The unit j : D !c D? applies
+the Val constructor. If f : D !c E? define kleisli f : D? !c E? to be the map
+
+cofix kl (d : D?) : E? := match d with Eps dl ) Eps (kl dl) | Val d0 ) f d0
+Thinking operationally, the way in which kleisli sequences computations is very
+intuitive. To run kleisli f d, we start by running d. Every time d takes an Eps
+step, we do too, so if d diverges so does kleisli f d. Should d yield a value d0,
+however, the remaining steps are those of f d0. We prove that kleisli f actually
+is a continuous function and, amongst other things, satisfies all the equations
+making (-?; j; kleisli(-)) a Kleisli triple on CPO. It is also convenient to have
+`parameterized' versions of the Kleisli operators Kleislir D E : (D * E !c
+F?) ! (D * E? !c F?) defined by composing kleisli with the evident strength
+o/ : D * E? !c (D * E)?.
+
+3 A Simply-Typed Functional Language
+Our first application of the domain theory formalization is mechanize the denotational semantics of PCFv, a simply-typed, call-by-value functional language with
+recursion. Types in PCFv consist of integer, boolean, functions and products;
+we represent typing environments by a list of types.
+Inductive Ty := Int | Bool | Arrow (o/1 o/2 : Ty) | Prod (o/1 o/2 : Ty).
+Infix " -> " := Arrow. Infix " * " := Prod (at level 55).
+Definition Env := list Ty.
+
+We separate syntactic values v from general expressions e, and restrict the
+syntax to ANF (administrative normal form), with explicit sequencing of evaluation by LET and inclusion of values into expressions by VAL. As usual, there
+immediately arises the question of how to represent binders. Our first attempt
+used de Bruijn indices of type nat in the syntax representation, and a separate
+type for typing judgments:
+
+Inductive Value := VAR : nat ! Value | FIX : Ty ! Ty ! Exp ! Value |: : :
+Inductive VTy (\Gamma  : Env) (o/ : Ty) : Value ! Type :=
+| TVAR : 8 m , nth error \Gamma  m = Some o/! VTy \Gamma  (VAR m) o/
+
+6
+
+| TFIX : 8 e o/1 o/2, (o/ = o/1 -> o/2) ! ETy (o/1 :: o/1 -> o/2 :: \Gamma  ) e o/2 ! VTy \Gamma  (FIX o/1
+o/2 e) o/ : : :
+
+The major drawback of the above is that typing judgments contain proof
+objects: simple equalities between types, as in TFIX, and the existence of a
+variable in the environment, as in TVAR. It's necessary to prove (at some length)
+that any two typings of the same term are equal, whilst definitions and theorems
+are hedged with well-formedness side-conditions.
+
+We recently switched to a strongly-typed term representation in which variable and term types are indexed by Ty and Env, ensuring that terms are welltyped by construction. Definitions and theorems become more natural and much
+more concise, and the problems with equality proofs go away.4 Here is the complete definition of well-typed terms:
+
+Inductive Var : Env ! Ty ! Type :=
+| ZVAR : 8 \Gamma  o/, Var (o/ :: \Gamma  ) o/ | SVAR : 8 \Gamma  o/ o/0, Var \Gamma  o/ ! Var (o/0 :: \Gamma  ) o/.
+
+Inductive Value : Env ! Ty ! Type :=
+| TINT : 8 \Gamma  , nat ! Value \Gamma  Int | TBOOL : 8 \Gamma  , bool ! Value \Gamma  Bool
+| TVAR : 8 \Gamma  o/, Var \Gamma  o/ ! Value \Gamma  o/
+| TFIX : 8 \Gamma  o/1 o/2, Exp (o/1 :: o/1 -> o/2 :: \Gamma  ) o/2 ! Value \Gamma  (o/1 -> o/2)
+| TPAIR : 8 \Gamma  o/1 o/2, Value \Gamma  o/1 ! Value \Gamma  o/2 ! Value \Gamma  (o/1 * o/2)
+with Exp : Env ! Ty ! Type :=
+| TFST : 8 \Gamma  o/1 o/2, Value \Gamma  (o/1 * o/2) ! Exp \Gamma  o/1
+| TSND : 8 \Gamma  o/1 o/2, Value \Gamma  (o/1 * o/2) ! Exp \Gamma  o/2
+| TOP : 8 \Gamma  , (nat ! nat ! nat) ! Value \Gamma  Int ! Value \Gamma  Int ! Exp \Gamma  Int
+| TGT : 8 \Gamma  , Value \Gamma  Int ! Value \Gamma  Int ! Exp \Gamma  Bool
+| TVAL : 8 \Gamma  o/, Value \Gamma  o/ ! Exp \Gamma  o/
+| TLET : 8 \Gamma  o/1 o/2, Exp \Gamma  o/1 ! Exp (o/1 :: \Gamma  ) o/2 ! Exp \Gamma  o/2
+| TAPP : 8 \Gamma  o/1 o/2, Value \Gamma  (o/1 -> o/2) ! Value \Gamma  o/1 ! Exp \Gamma  o/2
+| TIF : 8 \Gamma  o/, Value \Gamma  Bool ! Exp \Gamma  o/ ! Exp \Gamma  o/ ! Exp \Gamma  o/.
+
+Definition CExp o/ := Exp nil o/. Definition CValue o/ := Value nil o/.
+
+Variables of type Var \Gamma  o/ are represented by a "typed" de Bruijn index that
+is in essence a proof that o/ lives at that index in \Gamma  . The typing rule associated
+with each term constructor can be read directly off its definition: for example,
+TLET takes an expression typed as o/1 under \Gamma  , and another expression typed
+as o/2 under \Gamma  extended with a new variable of type o/1; its whole type is then o/2
+under \Gamma  . The abbreviations CExp and CValue define closed terms.
+
+Now the operational semantics can be presented very directly:
+
+Inductive Ev : 8 o/, CExp o/ ! CValue o/ ! Prop :=
+| e Val : 8 o/ (v : CValue o/), TVAL v + v
+| e Op : 8 op n1 n2, TOP op (TINT n1) (TINT n2) + TINT (op n1 n2)
+| e Gt : 8 n1 n2, TGT (TINT n1) (TINT n2) + TBOOL (ble nat n2 n1)
+| e Fst : 8 o/1 o/2 (v1 : CValue o/1) (v2 : CValue o/2), TFST (TPAIR v1 v2) + v1
+| e Snd : 8 o/1 o/2 (v1 : CValue o/1) (v2 : CValue o/2), TSND (TPAIR v1 v2) + v2
+| e App : 8 o/1 o/2 e (v1 : CValue o/1) (v2 : CValue o/2),
+
+substExp (doubleSubst v1 (TFIX e)) e + v2 ! TAPP (TFIX e) v1 + v2
+
+4 The new Program and dependent destruction tactics in Coq 8.2 are invaluable for
+
+working with this kind of strongly dependent representation.
+
+7
+
+| e Let : 8 o/1 o/2 e1 e2 (v1 : CValue o/1) (v2 : CValue o/2),
+
+e1 + v1 ! substExp (singleSubst v1) e2 + v2 ! TLET e1 e2 + v2
+| e IfTrue : 8 o/ (e1 e2 : CExp o/) v, e1 + v ! TIF (TBOOL true) e1 e2 + v
+| e IfFalse : 8 o/ (e1 e2 : CExp o/) v, e2 + v ! TIF (TBOOL false) e1 e2 + v
+where "e '+' v" := (Ev e v).
+
+Substitutions are typed maps from variables to values:
+Definition Subst \Gamma  \Gamma  0 := 8 o/, Var \Gamma  o/ ! Value \Gamma  0 o/.
+Definition hdSubst \Gamma  \Gamma  0 o/ : Subst (o/::\Gamma  ) \Gamma  0 ! Value \Gamma  0 o/ := : : :.
+Definition tlSubst \Gamma  \Gamma  0 o/ : Subst (o/::\Gamma  ) \Gamma  0 ! Subst \Gamma  \Gamma  0 := : : :.
+
+To apply a substitution on de Bruijn terms (functions substVal and substExp), one would conventionally define a shift operator, but the full dependent
+type of this operator (namely Val(\Gamma  ++ \Gamma  0) o/ ! Val(\Gamma  ++[o/ 0] ++ \Gamma  0) o/ ) is hard
+to work with. Instead, we first define general renamings (maps from variables to
+variables), and then bootstrap substitution on terms, defining shift in terms of
+renaming [5, 15, 1]. Definitions and lemmas regarding composition must be similarly bootstrapped: first composition of renamings is defined, then composition
+of substitution with renaming, and finally composition of substitutions.
+
+3.1 Denotational semantics
+The semantics of types is inductive, using product of cpo's to interpret products
+and continuous functions into a lifted cpo to represent call-by-value functions.
+
+Fixpoint SemTy o/ := match o/ with
+
+| Int ) Discrete nat | Bool ) Discrete bool
+| o/1 -> o/2 ) SemTy o/1 )c (SemTy o/2)?
+| o/1 * o/2 ) SemTy o/1 * SemTy o/2 end.
+Fixpoint SemEnv \Gamma  := match \Gamma  with nil ) 1 | o/ :: \Gamma  0 ) SemEnv \Gamma  0 * SemTy o/
+end.
+
+We interpret Value \Gamma  o/ in SemEnv \Gamma  !c SemTy o/ . Expressions are similar,
+except that the range is a lifted cpo. Note how we have used a `point-free' style,
+with no explicit mention of value environments.
+
+Fixpoint SemVar \Gamma  o/ (var : Var \Gamma  o/) : SemEnv \Gamma  !c SemTy o/ :=
+match var with ZVAR ) ss2 | SVAR v ) SemVar v ffi ss1 end.
+
+Fixpoint SemExp \Gamma  o/ (e : Exp \Gamma  o/) : SemEnv \Gamma  !c(SemTy o/)?:=
+match e with
+| TOP op v1 v2 ) j ffi uncurry (SimpleOp2 op) ffi h SemVal v1 , SemVal v2 i
+| TGT v1 v2 ) j ffi uncurry (SimpleOp2 ble nat) ffi h SemVal v2 , SemVal v1 i
+| TAPP v1 v2 ) ev ffi h SemVal v1 , SemVal v2 i
+| TVAL v ) j ffi SemVal v
+| TLET e1 e2 ) Kleislir(SemExp e2) ffi h ID, SemExp e1 i
+| TIF v e1 e2 ) (choose @3 (SemExp e1)) (SemExp e2) (SemVal v)
+| TFST v ) j ffi ss1ffi SemVal v
+| TSND v ) j ffi ss2ffi SemVal v
+end with SemVal \Gamma  o/ (v : Value \Gamma  o/) : SemEnv \Gamma  !cSemTy o/ :=
+match v with
+| TINT n ) K (n : Discrete nat)
+
+8
+
+| TBOOL b ) K (b : Discrete bool)
+| TVAR i ) SemVar i
+| TFIX e ) FIXP ffi curry (curry (SemExp e))
+| TPAIR v1 v2 ) h SemVal v1 , SemVal v2 i end.
+
+In the above SimpleOp2 lifts binary Coq functions to continuous maps on
+discrete cpos, K is the usual combinator and choose is a continuous conditional.
+
+3.2 Soundness and adequacy
+We first prove soundness, showing that if an expression e evaluates to a value v,
+then the denotation of e is indeed the denotation of v. This requires that substitution commutes with the semantic meaning function. We define the `semantics'
+of a substitution s : Subst \Gamma  0 \Gamma  to be a map in SemEnv \Gamma  !c SemEnv \Gamma  0.
+
+Fixpoint SemSubst \Gamma  \Gamma  0 : Subst \Gamma  0 \Gamma  ! SemEnv \Gamma  !c SemEnv \Gamma  0 :=
+
+match \Gamma  0 with
+| nil ) fun s ) K (tt : 1)
+| :: ) fun s ) h SemSubst (tlSubst s) , SemVal (hdSubst s) i end.
+
+This is then used to prove the substitution lemma, which in turn is used in
+the e App and e Let cases of the soundness proof.
+
+Lemma SemCommutesWithSubst:
+
+(8 \Gamma  o/ (v : Value \Gamma  o/) \Gamma  0 (s : Subst \Gamma  \Gamma  0),
+SemVal v ffi SemSubst s == SemVal (substVal s v))
+^ (8 \Gamma  o/ (e : Exp \Gamma  o/) \Gamma  0 (s : Subst \Gamma  \Gamma  0),
+
+SemExp e ffi SemSubst s == SemExp (substExp s e)).
+
+Theorem Soundness: 8 o/ (e : CExp o/) v, e + v ! SemExp e == j ffi SemVal v.
+
+We now prove adequacy, showing that if the denotation of a closed expression e is some (lifted) element, then e converges to a value. The proof uses a
+logical relation between syntax and semantics. We start by defining a liftRel operation that takes a relation between a cpo and values and lifts it to a relation
+between a lifted cpo and expressions, then use this to define relExp in terms
+of relVal.
+
+Definition liftRel o/ (R : SemTy o/ ! CValue o/ ! Prop) :=
+
+fun d e ) 8 d', d == Val d' ! 9 v, e + v ^ R d' v.
+
+Fixpoint relVal o/ : SemTy o/ ! CValue o/ ! Prop := match o/ with
+| Int ) fun d v ) v = TINT d
+| Bool ) fun d v ) v = TBOOL d
+| o/1 -> o/2 ) fun d v ) 9 e, v = TFIX e ^ 8 d1 v1, relVal o/1 d1 v1 ! liftRel (relVal
+o/2) (d d1) (substExp (doubleSubst v1 v ) e)
+| o/1 * o/2 ) fun d v ) 9 v1, 9 v2, v = TPAIR v1 v2 ^ relVal o/1 (ss1d) v1 ^ relVal o/2
+(ss2d) v2 end.
+
+Fixpoint relEnv \Gamma  : SemEnv \Gamma  ! Subst \Gamma  nil ! Prop := match \Gamma  with
+
+| nil ) fun ) True
+| o/ :: \Gamma  ) fun d s ) relVal o/ (ss2d) (hdSubst s) ^ relEnv \Gamma  (ss1d) (tlSubst s) end.
+
+Definition relExp o/ := liftRel (relVal o/).
+
+The logical relation reflects == and is admissible:
+
+9
+
+Lemma relVal lower: 8 o/ d d' v, d v d' ! relVal o/ d' v ! relVal o/ d v.
+Lemma relVal admissible: 8 o/ v, admissible (fun d ) relVal o/ d v).
+
+These lemmas are then used in the proof of the Fundamental Theorem for
+the logical relation, which is proved by induction on the structure of terms.
+
+Theorem FT : (8 \Gamma  o/ v ae s, relEnv \Gamma  ae s ! relVal o/ (SemVal v ae) (substVal s v))
+
+^ (8 \Gamma  o/ e ae s, relEnv \Gamma  ae s ! relExp o/ (SemExp e ae) (substExp s e)).
+
+Now we instantiate the fundamental theorem with closed expressions to obtain
+Corollary Adequacy: 8 o/ (e : CExp o/) d, SemExp e tt == Val d ! 9 v, e + v.
+
+4 Recursive Domain Equations
+We now outline our formalization of the solution of mixed-variance recursive
+domain equations, such as arise in modelling untyped higher-order languages,
+languages with higher-typed store or languages with general recursive types.
+
+The basic technology for solving domain equations is Scott's inverse limit
+construction, our formalization of which follows an approach due to Freyd [11,
+12] and Pitts [23]. A key idea is to separate the positive and negative occurences,
+specifying recursive domains as fixed points of locally continuous bi-functors
+F : CPOop * CPO ! CPO, i.e. domains D such that such that F (D; D) ' D.
+
+The type of mixed variance locally-continuous bifunctors on CPO is defined as
+the type of records comprising an action on pairs of objects (ob), a continuous
+action on pairs of morphisms (mor ), contravariant in the first argument and
+covariant in the second, together with proofs that mor respects both composition
+(morph comp) and identities (morph id):
+Record BiFunctor := mk functor
+
+{ ob : cpo ! cpo ! cpo;
+
+mor: 8 (A B C D : cpo), (B )cA) * (C )cD) )c (ob A C )c ob B D) ;
+morph comp: 8 A B C D E F f g h k,
+
+morB E D F (f, g) ffi morA B C D (h, k)
+== mor (h ffif, g ffik) ;
+morph id : 8 A B, mor (IDA , IDB) == ID
+We single out the strict bifunctors, taking pointed cpos to pointed cpos:
+Definition FStrict : BiFunctor ! Type :=
+
+fun BF ) 8 D E, PointedD ! PointedE ! (Pointed(ob BF D E )).
+
+We build interesting bifunctors from a few primitive ones in a combinatory
+style. If D : cpo then BiConst D : BiFunctor on objects is constantly D and on
+morphisms is constantly ID D. This is strict if D is pointed. BiArrow : BiFunctor
+on objects takes (D; E) to D )c E with the action on morphisms given by conjugation. This is strict. If F : BiFunctor then BiLift F : BiFunctor on objects
+takes (D; E) to (ob F (D; E))? and on morphisms composes mor F with the morphism part of the lift functor. This is always strict. If F1 F2 : BiFunctor then
+BiPair F1 F2 : BiFunctor on objects takes (D; E) to (ob F1 (D; E))*(ob F2 (D; E))
+with the evident action on morphisms. This is strict if both F1 and F2 are. The
+definition of BiSum F1 F2 : BiFunctor is similar, though this is not generally
+strict as our coproduct is a separated sum.
+
+10
+
+A pair (f : D !c E; g : E !c D) is an embedding-projection (e-p) pair if
+g ffi f == idD and f ffi g v idE. If F is a bifunctor and (f; g) an e-p pair, then
+(mor F (g; f); mor F (f; g)) is an e-p pair.
+
+Now let F : BiFunctor and F S : FStrict F . We define hDii to be the sequence
+of cpos defined by D0 = 1 and Dn+1 = ob F (Dn; Dn). We then define a sequence
+of e-p pairs:
+
+e0 = ? : D0 !c D1 p0 = ? : D1 !c D0
+en+1 = mor F (pn; en) : Dn+1 !c Dn+2 pn+1 = mor F (en; pn) : Dn+2 !c Dn+1:
+
+Let ssi : \Pi jDj !c Di be the projections from the product of all the Djs. The
+predicate P : \Pi jDj ! Prop defined by P d := 8i; ssi d == pn(ssi+1 d) is admissible, so we can define the sub-cpo D1 to be {d | P d} with order and lubs
+inherited from the indexed product. D1 will be the cpo we seek, so we now need
+to construct the required isomorphism.
+
+Define tn : Dn ! D1 to be the map that for i < n projects Dn to Di
+via pi ffi * * * ffi pn-1 and for i > n embeds Dn in Di via en ffi * * * ffi ei-1. Then
+mor F (ti; ssi) : ob F (D1; D1) !c ob F (Di; Di) = Di+1, so ti+1 ffi mor F (ti; ssi) :
+ob F (D1; D1) !c D1, and mor F (ssi; ti) ffi ss1+1 : D1 !c ob F (D1; D1). We
+then define
+
+UNROLL := G
+
+i
+
+(mor F (ssi; ti) ffi ssi+1) : D1 !c ob F (D1; D1)
+
+ROLL := G
+
+i
+
+(ti+1 ffi mor F (ti; ssi)) : ob F (D1; D1) !c D1
+
+Some calculation shows that ROLL ffi UNROLL == ID D1 and UNROLL ffi
+ROLL == ID(ob F (D1; D1)), so we have constructed the desired isomorphism.
+
+In order to do anything useful with recursively defined domains, we really
+need some general reasoning principles that allow us to avoid unpicking all the
+complex details of the construction above every time we want to prove something.
+One `partially' abstract interface to the construction reveals that D1 comes
+equipped with a chain of retractions aei : D1 !c D1 such that Fi aei == IDD1;
+concretely, aei can be taken to be ti ffi ssi. A more abstract and useful principle
+is given by Pitts's [23] characterization of the solution as a minimal invariant,
+which is how we will establish the existence of a recursively defined logical relation in Section 5.1. Let ffi : (D1 )c D1) !c (D1 )c D1) be given by
+
+ffi e = ROLL ffi mor F (e; e) ffi UNROLL
+The minimal invariance property is then the assertion that IDD1 is equal to
+fix(ffi), which we prove via a pointwise comparison of the chain of retractions
+whose lub we know to be the identity function with the chain whose lub gives
+the least fixed point of ffi.
+
+5 A Uni-Typed Lambda Calculus
+We now apply the technology of the previous section to formalize the denotational semantics of an uni-typed (untyped) CBV lambda calculus with constants.
+
+11
+
+This time the values are variables, numeric constants, and * abstractions; expressions are again in ANF with LET and VAL constructs, together with function
+application, numeric operations, and a zero-test conditional. For binding, we use
+de Bruijn indices and separate well-formedness judgments ETyping and VTyping. The evaluation relation is as follows:
+
+Inductive Evaluation : Exp ! Value ! Type :=
+| e Value : 8 v, VAL v + v
+| e App : 8 e v2 v, substExp [v2] e + v ! (APP (LAMBDA e) v2) + v
+| e Let : 8 e1 v1 e2 v2, e1 + v1 ! substExp [v1] e2 + v2 ! (LET e1 e2) + v2
+| e Ifz1 : 8 e1 e2 v1, e1 + v1 ! IFZ (NUM O) e1 e2 + v1
+| e Ifz2 : 8 e1 e2 v2 n, e2 + v2 ! IFZ (NUM (S n)) e1 e2 + v2
+| e Op : 8 op v1 n1 v2 n2, OP op (NUM n1 ) (NUM n2 ) + NUM (op n1 n2 )
+where "e '+' v" := (Evaluation e v).
+Inductive Converges e : Prop := e Conv : 8 v ( : Evaluation e v), Convergese.
+Notation "e '+'" := (Converges e).
+
+Note that Evaluation is here in Type rather than Prop, which is a knockon effect of separating the definition of terms from that of well-formedness.5 We
+plan instead to make untyped terms well-scoped by construction, using the same
+techniques as we did for the typed language in Section 3.
+
+5.1 Semantic Model
+We interpret the unityped language in a solution for the recursive domain equation D ' (nat + (D !c D))?, following the intuition that a computation either
+diverges or produces a value which is a number or a function. This is not the
+`tightest' domain equation one could use for CBV: one could make function space
+strict, or equivalently make the argument of the function space be a domain of
+values rather than computations. But this equation still gives an adequate model.
+The construction in Coq is an instantiation of results from the previous section.
+First we build the strict bifunctor F (D; E) = (nat + (D !c E))?:
+
+Definition FS := BiLift strict (BiSum (BiConst (Discrete nat)) BiArrow).
+
+And then we construct the solution, defining domains D1 for computations
+and V1 for values:
+
+Definition D1 := D1 FS.
+Definition V1 := Dsum (Discrete nat) (D1 !c D1).
+Definition Roll : (V1)? !c D1 := ROLL FS.
+Definition Unroll : D1 !c (V1)? := UNROLL FS.
+Definition UR iso : Unroll ffi Roll == ID := DIso ur FS.
+Definition RU iso : Roll ffi Unroll == ID := DIso ru FS.
+
+For environments we define the n-ary product of V1 and projection function.
+Fixpoint SemEnv n : cpo := match n with O ) 1| S n ) SemEnv n * V1 end.
+
+5 We induce over evaluations to construct well-formedness derivations when showing
+
+well-formedness preservation, and well-formedness derivations are themselves in Type
+so that we can use them to inductively define the denotational semantics.
+
+12
+
+Fixpoint projenv (m n : nat) : (m < n) ! SemEnv n !c V1 :=
+match m, n with
+| m, O ) fun inconsistent ) match (lt n O m inconsistent) with end
+| O, S n ) fun ) ss2
+| S m, S n ) fun h ) projenv (lt S n h) ffi ss1 end.
+
+We define a lifting operator Dlift : (V1 !c D1) !c D1 !c D1 and an operator
+Dapp : V1 * V1 !c (V1)? that applies the first component of a pair to the second, returning ? in the when the first component is not a function. (Coproducts
+are introduced with INL and INR, and eliminated with [*; *].)
+
+Definition Dlift : (V1 !c D1) !c D1 !c D1 :=
+
+curry (Roll ffi ev ffihkleisli ffi (Unroll ffi -) ffi ss1; Unroll ffi ss2i).
+Definition Dapp : V1 * V1 !c (V1)? :=
+
+ev ffi h[? : Discrete nat !c D1 !c (V1)?; (Unroll ffi -)] ffi ss1; Roll ffi j ffi ss2i.
+
+We can then define the semantics of the unityped language:
+Fixpoint SemVal v n (vt : VTyping n v) : SemEnv n !c V1 :=
+match vt with
+| TNUM n ) INL ffi (@K (Discrete nat) n)
+| TVAR m nthm ) projenv nthm
+| TLAMBDA t b ) INR ffi Dlift ffi curry (Roll ffi SemExp b)
+end with SemExp e n (et : ETyping n e) : SemEnv n !c (V1)? :=
+match et with
+| TAPP v1 v2 ) Dapp ffi hSemVal v1; SemVal v2i
+| TVAL v ) j ffi SemVal v
+| TLET e1 e2 ) ev ffi hcurry(Kleislir(SemExp e2)); SemExp e1i
+| TOP op v1 v2 )
+
+uncurry(Operator2 (j ffi INL ffi uncurry(SimpleOp2 op))) ffi
+
+h[j; ? : (D1 !c D1) !c (Discrete nat)?] ffi SemVal v1,
+
+[j; ? : (D1 !c D1) !c (Discrete nat)?] ffi SemVal v2i
+| TIFZ v e1 e2 ) ev ffi
+
+h[[K (SemExp e1), K (SemExp e2)] ffi zeroCase;
+
+? : (D1 !c D1) !c SemEnv n !c (V1)?] ffi (SemVal v), ID i end.
+
+5.2 Soundness and Adequacy
+As with the typed language, the proof of soundness makes use of a substitution
+lemma, and in addition uses the isomorphism of the domain D1 in the case for
+APP. The proof then proceeds by induction, using equational reasoning to show
+that evaluation preserves semantics:
+
+Lemma Soundness: 8 e v (et : ETyping 0 e) (vt : VTyping 0 v),
+
+e + v ! SemExp et == j ffi SemVal vt.
+
+We again use a logical relation between syntax and semantics to prove adequacy, but now cannot define the relation by induction on types. Instead we
+have a recursive specification of a logical relation over our recursively defined domain, but it is not at all clear that such a relation exists: because of the mixed
+variance of the function space, the operator on relations whose fixpoint we seek
+is not monotone. Following Pitts [23], however, we again use the technique of
+
+13
+
+separating positive and negative occurrences, defining a monotone operator in
+the complete lattice of pairs of relations, with the superset order in the first
+component and the subset order in the second. A fixed point of that operator is
+then constructed by Knaster-Tarski.
+
+We first define a notion of admissibility on ==-respecting relations between
+elements of our domain of values V1 and closed syntactic values in Value and
+show that this is closed under intersection, so admissible relations form a complete lattice.
+
+We then define a relational action corresponding to the bifunctor used in
+defining our recursive domain. This action, RelV , maps a pair of relations R; S
+on (V1)? * Value to a new relation that relates (inl m) to (NUM m) for all
+m : nat, and relates (inr f ) to (LAMBDA e) just when f : D1 !c D1 is strict
+and satisfies the `logical' property
+
+8(d; v) 2 R; 8d0; Unroll(f(Roll(Val d))) == Val d0
+
+! 9v0; substExp v e + v0 ^ (d0; v0) 2 S
+
+We then show that RelV maps admissible relations to admissible relations
+and is contravariant in its first argument and covariant in its second. Hence the
+function *R : RelAdmop: *S : RelAdm: (RelV S R; RelV R S) is monotone
+on the complete lattice RelAdmop * RelAdm. Thus it has a least fixed point
+(\Delta -; \Delta +). By applying the minimal invariant property from the previous section,
+we prove that in fact \Delta - == \Delta +, so we have found a fixed point, \Delta  of RelV ,
+which is the logical relation we need to prove adequacy.
+
+We extend \Delta  to \Delta e, a relation on (V1)? * Exp, by (d; e) 2 \Delta e if and only if
+for all d0 if d == Val d0 then there exists a value v and a derivation e + v such
+that (d0; v) 2 \Delta .
+
+The fundamental theorem for this relation is that for any environment env,
+derivations of VTyping n v and ETyping n e, and any list vs of n closed values
+such that nth error vs i = Some v implies (projenv i env; v) 2 \Delta  for all i and v,
+(SemVal v env ; substVal vs v) 2 \Delta  and (SemExp e env; substExp vs e) 2 \Delta e.
+
+Adequacy is then a corollary of the fundamental theorem:
+
+Theorem Adequacy: 8 e (te : ETyping 0 e) d, SemExp te tt == Val d ! e + .
+
+6 Discussion
+As we noted in the introduction, there have been many mechanized treatments
+of different aspects of domain theory and denotational semantics. One rough
+division of this previous work is between axiomatic approaches and those in
+which definitions and proofs of basic results about cpos, continuous functions
+and so on are made explicitly with the prover's logic. LCF falls into the first
+category, as does Reus's work on synthetic domain theory in LEGO [25]. In the
+second category, HOLCF, originally due to Regensburger [24] and later reworked
+by Mu"ller et al [18], uses Isabelle's axiomatic type class mechanism to define
+and prove properties of domain-theoretic structures within higher order logic.
+
+14
+
+HOLCPO [2, 4] was an extension of HOL with similar goals, and basic definitions
+have also been formalized in PVS [7]. Coq's library includes a formalization by
+Kahn of some general theory of dcpos [14].
+
+HOLCF is probably the most developed of these systems, and has been used
+to prove interesting results [19, 26], but working in a richer dependent type theory
+gives us some advantages. We can express the semantics of a typed language as
+a dependently typed map from syntax to semantics, rather than only being
+able to do shallow embeddings - this is clearly necessary if one wishes to prove
+theorems like adequacy or do compiler correctness. Secondly, it seems one really
+needs dependent types to work conveniently with monads and logical relations,
+or to formalize the inverse limit construction.6
+
+The constructive nature of our formalization and the coinductive treatment
+of lifting has both benefits and drawbacks. On the minus side, some of the proofs
+and constructions are much more complex than they would be classically and
+one does sometimes have to pay attention to which of two classically-equivalent
+forms of definition one works with. Worse, some constructions do not seem to be
+possible, such as the smash product of pointed domains; not being able to define
+\Omega  was one motivation for moving from Paulin-Mohring's pointed cpos to our
+unpointed ones. One benefit that we have not yet seriously investigated, however,
+is that it is possible to extract actual executable code from the denotational
+semantics. Indeed, the lift monad can be seen as a kind of syntax-free operational
+semantics, not entirely unlike game semantics; this perspective, and possible
+connections with step-indexing, seem to merit further study.
+
+The Coq development is of a reasonable size. The domain theory library,
+including the theory of recursive domain equations, is around 7000 lines. The
+formalization of the typed language and its soundness and adequacy proofs are
+around 1700 lines and the untyped language takes around 2500. Although all the
+theorems go through (with no axioms), we have to admit that the development
+is currently rather `rough'. Nevertheless, we have already used it as the basis
+of a non-trivial formalization of some new research [8] and our intention is to
+develop the formalization into something that is more widely useful. Apart from
+general polishing, we plan to abstract some of the structure of our category of
+domains to make it convenient to work simultaneously with different categories,
+including categories of algebras. We would also like to provide better support for
+`diagrammatic' rewriting in monoidal (multi)categories. It is convenient to use
+Setoid rewriting for pointfree equational reasoning, direct translating the normal
+categorical commuting diagrams. But dealing with all the structural morphisms
+is still awkward, and it should be possible to support something more like the
+diagrammatic proofs one can do with `string diagrams' [13].
+
+6 Agerholm [3] formalized the construction of a model of the untyped lambda calculus
+
+using HOL-ST, a version of HOL that supports ZF-like set theory; this is elegant
+but HOL-ST is not widely used and no denotational semantics seems to have been
+done with the model. Petersen [21] formalized a reflexive cpo based on P ! in HOL,
+though this also appears not to have been developed far enough to be useful.
+
+15
+
+References
+
+1. R. Adams. Formalized metatheory with terms represented by an indexed family
+
+of types. In Types for Proofs and Programs, volume 3839 of LNCS, 2006.
+2. S. Agerholm. Domain theory in HOL. In Higher Order Logic Theorem Proving
+
+and its Applications, volume 780 of LNCS, 1994.
+3. S. Agerholm. Formalizing a model of the lambda calculus in HOL-ST. Technical
+
+Report 354, University of Cambridge Computer Laboratory, 1994.
+4. S. Agerholm. LCF examples in HOL. The Computer Journal, 38(2), 1995.
+5. T. Altenkirch and B. Reus. Monadic presentations of lambda terms using generalized inductive types. In Computer Science Logic, volume 1683 of LNCS, 1999.
+6. P. Audebaud and C. Paulin-Mohring. Proofs of randomized algorithms in Coq. In
+
+Mathematics of Program Construction, volume 4014 of LNCS, 2006.
+7. F. Bartels, A. Dold, H. Pfeifer, F. W. Von Henke, and H. Ruess. Formalizing
+
+fixed-point theory in PVS. Technical report, Universita"t Ulm, 1996.
+8. N. Benton and C.-K. Hur. Biorthogonality, step-indexing and compiler correctness.
+
+In ACM International Conference on Functional Programming, 2009.
+9. V. Capretta. General recursion via coinductive types. Logical Methods in Computer
+
+Science, 1, 2005.
+10. T. Coquand. Infinite objects in type theory. In Types for Proofs and Programs,
+
+volume 806 of LNCS, 1993.
+11. P. Freyd. Recursive types reduced to inductive types. In IEEE Symposium on
+
+Logic in Computer Science, 1990.
+12. P. Freyd. Remarks on algebraically compact categories. In Applications of Categories in Computer Science, volume 177 of LMS Lecture Notes, 1992.
+13. A. Joyal and R. Street. The geometry of tensor calculus. Adv. in Math. 88, 1991.
+14. G. Kahn. Elements of domain theory. In the Coq users' contributions library, 1993.
+15. C. McBride. Type-preserving renaming and substitution. Unpublished draft.
+16. R. Milner. Logic for computable functions: Description of a machine implementation. Technical Report STAN-CS-72-288, Stanford University, 1972.
+17. E. Moggi. Notions of computation and monads. Inf. Comput., 93(1):55-92, 1991.
+18. O. Mu"ller, T. Nipkow, D. von Oheimb, and O. Slotosch. HOLCF = HOL + LCF.
+
+J. Functional Programming, 9, 1999.
+19. T. Nipkow. Winskel is (almost) right: Towards a mechanized semantics textbook.
+
+Formal Aspects of Computing, 10, 1998.
+20. C. Paulin-Mohring. A constructive denotational semantics for Kahn networks in
+
+Coq. In From Semantics to Computer Science. Essays in Honour of G Kahn. 2009.
+21. K. D. Petersen. Graph model of LAMBDA in higher order logic. In Higher-Order
+
+Logic Users Group Workshop, volume 780 of LNCS, 1993.
+22. A. M. Pitts. Computational adequacy via `mixed' inductive definitions. In Mathematical Foundations of Programming Semantics, volume 802 of LNCS, 1994.
+23. A. M. Pitts. Relational properties of domains. Inf. Comput., 127, 1996.
+24. F. Regensburger. HOLCF: Higher order logic of computable functions. In Theorem
+
+Proving in Higher Order Logics, volume 971 of LNCS, 1995.
+25. B. Reus. Formalizing a variant of synthetic domain theory. J. Automated Reasoning, 23, 1999.
+26. C. Varming and L. Birkedal. Higher-order separation logic in Isabelle/HOLCF. In
+
+Mathematical Foundations of Programming Semantics, 2008.
+
+16

@@ -1,0 +1,6000 @@
+
+
+Practical Affine Types *
+Jesse A. Tov Riccardo Pucella
+
+Northeafstern University
+{tov,riccardo}@ccs.neu.edu
+
+Abstract
+Alms is a general-purpose programming language that supports practicalaffine types. To offer the expressiveness of Girard's linear logic while keeping
+
+the type system light and convenient, Alms uses expressive kinds that minimizenotation while maximizing polymorphism between affine and unlimited types.
+
+A key feature of Alms is the ability to introduce abstract affine types viaML-style signature ascription. In Alms, an interface can impose stiffer resource
+usage restrictions than the principal usage restrictions of its implementation.This form of sealing allows the type system to naturally and directly express a
+variety of resource management protocols from special-purpose type systems.We present two pieces of evidence to demonstrate the validity of our design
+goals. First, we introduce a prototype implementation of Alms and discuss ourexperience programming in the language. Second, we establish the soundness
+of the core language. We also use the core model to prove a principal kindingtheorem.
+
+1 A Practical Affine Type System
+Alms is a practical, general-purpose programming language with affine types. Affinetypes enforce the discipline that some values are not used more than once, which
+in Alms makes it easy to define new, resource-aware abstractions. General-purposemeans that Alms offers a full complement of modern language features suitable for
+writing a wide range of programs. Practical means that Alms is neither vaporwarenor a minimal calculus--it is possible to download Alms today and try it out.
+
+Rationale. Resource-aware type systems divide into two camps: foundational cal-culi hewing closely to linear logic, and implementations of special-purpose type systems designed to solve special problems. We argue that a general, practical type
+
+*This is the extended version of a paper of the same title submitted to POPL 2011.
+
+1
+
+1 A PRACTICAL AFFINE TYPE SYSTEM
+module type RW LOCK = sigtype
+
+(ff, fi) array -- array of ff identified by fitype excl -- exclusive access
+
+type shared -- shared accesstype
+
+fi@fl : A -- grants fl-level access to array fi
+
+val new : int ! ff ! Efi. (ff, fi) array
+val acquireW : (ff, fi) array ! fi@exclval acquireR
+
+: (ff, fi) array ! fi@sharedval release
+: (ff, fi) array ! fi@fl ! unit
+
+val set : (ff, fi) array ! int ! ff ! fi@excl ! fi@exclval get
+
+: (ff, fi) array ! int ! fi@fl ! ff * fi@flend
+
+Figure 1: An interface for reader-writer locks ($2)
+system based on Girard's linear logic (1987) can naturally and directly express manyof the special cases, such as region-based memory management, aliasing control, session types, and typestate. To this end, the language must satisfy several desiderata:
+Convenience. Unlimited values are the common case, so working with them is assmooth as in a conventional language.
+
+Expressiveness. A wide variety of resource-aware type systems appear naturally asidioms.
+Familiarity. It is easy to use and understand.
+Pragmatics. It provides the trappings of a modern, high-level programming lan-guage, such as algebraic datatypes, pattern matching, exceptions, concurrency,
+
+and modules.
+Soundness. It has a clear theoretical foundation.
+
+We show that Alms meets these criteria.Alms employs a dependent kind system to determine whether a particular type
+is affine or unlimited and to support polymorphism over affine and unlimited types.This approach may sound complicated, but in practice it is no stranger or harder to
+understand than the type systems of other functional programming languages.Affine types, a weakening of linear types, forbid duplication of some values; unlike
+with linear types, all values may be dropped. This flexibility is appropriate to a high-level, garbage-collected language, and it interacts better with other features such as
+exceptions.
+
+2
+
+2 ALMS: THE LANGUAGE
+Our Contributions. This paper introduces the programming language Alms, itsimplementation, and its basic theory:
+
+* We describe the design of Alms, whose novel features include precise kinds foraffine type constructors, and demonstrate how it expresses a variety of resourceaware idioms ($2).
+
+* Our implementation is a usable, full-featured prototype in which we have writtenseveral thousand lines of code ($3).
+
+* Alms rests on a firm theoretical basis. We provide a formal model ($4) andestablish essential theoretical properties ($5).
+This extended version includes more detailed proofs in appendix A. Our implemen-tation is available at www.ccs.neu.edu/~tov/pubs/alms.
+
+2 Alms: The Language
+Alms is a typed, call-by-value, impure functional language with algebraic data types,pattern matching, reference cells, threads, exceptions, and modules with opaque signature ascription. Alms reads like Ocaml (Leroy et al. 2008) but is explicitly typed.In most cases local type inference renders explicit type instantiation unnecessary.
+
+We introduce Alms through a series of examples. Consider a simple Alms function,deposit, that updates one element of an array by adding an integer:
+
+let deposit (a: int Array.array) (acct: int) (amount: int) =Array.set a acct
+
+(Array.get a acct + amount)
+
+This function has a race condition between the read and the write, so we may wantto use a lock to enforce mutual exclusion:
+
+let deposit (a: int Array.array) (acct: int)
+
+(amount: int) (lock: Lock.lock) =Lock.acquire lock
+
+;Array.set a acct
+(Array.get a acct + amount);Lock.release lock
+
+Affine data. Locks can ensure mutual exclusion, but using them correctly is error-prone. A rather coarse alternative to ensure mutual exclusion is to forbid aliasing of
+the array altogether. If we have the only reference to an array then no other processcan operate on it concurrently. In Alms, we do this by declaring an interface that
+includes a new, abstract array type:
+
+3
+
+2 ALMS: THE LANGUAGE
+module type AF ARRAY = sigtype
+
+ff array : A
+
+val new : int ! ff ! ff arrayval set
+
+: ff array ! int A-! ff A-! ff arrayval get
+: ff array ! int A-! ff * ff arrayend
+
+module AfArray : AF ARRAY = struct . . . end
+The notation ": A" specifies that type ff AfArray.array has kind A, as in affine, whichmeans that any attempt to duplicate a reference to such an array is a type error. Two
+
+points about the types of AfArray.get and AfArray.set are worth noting:*
+
+Each must return an array because the caller cannot reuse the reference to thearray supplied as an argument.
+
+* Type o/1 A-! o/2 has kind A, which means that it may be used at most once.1This is necessary because reusing a function partially applied to an affine value
+
+would reuse that value.
+We now rewrite deposit to use the AF ARRAY interface:
+
+let deposit (a: int AfArray.array) (acct: int) (amt: int) =let
+
+(balance, a) = AfArray.get a acct inAfArray.set a acct
+
+(balance + amt)
+
+If we attempt to use an AfArray.array more than once without single-threading it, atype error results:
+
+let deposit (a: int AfArray.array) (acct: int) (amt: int) =let
+
+(balance, ) = AfArray.get a acct inAfArray.set a acct
+
+(balance + amt)
+
+Alms reports that the affine variable a is duplicated.Implementing AfArray is just a matter of wrapping the primitive array type and
+
+operations, and sealing the module with an opaque signature ascription:
+
+module AfArray : AF ARRAY = structtype
+
+ff array = ff Array.array
+
+let new = Array.newlet set
+
+(a: ff array) (ix: int) (v: ff) = Array.set a ix v; alet get
+
+(a: ff array) (ix: int) = (Array.get a ix, a)end
+
+1It is tempting to call this an affine function, but standard terminology says that an affine
+function uses its argument at most once, whereas here we have the type of a function itself usableat most once. Whether an Alms function is affine is determined by the kind of the type of its formal
+
+parameter.
+
+4
+
+2 ALMS: THE LANGUAGE
+The original array type ff Array.array has kind U, as in unlimited, because it places nolimits on duplication. We can use it to represent an abstract type of kind A, however,
+because U is a subkind of A, and Alms's kind subsumption rule allows assigningan abstract type a greater kind than that of its concrete representation. This is
+somewhat akin to Standard ML's treatment of equality types (Milner et al. 1997)and Ocaml's treatment of type constructor variance (Leroy et al. 2008). In SML,
+eqtype is subsumed by type, in that signature matching can abstract an equality typeto a non-equality type but not vice versa.
+
+We need not change new at all, and get and set are modified slightly to return thearray as required by the interface.
+
+Affine capabilities. The affine array interface is quite restrictive. Because it re-quires single-threading an array through the program, it cannot support operations
+that do not actually require exclusive access to the array. However, Alms supportscreating a variety of abstractions to suit our needs. One way to increase our flexibility is to separate the reference to the array from the capability to read and write thearray. Only the latter needs to be affine.
+
+For example, we may prefer an interface that supports "dirty reads," which do notrequire exclusive access but are not guaranteed to observe a consistent state:
+
+module type CAP ARRAY = sigtype
+
+(ff, fi) arraytype
+fi cap : A
+
+val new : int ! ff ! Efi. (ff, fi) array * fi capval set
+
+: (ff, fi) array ! int ! ff ! fi cap ! fi capval get
+: (ff, fi) array ! int ! fi cap ! ff * fi cap
+
+val dirtyGet : (ff, fi) array ! int ! ffend
+
+In this signature, (ff, fi) array is now unlimited and fi cap is affine. Type array's secondparameter,
+
+fi, is a "stamp" used to tie it to its capability, which must have type
+fi cap (where fi matches). In particular, the type of new indicates that it returns anexistential containing an array and a capability with matching stamps. The existential
+
+guarantees that the stamp on an array can only match the stamp on the capabilitycreated by the same call to new.
+
+Operations set and get allow access to an array only when presented with thematching capability. This ensures that set and get have exclusive access with respect
+to other sets and gets. They no longer return the array, but they do need to returnthe capability. On the other hand, dirtyGet does not require a capability and should
+not return one.For example, the CAP ARRAY interface allows us to shuffle an array while simultaneously computing an approximate sum:
+
+5
+
+2 ALMS: THE LANGUAGE
+let shuffleAndDirtySum (a: (ff, fi) CapArray.array)
+
+(cap: fi CapArray.cap) =let th1
+= Thread.fork (** ! inPlaceShuffle a cap) inlet th2
+= Thread.fork (** ! dirtySumArray a) in
+(Thread.wait th1, Thread.wait th2)
+
+To implement CAP ARRAY, we need suitable representations for its two abstracttypes. We represent CAP ARRAY's arrays by the primitive array type, and capabilities by type unit, which is adequate because these capabilities have no run-timesignificance.
+
+module A = Array
+module CapArray : CAP ARRAY = structtype
+
+(ff, fi) array = ff A.arraytype
+fi cap = unit
+
+let new (size: int) (init: ff) = (A.new size init, ())let set
+
+(a: ff A.array) (ix: int) (v: ff) = A.set a ix vlet get
+
+(a: ff A.array) (ix: int) = (A.get a ix, ())let dirtyGet
+
+= A.getend
+
+Type unit has kind U, but as in the previous example, we can abstract it to A tomatch the kind of
+
+fi CapArray.cap. The implementation of the operations is in termsof the underlying array operations, with some shuffling to ignore capability arguments
+
+(in set and get) and to construct tuples containing () to represent the capability inthe result (in new and get).
+
+2
+
+Capabilities are values. Capabilities such as fi CapArray.cap often represent thestate of a resource, but in Alms they are also ordinary values. They may be stored
+in immutable or mutable data structures, packed into exceptions and thrown, or sentover communication channels like any other value. For example, suppose we would
+like a list of array capabilities. Lists are defined thus in the standard library:
+
+type ^ff list = Nil | Cons of ^ff * ^ff list
+The type variables we have seen until now could only be instantiated with unlimitedtypes, but the diacritic on type variable
+
+^ff indicates that ^ff may be instantiated toany type, whether affine or unlimited.
+
+Whether a list should be treated as affine or unlimited depends on whether thecontents of the list is affine or unlimited. Alms represents this fact by giving the list
+type constructor a dependent kind, where kind h ^ffi denotes the kind of ^ff:
+
+2If you think this unit shuffling is unnecessary, we agree ($7).
+
+6
+
+2 ALMS: THE LANGUAGE
+
+^ff list : h ^ffi -- list has kind \Pi  ^ff. h ^ffi
+That is, the kind of a list is the same as the kind of its element type: type int list haskind U, whereas
+
+fi CapArray.cap list has kind A.In general, the kind of a type is the least upper bound of the kinds of the types
+
+that occur directly in its representation. For example:
+
+type ( ^ff, ^fi) r = ^ff * ^fi -- h ^ffi t h ^fii
+type ( ^ff, ^fi) s = int * ^fi -- h ^fii
+type ( ^ff, ^fi) t = T1 of ^ff | T2 of ( ^fi, ^ff) t -- h ^ffi t h ^fii
+type ( ^ff, ^fi) u = U1 | U2 of ( ^fi, ^ff) u -- U
+type ( ^ff, ^fi) v = ^ff * (unit ! ^fi) -- h ^ffi
+type ( ^ff, ^fi) w = ^ff * (unit h ^fii-! unit) -- h ^ffi t h ^fii
+
+Because both ^ff and ^fi are part of the representation of ( ^ff, ^fi) r, it must be affine ifeither of its parameters is affine. On the other hand, the phantom parameter
+
+^ff is notpart of the representation of
+( ^ff, ^fi) s, so that has kind h ^fii. The kinds of t and u arethe least solutions to these inequalities:
+
+^(( ^ff, ^fi) t) w ^( ^ff) ^(( ^ff, ^fi) u) w U
+^(( ^ff, ^fi) t) w ^(( ^fi, ^ff) t)^(( ^ff, ^fi) u) w ^(( ^fi, ^ff) u)
+
+The kind of each type must be at least as restrictive as the kinds of all of its alterna-tives.
+
+For ( ^ff, ^fi) v, the kind of ^fi does not appear because the domain and codomain ofa function type are not part of the function's representation. Instead, function types
+have their kind in a superscript as in the definition of type w. We saw this in theAfArray example, where the superscripts were all A. (When the kind is U, we often
+omit it.) We discuss the kinds of function types and their subtyping in more depthin $4.3.
+
+More possibilities. The rules of Alms are flexible enough to express a wide varietyof designs. For example, the ability to store capabilities in data structures allows us
+to create a more dynamic interface than the static capabilities of CapArray:
+
+module type CAP LOCK ARRAY = siginclude CAP ARRAY
+
+val new : int ! ff ! Efi. (ff, fi) arrayval acquire
+
+: (ff, fi) array ! fi capval release
+: (ff, fi) array ! fi cap ! unitend
+
+7
+
+2 ALMS: THE LANGUAGE
+This signature changes the type of new to return an array (with unique tag fi) butno capability. To operate on the array, one needs to request a capability using acquire. Subsequent attempts to acquire a capability for the same array block until thecapability is released.
+
+We implement CAP LOCK ARRAY in terms of CapArray without any privilegedknowledge about the representation of its capabilities. The implementation relies on
+mvars, synchronized variables based Id's M-structures (Barth et al. 1991). An ^ff mvarmay hold a value of type
+
+^ff or it may be empty. While an mvar may contain anaffine value, the mvar itself is always unlimited. This is safe because calling take on a
+
+non-empty mvar removes the value and returns it, while take on an empty mvar blocksuntil another thread puts a value in it.
+
+To implement CAP LOCK ARRAY we now represent an array as a pair of theunderlying
+
+(ff, fi) CapArray.array and an mvar to store its capability:
+
+module CapLockArray : CAP LOCK ARRAY = structmodule A
+
+= CapArraytype
+(ff, fi) array = (ff, fi) A.array * fi cap MVar.mvar
+
+let new (size: int) (init: ff) =let
+
+(fi, a, cap) = A.new size init in
+(a, MVar.new cap)
+
+let acquire (( , mvar): (ff, fi) array) = MVar.take mvarlet release
+
+(( , mvar): (ff, fi) array) (cap: fi cap) =MVar.put mvar cap
+
+let set ((a, ): (ff, fi) array) = A.set alet get
+
+((a, ): (ff, fi) array) = A.get a
+. . .end
+
+The new operation creates a new array-capability pair and stores the capability in anmvar. Operations acquire and release use the mvar component of the representation,
+while the old operations such as set must be lifted to project out the underlyingCapArray.array.
+
+There are many more possibilities. Figures 1 and 2 show two interfaces for reader-writer locks, which at any one time allow either exclusive read-write access or shared
+read-only access. Signature RW LOCK (figure 1 on the first page) describes dynamicreader-writer locks. The signature declares nullary types excl and shared and an
+affine, binary type constructor (* @ *). Capabilities now have type fi@fl, where fi tiesthe capability to a particular array and
+
+fl records whether the lock is exclusive orshared. Operation set requires an exclusive lock (
+
+fi@excl), but get allows fl to beshared or excl.
+
+Signature FRACTIONAL (figure 2) describes static reader-writer locks based onfractional capabilities (Boyland 2003). As in the previous example, the capability
+
+8
+
+2 ALMS: THE LANGUAGE
+
+module type FRACTIONAL = sigtype
+
+(ff, fi) arraytype 1
+
+type 2type
+
+fl/ffitype
+(fi, fl) cap : A
+
+val new : int ! ff ! Efi. (ff, fi) array * (fi, 1) cap
+val split : (fi, fl) cap ! (fi, fl/2) cap * (fi, fl/2) capval join
+
+: (fi, fl/2) cap * (fi, fl/2) cap ! (fi, fl) cap
+
+val set : (ff, fi) array ! int ! ff !
+
+(fi, 1) cap ! (fi, 1) capval get
+: (ff, fi) array ! int !
+
+(fi, fl) cap ! ff * (fi, fl) capend
+
+Figure 2: Another interface for reader-writer locks
+type (fi, fl) cap has a second parameter, which in this case represents a fraction ofthe whole capability. The fraction is represented using type constructors 1, 2, and
+(* / *). A capability of type (fi, 1) cap grants exclusive access to the array with tag fi,while a fraction less than 1 such as 1/2 or 1/2/2 indicates shared access. There are
+operations split, which splits a capability whose fraction is fl into two capabilities offraction
+
+fl/2, and join, which combines two fl/2 capabilities back into one fl capability.Again, set requires exclusive access but get does not.
+
+Syntax matters. Given CapLockArray as defined above, we can rewrite deposit totake advantage of it:
+
+open CapLockArray
+let deposit (a: (int, fi) array) (acct: int) (amt: int) =let cap
+
+= acquire a inlet
+(balance, cap) = get a acct cap inlet cap
+
+= set a acct (balance + amt) cap inrelease a cap
+
+While this gets the job done, the explicit threading of the capability can be inconve-nient and hard to read. To address this, Alms provides preliminary support for an
+alternative syntax inspired by a proposal by Mazurak et al. (2010):
+
+let deposit (a: (int, fi) array) (acct: int) (amt: int) =let !cap
+
+= acquire a in
+
+9
+
+3 ALMS: THE IMPLEMENTATION
+set a acct (get a acct cap + amt) cap;release a cap
+The pattern !cap bound by let marks cap as an "imperative variable," which meansthat within its scope, functions applied to cap are expected to return a pair of their
+real result and the new version of cap. Alms transforms this code into the explicitly-threaded version above. Currently this transformation happens before type checking,
+which means that it cannot compromise soundness but also cannot exploit type in-formation.
+
+3 Alms: The Implementation
+Our prototype, implemented in 16k lines of Haskell, is available at www.ccs.neu.edu/~tov/pubs/alms. Besides a usable interpreter, it includes all the example code from
+this paper and other Alms examples illustrating a variety of concepts:
+
+* A capability-based interface to Berkeley Sockets ensures that the protocol toset up a socket is followed correctly. This library also shows how exceptions
+
+may be used for error recovery in the presence of affine capabilities.
+
+* An echo server is built on top of the socket library.
+
+* Two session types (Gay et al. 2003) libraries demonstrate different approachesto alternation: one uses anonymous sums and the other uses algebraic datatypes
+
+for named branches.
+
+* Our version of Sutherland and Hodgman (1974) re-entrant polygon clippinguses session types to connect stream transducers.
+
+* The Alms standard library implements higher-order coercions for checked down-casts which can, for example, turn a function of type
+
+(unit U-! unit) U-! threadinto a function of type
+(unit A-! unit) U-! thread by adding a dynamic check.
+
+These examples are not the last word on what can be done in a language likeAlms. Haskell's type classes (Wadler and Blott 1989), a general mechanism invented
+
+to solve specific problems, have since found myriad unanticipated uses. Similarly,a practical, general form of substructural types as offered by Alms likely has many
+applications waiting to be uncovered.We have now written several thousand lines of code in Alms, and this experience
+has led to improvements in both its design and our skill at using what it has to offer.For example, an earlier version of Alms had only unlimited ( U-!) and affine ( A-!) arrows,
+but Alms's behavioral contract library motivated the introduction of arrows whosekinds involve type variables (e.g., h
+
+^ffi--!). In particular, we found ourselves writing the
+
+same function multiple times with different qualifiers in the argument types, and theaddition of usage qualifier expressions eliminates this redundancy.
+
+10
+
+4 ALMS: THE CALCULUS
+4 Alms: The Calculus
+We model Alms with a calculus based on System F!<:, the higher-order polymorphic *calculus with subtyping (Pierce 2002). Our calculus,
+
+a*ms , makes several important
+
+changes to F!<::
+
+* Our type system's structural rules are limited. In particular contraction, whichduplicates variables in a typing context to make them accessible to multiple subterms, applies only to variables whose type is of the unlimited kind. Variablesof affine or polymorphic kind cannot be contracted.
+
+* Our kind system is enriched with dependent kinds.
+
+* Our kind system is also enriched with variance on type operators (Steffen 1997),which allows abstract type constructors to specify how their results vary in
+
+relation to their parameters.
+
+* Type operators are limited to first-order kinds--that is, type operators may nottake type operators as parameters.
+
+* Universally-quantified type variables are bounded only by a kind, not by a type.
+
+* The subtyping relation is induced by the subtyping rule for functions, wherebyan unlimited-use function may be supplied where a one-use function is expected.
+
+The calculus a*ms also includes more types and terms than a minimal presentationof F
+
+!<:. Because we are interested in practical issues, we think it is important that our
+
+model include products,3 sums, mutable references, and non-termination.We do not model modules directly in
+
+a*ms , but its higher-kinded type abstraction
+
+makes a*ms a suitable target for the first-order fragment of Rossberg et al.'s (2010)"F-ing modules" translation.
+
+4.1 Syntax
+We begin with the syntax of a*ms in figure 3. Terms (e) include the usual terms fromSystem F (variables, abstractions, applications, type abstractions, and type applications), several forms for data construction and elimination (nil, pairs, pair elimination,
+
+3In linear logic terms, our calculus (like Alms) supplies multiplicative products (\Omega ) and additive
+sums (\Phi ) directly. Additive products (&) are easily encoded by
+
+o/1 & o/2 , 8ff:A. (o/1 A-! ff) + (o/2 A-! ff) '
+
+1t'2----! ff
+
+[e1, e2] , \Lambda ff:A.*k . case k of '1 x1 ! x1 e1; '2 x2 ! x2 e2,
+where '1 and '2 are the kinds of o/1 and o/2.
+
+11
+
+4.1 Syntax 4 ALMS: THE CALCULUS
+
+x, y variables
+ff, fi type variables
+` store locations
+e ::= terms|
+
+x variable|
+*x:o/.e abstraction|
+e1 e2 application|
+\Lambda ff:^.v type abstraction|
+e[o/ ] type application|
+fix e recursion| hi nil value
+
+| '1 e left sum injection|
+
+'2 e right sum injection|
+case e of '1 x1 ! e1; '2 x2 ! e2 sum destruction| h
+
+e1, e2i pair construction|
+case e of hx1, x2i ! e1 pair destruction|
+new e reference allocation|
+swap e1 e2 reference access|
+delete e reference deallocation|
+ptr ` location (run-time only)
+
+Figure 3: Syntax (i): metavariables and terms
+
+o/, oe ::= types|
+
+ff type variable|
+*ff.o/ type-level abstraction|
+o/1 o/2 type-level application| 8
+
+ff:^.o/ universal type|
+
+o/1 '-! o/2 function type|
+O/ type constructor constant
+
+O/ ::= type constructor constants|
+
+1 unit|
+(+) sum|
+(*) product|
+aref reference
+
+Figure 4: Syntax (ii): types
+
+12
+
+4 ALMS: THE CALCULUS 4.1 Syntax
+
+(q, v, t, u)
+
+A
+
+U
+
+(v, v, t, u)
+
++-
++ -ff
+
+v1 * v2 = v
+
+* +- - + ff+- +- +- +- ff
+
+- +- + - ff
+
++ +- - + ffff ff ff ff ff
+
+Figure 5: Syntax (iii): Qualifier constants, variances, and variance composition
+' ::= usage qualifier expressions|
+
+q literal| h
+
+ffi qualifier of type variable|
+'1 t '2 least upper bound|
+'1 u '2 greatest lower bound
+
+^ ::= kinds|
+
+' kind of proper types|
+\Pi ffv.^ kind of type operators
+
+Figure 6: Syntax (iv): kinds
+
+sum injections, and sum elimination), recursion (fix e), and several operations on ref-erence cells (allocation, linear swap, and deallocation). Location names (
+
+ptr `) appearat run time but are not present in source terms. Values (
+v) are standard.
+
+Types (o/ , figure 4) include type variables, type-level abstraction and application,universal quantification, function types, and type constructor constants for unit, sums,
+
+products, and references. As in Alms, the function arrow carries a usage qualifier ('),which specifies whether the function is unlimited or one-use.
+
+The two constant usage qualifiers (q), U for unlimited and A for affine, are thebottom and top of the two-element lattice in figure 5. Now consider the
+
+K combinator
+\Lambda ff:hffi.\Lambda fi:hfii.*x:ff.*y:fi.x partially applied to a value: K[o/1][o/2] v. Whether it is safeto duplicate this term depends on whether it is safe to duplicate
+
+v, and this is reflectedin the instantiation of
+ff. To express this relationship, we introduce usage qualifierexpressions (
+'), which form a bounded, distributive lattice over type variables with
+U and A as bottom and top. We can thus give K type 8ff:hffi.8fi:hfii.ff U-! fi hffi--! ff.
+
+Qualifier expressions (figure 6) are the base kinds of a*ms --that is, the kinds thatclassify proper types that may in turn classify values. To classify type operators,
+
+kinds (^) also include dependent product kinds, written \Pi ffv.^. This is the kind ofa type operator that, when applied to a type with kind
+
+', gives a type with kind
+['/ff]^. For example, the kind of the Alms list type constructor in $2 is \Pi ff+.hffi,
+
+13
+
+4.2 Operational Semantics 4 ALMS: THE CALCULUS
+
+\Gamma , \Sigma  ::= typing contexts| * empty
+
+| \Gamma 1, \Gamma 2 concatenation|
+
+ff:^ kind of type variable|
+x:o/ type of variable|
+`:o/ type of location
+
+Figure 7: Typing contexts
+
+which means that list o/ has the same kind as o/ .4The superscript
+
++ in kind \Pi ff+.hffi means that list is a covariant (or monotone)type constructor: if
+
+o/1 is a subtype of o/2 then list o/1 is a subtype of list o/2. Variances(
+v) form a four-point lattice (figure 5). A type operator may also be contravariant(-), where the result varies inversely with the argument; omnivariant (ff), where
+
+argument may vary freely without affecting the result; or invariant (+-) where theargument may not vary at all without producing a subtyping-unrelated result. We
+define a composition operation (*) on variances, where v1 * v2 is the variance of thecomposition of type operators having variances
+
+v1 and v2.The kinds of the type constructors for sums and references may aid understanding.
+
+The sum type constructor (+) has kind \Pi ff+.\Pi fi+.hffi t hfii. This means that thekind of a sum type is at least as restrictive as the kinds of its disjuncts. It is covariant
+in both arguments, which means that o/1 + o/2 is a subtype of o/ 01 + o/ 02 if o/1 is a subtypeof
+
+o/ 01 and o/2 is a subtype of o/ 02. The reference type constructor, on the other hand, haskind
+
+\Pi ff+-.A. This means that reference cells are always affine and that their typesdo not support subtyping in either direction.
+
+Typing contexts (\Gamma  or \Sigma ; figure 7) associate type variables with their kinds, vari-ables with their types, and locations with the types of their contents. By convention,
+we use \Gamma  for typing contexts that include neither affine variables nor locations, andwe use
+
+\Sigma  for typing contexts that may include locations and affine (or indeterminate)variables. We use
+
+dom(\Gamma ) to refer to the type variables, variables, and locationsmapped by a context.
+
+We define the free variables in a term (fv(e)) and the free type variables in avariety of syntactic forms (
+
+ftv(e), ftv(o/ ), ftv(^), etc.) in the standard way. We use
+locs(e) to denote the set of location names present in term e. There are no bindersfor locations.
+
+4.2 Operational Semantics
+The operational semantics of a*ms is mostly a standard call-by-value reduction se-mantics. We give a selection of rules in figure 8. The reduction relation (7-!) relates
+
+4Whereas Alms uses ML's conventional postfix notation for type-level application, a*ms uses
+prefix application.
+
+14
+
+4 ALMS: THE CALCULUS 4.2 Operational Semantics
+
+s1; e1 7-! s2; e2 (small-step reduction)
+
+(R-fi) s; (*x:o/.e1) v2 7-! s; [v2/x]e1
+(R-B) s; (\Lambda ff:^.v)[o/ ] 7-! s; [o/ /ff]v
+(R-Fix) s; fix v 7-! s; v (fix v)
+(R-ChooseL) s; case '1 v of '1 x1 ! e1; '2 x2 ! e2 7-! s; [v/x1]e1
+(R-ChooseR) s; case '2 v of '1 x1 ! e1; '2 x2 ! e2 7-! s; [v/x2]e2
+
+(R-Unpair) s; case hv1, v2i of hx1, x2i ! e 7-! s; [v1/x1][v2/x2]e
+
+(R-New) s; new v 7-! s ] {` 7! v}; ptr `
+(R-Swap) s ] {` 7! v1}; swap (ptr `) v2 7-! s ] {` 7! v2}; hptr `, v1i
+(R-Delete) s ] {` 7! v}; delete (ptr `) 7-! s; hi
+
+(R-Cxt) s; es; E[e] 7-!7-! s0; e0s0; E[e0]
+
+s ::=| {}
+
+| s1 ] s2| {
+
+` 7! v}
+
+v ::=|
+
+*x:o/.e|
+\Lambda ff:^.v| hi
+
+| '1 v|
+
+'2 v| h
+
+v1, v2i|
+ptr `
+
+E ::=|
+
+[]|
+E e2|
+v1 E|
+E[o/ ]|
+fix E|
+'1 E|
+'2 E|
+case E of '1 x1 ! e1; '2 x2 ! e2| h
+
+E, e2i| h
+v1, Ei|
+case E of hx1, x2i ! e1|
+new E|
+swap E e2|
+swap v1 E|
+delete E
+
+Figure 8: Operational semantics
+
+15
+
+4.3 Static Semantics 4 ALMS: THE CALCULUS
+configurations (s; e) comprising a store and a term. A store maps locations (`) tovalues (
+
+v). Stores are taken to be unordered and do not repeat location names.The rules for reference operations are worth noting. In store
+
+s, new v chooses afresh location
+`, adding v to the store at location ` and reducing to the reference
+ptr `. The operation swap (ptr `) v2 requires that the store have location ` holdingsome value
+
+v1. It swaps v2 for v1 in the store, returning a pair of a reference to ` andvalue
+v1. Finally, delete (ptr `) also requires that the store contain `, which it thenremoves from the store. This means that freeing a location can result in a dangling
+
+pointer, which would cause subsequent attempts to access that location to get stuck.Our type system prevents this.
+
+\Gamma  ` ^ kind ^ is well formed (fig. 10)
+\Gamma  ` ^1 <: ^2 kind ^1 is subsumed by ^2 (fig. 10)
+\Gamma  ` \Gamma 0 kinds in context \Gamma 0 are well formed (fig. 10)
+\Gamma  ` ff 2 o/ l v type o/ varies v-ly when ff increases (fig. 11)
+\Gamma  ` o/ : ^ type o/ has kind ^ (fig. 11)
+o/1 j o/2 types o/1 and o/2 are fi-equivalent (fig. 12)
+\Gamma  ` o/1 <:v o/2 type o/1 is v-related to type o/2 (fig. 12)
+\Gamma  ` \Sigma  _ ' context \Sigma  is bounded by qualifier ' (fig. 13)`
+
+\Gamma ; \Sigma  dual contexts \Gamma ; \Sigma  are well formed (fig. 13)`
+(\Gamma 0; \Sigma 0), \Sigma 0  \Gamma ; \Sigma  extending \Gamma 0; \Sigma 0 with \Sigma 0 gives \Gamma ; \Sigma  (fig. 13)
+\Gamma ; \Sigma  B e : o/ term e has type o/ (fig. 14)
+\Sigma 1 B s : \Sigma 2 store s has type \Sigma 2 (fig. 15)B
+
+s; e : o/ configuration s; e has type o/ (fig. 15)
+
+Figure 9: Type system judgments
+
+4.3 Static Semantics
+Our type system involves a large number of judgments, which we summarize in fig-ure 9.
+
+Kind judgments. Judgments on kinds appear in figure 10. The first judgment,
+\Gamma  ` ^ , determines whether a kind ^ is well formed in typing context \Gamma . A base kind(i.e., a usage qualifier expression) is well formed provided that
+
+\Gamma  specifies a kind forall of its free variables. A dependent product kind
+\Pi ffv.^ is well formed if \Gamma  mapsall of its free variables, provided it satisfies a second condition: whenever the bound
+
+type variable ff is free in ^--that is, when the kind is truly dependent--then variance
+v must be + or +-. This rules out incoherent kinds such as \Pi ff-.hffi that classify nouseful type operator but whose presence breaks the kinding relation's monotonicity
+
+property (see lemma 30).
+
+16
+
+4 ALMS: THE CALCULUS 4.3 Static Semantics
+
+\Gamma  ` ^ (kind well-formedness)
+
+OK-Qual
+
+ftv(') ` dom(\Gamma )
+
+\Gamma  ` '
+
+OK-Arrif
+
+ff 2 ftv(^) then + v v \Gamma , ff:hffi ` ^
+
+\Gamma  ` \Pi ffv.^
+
+\Gamma  ` ^1 <: ^2 (subkinding)
+
+KSub-Qual
+
+\Gamma  |= '1 v '2
+
+\Gamma  ` '1 <: '2
+
+KSub-Arr
+
+v1 v v2 \Gamma , ff:hffi ` ^1 <: ^2
+
+\Gamma  ` \Pi ffv1.^1 <: \Pi ffv2.^2
+
+\Gamma  ` \Gamma 0 (kind context well-formedness)
+
+Wf-Nil
+
+\Gamma  ` *
+
+Wf-ConsA
+
+\Gamma  ` \Gamma 0 \Gamma  ` ^
+
+\Gamma  ` \Gamma 0, ff:^
+
+Wf-ConsX
+
+\Gamma  ` \Gamma 0
+
+\Gamma  ` \Gamma 0, x:o/
+
+Wf-ConsL
+
+\Gamma  ` \Gamma 0
+
+\Gamma  ` \Gamma 0, `:o/
+
+Figure 10: Statics (i): kinds
+The second judgment is subkinding: \Gamma  ` ^1 <: ^2. As we will see, if a type haskind
+
+^1, then it may be used where ^1 or any greater kind is expected. For dependentproduct kinds the subkinding order is merely the product order on the variance and
+
+the result kind, but for base kinds the relation relies on an interpretation of qualifierexpressions.
+
+We interpret qualifier expressions via a valuation V, which is a map from typevariables to qualifier constants. We extend V's domain to qualifier expressions:
+
+V (q) = q V('1 t '2) = V('1) t V('2)V
+(hffi) = V(ff) V('1 u '2) = V('1) u V('2)
+
+We need to interpret qualifier expressions under a typing context:
+Definition 1 (Consistent valuations). A valuation V is consistent with a typingcontext
+
+\Gamma  if for all ff:' 2 \Gamma , V(ff) v V(').
+
+Thus, a valuation is consistent with a context if it corresponds to a potential instan-tiation of the type variables, given that context.
+
+Definition 2 (Qualifier subsumption). We say that '1 is subsumed by '2 in \Gamma ,written
+
+\Gamma  |= '1 v '2, if for all valuations V consistent with \Gamma , V('1) v V ('2).
+
+In other words, in all possible instantiations of the type variables in \Gamma , qualifier '1being
+
+A implies that '2 is A.
+
+17
+
+4.3 Static Semantics 4 ALMS: THE CALCULUS
+
+\Gamma  ` ff 2 o/ l v (variance of type variables with respect to types)
+
+V-VarPre
+
+\Gamma  ` ff 2 ff l +
+
+V-VarAbs
+
+\Gamma  ` ff 2 fi l ff
+
+V-Con
+
+\Gamma  ` ff 2 O/ l ff
+
+V-Abs
+
+\Gamma , fi:hfii ` ff 2 o/ l v
+
+\Gamma  ` ff 2 *fi.o/ l v
+
+V-App
+
+\Gamma  ` ff 2 o/1 l v1 \Gamma  ` ff 2 o/2 l v2 \Gamma  ` o/1 : \Pi fiv3.^3
+
+\Gamma  ` ff 2 o/1 o/2 l v1 t v2v3
+
+V-All
+
+\Gamma , fi:^ ` ff 2 o/ l v1
+
+v2 = if ff 2 ftv(^) then +- else ff
+
+\Gamma  ` ff 2 8fi:^.o/ l v1 t v2
+
+V-Arr
+
+\Gamma  ` ff 2 o/1 l v1 \Gamma  ` ff 2 o/2 l v2
+
+v3 = if ff 2 ftv(') then + else ff
+
+\Gamma  ` ff 2 o/1 '-! o/2 l -v1 t v2 t v3
+
+\Gamma  ` o/ : ^ (kinding of types)
+
+K-Var
+
+ff:^ 2 \Gamma  \Gamma  ` ^ \Gamma  ` \Gamma 
+
+\Gamma  ` ff : ^
+
+K-Abs
+
+\Gamma , ff:hffi ` o/ : ^ \Gamma , ff:hffi ` ff 2 o/ l v
+
+\Gamma  ` *ff.o/ : \Pi ffv.^
+
+K-App
+
+\Gamma  ` o/1 : \Pi ffv.^ \Gamma  ` o/2 : '
+
+\Gamma  ` o/1 o/2 : ['/ff]^
+
+K-All
+
+\Gamma , ff:^ ` o/ : ' \Gamma , ff:^ ` ^
+
+\Gamma  ` 8ff:^.o/ : [A/ff]'
+
+K-Arr
+
+\Gamma  ` o/1 : '1 \Gamma  ` o/2 : '2 \Gamma  ` '
+
+\Gamma  ` o/1 '-! o/2 : '
+
+K-Unit
+
+\Gamma  ` \Gamma 
+
+\Gamma  ` 1 : U
+
+K-Sum
+
+\Gamma  ` \Gamma 
+
+\Gamma  ` (+) : \Pi ff1+.\Pi ff2+.hff1i t hff2i
+
+K-Prod
+
+\Gamma  ` \Gamma 
+
+\Gamma  ` (*) : \Pi ff1+.\Pi ff2+.hff1i t hff2i
+
+K-Ref
+
+\Gamma  ` \Gamma 
+
+\Gamma  ` aref : \Pi ff+-.A
+
+Figure 11: Statics (ii): types
+
+18
+
+4 ALMS: THE CALCULUS 4.3 Static Semantics
+
+o/1 j o/2 (type equivalence)
+
+E-Refl
+
+o/ j o/
+
+E-Sym
+
+o/1 j o/2
+
+o/2 j o/1
+
+E-Trans
+
+o/1 j o/2 o/2 j o/3
+
+o/1 j o/3
+
+E-Arr
+
+o/11 j o/21 o/12 j o/22
+
+o/11 '-! o/12 j o/21 '-! o/22
+
+E-All
+
+o/1 j o/28
+
+ff:^.o/1 j 8ff:^.o/2
+
+E-Abs
+
+o/1 j o/2
+
+*ff.o/1 j *ff.o/2
+
+E-App
+
+o/11 j o/21 o/12 j o/22
+
+o/11 o/12 j o/21 o/22
+
+E-Beta
+
+(*ff.o/1) o/2 j [o/2/ff]o/1
+\Gamma  ` o/1 <:v o/2 (subtyping)
+
+TSub-Eq
+
+\Gamma  ` o/1 : ^ \Gamma  ` o/2 : ^ o/1 j o/2
+
+\Gamma  ` o/1 <:v o/2
+
+TSub-Omni
+
+\Gamma  ` o/1 : ^1 \Gamma  ` o/2 : ^2
+
+\Gamma  ` o/1 <:ff o/2
+
+TSub-Trans
+
+\Gamma  ` o/1 <:v o/2 \Gamma  ` o/2 <:v o/3 \Gamma  ` o/2 : ^
+
+\Gamma  ` o/1 <:v o/3
+
+TSub-Contra
+
+\Gamma  ` o/2 <:-v o/1
+
+\Gamma  ` o/1 <:v o/2
+
+TSub-Abs
+
+\Gamma , ff:hffi ` o/1 <:v o/2
+
+\Gamma  ` *ff.o/1 <:v *ff.o/2
+
+TSub-App
+
+\Gamma  ` o/11 : \Pi ffv1.^1 \Gamma  ` o/21 : \Pi ffv2.^2
+
+\Gamma  ` o/11 <:v o/21 \Gamma  ` o/12 <:v*(v1tv2) o/22
+
+\Gamma  ` o/11 o/12 <:v o/21 o/22
+
+TSub-All
+
+\Gamma , ff:^ ` o/1 <:v o/2
+
+\Gamma  ` 8ff:^.o/1 <:v 8ff:^.o/2
+
+TSub-Arr
+
+\Gamma  ` o/11 <:-v o/21 \Gamma  ` o/12 <:v o/22 \Gamma  ` '1 <:v '2
+
+\Gamma  ` o/11 '
+
+1-! o/12 <:v o/21 '2-! o/22
+
+Figure 12: Statics (iii): subtyping
+
+19
+
+4.3 Static Semantics 4 ALMS: THE CALCULUS
+Kinding and variance. The first two judgments in figure 11, for computing vari-ances and giving kinds to types, are defined by mutual induction. It should be clear
+on inspection that the definitions are well-founded. Judgment \Gamma  ` ff 2 o/ l v meansthat type variable
+
+ff appears in type o/ at variance v, or in other words, that typeoperator
+*ff.o/ has variance v. Rules V-VarPre, V-VarAbs, and V-Con say thattype variables appear positively with respect to themselves and omnivariantly with
+
+respect to types in which they are not free. Rule V-Abs says that a type variableappears in a type operator
+
+*fi.o/ at the same variance that it appears in the body o/ .The remaining three rules are more involved:
+
+* By rule V-App, the variance of a type variable in a type application comes fromboth the operator and the operand. The variance of
+
+ff in o/1 o/2 is at least thevariance of
+ff in o/1 and at least the variance of ff in the o/2 composed with thevariance of operator
+
+o/1. This makes sense: if o/ is a contravariant type operator,then
+ff appears negatively in o/ ff but positively in o/ (o/ ff).
+
+* By rule V-All, the variance of ff in 8fi:^.o/ is at least its variance in o/ . However,if
+
+ff appears in ^ then it is invariant in 8fi:^.o/ . This reflects the fact thatuniversally-quantified types are related only if their bounds (
+
+^) match exactly,so changing a type variable that appears in
+^ produces an unrelated type. (Thismeans that
+a*ms is based on the kernel variant of F!<: (Pierce 2002).)
+
+* By rule V-Arr, the variance of ff in a function type o/1 '-! o/2 is at least itsvariance in the codomain
+
+o/2 and at least the opposite (composition with -) ofits variance in the domain
+
+o/1. This reflects function argument contravariance.The variance of
+ff is at least + if it appears in the qualifier expression '.
+
+The second judgment, \Gamma  ` o/ : ^, assigns kinds to well formed types. Rule K-Varmerely looks up the kind of a type variable in the context. Rules
+
+K-Abs and K-Appare the usual rules for dependent abstraction and application, with two small changes
+
+in rule K-Abs. First, it associates ff with itself in the context, as ff:hffi, which ensuresthat occurrences of
+
+ff in o/ can be reflected in ^. Second, it appeals to the variancejudgment to determine the variance of the type operator. Rule
+
+K-All assigns auniversal type the same kind as its body, but with
+A replacing ff. This is necessarybecause the resulting kind is outside the scope of
+ff. Qualifier A is a safe bound forany instantiation of
+ff, and no terms have types that lose precision by this choice.The kind of an arrow type, in rule
+
+K-Arr, is just the qualifier expression attachedto the arrow. The remaining rules give kinds for type constructor constants, where
+
+(+) and aref are as discussed in $4.1 and (*) has the same kind as (+).
+
+Type equivalence and dereliction subtyping. The next two judgments in fig-ure 12 are type equivalence and subtyping. The subtyping relation is parametrized
+by a variance v, which gives the direction of the subtyping: \Gamma  ` o/1 <:+ o/2 is the usual
+
+20
+
+4 ALMS: THE CALCULUS 4.3 Static Semantics
+direction, judging o/1 a subtype of o/2. In terms of subsumption, this means that valuesof type
+
+o/1 may be used where values of type o/2 are expected. The other variances areuseful in defining the relation in the presence of
+
+v-variant type operators: (<:-) givesthe inverse of the subtyping relation, (
+<:+-) relates only equivalent types, and (<:ff)relates all types. We can see how this works this in rule
+
+TSub-App. To determinewhether
+o/11 o/12 is a subtype of o/21 o/22, we take v to be +, yielding
+
+\Gamma  ` o/11 : \Pi ffv1.^1 \Gamma  ` o/21 : \Pi ffv2.^2
+
+\Gamma  ` o/11 <:+ o/21 \Gamma  ` o/12 <:v1tv2 o/22
+
+\Gamma  ` o/11 o/12 <:+ o/21 o/22 .
+
+This means that for the subtyping relation to hold:
+
+* The operators must be related in the same direction, so that o/11 is a subtype of
+
+o/21.
+
+* The operands must be related in the direction given by the variances of theoperators. For example, if both operators are covariant, then the operands must
+
+vary in the same direction, so that o/12 is a subtype of o/22. If both operatorsare contravariant, then the operands must vary in the opposite direction. If the
+operators are invariant then the operands cannot vary at all, but if they areomnivariant then
+
+o/11 o/ 012 is a subtype of o/21 o/ 022 for any o/ 012 and o/ 022.
+
+Rule TSub-Eq says that subtyping includes type equivalence (o/1 j o/2), whichis merely
+
+fi equivalence on types. Rule TSub-Omni allows any pair of types tobe related by ff-variant subtyping, and rule
+
+TSub-Contra says that the oppositevariance sign gives the inverse relation. Rules
+
+TSub-Abs and TSub-All specifythat type operators and universally-quantified types are related if their bodies are.
+
+Rule TSub-Arr is more than the usual arrow subtyping rule. Beyond the usualcontravariance for arguments and covariance for results, it requires that qualifiers
+
+'1and
+'2 relate in the same direction. This rule is the source of non-trivial subtypingin
+a*ms , without which subtyping would relate only equivalent types. The rule has
+
+two important implications.First, an unlimited-use function can always be used where a one-use function is
+
+expected. This corresponds to linear logic's usual dereliction rule, which says thatthe
+
+! ("of course!") modality may always be removed. ILL (Bierman 1993) has a rule:
+
+\Delta  ` e : !A
+\Delta  ` derelict e : A Dereliction.
+
+Dereliction is syntax-directed in this rule, but for practical programming we considerthat as too inconvenient. Thus, our subtyping relation supports dereliction as needed.
+
+For example, the function for creating a new thread in Alms, Thread.fork, has typeA
+^ff. (unit A-! ^ff) U-! ^ff thread, which means that Thread.fork will not call its argument
+
+21
+
+4.3 Static Semantics 4 ALMS: THE CALCULUS
+
+\Gamma  ` \Sigma  _ ' (bound of typing context)
+
+B-Nil
+
+\Gamma  ` * _ U
+
+B-ConsX
+
+\Gamma  ` \Sigma  _ '1 \Gamma  ` o/ : '2
+
+\Gamma  ` \Sigma , x:o/ _ '1 t '2
+
+B-ConsL
+
+\Gamma  ` \Sigma  _ '1 \Gamma  ` o/ : '2
+
+\Gamma  ` \Sigma , `:o/ _ A
+
+B-ConsA
+
+\Gamma  ` \Sigma  _ ' \Gamma  ` ^
+
+\Gamma  ` \Sigma , ff:^ _ '
+
+` \Gamma ; \Sigma  (context well-formedness)
+
+Wf
+
+\Gamma  ` \Gamma  _ U \Gamma  ` \Gamma  _ '`
+
+\Gamma ; \Sigma 
+
+` (\Gamma 0; \Sigma 0), \Sigma 0  \Gamma 1; \Sigma 1 (environment extension)
+
+X-Nil
+
+` (\Gamma ; \Sigma ), *  \Gamma ; \Sigma 
+
+X-ConsU
+
+\Gamma 0 ` o/ : U`
+
+(\Gamma 0, x:o/ ; \Sigma 0), \Sigma 0  \Gamma 1; \Sigma 1`
+
+(\Gamma 0; \Sigma 0), x:o/, \Sigma 0  \Gamma 1; \Sigma 1
+
+X-ConsA
+
+\Gamma 0 ` o/ : '`
+
+(\Gamma 0; \Sigma 0, x:o/ ), \Sigma 0  \Gamma 1; \Sigma 1`
+
+(\Gamma 0; \Sigma 0), x:o/, \Sigma 0  \Gamma 1; \Sigma 1
+
+Figure 13: Statics (iv): typing contexts
+
+more than once. However, this should not stop us from passing an unlimited-usefunction to Thread.fork, and indeed we can. Dereliction subtyping allows us to use a
+value of type unit U-! ^ff where a value of type unit A-! ^ff is expected. Alternatively,by domain contravariance, we can use Thread.fork where a value of type A
+
+^ff. (unit U-!
+^ff) U-! ^ff thread is expected. In this case subsumption allows us to forget Thread.fork'spromise not to reuse its argument.
+
+The other important implication of dereliction subtyping will become clearer oncewe see how qualifier expressions are assigned to function types. Subsumption makes it
+reasonable to always assign functions the most permissive safe usage qualifier, becausesubsumption then allows us to use them in a less permissive context. Dereliction
+subtyping applies only to function types because in both the a*ms calculus and Almslanguage only function types carry qualifiers. For instance, Alms has no separate
+types intU for unlimited integers and intA for affine integers. Integers are alwaysunlimited. If a programmer wants an affine version of int, she can create it in Alms
+using the module system.
+
+22
+
+4 ALMS: THE CALCULUS 4.3 Static Semantics
+Context judgments. Figure 13 defines two judgments on contexts. Judgment
+\Gamma  ` \Sigma  _ ', which will be important in typing functions, computes an upper bound
+' on the qualifiers of all the types in context \Sigma . If a context contains any locations,it is bounded by
+
+A; otherwise, its bound is the least upper bound of the qualifiers ofall the types of variables in the context.
+
+The second judgment shows how environments are extended by variable bindings.The typing judgment for terms will use two typing contexts:
+
+\Gamma  holds environmentinformation that may be safely duplicated, such as type variables and variables of unlimited type, whereas \Sigma  holds information, such as location types and affine variables,that disallows duplication. Given contexts
+
+\Gamma 0 and \Sigma 0, judgment ` (\Gamma 0; \Sigma 0), \Sigma 0  \Gamma ; \Sigma extends them by the variables and types in
+
+\Sigma 0 to get \Gamma  and \Sigma . Any variables may beplaced in
+\Sigma , but only variables whose types are known to be unlimited may be placedin
+\Gamma , since \Gamma  may be duplicated.
+
+Term judgment. The typing judgment for terms appears in figure 14. The judg-ment,
+
+\Gamma ; \Sigma  B e : o/ , uses two typing contexts in the style of DILL (Barber 1996): theunlimited environment
+
+\Gamma  and the affine environment \Sigma . When typing multiplicativeterms such as application, we distribute
+
+\Gamma  to both subterms but partition \Sigma  betweenthe two:
+
+\Gamma ; \Sigma 1 B e1 : o/1 '-! o/2 \Gamma ; \Sigma 2 B e2 : o/1
+
+\Gamma ; \Sigma 1, \Sigma 2 B e1 e2 : o/2 T-App
+Unlike DILL, not all types in \Sigma  are necessarily affine. Since types whose usagequalifier involves type variables are not known to be unlimited, we place those in
+
+\Sigma , to ensure that we do not duplicate values that might turn out to be affine onceuniversally-quantified types are instantiated.
+
+The other multiplicative rules are T-Pair for product introduction, T-Unpairfor product elimination, and
+
+T-Swap for reference updates. Note that T-Swap doesnot require that the type of the reference in its first parameter match the type of the
+
+value in its second--in other words, swap performs a strong update. To type the term
+case e of hx1, x2i ! e1, rule T-Unpair first splits the affine environment into \Sigma 1 fortyping subterm
+
+e and \Sigma 2 for subterm e1. It invokes the context extension relation(figure 13) to extend
+
+\Gamma  and \Sigma 2 with bindings for x1 and x2 in order to type e1. Thecontext extension relation requires that variables not known to be unlimited be added
+
+to \Sigma 2.The rule for sum elimination,
+
+T-Choose, is both multiplicative and additive:the affine context is split between the term being destructed and the branches of the
+
+case expression. However, the portion of the context given to the branches is sharedbetween them, because only one or the other will be evaluated. Rule
+
+T-Choose alsouses the context extension relation to bind the pattern variables for the branches.
+
+Rules T-New and T-Delete introduce and eliminate reference types in the usualway. Likewise, the sum introduction rules rule
+
+T-Inl and rule T-Inr and type ab-straction rule
+T-TAbs are standard. Rules T-Var, T-Ptr, and T-Unit are standard
+
+23
+
+4.3 Static Semantics 4 ALMS: THE CALCULUS
+
+\Gamma ; \Sigma  B e : o/ (typing of terms)
+
+T-Subsume
+
+\Gamma ; \Sigma  B e : o/ 0 \Gamma  ` o/ 0 <:+ o/ \Gamma  ` o/ : '
+
+\Gamma ; \Sigma  B e : o/
+
+T-Weak
+
+\Gamma ; \Sigma  B e : o/ ` \Gamma ; \Sigma , \Sigma 0
+
+\Gamma ; \Sigma , \Sigma 0 B e : o/
+
+T-Var
+
+x:o/ 2 \Gamma , \Sigma  \Gamma  ` o/ : ' ` \Gamma ; \Sigma 
+
+\Gamma ; \Sigma  B x : o/
+
+T-Ptr
+
+`:o/ 2 \Sigma  * ` o/ : ' ` \Gamma ; \Sigma 
+
+\Gamma ; \Sigma  B ptr ` : aref o/
+
+T-Abs`
+
+(\Gamma ; \Sigma ), x:o/1  \Gamma 0; \Sigma 0 \Gamma 0; \Sigma 0 B e : o/2
+
+\Gamma  ` \Sigma  _ ' \Gamma  ` o/1 : '1
+
+\Gamma ; \Sigma  B *x:o/1.e : o/1 '-! o/2
+
+T-TAbs
+
+\Gamma , ff:^; \Sigma  B v : o/
+
+\Gamma , ff:^ ` ^
+
+\Gamma ; \Sigma  B \Lambda ff:^.v : 8ff:^.o/
+
+T-App
+
+\Gamma ; \Sigma 1 B e1 : o/1 '-! o/2
+
+\Gamma ; \Sigma 2 B e2 : o/1
+
+\Gamma ; \Sigma 1, \Sigma 2 B e1 e2 : o/2
+
+T-TApp
+
+\Gamma ; \Sigma  B e : 8ff:^.o/
+
+\Gamma  ` o/ 0 : ^0 \Gamma  ` ^0 <: ^
+
+\Gamma ; \Sigma  B e[o/ 0] : [o/ 0/ff]o/
+
+T-Fix
+
+\Gamma ; \Sigma  B e : o/ U-! o/
+
+\Gamma ; \Sigma  B fix e : o/
+
+T-Unit`
+
+\Gamma ; \Sigma 
+
+\Gamma ; \Sigma  B hi : 1
+
+T-Inl
+
+\Gamma ; \Sigma  B e : o/1 \Gamma  ` o/2 : '
+
+\Gamma ; \Sigma  B '1 e : o/1 + o/2
+
+T-Inr
+
+\Gamma ; \Sigma  B e : o/2 \Gamma  ` o/1 : '
+
+\Gamma ; \Sigma  B '2 e : o/1 + o/2
+
+T-Pair
+
+\Gamma ; \Sigma 1 B e1 : o/1
+
+\Gamma ; \Sigma 2 B e2 : o/2
+
+\Gamma ; \Sigma 1, \Sigma 2 B he1, e2i : o/1 * o/2
+
+T-Choose
+
+\Gamma ; \Sigma  B e : o/1 + o/2`
+
+(\Gamma ; \Sigma 0), x1:o/1  \Gamma 1; \Sigma 1 \Gamma 1; \Sigma 1 B e1 : o/`
+(\Gamma ; \Sigma 0), x2:o/2  \Gamma 2; \Sigma 2 \Gamma 2; \Sigma 2 B e2 : o/
+
+\Gamma ; \Sigma , \Sigma 0 B case e of '1 x1 ! e1; '2 x2 ! e2 : o/
+
+T-Unpair
+
+\Gamma ; \Sigma 1 B e : o/1 * o/2 ` (\Gamma ; \Sigma 2), x1:o/1, x2:o/2  \Gamma 0; \Sigma 0 \Gamma 0; \Sigma 0 B e1 : o/
+
+\Gamma ; \Sigma 1, \Sigma 2 B case e of hx1, x2i ! e1 : o/
+
+T-New
+
+\Gamma ; \Sigma  B e : o/
+
+\Gamma ; \Sigma  B new e : aref o/
+
+T-Swap
+
+\Gamma ; \Sigma 1 B e1 : aref o/1 \Gamma ; \Sigma 2 B e2 : o/2
+
+\Gamma ; \Sigma 1, \Sigma 2 B swap e1 e2 : aref o/2 * o/1
+
+T-Delete
+
+\Gamma ; \Sigma  B e : aref o/
+
+\Gamma ; \Sigma  B delete e : 1
+
+Figure 14: Statics (v): terms
+
+24
+
+4 ALMS: THE CALCULUS 4.3 Static Semantics
+for an affine calculus but not a linear one, as they implicitly support weakening byallowing
+
+\Sigma  to contain unused bindings. Rule T-Fix is also standard, modulo thereasonable constraint that its parameter function be unlimited, since the reduction
+
+rule for fix makes a copy of the parameter.The type application rule
+
+T-TApp supports subkinding, because it requires onlythat the kind of the actual type parameter be a subkind of that of the formal parameter. This is the rule that supports the sort of type abstraction that we usedin our examples of $2 to construct affine capabilities. For example, the rule lets us
+instantiate affine type variable ff with unlimited unit type 1:
+
+\Gamma ; \Sigma  B (\Lambda ff:A.*x:ff.e) : 8ff:A.ff '-! o/ \Gamma  ` 1 : U \Gamma  ` U <: A
+
+\Gamma ; \Sigma  B (\Lambda ff:A.*x:ff.e)[1] : 1 '-! o/ T-TApp
+
+Within its scope, ff is considered a priori affine, regardless of how it may eventuallybe instantiated. This term types only if
+
+x appears in affine fashion in e.This brings us finally to
+T-Abs, the rule for typing term-level * abstractions. Totype a term
+*x:o/1.e, rule T-Abs uses the context extension relation to add x:o/1 to itscontexts and types the body
+
+e in the extended contexts. It also must determine thequalifier
+' that decorates the arrow. Because abstractions close over their free vari-ables, duplicating a function also duplicates the values of its free variables. Therefore,
+
+the qualifier of a function type should be at least as restrictive as the qualifiers of theabstraction's free variables. To do this, rule
+
+T-Abs appeals to the context boundingjudgment (figure 13) to find the least upper bound of the usage qualifiers of variables
+
+in the affine environment, and it requires that the function type's qualifier be equallyrestrictive.
+
+This refines linear logic's usual promotion rule, which says that the ! modalitymay be added to propositions that in turn depend only on
+
+!-ed resources. In ILL, wehave
+
+!\Delta  ` e : A
+!\Delta  ` promote e : !A Promotion,
+
+where !\Delta  is a context in which all assumptions are of the form x : !B. As withdereliction, in our system it only makes sense to apply promotion to function types.
+
+Our treatment of promotion indicates why we need the explicit weakening rule
+T-Weak, which allows discarding unused portions of the affine environment. Inorder to give a function type the best qualifier possible, we need to remove from
+
+\Sigma any unused variables or locations that might otherwise raise the bound on
+\Sigma , and thealgorithmic version of the type system as implemented in Alms does just that. In $5
+
+we show that our implicit promotion mechanism selects the best usage qualifier forfunction types.
+
+Store and configuration judgments. In order to prove our type soundness the-orem, we need to lift our typing judgments to stores and run-time configurations.
+
+25
+
+5 THEORETICAL RESULTS
+\Sigma 1 B s : \Sigma 2 (store typing)
+
+S-Nil
+
+\Sigma  B {} : *
+
+S-Cons
+
+\Sigma 1 B s : \Sigma 0 *; \Sigma 2 B v : o/
+
+\Sigma 1, \Sigma 2 B s ] {` 7! v} : \Sigma 0, `:o/
+
+B s; e : o/ (configuration typing)
+
+Conf
+
+\Sigma 1 B s : \Sigma 1, \Sigma 2 *; \Sigma 2 B e : o/
+
+B s; e : o/
+
+Figure 15: Statics (vi): stores and configurations
+The type of a store is a typing context containing the names of the store's locationsand the types of their contents. The store typing judgment
+
+\Sigma 1 B s : \Sigma 2 gives store
+s type \Sigma 2 in the context of \Sigma 1, which is necessary because values in the store mayrefer to other values in the store. Rule
+
+S-Cons shows that the resources representedby context
+\Sigma 1 (i.e., \Sigma 11, \Sigma 12) are split between the values in s.Our preservation lemma concerns typing judgments on configurations, B
+
+s; e : o/ ,which means that
+e has type o/ in the context of store s. To type the configurationby rule
+Conf, we type the store, splitting its type into \Sigma 1, which contains locationsreferenced from the store, and
+
+\Sigma 2, which contains locations referenced from e.
+
+5 Theoretical Results
+We now state our two main theorems--principal qualifiers and type soundness--andsketch their proofs. The full versions of our proofs may be found in appendix A.
+
+Principal qualifiers. Alms and a*ms go to a lot of trouble to find the best usagequalifier expressions for function types. To make programming with affine types as
+convenient as possible, we want to maximize polymorphism between one-use and un-limited versions of functions. While writing the Alms standard library, we found that
+usage qualifier constants A and U, even with dereliction subtyping, were insufficientto give a principal type to some terms.
+
+For example, consider function default, an eliminator for option types, sans func-tion argument types:
+
+let default (def: . . .) (opt: . . .) =match opt with
+
+26
+
+5 THEORETICAL RESULTS
+
+| Some x ! x| None ! def
+Without usage qualifier expressions, default has at least two incomparable types:
+
+default1 : A^ff. ^ff U-! ^ff option A-! ^ffdefault
+
+2 : Aff. ff U-! ff option U-! ff.
+
+In the first case, because ^ff might be affine, the partial application of default1 must bea one-use function, but in the second case we know that
+
+ff is unlimited so partiallyapplying default
+
+2 and reusing the result is safe. Formally, these types are incomparablebecause the universally-quantified type variable
+
+^ff in the former has a different kindthan
+
+ff in the latter, and Alms uses the kernel variant of rule TSub-All. However,even were we to replace rule
+
+TSub-All with a rule analogous to F!<:'s full variant,
+
+\Gamma , ff:^ ` o/1 <:v o/2 \Gamma , ff:^ ` ^1 <:-v ^2
+
+\Gamma  ` 8ff:^1.o/1 <:v 8ff:^2.o/2 TSub-Allfull,
+
+the types would not be related by the subtyping order. More importantly, neither typeis preferable in an informal sense. The type of default
+
+1 allows ^ff to be instantiated toan affine or unlimited type, but the result of partially applying it is a one-use function
+
+even if ^ff is known to be unlimited:
+
+default1 5 : int option A-! intdefault
+
+1 (aref 5) : int aref option A-! int aref.
+
+If we choose default2, the result of partial application is unlimited, but attempting toinstantiate
+
+ff to an affine type is a type error:
+
+default2 5 : int option U-! intdefault
+
+2 (aref 5) : Type error!
+
+Alms avoids both problems and instead discovers that the best usage qualifier for thearrow is the kind of the type variable:
+
+default : A^ff. ^ff U-! ^ff option h^ffi--! ^ff
+default 5 : int option U-! intdefault
+
+(aref 5) : int aref option A-! int aref.
+
+Because this is an important property, we prove a theorem that every typeable
+a*ms function has a principal usage qualifier.
+
+Theorem 8 (Principal qualifiers5). If \Gamma ; \Sigma  B *x:o/.e : o/1 '-! o/2, then it has a leastqualifier expression
+
+'0; that is,
+
+5Numbering of propositions in this section skips because it matches the numbering in appendix A
+rather than the numbering in the short version of this paper.
+
+27
+
+5 THEORETICAL RESULTS
+
+* \Gamma ; \Sigma  B *x:o/.e : o/1 '
+
+0-! o/2 and
+
+* \Gamma  ` '0 <: '0 for all '0 such that \Gamma ; \Sigma  B *x:o/.e : o/1 '0-! o/2.
+Proof sketch. We obtain the principal qualifier '0 as follows. Let \Sigma 0 be the restrictionof
+
+\Sigma  to exactly the free variables and locations of *x:o/.e. Let '0 be the unique boundof
+
+\Sigma 0 given by \Gamma  ` \Sigma 0 _ '0. By strengthening, \Gamma ; \Sigma 0 B *x:o/.e : o/1 '
+
+0-! o/2, and by
+
+rule T-Weak we can get the same type in \Sigma .
+
+A derivation of \Gamma ; \Sigma  B *x:o/.e : o/1 '0-! o/2 always involves rule T-Abs using someportion of
+
+\Sigma , followed by some number of subsumptions and weakenings. Subsump-tion will never let
+
+'0 be less than '0. However, weakening might allow us to type
+*x:o/.e with a different portion of \Sigma  than \Sigma 0. We know that any superset of \Sigma 0 hasbound no less than
+
+'0, and while a non-superset of \Sigma 0 may have a smaller bound,we chose
+\Sigma 0 so that only \Sigma 0 and its supersets are suitable to type the term and thenweaken to
+
+\Sigma . (The full proof of theorem 8 may be found on page 40.) B
+
+Thus, for a function in any given context, there is a least usage qualifier, and ourimplementation can find the least qualifier by considering only the portion of
+
+\Sigma  thatpertains to the free identifiers of the
+* term, as suggested by the algorithmic rule
+
+(T-Absalg)`
+
+(\Gamma ; \Sigma ), x:o/1  \Gamma 0; \Sigma 0 \Gamma 0; \Sigma 0 B e : o/2
+
+'0 = (A if locs(e) 6= ?G{' | x 2 fv(e), \Gamma  ` \Sigma (x) : '} otherwise
+
+\Gamma ; \Sigma  B *x:o/1.e : o/1 '
+
+0-! o/2 .
+
+Type soundness. The key obstacle in our type soundness proof is establishing asubstitution lemma, which in turn relies on showing that the kind of the type of any
+value accurately reflects the resources contained in that value, which itself comes asa corollary to the proposition that the kinds of subtypes are themselves subkinds:
+
+Lemma 30 (Monotonicity of kinding). If \Gamma  ` o/1 <:+ o/2 where \Gamma  ` o/1 : '1 and
+\Gamma  ` o/2 : '2, then \Gamma  ` '1 <: '2.
+
+This lemma is the reason for the premise in rule OK-Arr that for a kind \Pi ffv.^,variance
+
+v must be at least + if ff 2 ftv(^). Otherwise, we could construct a coun-terexample to lemma 30:
+
+* fi:\Pi ff-.hffi ` fi (1 A-! 1) <:+ (1 U-! 1),
+
+* fi:\Pi ff-.hffi ` fi (1 A-! 1) : A, and
+
+* fi:\Pi ff-.hffi ` fi (1 U-! 1) : U,
+
+28
+
+6 RELATED WORK
+
+* but fi:\Pi ff-.hffi ` A <: U is not the case.
+The kind well-formedness judgment rules out kinds like \Pi ff-.hffi.
+Proof sketch for lemma 30. We define an extension of the subkinding relation, \Gamma  `
+^1 / ^2, which is insensitive to the variances decorating \Pi  kinds. Observe that onqualifier expressions this new relation coincides with subkinding. We generalize the
+
+induction hypothesis--if \Gamma  ` o/1 <:+ o/2 where \Gamma  ` o/1 : ^1 and \Gamma  ` o/2 : ^2, then
+\Gamma  ` ^1 / ^2--and complete the proof by induction on the structure of the subtypingderivation. (The full proof of lemma 30 may be found on page 65.) B
+
+Corollary 32 (Kinding finds locations). Suppose that \Gamma ; \Sigma  B v : o/ and \Gamma  ` o/ : 'where
+
+dom(\Sigma ) contains only locations (`). If any locations appear in v then \Gamma  ` A <:
+'.
+
+Proof sketch. By induction on the typing derivation. We use the previous lemma inthe case for the subsumption rule
+
+T-Subsume:
+
+Case \Gamma ; \Sigma  B v : o/
+
+0 \Gamma  ` o/ 0 <:+ o/ \Gamma  ` o/ : '
+
+\Gamma ; \Sigma  B v : o/ .
+By the induction hypothesis, \Gamma  ` o/ 0 : A, and by lemma 30, \Gamma  ` A <: '.
+
+(The full proof of corollary 32 may be found on page 68.) B
+Corollary 32 lets us prove our substitution lemma. Then progress, preservation,and type soundness are standard:
+
+Theorem 55 (Type soundness). If B {}; e : o/ then either e diverges or there exists
+some store s and value v such that {}; e *7-! s; v and B s; v : o/ .
+
+6 Related Work
+In prior work, we showed how an Alms-like affine language may safely interoperatewith a conventional (non-affine) language (Tov and Pucella 2010). In particular, the
+
+languages may freely share values, including functions. Attempts by the conventionallanguage to subvert the affine language's invariants are prevented by dynamic checks
+in the form of behavioral software contracts. That paper focused specifically onmulti-language interaction, using a predecessor of Alms.
+
+System Fffi. Mazurak et al. (2010) describe a calculus of "lightweight linear types."Their primary motivation is similar to ours: to remove needless overhead and provide
+a "simple foundation for practical linear programming."System Fffi and the prior iteration of Alms independently introduced several new
+ideas:
+
+29
+
+6 RELATED WORK
+
+* Both use kinds to distinguish linear (in Alms, affine) types from unlimited types,where Fffi's kinds ffi and
+
+? correspond to our A and U, and their subkindingrelation
+? <= ffi corresponds to our U v A.
+
+* Fffi uses existentials and subkinding to abstract unlimited types into linear types.Alms (the language) uses modules and
+
+a*ms (the calculus) uses higher-kinded
+
+type abstraction to define abstract affine types, including type constructorswith parameters. Mazurak et al. mention the possibility of extending Fffi with
+
+abstraction over higher kinds but do not show the details.
+
+* They sketch out a convenient notation for writing linear computations. Thisinspired our different implicit threading syntax, which is implemented in Alms
+
+as mentioned at the end of $2.
+There are also notable differences:
+
+* Fffi has linear types, which disallow weakening, whereas Alms has affine types,which support it. This is a trade-off. Linear types make it possible to enforce
+
+liveness properties, which may be useful, for instance, to ensure that manualmemory management does not leak. On the other hand, we anticipate that
+safely combining linearity with exceptions requires a type-and-effect system totrack when raising an exception would implicitly discard linear values. Alms
+can support explicit deallocation so long as failure to do so is backed up by agarbage collector.
+
+* Alms's unlimited-use function type is a subtype of its one-use function type.Fffi does not provide subtyping, though they do show how
+
+j expansion canexplicitly perform the coercion that our subtyping does implicitly. Experience
+
+with our implementation confirms that dereliction subtyping is valuable, thoughwe admit it comes at the cost of complexity.
+
+* Fffi requires annotating abstractions (*^x:o/.e) to specify the kind of the result-ing arrow type, which may only be
+
+? or ffi. Alms refines this with qualifierexpressions and selects the least kind automatically.
+
+* Mazurak et al. give a resource-aware semantics and prove that they can encoderegular protocols. We do neither but conjecture that our system enjoys similar
+
+properties, except that weakening makes it possible to bail out of a protocol atany point.
+
+* Their sketch of rules for algebraic datatypes is similar to how ours work, thoughours are strictly stronger. For example, an option type in Fffi would have two
+
+versions:
+
+optionLin : ffi ) ffi optionUn : ? ) ?.
+
+30
+
+6 RELATED WORK
+
+Our dependent kinds in Alms let us define one type constructor whose kindsubsumes both:
+
+option : \Pi  ^ff+. h ^ffi.
+Clean. At first glance, Clean's uniqueness types appear to be dual to affine types.Uniqueness types are descriptive--they indicate that a particular reference is unique--
+while affine (and linear) types are prescriptive, since they restrict what may be doneto some reference in the future but do not necessarily know where it's been. Similarly,
+Clean's subtyping relation, which allows forgetting that a value is unique, appearsdual to Alms's, which allows pretending that an unlimited value is affine. However,
+the duality breaks down in the higher-order case. When a partially applied functioncaptures some unique free variable, Clean's type system must prohibit aliasing of
+the function in order to maintain descriptive uniqueness when the function is fullyapplied (Plasmeijer and Eekelen 2002). In Clean's terminology, function types with
+the unique attribute are "essentially unique," but we might call them "affine."There is a strong similarity between our kinding judgment and Clean's uniqueness propagation rules that relate the uniqueness of data structures to that of theirconstituent parts. While Clean supports subtyping, it does not have a subkinding
+relation analogous to Alms or Fffi's. In particular, Clean requires that the uniquenessattributes declared for an abstract type in a module's interface exactly match the
+uniqueness attributes in the module's implementation.
+Use types and qualifiers. Wadler (1991) discusses several variants of linear typesystems. He proposes something akin to dereliction subtyping (i.e.,
+
+!A <= A) andpoints out that in such a system, terms such as
+*f.*x.f x have several unrelatedtypes. (We made a similar observation in $5.) In order to recover principal types, he
+
+introduces use types, which decorate the exponential modality with a use variable i:
+!i. The use variable ranges over 0 and 1, where !0A = A and !1A = !A. This providesprincipal types, but at the cost of adding use-variable inequality constraints to type
+
+schemes.A use-variable inequality of the form
+
+i <= j is essentially an implication i oe j,where
+1 is truth and 0 is falsity. De Vries et al. (2008) show, in the setting ofuniqueness types, how such inequalities may be represented instead using Boolean
+
+logic. For example, if we have a type
+
+. . . !i . . . !j . . . , [i <= j],
+we can discard the inequality constraint and represent it instead as
+
+. . . !i . . . !i.k . . . ,
+because i <= (i.k). In general, any collection of use-variable inequalities (or uniqueness-attribute constraints) may be eliminated by replacing some of the use variables with
+
+31
+
+6 RELATED WORK
+propositional formulae over use variables. This insight is the source of Alms's usagequalifier expressions.
+
+If we follow use types to their logical conclusion, we reach *URAL (Ahmed et al.2005), wherein each type is composed of a pretype that describes its representation
+and a qualifier that gives its usage. Alms does not follow this approach becausewe insist that qualified types are too verbose for a user-visible type system. Their
+system's qualifier lattice includes two more than ours, R for relevant types that allowduplication but not discarding, and L for linear types. This results in a rich and
+elegant system, but we do not believe R and L would be useful in a language likeAlms.
+
+However, there is an interesting correspondence between our kinding rules andtheir type rules. For example, our product type constructor
+
+(*) has kind \Pi ff+.\Pi fi+.hffith
+fii, which means that the kind of a product type is the least upper bound of thekinds of its components. The product typing rule in
+
+*URAL enforces a similar con-straint, that the qualifier of a product type,
+,, must upper bound the qualifiers of itscomponents
+o/1 and o/2.
+
+\Delta  ` \Gamma   \Gamma 1 \Delta  \Gamma 2 \Delta  ` , : QUAL
+
+\Delta ; \Gamma 1 ` v1 : o/1 \Delta  ` o/1 _ ,
+\Delta ; \Gamma 2 ` v2 : o/2 \Delta  ` o/2 _ ,
+
+\Delta ; \Gamma  ` hv1, v2i : ,(o/1 \Omega  o/2) (MPair).
+
+Vault. DeLine and Fa"hndrich's Vault (2001) is a safe, low-level language with sup-port for typestate. It tracks keys, which associate static capabilities with the identity
+of run-time objects, in the same manner that Alms uses existentially-quantified typevariables to tie values to capabilities. This allows static enforcement of a variety of
+protocols. As an example, DeLine and Fa"hndrich give a tracked version of the Berke-ley Sockets API. In previous work on Alms we show how Alms expresses the same
+interface.
+
+Vault's treatment of capabilities may be more convenient to use than Alms's, be-cause while Alms requires explicit threading of capability values, Vault's key sets are
+
+tracked automatically within function bodies. On the other hand, because capabilitiesin Alms appear as ordinary values, we may combine them using the native intuitionistic logic of Alms's type system. Instead, Vault must provide a simple predicatecalculus for expressing pre- and post-conditions. For more complicated logic, Vault
+allows embedding capabilities in values, but since the values are untracked, extractinga capability from a value requires a dynamic check. Alms's type system eliminates
+the need for such checks for affine values stored in algebraic datatypes, though it alsoallows dynamic management of affine values by storing them in reference cells.
+
+Notably, Alms can also express Fa"hndrich and DeLine's adoption and focus (2002).
+
+32
+
+7 FUTURE WORK AND CONCLUSION
+Sing#. Microsoft's experimental Singularity operating system is written in Sing#,a high-level systems programming language that extends Spec# (Fa"hndrich et al.
+2006). Sing# has built-in support for channel contracts, which are a form of sessiontype providing static checking of communication protocols between device drivers
+and other services. Unlike more idealistic linear systems, the design acknowledgesthe need to allow for failure: every protocol implicitly includes branches to close the
+channel at any point.Sing# processes do not share memory but can allocate tracked objects on a common exchange heap. Only one process has access to an exchange heap object at agiven time, but a process may give up access and transmit the object over a channel
+to another process, which then claims ownership of it.Alms's library includes two different implementations of session types supporting
+different interfaces, and the exchange heap concept is easily expressible as well.
+
+7 Future Work and Conclusion
+We already enjoy programming in Alms, but we are not done yet.
+
+* In $2, we found that adding capabilities to an existing interface often involveswrapping the old version of a function to ignore a new argument of type unit or
+
+construct a tuple containing unit for its result. This is unnecessary. While theclient outside the abstraction barrier needs to see types that involve the affine
+capabilities, the implementation has no use for them.
+To eliminate much of this noise, we can extend our subtyping relation to takeadvantage of the fact that unit is, well, a unit:
+
+\Gamma  ` o/2 singleton
+\Gamma  ` o/1 <:v o/1 * o/2
+
+\Gamma  ` o/2 singleton
+\Gamma  ` o/1 <:v o/2 * o/1
+
+\Gamma  ` o/2 singleton
+
+\Gamma  ` o/1 '-! o/2 '-! o/3 <:v o/1 '-! o/3
+This is implementable via a type erasure technique such as intensional poly-morphism (Crary et al. 2002). Not representing compile-time capabilities at
+
+run time has performance benefits as well.
+
+* Alms's local type inference eliminates most explicit type applications, but need-ing to annotate all function arguments is irksome. To fix this, we are exploring
+
+possibilities for type inference. While we suspect that our limited subtypingshould not impede full Damas-Milner-style inference (Damas and Milner 1982),
+Alms has several idioms that rely on existential types. We are exploring whetheran extension for first-class polymorphism, such as HML (Leijen 2009), would
+be suitable for Alms.
+
+Alms is not finished, but our prototype is at this point usable for experimentation.It is based on a calculus,
+
+a*ms , whose type system we have proved sound. While some
+
+33
+
+REFERENCES REFERENCES
+parts of the type system are complex, we have seen in practice that Alms types aretractable and Alms programs do not look very different from the functional programs
+to which we are accustomed. It currently implements algebraic datatypes, exceptions,pattern matching, concurrency, and opaque signature ascription. The language is
+rich enough to express Vault-style typestate, a variety of static and dynamic lockingprotocols, checked downcasts of one-use functions to unlimited-use functions, session
+types, and more.
+
+Acknowledgments
+We wish to thank J. Daniel Brown, Bryan Chadwick, Matthias Felleisen, Sam Tobin-Hochstadt, Vincent St-Amour, and the anonymous referees for their helpful comments, discussion, and corrections. This research was supported in part by AFOSRgrant FA9550-09-1-0110.
+
+References
+A. Ahmed, M. Fluet, and G. Morrisett. A step-indexed model of substructural state.In ICFP'05, pages 78-91. ACM, 2005.
+
+A. Barber. Dual intuitionistic linear logic. Technical Report ECS-LFCS-960347, U.of Edinburgh, 1996.
+P. S. Barth, R. S. Nikhil, and Arvind. M-structures: Extending a parallel, non-strict,functional language with state. In Proc. FPCA'91, volume 523 of LNCS. Springer,
+
+1991.
+G. M. Bierman. On Intuitionistic Linear Logic. PhD thesis, U. of Cambridge, 1993.
+J. Boyland. Checking interference with fractional permissions. In SAS'03, volume2694 of LNCS. Springer, 2003.
+
+K. Crary, S. Weirich, and G. Morrisett. Intensional polymorphism in type-erasuresemantics. JFP, 12(06):567-600, 2002.
+L. Damas and R. Milner. Principal type-schemes for functional programs. InPOPL'82, pages 207-212. ACM, 1982.
+R. DeLine and M. Fa"hndrich. Enforcing high-level protocols in low-level software. InPLDI'01. ACM, 2001.
+M. Fa"hndrich and R. DeLine. Adoption and focus: Practical linear types for imper-ative programming. In PLDI'02. ACM, 2002.
+
+34
+
+REFERENCES REFERENCES
+M. Fa"hndrich, M. Aiken, C. Hawblitzel, O. Hodson, G. Hunt, J. R. Larus, and S. Levi.Language support for fast and reliable message-based communication in Singularity
+
+OS. In EuroSys'06, pages 177-190. ACM, 2006.
+S. J. Gay, V. T. Vasconcelos, and A. Ravara. Session types for inter-process commu-nication. Technical Report TR-2003-133, U. of Glasgow, 2003.
+
+J.-Y. Girard. Linear logic. Theoretical Computer Science, 50:1-102, 1987.
+D. Leijen. Flexible types: Robust type inference for first-class polymorphism. InPOPL'09, pages 66-77. ACM, 2009.
+
+X. Leroy, D. Doligez, J. Garrigue, D. Re'my, and J. Vouillon. The Objective Camlsystem. INRIA, 3.11 edition, 2008.
+K. Mazurak, J. Zhao, and S. Zdancewic. Lightweight linear types in System Fffi. InTLDI'10, pages 77-88. ACM, 2010.
+R. Milner, M. Tofte, R. Harper, and D. MacQueen. The Definition of Standard ML.MIT, revised edition, 1997.
+B. C. Pierce. Types and Programming Languages. MIT, 2002.
+R. Plasmeijer and M. van Eekelen. Clean Language Report, Version 2.1. Dept. ofSoftware Technology, U. of Nijmegen, 2002.
+
+A. Rossberg, C. V. Russo, and D. Dreyer. F-ing modules. In TLDI'10, pages 89-102.ACM, 2010.
+M. Steffen. Polarized Higher Order Subtyping. PhD thesis, Universita"t Erlangen-Nu"rnberg, 1997.
+I. E. Sutherland and G. W. Hodgman. Reentrant polygon clipping. CACM, 17(1):32-42, 1974.
+J. A. Tov and R. Pucella. Stateful contracts for affine types. In ESOP'10, volume6012 of LNCS, pages 550-569. Springer, 2010.
+E. de Vries, R. Plasmeijer, and D. M. Abrahamson. Uniqueness typing simplified. InIFL'07, pages 201-218. Springer, 2008.
+P. Wadler. Is there a use for linear logic? In PEPM'91, pages 255-273. ACM, 1991.
+P. Wadler and S. Blott. How to make ad-hoc polymorphism less ad hoc. In POPL'89,pages 60-76. ACM, 1989.
+
+35
+
+A ADDITIONAL PROOFS
+A Additional Proofs
+Conventions. We follow several conventions throughout:
+
+* If there is a context \Sigma X and we introduce \Sigma X1 and \Sigma X2, this means that \Sigma  =
+
+\Sigma X1, \Sigma X2, up to permutation.
+
+* Contexts \Sigma X1 and \Sigma X2 are taken to be disjoint.
+
+* Following Barendregt, we use evasive relettering liberally. Bound (type) vari-ables, as in
+
+*x:o/.e, \Lambda ff:^.v, 8ff:^.o/ , *ff.o/ , and \Pi ffv.^, are fresh for any syntaxthat appears outside their scope.
+
+A.1 Principal Qualifiers
+Definition 3 (Kind semilattices). We partition the kinds by arity, where ^j are thekinds of arity
+
+j:
+
+^0 ::= '
+^j+1 ::= \Pi ffv.^j.
+
+Then, subject to a context \Delta  mapping type variables to kinds, (^j, <:, tj, ?j) is abounded join semilattice, defined inductively for each arity
+
+j by:
+
+'1 t0 '2 = '1 t '2
+(\Pi ffv1.^j1) tj+1 (\Pi ffv2.^j2) = \Pi ffv1 t v2.(^j1 tj ^j2)
+
+?0 = U?
+j+1 = \Pi ffff.?j.
+
+We omit the arity superscript j when it is clear from context.
+Proof. We show that the previous definition gives a bounded join semilattice, byinduction on
+
+j:
+
+Case 0.
+
+When \Delta  is empty, qualifier expressions ' form the free bounded semilatticeover uninterpreted type variables
+
+(hffi), with join (t) and bottom U all as givenin the syntax of qualifier constants and expressions. When
+
+\Delta  is non-empty, wequotient the semilattice as follows: for each type variable
+ff:U 2 \Delta , we add theconstraint that h
+ffi = U.
+
+Case i + 1.
+
+The semilattice on ^i+1 is isomorphic to the product semilattice on v * ^i. Thisfollows from definition 3 and by inspection of rule
+
+KSub-Arr, noting that theaddition of
+ff:hffi to the context does not quotient hffi.
+
+36
+
+A ADDITIONAL PROOFS A.1 Principal Qualifiers
+Lemma 4 (Well-formed kind semilattice). For kinds ^1 and ^2 of the same arity j,if
+
+\Delta  ` ^1 and \Delta  ` ^2 then \Delta  ` ^1 t ^2 .
+
+Proof. By induction on j:
+
+Case 0.
+
+Let '1 = ^1 and '2 = ^2. By inversion, ftv('1) ` dom(\Delta ) and ftv('2) `
+dom(\Delta ). Then*
+
+ftv('1 t '2) ` ftv '1 [ ftv '2 ` dom \Delta .
+
+Case j0 + 1.
+
+Then there are some ^01, ^02, v1, and v2 such that*
+
+^1 = \Pi ffv1.^01 and*
+^2 = \Pi ffv2.^02.
+
+Then by definition 3,
+
+* ^1 t ^2 = \Pi ffv1 t v2.^01 t ^02.
+By inversion of rule OK-Arr,
+
+* \Delta , ff:hffi ` ^01 ,*
+
+if ff 2 ftv(^01) then + v v1,*
+\Delta , ff:hffi ` ^02 ,*
+if ff 2 ftv(^02) then + v v2.
+
+By the induction hypothesis,
+
+* \Delta , ff:hffi ` ^01 t ^02 .
+Finally, if ff 2 ftv(^01 t ^02), it must be in at least ^01 or ^02, which means thateither
+
++ v v1 or + v v2, which means that + v v1 t v2.
+
+Lemma 5 (Unique kinds and unique variances).
+
+1. If \Delta  ` o/ : ^ and \Delta  ` o/ : ^0 then ^ = ^0.
+2. If \Delta  ` ff 2 o/ l v and \Delta  ` ff 2 o/ l v0 then v = v0.
+Proof. By induction on the structure of o/ .
+
+1. For kinding:
+
+37
+
+A.1 Principal Qualifiers A ADDITIONAL PROOFS
+
+Case ff.
+
+The only applicable rule is K-Var. By inversion, it must be the case that
+ff:^ 2 \Delta . and ff:^0 2 \Delta . Since contexts do not admit repetition, ^ = ^0.
+
+Case *ff.o/1.
+
+The only applicable rule is K-Abs. By inversion, there must be some ^1and
+
+v1 where ^ = \Pi ffv1.^1 such that*
+
+\Delta , ff:hffi ` o/1 : ^1 and*
+\Delta , ff:hffi ` ff 2 o/ l v1.
+
+Likewise, there must be some ^01 and v01 where ^0 = \Pi ffv01.^01 such that*
+
+\Delta , ff:hffi ` o/1 : ^01 and*
+\Delta , ff:hffi ` ff 2 o/ l v01.
+
+By the induction hypothesis, ^1 = ^01, and by the induction hypothesispart (2),
+
+v1 = v01. Therefore, ^ = ^0.
+
+Case o/1 o/2.
+
+By inversion of rule K-App and the induction hypothesis twice, relying onthe fact that substitution is a function.
+
+Case 8ff:^1.o/1.
+
+By inversion of rule K-All and the induction hypothesis, relying on thefact that substitution is a function.
+
+Case o/1 '-! o/2.
+
+Then ^ = ' = ^0.
+
+Case O/.
+
+The only applicable rule is one of K-Unit, K-Sum, or K-Prod, dependingon the form of
+
+O/.
+
+2. For variance:
+
+Case fi.
+
+If ff = fi then v = v0 = +. Otherwise, v = v0 = ff.
+
+Case *fi.o/1.
+
+By inversion of rule V-Abs,*
+
+\Delta , fi:hfii ` ff 2 o/1 l v and*
+\Delta , fi:hfii ` ff 2 o/1 l v0.
+
+By the induction hypothesis, v = v0.
+Case o/1 o/2.
+
+By inversion of rule V-App,*
+
+\Delta  ` ff 2 o/1 l v1,
+
+38
+
+A ADDITIONAL PROOFS A.1 Principal Qualifiers
+
+* \Delta  ` ff 2 o/2 l v2, and*
+
+\Delta  ` o/1 : \Pi fiv3.^3
+
+where v = v1 t (v2 * v3). Likewise by inversion,*
+
+\Delta  ` ff 2 o/1 l v01,*
+\Delta  ` ff 2 o/2 l v02, and*
+\Delta  ` o/1 : \Pi fiv03.^03
+
+where v0 = v01 t (v02 * v03).
+By the induction hypothesis twice, v1 = v01 and v2 = v02. By the inductionhypothesis at part (1),
+
+\Pi fiv3.^3 = \Pi fiv03.^03, and thus v3 = v03. Therefore,
+v = v0.
+
+Case 8ff:^1.o/1.
+
+As for *ff.o/1, but with rule V-All.
+
+Case o/1 '-! o/2.
+
+As for o/1 o/2, but with rule V-Arr.
+
+Case O/.
+
+Then v = v0 = ff by rule V-Con.
+
+Corollary 6 (Unique context bounds). If \Delta  ` \Sigma  _ ' and \Delta  ` \Sigma  _ '0 then ' = '0.
+Proof. By induction on the structure of \Sigma :
+
+Case *.
+
+The only applicable rule is rule B-Nil, so ' = '0 = U.
+
+Case \Sigma 0, ff:^.
+
+The only applicable rule is rule B-ConsA. By inversion,
+
+* \Delta  ` \Sigma 0 _ ' and*
+
+\Delta  ` \Sigma 0 _ '0.
+
+Then by the induction hypothesis, ' = '0.
+Case \Sigma 0, x:o/ .
+
+The only applicable rule is rule B-ConsX. By inversion there exist some '1and
+
+'2 such that*
+
+\Delta  ` \Sigma 0 _ '1 and*
+\Delta  ` o/ : '2
+
+where ' = '1 t '2. Likewise, there exist some '01 and '02 such that
+
+39
+
+A.1 Principal Qualifiers A ADDITIONAL PROOFS
+
+* \Delta  ` \Sigma 0 _ '01 and*
+
+\Delta  ` o/ : '02
+
+where '0 = '01 t '02. By the induction hypothesis, '1 = '01, and by lemma 5,
+'2 = '02. Thus, ' = '0.
+
+Case \Sigma 0, `:o/ .
+
+The only applicable rule is rule B-ConsL, so ' = '0 = A.
+
+Lemma 7 (Context bounding).
+
+1. If \Gamma  ` \Sigma 1 _ '1 and \Gamma  ` \Sigma 2 _ '2 then \Gamma  ` \Sigma 1, \Sigma 2 _ '1 t '2.
+2. If \Gamma  ` \Sigma  _ ' and \Gamma  ` o/ : '0 where x:o/ 2 \Sigma  then \Gamma  ` '0 <: '.
+Proof.
+
+1. By induction on the structure of \Sigma 2.
+2. By induction on the structure of \Sigma .
+
+Theorem 8 (Principal function qualifiers). If term \Gamma ; \Sigma  B *x:o/.e : o/1 '0-! o/2, thenthere is a least qualifier expression
+
+'0 such that:
+
+* \Gamma ; \Sigma  B *x:o/.e : o/1 '
+
+0-! o/2, and
+
+* \Gamma  ` '0 <: ' for all ' such that \Gamma ; \Sigma  B *x:o/.e : o/1 '-! o/2.
+Proof. By assumption, \Gamma ; \Sigma  B *x:o/.e : o/ 01 '0-! o/ 02. Two rules apply at the root ofthe typing derivation: the syntax-directed rule
+
+T-Abs and the subsumption rule
+T-Subsume. Without loss of generality, we can collapse multiple subsumptions toone by transitivity, or expand zero subsumptions to one by reflexivity, which means
+
+that we need only consider derivations of the form
+
+A : ` (\Gamma ; \Sigma ), x:o/  \Gamma 0; \Sigma 0B
+
+: \Gamma 0; \Sigma 0 B e : o/2C
+
+: \Gamma  ` \Sigma  _ 'D
+
+: \Gamma  ` o/ : '1
+
+\Gamma ; \Sigma  B *x:o/.e : o/ '-! o/2 T-Abs
+
+J : \Delta  ` o/ <:- o/ 01K
+
+: \Delta  ` ' <: '0L
+: \Delta  ` o/2 <:+ o/ 02
+
+\Delta  ` o/ '-! o/2 <:+ o/ 01 '0-! o/ 02 TSub-Arr
+\Gamma ; \Sigma  B *x:o/.e : o/ 01 '0-! o/ 02
+
+T-Subsume.
+
+Now let \Sigma 0 be \Sigma  restricted to the free variables and locations of *x:o/.e. If x:o/ 2 \Sigma 0then let
+
+\Sigma 00 = \Sigma 0, x:o/ ; otherwise let \Sigma 00 = \Sigma 0. Thus, ` (\Gamma ; \Sigma 0), x:o/  \Gamma 0; \Sigma 00. Bycorollary 6, let
+
+'0 be the unique qualifier expression such that \Gamma  ` \Sigma 0 _ '0. By
+
+40
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+inspection of the typing rules, we may strengthen B to \Gamma 0; \Sigma 00 B e : o/2, because weremoved only irrelevant assumptions from
+
+\Sigma 00. Thus, we can derive:
+
+A0 : ` (\Gamma ; \Sigma 0), x:o/  \Gamma 0; \Sigma 00B0
+
+: \Gamma 0; \Sigma 00 B e : o/2C0
+
+: \Gamma  ` \Sigma 0 _ '0D
+
+: \Gamma  ` o/ : '1
+
+\Gamma ; \Sigma 0 B *x:o/.e : o/ '
+
+0-! o/2 T-Abs
+
+J : \Delta  ` o/ <:- o/ 01K0
+
+: \Delta  ` '0 <: '0L
+: \Delta  ` o/2 <:+ o/ 02
+
+\Delta  ` o/ '
+
+0-! o/2 <:+ o/ 0
+
+1
+
+'0-! o/ 0
+
+2
+
+TSub-Arr
+
+\Gamma ; \Sigma 0 B *x:o/.e : o/ 01 '
+
+0-! o/ 0
+
+2
+
+T-Subsume
+
+\Gamma ; \Sigma  B *x:o/.e : o/ 01 '
+
+0-! o/ 0
+
+2
+
+T-Weak.
+
+We now must show that '0 is the least usage qualifier that can be given to *x:o/.e.Since
+
+'0 is the least upper bound for \Sigma 0, the only way to get a lower qualifier wouldbe to remove some variables from
+
+\Sigma 0, but we defined \Sigma 0 to contain only variablesrelevant to
+*x:o/.e, which means that nothing else can be removed.
+
+A.2 Type Soundness
+A.2.1 Type Substitutions
+Definition 9 (Type substitution). We define type substitution on a variety of syn-tactic classes--types
+
+([o/ /ff]o/ 0), terms ([o/ /ff]e), and contexts ([o/ /ff]\Delta )--in the stan-dard homomorphic, binding-respecting way, but only when
+
+o/ is closed. Because weneed to define
+[o/ /ff](o/1 '-! o/2), we also need to define type substitution on kinds:
+[o/ /ff]^.
+
+We require that o/ be closed and well-formed, in particular, that * ` o/ : ^0 for somekind
+
+^0 (uniquely determined by lemma 5). If ^0 is an arrow kind, then we define
+[o/ /ff]^ = ^. On the other hand, if ^0 is a qualifier expression ', then we define
+[o/ /ff]^ = ['/ff]^.
+
+Lemma 10 (Type substitution on kind well-formedness). If \Delta , ff:^0 ` ^ and \Delta  ` o/ :
+^0 then [o/ /ff]\Delta  ` [o/ /ff]^ .
+
+Proof. By cases on ^0"
+
+Case \Pi ffv.^00.
+
+Then [o/ /ff]^ = ^, so \Delta  ` [o/ /ff]^ by weakening.
+
+Case '0.
+
+By induction on the derivation of ^:
+
+41
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case ftv(') ` dom(\Delta )\Delta , ff:'0 ` ' .
+
+By inversion, ftv('0) ` dom(\Delta ), and since ff 62 ftv(['0/ff]'), noting that
+dom \Delta  = dom([o/ /ff]\Delta ), we know that ftv(['0/ff]') 2 dom([o/ /ff]\Delta ).
+
+Case if fi 2 ftv(^) then + v v \Delta , ff:'
+
+0, fi:hfii ` ^
+
+\Delta , ff:'0 ` \Pi fiv.^ .
+By the induction hypothesis, [o/ /ff]\Delta , fi:hfii ` [o/ /ff]^ . Since fi is boundwith
+
+^ in scope, fi is fresh for o/ , which means that fi 2 [o/ /ff]^ if and onlyif
+fi 2 ftv ^. Then by rule OK-Arr.
+
+Lemma 11 (Qualifier substitution on qualifier subsumption). If \Delta , ff:' |= '1 v '2then
+
+['/ff]\Delta  |= ['/ff]'1 v ['/ff]'2.
+
+Proof. Let V be any valuation consistent with ['/ff]\Delta . That means that for all
+fi:'00 2 ['/ff]\Delta , V(fi) v V('00). Equivalently, for all fi:'0 2 \Delta , we know that V(fi) vV
+
+(['/ff]'0). (Note that fi 6= ff or else \Delta , ff:' would be ill formed.)Now let V 0
+
+= V{ff 7! V (')}. Note that V0(fi) = V(fi) and that V0('0) =V
+(['/ff]'0). Then V0(fi) v V0('0) for all fi:'0 2 \Delta . Furthermore, we defined V0so that V0
+
+(ff) = V0('), so V0(ff) v V0('). Thus, V0 is consistent with \Delta , ff:'.By definition 2, since
+
+\Delta , ff:' |= '1 v '2, we now know that V0('1) v V0('2).Note that V 0
+('1) = V(['/ff]'1) and V0('2) = V(['/ff]'2). Then we know thatV
+(['/ff]'1) v V(['/ff]'2). Since V is an arbitrary valuation consistent with ['/ff]\Delta ,this means that
+
+['/ff]\Delta  |= ['/ff]'1 v ['/ff]'2.
+
+Corollary 12 (Type substitution on subkinding). If \Delta , ff:^ ` ^1 <: ^2 and * ` o/ : ^then
+
+[o/ /ff]\Delta  ` [o/ /ff]^1 <: [o/ /ff]^2.
+
+Proof. By cases on the subkinding derivation:
+
+Case v1 v v2 \Delta , fi:hfii, ff:^ ` ^
+
+01 <: ^02
+
+\Delta , ff:^ ` \Pi fiv1.^01 <: \Pi fiv2.^02 .
+By the induction hypothesis and rule KSub-Arr.
+
+Case \Delta , ff:^ |= '1 v '2\Delta , ff:^ ` '
+
+1 <: '2 .
+
+We need to show that [o/ /ff]\Delta  |= [o/ /ff]'1 v [o/ /ff]'2. If ^ the kind of o/ , is nota base kind, then this is trivially the case. Otherwise, there exists some
+
+' suchthat
+\Delta , ff:' |= '1 v '2. Then by lemma 11, ['/ff]\Delta  |= ['/ff]'1 v ['/ff]'2.
+
+Lemma 13 (Non-free type variables do not vary). If ff 62 ftv o/ then \Delta  ` ff 2 o/ l ff.
+Proof. By induction on the structure of o/ .
+
+42
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+Lemma 14 (Type substitution on kinding and variance). For any type o/ and kind ^such that * `
+
+o/ : ^,
+
+1. If \Delta , ff:^ ` o/ 0 : ^0 then [o/ /ff]\Delta  ` [o/ /ff]o/ 0 : [o/ /ff]^0.
+2. If \Delta , fi:hfii, ff:^ ` fi 2 o/ 0 l v, where fi 62 ftv o/ and fi 62 ftv(\Delta , ff:^), then
+
+[o/ /ff]\Delta , fi:hfii ` fi 2 [o/ /ff]o/ 0 l v.
+
+Proof. We proceed by mutual induction on the kinding and variance derivations.
+
+1. For kinding:
+
+Case ff
+
+0:^0 2 \Delta , ff:^ \Delta , ff:^ ` ^0 ` \Delta , ff:^; *
+
+\Delta , ff:^ ` ff0:^0 .
+By lemma 10, [o/ /ff]\Delta  ` [o/ /ff]^0 .
+If ff 6= ff0 then [o/ /ff]ff0 = ff0. Clearly ff0:[o/ /ff]^0 2 [o/ /ff](\Delta , ff:^). Then byrule
+
+K-Var.
+
+If ff = ff0 then ^ = ^0 and [o/ /ff]ff0 = o/ . We know that * ` o/ : ^, so byweakening,
+
+* [o/ /ff]\Delta  ` [o/ /ff]ff0:^0.
+It remains to be shown that [o/ /ff]^0 = ^0. If o/ is a type operator, then bydefinition 9,
+
+[o/ /ff]^0 = ^0. Otherwise, ^0 is a type qualifier '. Note thatwe admit two forms of bindings for
+
+ff:':
+
+Case ff:hffi.Then
+
+[ff/ff]ff = ff.
+
+Case ff:' where ff 62 ftv '.Then
+
+['/ff]' = '.
+
+Case ` \Delta , ff:^; *\Delta , ff:^ ` 1 : U .
+
+By rule K-Unit, since [o/ /ff]1 = 1 and [o/ /ff]U = U.
+
+Case \Delta , ff:^, fi:hfii ` o/
+
+00 : ^00 \Delta , ff:^, fi:hfii ` fi 2 o/ 00 l v
+
+\Delta , ff:^ ` *fi.o/ 00 : \Pi fiv.^00 .
+By the induction hypothesis,*
+
+[o/ /ff]\Delta , fi:hfii ` [o/ /ff]o/ 00 : [o/ /ff]^00.
+Since fi is fresh and only o/ 00 and ^00 appear in its scope, we know that
+fi 62 ftv o/ [ ftv(\Delta , ff:^). Thus, we can apply the induction hypothesis atpart (2) to get
+
+* [o/ /ff]\Delta , fi:hfii ` fi 2 [o/ /ff]o/ 00 l v.
+Then by rule K-Abs.
+
+43
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case \Delta , ff:^ ` o/1 : \Pi fi
+
+v.^00 \Delta , ff:^ ` o/2 : '
+
+\Delta , ff:^ ` o/1 o/2 : ['/fi]^00 .
+By the induction hypothesis twice,*
+
+[o/ /ff]\Delta  ` [o/ /ff]o/1 : \Pi fiv.[o/ /ff]^00 and*
+[o/ /ff]\Delta  ` [o/ /ff]o/2 : [o/ /ff]'.
+
+By rule K-App,*
+
+[o/ /ff]\Delta  ` [o/ /ff](o/1 o/2) : [[o/ /ff]'/fi][o/ /ff]^00.
+Since fi is bound in this rule with ' not in its scope, we know that fi is not inthe free type variables of
+
+'. Therefore, [[o/ /ff]'/fi][o/ /ff]^00 = [o/ /ff]['/fi]^00,and thus
+
+* [o/ /ff]\Delta  ` [o/ /ff](o/1 o/2) : [o/ /ff]['/fi]^00.
+Case \Delta , ff:^, fi:^
+
+00 ` o/ 00 : ' \Delta , ff:^ ` ^00
+
+\Delta , ff:^ ` 8fi:^00.o/ 00 : [A/fi]' .
+By lemma 10 and the induction hypothesis,*
+
+[o/ /ff]\Delta  ` [o/ /ff]^00 and*
+[o/ /ff]\Delta , fi:[o/ /ff]^00 ` [o/ /ff]o/ 00 : [o/ /ff]'.
+
+Because fi is fresh for o/ , [A/fi][o/ /ff]' = [o/ /ff][A/fi]', Then by rule K-All,*
+
+[o/ /ff]\Delta  ` [o/ /ff](8fi:^00.o/ 00) : [o/ /ff][A/fi]'.
+
+Case \Delta , ff:^ ` o/1 : '1 \Delta , ff:^ ` o/2 : '2 \Delta , ff:^ ` '\Delta , ff:^ ` o/
+
+1
+
+'-! o/
+
+2 : ' .By the induction hypothesis twice, lemma 10, and rule K-Arr.
+
+Case ` \Delta , ff:^; *\Delta , ff:^ ` aref : \Pi fi+-.A .
+
+As in the hi case.
+Case ` \Delta , ff:^; *\Delta , ff:^ ` (+) : \Pi fi
+
+1+.\Pi fi2+.hfi1i t hfi2i .As in the previous case.
+
+Case ` \Delta , ff:^; *\Delta , ff:^ ` (*) : \Pi fi
+
+1+.\Pi fi2+.hfi1i t hfi2i .As in the previous case.
+
+2. For variance:
+
+Case \Delta , fi:hfii, ff:^ ` fi 2 fi l +.
+
+Since ff 6= fi, [o/ /ff]fi = fi, so [o/ /ff]\Delta , fi:hfii ` fi 2 fi l +.
+
+Case \Delta , fi:hfii, ff:^ ` fi 2 fi0 l ff.
+
+If fi0 6= ff then [o/ /ff]fi0 = fi0, so [o/ /ff]\Delta , fi:hfii ` fi 2 [o/ /ff]fi0 l ff.
+
+44
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+If fi0 = ff, then we must consider because fi 62 ftv o/ , and by lemma 13,
+[o/ /ff]\Delta , fi:hfii ` fi 2 o/ l ff.
+
+Case \Delta , ff:^, fi:hfii, fi
+
+0:hfi0i ` fi 2 o/ 00 l v
+
+\Delta , fi:hfii, ff:^ ` fi 2 *fi0.o/ 00 l v .
+By the induction hypothesis and rule V-Abs.
+
+Case
+
+\Delta , fi:hfii, ff:^ ` fi 2 o/1 l v1 \Delta , fi:hfii, ff:^ ` fi 2 o/2 l v2
+
+\Delta , fi:hfii, ff:^ ` o/1 : \Pi fi0v3.^3
+
+\Delta , fi:hfii, ff:^ ` fi 2 o/1 o/2 l v1 t (v2 * v3) .
+By the induction hypothesis twice at part (2), the induction hypothesisonce at part (1), and rule
+
+V-App.
+
+Case \Delta , fi:hfii, ff:^, fi
+
+0:^0 ` fi 2 o/ 00 l v1 v2 = if fi 2 ftv(^0) then +- else ff
+
+\Delta , fi:hfii, ff:^ ` fi 2 8fi0:^0.o/ 00 l v1 t v2 .
+By the induction hypothesis,*
+
+[o/ /ff]\Delta , fi:hfii, fi0:[o/ /ff]^0 ` fi 2 [o/ /ff]o/ 00 l v1.
+
+Since fi 6= ff and fi 62 ftv ^, fi 2 ftv ^0 iff fi 2 ftv[o/ /ff]^0, so
+
+* v2 = if fi 2 ftv(([o/ /ff]^0)) then +- else ff.
+Then by rule V-All.
+
+Case
+
+\Delta , fi:hfii, ff:^ ` fi 2 o/1 l v1 \Delta , fi:hfii, ff:^ ` fi 2 o/2 l v2
+
+v3 = if fi 2 ftv(') then + else ff
+
+\Delta , fi:hfii, ff:^ ` fi 2 o/1 '-! o/2 l (-v1) t v2 t v3 .
+By the induction hypothesis twice,*
+
+[o/ /ff]\Delta , fi:hfii ` fi 2 [o/ /ff]o/1 l v1 and*
+[o/ /ff]\Delta , fi:hfii ` fi 2 [o/ /ff]o/2 l v2.
+
+Furthermore, note that fi 2 ftv ' if and only if fi 2 (ftv[o/ /ff]'). Because
+fi 6= ff, the substitution cannot remove fi, and because fi 62 ftv o/ , thesubstitution canot add
+
+fi. Thus,*
+
+v3 = if fi 2 ftv(([o/ /ff]')) then + else ff.
+Then by rule V-Arr.
+Case \Delta , fi:hfii, ff:^ ` fi 2 O/ l ff.
+
+Note that [o/ /ff]O/ = O/. Then by rule V-Con.
+
+Lemma 15 (Type substitution on type equivalence). If o/1 j o/2 then [o/ /ff]o/1 j
+[o/ /ff]o/2.
+
+Proof. By induction on the type equivalence derivation o/1 j o/2:
+
+45
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case o/1 j o/1.
+
+Then [o/ /ff]o/1 j [o/ /ff]o/1 by rule E-Refl.
+
+Case o/2 j o/1o/
+
+1 j o/2 .
+
+By the induction hypothesis and rule E-Sym.
+
+Case o/1 j o/3 o/3 j o/2o/
+
+1 j o/2 .
+
+By the induction hypothesis twice and rule E-Trans.
+
+Case o/11 j o/21 o/12 j o/22o/
+
+11
+
+'-! o/
+
+12 j o/21
+
+'-! o/
+
+22 .
+
+By the induction hypothesis twice and rule E-Arr.
+
+Case o/
+
+01 j o/ 02
+
+8fi:^0.o/ 01 j 8fi:^0.o/ 02 .
+By the induction hypothesis twice and rule E-All.
+
+Case o/
+
+01 j o/ 02
+
+*fi.o/ 01 j *fi.o/ 02 .
+By the induction hypothesis and rule E-Abs.
+
+Case o/11 j o/21 o/12 j o/22o/
+
+11 o/12 j o/21 o/22 .
+
+By the induction hypothesis twice and rule E-App.
+
+Case (*fi.o/ 01) o/ 02 j [o/ 02/fi]o/ 01.
+
+Then
+
+* [o/ /ff]o/1 = (*fi.[o/ /ff]o/ 01) [o/ /ff]o/ 02 and*
+
+[o/ /ff]o/2 = [[o/ /ff]o/ 02/fi][o/ /ff]o/ 01,
+
+and finally
+
+* (*fi.[o/ /ff]o/ 01) [o/ /ff]o/ 02 j [[o/ /ff]o/ 02/fi][o/ /ff]o/ 01.
+by rule E-Beta.
+Lemma 16 (Type substitution on subtyping). If \Delta , ff:^ ` o/1 <:v o/2 and * ` o/ : ^then
+
+[o/ /ff]\Delta  ` [o/ /ff]o/1 <:v [o/ /ff]o/2.
+
+Proof. We proceed by induction on the subtyping derivation:
+
+46
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Case o/1 j o/2 \Delta , ff:^ ` o/1 : ^ \Delta , ff:^ ` o/2 : ^\Delta , ff:^ ` o/
+
+1 <:v o/2 .
+
+By lemma 15, lemma 14 twice, and rule TSub-Eq.
+
+Case \Delta , ff:^ ` o/1 <:
+
+v o/3 \Delta , ff:^ ` o/3 <:v o/2 \Delta , ff:^ ` o/3 : ^
+
+\Delta , ff:^ ` o/1 <:v o/2 .
+By the induction hypothesis twice, lemma 14, and rule TSub-Trans.
+
+Case \Delta , ff:^ ` o/2 <:
+
+-v o/1
+
+\Delta , ff:^ ` o/1 <:v o/2 .
+By the induction hypothesis and rule TSub-Contra.
+
+Case \Delta , ff:^, fi:hfii ` o/
+
+01 <:v o/ 02
+
+\Delta , ff:^ ` *fi.o/ 01 <:v *fi.o/ 02 .
+By the induction hypothesis and rule TSub-Abs.
+
+Case
+
+\Delta , ff:^ ` o/11 : \Pi ffv1.^1 \Delta , ff:^ ` o/21 : \Pi ffv2.^2
+\Delta , ff:^ ` o/11 <:v o/21 \Delta , ff:^ ` o/12 <:v*(v1tv2) o/22
+
+\Delta , ff:^ ` o/11 o/12 <:v o/21 o/22 .
+
+By the induction hypothesis twice, lemma 14 twice, and rule TSub-App.
+
+Case \Delta , ff:^, fi:^
+
+0 ` o/ 01 <:v o/ 02
+
+\Delta , ff:^ ` 8fi:^0.o/ 01 <:v 8fi:^0.o/ 02 .
+Note that \Delta , ff:^, fi:^0 = \Delta , fi:^0, ff:^. Then by the induction hypothesis andrule
+
+TSub-All.
+
+Case \Delta , ff:^ ` o/11 <:
+
+-v o/21 \Delta , ff:^ ` o/12 <:v o/22 \Delta , ff:^ ` '1 <:v '2
+
+\Delta , ff:^ ` o/11 '
+
+1-! o/12 <:v o/21 '2-! o/22 .
+
+By the induction hypothesis twice, corollary 12, and rule TSub-Arr.
+Lemma 17 (Type substitution on context bounding). If \Delta , ff:^ ` \Sigma  _ ' and * ` o/ : ^then
+
+[o/ /ff]\Delta  ` [o/ /ff]\Sigma  _ [o/ /ff]'.
+
+Proof. By induction on the derivation of \Delta , ff:^ ` \Sigma  _ ':
+
+Case \Delta , ff:^ ` * _ '.
+
+That is, \Sigma  = *. By inversion of rule B-Nil, ' = U. Noting that [o/ /ff]U = U, byrule
+
+B-Nil,
+
+* [o/ /ff]\Delta  ` * _ [o/ /ff]U.
+
+47
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case \Delta , ff:^ ` \Sigma 
+
+0 _ '1 \Delta , ff:^ ` o/ 0 : '2
+
+\Delta , ff:^ ` \Sigma 0, x:o/ 0 _ '1 t '2 .
+By the induction hypothesis and lemma 14,*
+
+[o/ /ff]\Delta  ` [o/ /ff]\Sigma 0 _ [o/ /ff]'1 and*
+[o/ /ff]\Delta  ` [o/ /ff]o/ 0 : [o/ /ff]'2.
+
+Then by rule B-ConsX,
+
+* [o/ /ff]\Delta  ` [o/ /ff](\Sigma 0, x:o/ 0) _ [o/ /ff]('1 t '2).
+
+Case \Delta , ff:^ ` \Sigma 
+
+0 _ '1 \Delta , ff:^ ` o/ 0 : '2
+
+\Delta , ff:^ ` \Sigma 0, `:o/ 0 _ A .
+By the induction hypothesis and lemma 14,*
+
+[o/ /ff]\Delta  ` [o/ /ff]\Sigma 0 _ [o/ /ff]'1 and*
+[o/ /ff]\Delta  ` [o/ /ff]o/ 0 : [o/ /ff]'2.
+
+Then by rule B-ConsL, [o/ /ff]\Delta  ` [o/ /ff]\Sigma 0, `:[o/ /ff]o/ 0 _ [o/ /ff]A
+
+Case \Delta , ff:^ ` \Sigma 
+
+0 _ ' \Delta , ff:^ ` ^0
+
+\Delta , ff:^ ` \Sigma 0, ff0:^0 _ ' .
+By the induction hypothesis, lemma 10, and rule B-ConsA.
+
+Lemma 18 (Type substitution on context well-formedness). If ` \Gamma , ff:^; \Sigma  and * `
+o/ : ^ then ` [o/ /ff]\Gamma ; [o/ /ff]\Sigma .
+
+Proof. By inversion of rule Wf, lemma 17 twice, and rule Wf.
+Lemma 19 (Type substitution on context extension). If ` (\Gamma 0, ff:^; \Sigma 0), \Sigma 0  \Gamma 1, ff:^; \Sigma 1and * `
+
+o/ : ^ then ` ([o/ /ff]\Gamma 0; [o/ /ff]\Sigma 0), [o/ /ff]\Sigma 0  [o/ /ff]\Gamma 1; [o/ /ff]\Sigma 1.
+
+Proof. By induction on the derivation of ` (\Gamma , ff:^; \Sigma ), \Sigma 1  \Gamma 0, ff:^; \Sigma 0:
+
+Case ` (\Gamma , ff:^; \Sigma ), *  \Gamma , ff:^; \Sigma .
+
+Then [o/ /ff]* = *, so* `
+
+([o/ /ff]\Gamma ; [o/ /ff]\Sigma ), *  [o/ /ff]\Gamma ; [o/ /ff]\Sigma 
+
+by rule X-Nil.
+
+Case \Gamma 0, ff:^ ` o/ : U ` (\Gamma 0, ff:^, x:o/
+
+0; \Sigma 0), \Sigma 0  \Gamma 1, ff:^; \Sigma 1
+
+` (\Gamma 0, ff:^; \Sigma 0), x:o/ 0, \Sigma 0  \Gamma 1, ff:^; \Sigma 1 .
+Note that because o/ is closed, ff:^ and x:o/ 0 commute. By lemma 14 and theinduction hypothesis,
+
+* [o/ /ff]\Gamma 0 ` [o/ /ff]o/ 0 : U and
+
+48
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+* ` ([o/ /ff](\Gamma 0, x:o/ 0); [o/ /ff]\Sigma 0), [o/ /ff]\Sigma 0  [o/ /ff]\Gamma 1; [o/ /ff]\Sigma 1.
+Then by rule X-ConsU.
+
+Case \Gamma 0, ff:^ ` o/
+
+0 : ' ` (\Gamma 0, ff:^; \Sigma 0, x:o/ 0), \Sigma 0  \Gamma 1, ff:^; \Sigma 1
+
+` (\Gamma 0, ff:^; \Sigma 0), x:o/ 0, \Sigma 0  \Gamma 1, ff:^; \Sigma 1 .
+By lemma 14 and the induction hypothesis,*
+
+[o/ /ff]\Gamma 0 ` [o/ /ff]o/ 0 : [o/ /ff]' and* `
+
+([o/ /ff]\Gamma 0; [o/ /ff](\Sigma 0, x:o/ 0)), [o/ /ff]\Sigma 0  [o/ /ff]\Gamma 1; [o/ /ff]\Sigma 1,
+
+and finally
+
+* ` ([o/ /ff]\Gamma 0; [o/ /ff]\Sigma 0), [o/ /ff](x:o/ 0, \Sigma 0)  [o/ /ff]\Gamma 1; [o/ /ff]\Sigma 1
+by rule X-ConsA.
+Lemma 20 (Type substitution on typing). If \Gamma , ff:^; \Sigma  B e : o/ and * ` o/ 0 : ^ then
+[o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B [o/ 0/ff]e : [o/ 0/ff]o/ .
+
+Proof. By induction on the height of the typing derivation:
+
+Case \Gamma , ff:^; \Sigma  B e : o/
+
+00 \Gamma , ff:^ ` o/ 00 <:+ o/ \Gamma , ff:^ ` o/ : '
+
+\Gamma , ff:^; \Sigma  B e : o/ .
+By the induction hypothesis,*
+
+[o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B [o/ 0/ff]e : [o/ 0/ff]o/ 00.
+
+By lemma 16 and lemma 14,
+
+* [o/ 0/ff]\Gamma  ` [o/ 0/ff]o/ 00 <:+ [o/ 0/ff]o/ and*
+
+[o/ 0/ff]\Gamma  ` [o/ 0/ff]o/ : [o/ 0/ff]'.
+
+Then by rule T-Subsume,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B [o/ 0/ff]e : [o/ 0/ff]o/.
+
+Case \Gamma 
+
+01; \Sigma 1 B e : o/ ` \Gamma 1, \Gamma 2, ff:^; \Sigma 1, \Sigma 2
+
+\Gamma 1, \Gamma 2, ff:^; \Sigma 1, \Sigma 2 B e : o/ .
+There are two possibilities for \Gamma 01:
+
+Case \Gamma 01 = \Gamma 1.
+
+Then by weakening, \Gamma 1, ff:^; \Sigma 1 B e : o/ . This derivation has the sameheight, so we can apply the induction hypothesis as in the next case.
+
+Case \Gamma 01 = \Gamma 1, ff:^.
+
+Then by the induction hypothesis,*
+
+[o/ 0/ff]\Gamma 1; [o/ 0/ff]\Sigma 1 B [o/ 0/ff]e : [o/ 0/ff]o/,
+
+49
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+by lemma 18,* `
+
+[o/ 0/ff](\Gamma 1, \Gamma 2); [o/ 0/ff](\Sigma 1, \Sigma 2),
+and by weakening,*
+
+[o/ 0/ff](\Gamma 1, \Gamma 2); [o/ 0/ff](\Sigma 1, \Sigma 2) B [o/ 0/ff]e : [o/ 0/ff]o/.
+
+Case x:o/ 2 \Gamma , ff:^, \Sigma  \Gamma  ` o/ : ' ` \Gamma , ff:^; \Sigma \Gamma , ff:^; \Sigma  B x : o/ .
+
+Then x:o/ 2 \Gamma , \Sigma , and thus*
+
+x:[o/ 0/ff]o/ 2 [o/ 0/ff]\Gamma , [o/ 0/ff]\Sigma .
+
+By lemma 14 and lemma 18,
+
+* [o/ 0/ff]\Gamma  ` [o/ 0/ff]o/ : [o/ 0/ff]' and* `
+
+[o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma .
+
+Note that [o/ 0/ff]x = x. Then by rule T-Var,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B x : [o/ 0/ff]o/.
+
+Case `:o/1 2 \Sigma  * ` o/1 : ' ` \Gamma , ff:^; \Sigma \Gamma , ff:^; \Sigma  B ptr ` : aref o/
+
+1 .
+
+Since o/1 types in the empty context, ff is not free in o/1, so [o/ 0/ff]o/1 = o/1.Furthermore,
+
+* [o/ 0/ff](ptr `) = ptr ` and*
+
+`:o/1 2 [o/ 0/ff]\Sigma .
+
+By lemma 18,
+
+* ` [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma .
+Then by rule T-Ptr,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B [o/ 0/ff](ptr `) : [o/ 0/ff](aref o/1).
+
+Case
+
+` (\Gamma , ff:^; \Sigma ), x:o/1  \Gamma 0; \Sigma 0
+\Gamma 0; \Sigma 0 B e2 : o/2 \Gamma , ff:^ ` \Sigma  _ ' \Gamma , ff:^ ` o/1 : '1
+
+\Gamma , ff:^; \Sigma  B *x:o/1.e2 : o/1 '-! o/2 .
+Let \Gamma 00, ff:^ = \Gamma 0, and note that ` (\Gamma ; \Sigma ), x:o/1  \Gamma 00; \Sigma 0. By the inductionhypothesis,
+
+* [o/ 0/ff]\Gamma 00; [o/ 0/ff]\Sigma 0 B [o/ 0/ff]e2 : [o/ 0/ff]o/2.
+By lemma 19, lemma 17, and lemma 14,
+
+50
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+* ` ([o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma ), x:[o/ 0/ff]o/1  [o/ 0/ff]\Gamma 00; [o/ 0/ff]\Sigma 0,*
+
+[o/ 0/ff]\Gamma  ` [o/ 0/ff]\Sigma  _ [o/ 0/ff]', and*
+[o/ 0/ff]\Gamma  ` [o/ 0/ff]o/1 : [o/ 0/ff]'1.
+
+Then by rule T-Abs,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B *x:[o/ 0/ff]o/1.[o/ 0/ff]e2 : [o/ 0/ff](o/1 '-! o/2).
+
+Case \Gamma , ff:^; \Sigma 1 B e1 : o/1
+
+'-! o/
+
+2 \Gamma , ff:^; \Sigma 2 B e2 : o/1
+
+\Gamma , ff:^; \Sigma 1, \Sigma 2 B e1 e2 : o/2 .
+
+By the induction hypothesis twice,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma 1 B [o/ 0/ff]e1 : [o/ 0/ff]o/1 [o/
+
+0/ff]'----! [o/ 0/ff]o/
+
+2 and*
+
+[o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma 2 B [o/ 0/ff]e2 : [o/ 0/ff]o/1.
+
+Then by rule T-App,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff](\Sigma 1, \Sigma 2) B [o/ 0/ff](e1 e2) : [o/ 0/ff]o/2.
+
+Case \Gamma , ff:^, ff1:^1; \Sigma  B e1 : o/1 \Gamma , ff:^ ` ^1\Gamma , ff:^; \Sigma  B \Lambda ff
+
+1:^1.v1 : 8ff1:^1.o/1 .
+
+By lemma 10 and the induction hypothesis,*
+
+[o/ 0/ff]\Gamma  ` [o/ 0/ff]^1 and*
+[o/ 0/ff]\Gamma , ff1:[o/ 0/ff]^1; [o/ 0/ff]\Sigma  B [o/ 0/ff]v1 : [o/ 0/ff]o/1,
+
+and by rule T-TAbs,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B [o/ 0/ff](\Lambda ff1:^1.v1) : [o/ 0/ff](8ff1:^1.o/1).
+
+Case \Gamma , ff:^; \Sigma  B e1 : 8ff1:^1.o/2 \Gamma , ff:^ ` o/1 : ^1\Gamma , ff:^; \Sigma  B e
+
+1[o/1] : [o/1/ff1]o/2 .
+
+By the induction hypothesis,*
+
+[o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B [o/ 0/ff]e1 : 8ff1:[o/ 0/ff]^1.[o/ 0/ff]o/2,
+
+and by lemma 14,
+
+* [o/ 0/ff]\Gamma  ` [o/ 0/ff]o/1 : [o/ 0/ff]^1.
+Note that [[o/ 0/ff]o/1/ff1][o/ 0/ff]o/2 = [o/ 0/ff][o/1/ff1]o/2. Then by rule T-TApp,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B [o/ 0/ff](e1[o/1]) : [o/ 0/ff][o/1/ff1]o/2.
+
+51
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case \Gamma , ff:^; \Sigma  B e1 : o/
+
+U-! o/
+
+\Gamma , ff:^; \Sigma  B fix e1 : o/ .
+By the induction hypothesis,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B [o/ 0/ff]e1 : [o/ 0/ff]o/ U-! [o/ 0/ff]o/.
+
+Then by rule T-Fix,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B [o/ 0/ff](fix e1) : [o/ 0/ff]o/.
+
+Case ` \Gamma , ff:^; \Sigma \Gamma , ff:^; \Sigma  B hi : 1 .
+
+By lemma 18,* `
+
+[o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma ,
+
+and by rule T-Unit, [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B hi : 1.
+
+Case \Gamma , ff:^; \Sigma  B e1 : o/1 \Gamma , ff:^ ` o/2 : '\Gamma , ff:^; \Sigma  B '
+
+1 e1 : o/1 + o/2 .
+
+By the induction hypothesis,*
+
+[o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B [o/ 0/ff]e1 : [o/ 0/ff]o/1,
+
+and by lemma 14,
+
+* [o/ 0/ff]\Gamma  ` [o/ 0/ff]o/2 : [o/ 0/ff]'.
+By rule T-Inl,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma  B [o/ 0/ff]('1 e1) : [o/ 0/ff](o/1 + o/2).
+
+Case \Gamma , ff:^; \Sigma  B e2 : o/2 \Gamma , ff:^ ` o/1 : '\Gamma , ff:^; \Sigma  B '
+
+2 e2 : o/1 + o/2 .
+
+As in the previous case.
+
+Case
+
+\Gamma , ff:^; \Sigma 1 B e0 : o/1 + o/2`
+(\Gamma , ff:^; \Sigma 2), x1:o/1  \Gamma 1; \Sigma 21 \Gamma 1; \Sigma 21 B e1 : o/`
+(\Gamma , ff:^; \Sigma 2), x2:o/2  \Gamma 2; \Sigma 22 \Gamma 2; \Sigma 22 B e2 : o/
+
+\Gamma , ff:^; \Sigma 1, \Sigma 2 B case e0 of '1 x1 ! e2; '2 x2 ! e2 : o/ .
+Let \Gamma 01, ff:^ = \Gamma 1 and \Gamma 02, ff:^ = \Gamma 2. Then by the induction hypothesis,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma 1 B [o/ 0/ff]e0 : [o/ 0/ff]o/1 + [o/ 0/ff]o/2,*
+
+[o/ 0/ff]\Gamma 01; [o/ 0/ff]\Sigma 21 B [o/ 0/ff]e1 : [o/ 0/ff]o/ , and*
+[o/ 0/ff]\Gamma 02; [o/ 0/ff]\Sigma 22 B [o/ 0/ff]e2 : [o/ 0/ff]o/.
+
+52
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+By lemma 19,
+
+* ` ([o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma 2), x1:[o/ 0/ff]o/1  [o/ 0/ff]\Gamma 01; [o/ 0/ff]\Sigma 21 and* `
+
+([o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma 2), x2:[o/ 0/ff]o/2  [o/ 0/ff]\Gamma 01; [o/ 0/ff]\Sigma 22.
+
+Then by rule T-Choose,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff](\Sigma 1, \Sigma 2) B [o/ 0/ff](case e0 of '1 x1 ! e2; '2 x2 ! e2) : [o/ 0/ff]o/.
+
+Case \Gamma , ff:^; \Sigma 1 B v1 : o/1 \Gamma , ff:^; \Sigma 2 B v2 : o/2\Gamma , ff:^; \Sigma 
+
+1, \Sigma 2 B hv1, v2i : o/1 * o/2 .
+
+By the induction hypothesis twice and rule T-Pair.
+
+Case
+
+\Gamma , ff:^; \Sigma 1 B e0 : o/1 * o/2`
+(\Gamma , ff:^; \Sigma 2), x1:o/1, x2:o/2  \Gamma 0; \Sigma 0 \Gamma 0; \Sigma 0 B e1 : o/
+
+\Gamma , ff:^; \Sigma 1, \Sigma 2 B case e0 of hx1, x2i ! e1 : o/ .
+
+Let \Gamma 00, ff:^ = \Gamma 00. Then by the induction hypothesis twice and lemma 19,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma 1 B [o/ 0/ff]e0 : [o/ 0/ff]o/1 * [o/ 0/ff]o/2,*
+
+[o/ 0/ff]\Gamma 00; [o/ 0/ff]\Sigma 0 B [o/ 0/ff]e1 : [o/ 0/ff]o/ , and* `
+
+([o/ 0/ff]\Gamma ; [o/ 0/ff]\Sigma 2), x1:[o/ 0/ff]o/1, x2:[o/ 0/ff]o/2  [o/ 0/ff]\Gamma 00; [o/ 0/ff]\Sigma 0
+
+Then by rule T-Unpair,
+
+* [o/ 0/ff]\Gamma ; [o/ 0/ff](\Sigma 1, \Sigma 2) B [o/ 0/ff](case e0 of hx1, x2i ! e1) : [o/ 0/ff]o/.
+
+Case \Gamma , ff:^; \Sigma  B e1 : o/1\Gamma , ff:^; \Sigma  B new e
+
+1 : aref o/1 .
+
+By the induction hypothesis and rule T-New.
+
+Case \Gamma , ff:^; \Sigma 1 B e1 : aref o/1 \Gamma , ff:^; \Sigma 2 B e2 : o/2\Gamma , ff:^; \Sigma 
+
+1, \Sigma 2 B swap e1 e2 : aref o/2 * o/1 .
+
+By the induction hypothesis twice and rule T-Swap.
+
+Case \Gamma , ff:^; \Sigma  B e1 : aref o/1\Gamma , ff:^; \Sigma  B delete e
+
+1 : 1 .
+
+By the induction hypothesis and rule T-Delete.
+
+A.2.2 Properties of Contexts
+Observation 21 (Strengthening).
+
+53
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+1. Type- and kind-level judgments are unaffected by variables and locations in thedomain of the context. Let
+
+\Gamma 0 be a context with no type variable bindings, thatis, there are no
+ff:^ 2 \Gamma 0. Then:
+
+(a) If \Gamma , \Gamma 0 ` ^ then \Gamma  ` ^ .
+
+(b) If \Gamma , \Gamma 0 ` o/ : ^ then \Gamma  ` o/ : ^.
+(c) If \Gamma , \Gamma 0 ` o/1 <:v o/2 then \Gamma  ` o/1 <:v o/2.
+(d) If \Gamma , \Gamma 0 ` ^1 <: ^2 then \Gamma  ` ^2 <: ^2.
+
+(e) If \Gamma , \Gamma 0 ` ff 2 o/ l v then \Gamma  ` ff 2 o/ l v.
+
+(f ) If \Gamma , \Gamma 0 ` \Sigma  _ ' then \Gamma  ` \Sigma  _ '.
+(g) If ` (\Gamma 0; \Sigma 0), \Gamma 0  \Gamma ; \Sigma  and one of the preceding judgments holds in \Gamma  thenit holds in
+
+\Gamma 0 as well.
+
+2. The context bounding judgment is unaffected by type variables in the domainof the subject context; The context well-formedness judgments are unaffected by
+
+type variables in the domain of the affine context. Let \Delta 0 by a context with novariables nor locations, only type variables. Then:
+
+(a) \Delta  ` \Sigma , \Delta 0 _ ' if and only if \Delta  ` \Sigma  _ '.
+
+(b) ` \Gamma ; \Sigma , \Delta 0 if and only if ` \Gamma ; \Sigma .
+(c) If \Gamma ; \Sigma , \Delta 0 B e : o/ then \Gamma ; \Sigma  B e : o/ .
+
+Justification.
+
+1. (a-f) By inspection of the rules we can see that these judgments never directlyobserve variables or locations in their context, and they never indirectly
+
+observe them through appeal to some other judgment not sharing thisproperty.
+
+(g) Observe that \Gamma  may differ from \Gamma 0 only by adding the types of some vari-ables.
+
+2. (a) By induction on the length of \Delta 0.
+
+(b) By the previous subpart.
+
+(c) Observe that no rule for the typing judgment looks up a type variable in
+
+\Sigma , and furthermore, the only rules to which it passes \Sigma  are covered by theprevious two subparts.
+
+Lemma 22 (Contexts close terms). If \Gamma ; \Sigma  B e : o/ and x 2 fv e then there existssome
+
+o/ 0 such that x:o/ 0 2 \Gamma , \Sigma .
+
+Proof. By inspection of the typing rules, we see that x can only be typed if it occursin the context, and furthermore the typing rules must type every subterm of
+
+e.
+
+54
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+Lemma 23 (Coalescing of context extension). ` (\Gamma 0; \Sigma 0), \Sigma 01  \Gamma 1; \Sigma 1 and ` (\Gamma 1; \Sigma 1), \Sigma 02 
+\Gamma 2; \Sigma 2 if and only if ` (\Gamma 0; \Sigma 0), \Sigma 01, \Sigma 02  \Gamma 2; \Sigma 2
+
+Proof. By induction on the structure of \Sigma 01:
+
+Case *.
+
+Then* `
+
+(\Gamma 0; \Sigma 0), *  \Gamma 0; \Sigma 0,* `
+(\Gamma 0; \Sigma 0), \Sigma 02  \Gamma 2; \Sigma 2, and* `
+(\Gamma 0; \Sigma 0), *, \Sigma 02  \Gamma 2; \Sigma 2.
+
+Case ff:^, \Sigma 001.
+
+There is no rule for adding ff:^, so both sides of the bi-implication are false.
+
+Case `:o/, \Sigma 001.
+
+There is no rule for adding `:o/ , so both sides of the bi-implication are false.
+
+Case x:o/, \Sigma 001.
+
+Note that \Gamma 0, \Gamma 1 and \Gamma 2 all support the same type- and kind-level judgments,by observation 21.
+
+If there is no ' such that \Gamma 0 ` o/ : ', there is no rule for adding x:o/ , so bothsides of the bi-implication are false.
+If there exists some ' such that \Gamma 0 ` o/ : ', then by inversion of rule X-ConsAtwice, it suffices to show that `
+
+(\Gamma 0; \Sigma 0, x:o/ ), \Sigma 001  \Gamma 1; \Sigma 1 and ` (\Gamma 1; \Sigma 1), \Sigma 02 
+\Gamma 2; \Sigma 2 if and only if ` (\Gamma 0; \Sigma 0, x:o/ ), \Sigma 001, \Sigma 02  \Gamma 2; \Sigma 2. This holds by the inductionhypothesis.
+
+If \Gamma 0 ` o/ : U, then by inversion of rule X-ConsU twice, it suffices to showthat `
+
+(\Gamma 0, x:o/ ; \Sigma 0), \Sigma 001  \Gamma 1; \Sigma 1 and ` (\Gamma 1; \Sigma 1), \Sigma 02  \Gamma 2; \Sigma 2 if and only if`
+(\Gamma 0, x:o/ ; \Sigma 0), \Sigma 001, \Sigma 02  \Gamma 2; \Sigma 2. This too holds by the induction hypothesis.
+
+Lemma 24 (Context extension soundness). Suppose that ` (\Gamma 0; \Sigma 0), \Sigma 0  \Gamma ; \Sigma . Then`
+
+\Gamma 0; \Sigma 0 if and only if ` \Gamma ; \Sigma .
+
+Proof. By induction on the derivation of ` (\Gamma 0; \Sigma 0), \Sigma 0  \Gamma ; \Sigma :
+
+Case ` (\Gamma ; \Sigma ), *  \Gamma ; \Sigma .
+
+Trivially.
+
+Case \Gamma 0 ` o/ : U ` (\Gamma 0, x:o/ ; \Sigma 0), \Sigma 
+
+0  \Gamma 1; \Sigma 1
+
+` (\Gamma 0; \Sigma 0), x:o/, \Sigma 0  \Gamma 1; \Sigma 1 .
+Suppose that ` \Gamma 0; \Sigma 0. Then there exists some ' such that
+
+55
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+* \Gamma 0 ` \Gamma 0 _ U and*
+
+\Gamma 0 ` \Sigma 0 _ '.
+
+By rule X-ConsU and weakening,
+
+* \Gamma 0, x:o/ ` \Gamma 0, x:o/ _ U and*
+
+\Gamma 0, x:o/ ` \Sigma 0 _ '.
+
+Then by the induction hypothesis, ` \Gamma 1; \Sigma 1.
+Conversely, suppose that ` \Gamma 1; \Sigma 1. By the induction hypothesis, ` \Gamma 0, x:o/ ; \Sigma 0,which means there exists some
+
+' such that
+
+* \Gamma 0, x:o/ ` \Gamma 0, x:o/ _ U and*
+
+\Gamma 0, x:o/ ` \Sigma 0 _ '.
+
+By inversion of rule X-ConsU and observation 21,
+
+* \Gamma 0 ` \Gamma 0 _ U and*
+
+\Gamma 0 ` \Sigma 0 _ '.
+
+Case \Gamma 0 ` o/ : ' ` (\Gamma 0; \Sigma 0, x:o/ ), \Sigma 
+
+0  \Gamma 1; \Sigma 1
+
+` (\Gamma 0; \Sigma 0), x:o/, \Sigma 0  \Gamma 1; \Sigma 1 .
+Suppose that ` \Gamma 0; \Sigma 0. Then*
+
+\Gamma 0 ` \Gamma 0 _ U and*
+\Gamma 0 ` \Sigma 0 _ '0.
+
+By rule X-ConsA
+
+* \Gamma 0 ` \Sigma 0, x:o/ _ '0 t '.
+Then by the induction hypothesis, ` \Gamma 1; \Sigma 1.
+Conversely, suppose that ` \Gamma 1; \Sigma 1. By the induction hypothesis, ` \Gamma 0; \Sigma 0, x:o/ ,which means there exists some
+
+'0 such that.
+
+* \Gamma 0 ` \Gamma 0 _ U and*
+
+\Gamma 0 ` \Sigma 0, x:o/ _ '0.
+
+By inversion of rule X-ConsA, there exists some '0 such that
+
+* \Gamma 0 ` \Sigma 0 _ '0
+where '0 = '0 t '. Then by rule Wf.
+
+56
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+A.2.3 Regularity Properties
+Lemma 25 (Regularity of kinding). If \Delta  ` o/ : ^ then \Delta  ` \Delta .
+Proof. By induction on the kinding derivation. Rules K-Var, K-Unit, K-Sum,
+K-Prod, and K-Ref have \Delta  ` \Delta  as a premise. Rules K-App and K-Arr use \Delta  asthe context for a kinding judgment in the premise, so it's well-formed by the induction
+
+hypothesis. The remaining two cases:
+
+Case \Delta , ff:hffi ` o/ : ^ \Delta , ff:hffi ` ff 2 o/ l v\Delta  ` *ff.o/ : \Pi ffv.^ .
+
+By the induction hypothesis, \Delta , ff:hffi ` \Delta , ff:hffi. By inversion of rule Wf-ConsA,
+\Delta , ff:hffi ` \Delta , and since ff is fresh for \Delta , we can strangthen to \Delta  ` \Delta .
+
+Case \Delta , ff:^ ` o/ : ' \Delta  ` ^\Delta  ` 8ff:^.o/ : [A/ff]' .
+
+By the induction hypothesis, \Delta , ff:^ ` \Delta , ff:^. Then by inversion of rule Wf-ConsA,
+\Delta , ff:^ ` \Delta . Since ff is fresh for \Delta , we can strengthen to \Delta  ` \Delta .
+
+Lemma 26 (Regularity of typing). If \Gamma ; \Sigma  B e : o/ then ` \Gamma ; \Sigma .
+Proof. By induction on the typing derivation.Rules
+
+T-Subsume, T-TApp, T-Fix, T-Inl, T-Inr, T-New, and T-Delete usethe same context
+
+\Gamma ; \Sigma  for in a typing derivation premise, so these cases hold by theinduction hypothesis.
+
+Rules T-Weak, T-Var, T-Ptr, and T-Unit have ` \Gamma ; \Sigma  explicitly as a premise.We consider the remaining rules by cases:
+
+Case ` (\Gamma ; \Sigma ), x:o/1  \Gamma 
+
+0; \Sigma 0 \Gamma 0; \Sigma 0 B e : o/2 \Gamma  ` \Sigma  _ ' \Gamma  ` o/1 : '1
+
+\Gamma ; \Sigma  B *x:o/1.e : o/1 '-! o/2 .
+By the induction hypothesis, ` \Gamma 0; \Sigma 0. Then by lemma 24.
+
+Case \Gamma ; \Sigma 1 B e1 : o/1
+
+'-! o/
+
+2 \Gamma ; \Sigma 2 B e2 : o/1
+
+\Gamma ; \Sigma 1, \Sigma 2 B e1 e2 : o/2 .
+
+By the induction hypothesis twice, ` \Gamma ; \Sigma 1 and ` \Gamma ; \Sigma 2. By inversion of rule Wftwice, there exist some
+
+'1 and '2 such that
+
+* \Gamma  ` \Gamma  _ U,*
+
+\Gamma  ` \Sigma 1 _ '1, and*
+\Gamma  ` \Sigma 2 _ '2.
+
+By lemma 7,
+
+* \Gamma  ` \Sigma 1, \Sigma 2 _ '1 t '2.
+
+57
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Then by rule Wf.
+Case \Gamma , ff:^; \Sigma  B v : o/\Gamma ; \Sigma  B \Lambda ff:^.v : 8ff:^.o/ .
+
+By the induction hypothesis, ` \Gamma , ff:^; \Sigma . By inversion of rule Wf, there existssome
+
+' such that*
+
+\Gamma , ff:^ ` \Gamma , ff:^ _ U and*
+\Gamma , ff:^ ` \Sigma  _ '.
+
+By inversion of rule X-ConsA,
+
+* \Gamma , ff:^ ` \Gamma  _ U.
+Note that ff is bound, with only v and o/ in its scope, so it cannot appearelsewhere in
+
+\Gamma  or \Sigma , so we have that
+
+* \Gamma  ` \Gamma  _ U and*
+
+\Gamma  ` \Sigma  _ '.
+
+Then by rule Wf.
+
+Case
+
+\Gamma ; \Sigma  B e : o/1 + o/2`
+(\Gamma ; \Sigma 0), x1:o/1  \Gamma 1; \Sigma 1 \Gamma 1; \Sigma 1 B e1 : o/`
+(\Gamma ; \Sigma 0), x2:o/2  \Gamma 2; \Sigma 2 \Gamma 2; \Sigma 2 B e2 : o/
+
+\Gamma ; \Sigma , \Sigma 0 B case e of '1 x1 ! e1; '2 x2 ! e2 : o/ .
+By the induction hypothesis twice, ` \Gamma ; \Sigma  and ` \Gamma 1; \Sigma 2. By lemma 24,* `
+
+\Gamma ; \Sigma 0
+
+. Then by inversion of rule Wf twice,
+
+* \Gamma  ` \Gamma  _ U,*
+
+\Gamma  ` \Sigma  _ ', and*
+\Gamma  ` \Sigma 0 _ '0.
+
+By lemma 7, \Gamma  ` \Sigma , \Sigma 0 _ ' t '0. Then by rule Wf.
+
+Case \Gamma ; \Sigma 1 B e1 : o/1 \Gamma ; \Sigma 2 B e2 : o/2\Gamma ; \Sigma 
+
+1, \Sigma 2 B he1, e2i : o/1 * o/2 .
+
+As in the T-App case.
+
+Case \Gamma ; \Sigma 1 B e : o/1 * o/2 ` (\Gamma ; \Sigma 2), x1:o/1, x2:o/2  \Gamma 
+
+0; \Sigma 0 \Gamma 0; \Sigma 0 B e1 : o/
+
+\Gamma ; \Sigma 1, \Sigma 2 B case e of hx1, x2i ! e1 : o/ .
+As in the T-Choose case.
+
+58
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Case \Gamma ; \Sigma 1 B e1 : aref o/1 \Gamma ; \Sigma 2 B e2 : o/2\Gamma ; \Sigma 
+
+1, \Sigma 2 B swap e1 e2 : aref o/2 * o/1 .
+
+As in the T-App case.
+
+Lemma 27 (Variance coherence). Suppose that
+
+* \Delta , fi:hfii ` \Delta , fi:hfii,
+
+* \Delta , fi:hfii ` o/ : ^,
+
+* \Delta , fi:hfii ` fi 2 o/ l v, and
+
+* fi 62 ftv \Delta .
+If fi 2 ftv ^ then + v v.
+Proof. By induction on the kinding derivation:
+
+Case \Delta , fi:hfii ` fi:^.
+
+Then v = +.
+
+Case \Delta , fi:hfii ` ff:^.
+
+By inversion of rule K-Var, ff:^ 2 \Delta . Then fi 62 ftv \Delta  contradicts fi 2 ftv ^, sothis case is vacuous.
+
+Case \Delta , fi:hfii, ff:hffi ` o/
+
+0 : ^0 \Delta , fi:hfii, ff:hffi ` ff 2 o/ 0 l v0
+
+\Delta , fi:hfii ` *ff.o/ 0 : \Pi ffv0.^0 .
+By inversion of rule V-Abs,*
+
+\Delta , fi:hfii, ff:hffi ` fi 2 o/ 0 l v.
+
+If fi 2 ftv(\Pi ffv0.^0) then fi 2 ftv ^0. Then by the induction hypothesis, + v v.
+
+Case \Delta , fi:hfii ` o/1 : \Pi ff
+
+v3.^3 \Delta , fi:hfii ` o/2 : '
+
+\Delta , fi:hfii ` o/1 o/2 : ['/ff]^3 .
+By inversion of rule V-App, there exist some v1 and v2 such that*
+
+\Delta , fi:hfii ` fi 2 o/1 l v1,*
+\Delta , fi:hfii ` fi 2 o/2 l v2, and*
+v = v1 t v2v3.
+
+If fi 2 ftv(['/ff]^3) then either fi 2 ftv ^3 or both fi 2 ftv ' and ff 2 ftv ^3:
+
+* If fi 2 ftv ^3, then fi 2 \Pi ffv3.^3. Then by the induction hypothesis, + v v1,so
+
++ v v1 t v2v3 as well.
+
+59
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+* If fi 2 ftv ' and ff 2 ftv ^3, then by the induction hypothesis, + v v2, andbecause
+
+\Pi ffv3.^3 is well-formed, + v v3. Then + v v1 t v2v3.
+
+Case \Delta , fi:hfii, ff:^
+
+0 ` o/ 0 : ' \Delta , fi:hfii ` ^0
+
+\Delta , fi:hfii ` 8ff:^0.o/ 0 : [A/ff]' .
+By inversion of rule V-All,*
+
+\Delta , fi:hfii, ff:^0 ` fi 2 o/ 0 l v1 and*
+v2 = if fi 2 ftv(^0) then +- else ff
+
+where v = v1 t v2. If fi 2 ftv([A/ff]') then fi 2 ftv '. Then by the inductionhypothesis
+
++ v v1, which means that + v v1 t v2.
+
+Case \Delta , fi:hfii ` o/1 : '1 \Delta , fi:hfii ` o/2 : '2 \Delta , fi:hfii ` '\Delta , fi:hfii ` o/
+
+1
+
+'-! o/
+
+2 : ' .
+
+By inversion of rule V-Arr, there exist some v1, v2, and v3 such that*
+
+\Delta , fi:hfii ` fi 2 o/1 l v1,*
+\Delta , fi:hfii ` fi 2 o/2 l v2,*
+v3 = if fi 2 ftv(') then + else ff, and*
+v = -v1 t v2 t v3.
+
+If fi 2 ftv ' then v3 = +, so + <: -v1 t v2 t v3.
+
+Case ` \Delta , fi:hfii; *\Delta , fi:hfii ` 1 : U .
+
+fi 62 ftv ^.
+
+Case ` \Delta , fi:hfii; *\Delta , fi:hfii ` (+) : \Pi ff
+
+1+.\Pi ff2+.hff1i t hff2i .
+
+fi 62 ftv ^.
+
+Case ` \Delta , fi:hfii; *\Delta , fi:hfii ` (*) : \Pi ff
+
+1+.\Pi ff2+.hff1i t hff2i .
+
+fi 62 ftv ^.
+
+Case ` \Delta , fi:hfii; *\Delta , fi:hfii ` aref : \Pi ff+-.A .
+
+fi 62 ftv ^.
+Lemma 28 (Type kinds are well-formed). If \Delta  ` o/ : ^ then \Delta  ` ^ .
+Proof. By induction on the kinding derivation:
+
+60
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Case ff:^ 2 \Delta  \Delta  ` ^\Delta  ` ff:^ .
+
+By the premise.
+
+Case \Delta , ff:hffi ` o/ : ^ \Delta , ff:hffi ` ff 2 o/ l v\Delta  ` *ff.o/ : \Pi ffv.^ .
+
+By the induction hypothesis,
+
+* \Delta , ff:hffi ` ^ .
+By lemma 27, if ff 2 ftv ^ then + v v. Then by rule OK-Arr.
+
+Case \Delta  ` o/1 : \Pi ff
+
+v.^ \Delta  ` o/2 : '
+
+\Delta  ` o/1 o/2 : ['/ff]^ .
+By the induction hypothesis twice,
+
+* \Delta  ` \Pi ffv.^ and
+
+* \Delta  ` ' .
+
+Then by inversion rule OK-Arr on the former,
+
+* \Delta , ff:hffi ` ^ .
+Then by lemma 10.
+
+Case \Delta , ff:^ ` o/ : ' \Delta  ` ^\Delta  ` 8ff:^.o/ : [A/ff]' .
+
+By the induction hypothesis,
+
+* \Delta , ff:^ ` ' ,
+
+and by inversion of rule OK-Qual,
+
+* ftv(') ` dom(\Delta , ff:^).
+Then
+
+* ftv([A/ff]') ` dom(\Delta ),
+and by rule OK-Qual,
+
+* \Delta  ` [A/ff]' .
+
+61
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case \Delta  ` o/1 : '1 \Delta  ` o/2 : '2 \Delta  ` '\Delta  ` o/
+
+1
+
+'-! o/
+
+2 : ' .
+
+By the premise.
+
+Case \Delta  ` 1 : U.
+
+By rule OK-Qual.
+
+Case \Delta  ` (+) : \Pi ff1+.\Pi ff2+.hff1i t hff2i.
+
+By rule OK-Arr twice and rule OK-Qual.
+
+Case \Delta  ` (*) : \Pi ff1+.\Pi ff2+.hff1i t hff2i.
+
+By rule OK-Arr twice and rule OK-Qual.
+
+Case \Delta  ` aref : \Pi ff+-.A.
+
+By rule OK-Arr and rule OK-Qual.
+
+Lemma 29 (Term types are well-kinded). If \Gamma ; \Sigma  B e : o/ then there exists some 'such that
+
+\Gamma  ` o/ : '.
+
+Proof. By induction on the typing derivation:
+
+Case \Gamma ; \Sigma  B e : o/
+
+00 \Gamma  ` o/ 00 <:+ o/ \Gamma  ` o/ : '0
+
+\Gamma ; \Sigma  B e : o/ .
+Let ' = '0.
+
+Case \Gamma 1; \Sigma 1 B e : o/ ` \Gamma 1, \Gamma 2; \Sigma 1, \Sigma 2\Gamma 
+
+1, \Gamma 2; \Sigma 1, \Sigma 2 B e : o/ .
+
+By the induction hypothesis.
+
+Case x:o/ 2 \Gamma , \Sigma  \Gamma  ` o/ : '
+
+0 ` \Gamma ; \Sigma 
+
+\Gamma ; \Sigma  B x : o/ .
+Let ' = '0.
+
+Case `:o/1 2 \Sigma  * ` o/1 : '1 ` \Gamma ; \Sigma \Gamma ; \Sigma  B ptr ` : aref o/
+
+1 .
+
+Let ' = A.
+
+Case ` (\Gamma ; \Sigma ), x:o/1  \Gamma 
+
+0; \Sigma 0 \Gamma 0; \Sigma 0 B e2 : o/2 \Gamma  ` \Sigma  _ ' \Gamma  ` o/1 : '1
+
+\Gamma ; \Sigma  B *x:o/1.e2 : o/1 '0-! o/2 .
+By the induction hypothesis \Gamma 0 ` o/2 : '2 for some '2, and since the onlydifference between
+
+\Gamma 0 and \Gamma  may be a variable binding, \Gamma  ` o/2 : '2 as well.Then let
+' = '0.
+
+62
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Case \Gamma ; \Sigma 1 B e1 : o/1
+
+'0-! o/
+
+2 \Gamma ; \Sigma 2 B e2 : o/1
+
+\Gamma ; \Sigma 1, \Sigma 2 B e1 e2 : o/2 .
+
+By the induction hypothesis, that
+
+* \Gamma  ` o/1 '0-! o/2 : '0,
+and by inversion of rule K-Arr, there exist some '1 and '2 such that
+
+* \Gamma  ` o/1 : '1 and*
+
+\Gamma  ` o/2 : '2.
+
+Then let ' = '2.
+
+Case \Gamma , ff:^; \Sigma  B v1 : o/1\Gamma ; \Sigma  B \Lambda ff:^.v
+
+1 : 8ff:^.o/1 .
+
+By the induction hypothesis,*
+
+\Gamma , ff:^ ` o/1 : '1,
+
+and by rule K-All,
+
+* \Gamma  ` 8ff:^.o/1 : [A/ff]'1.
+Then let ' = [A/ff]'1.
+
+Case \Gamma ; \Sigma  B e1 : 8ff:^1.o/2 \Gamma  ` o/1 : ^1\Gamma ; \Sigma  B e
+
+1[o/1] : [o/1/ff]o/2 .
+
+By the induction hypothesis, there exists some '2 such that*
+
+\Gamma  ` 8ff:^1.o/2 : '2.
+
+Then by inversion of rule K-All,
+
+* \Gamma , ff:^1 ` o/2 : '1.
+By lemma 14,
+
+* [o/1/ff]\Gamma  ` [o/1/ff]o/2 : [o/1/ff]'1.
+Note that because ff is bound without \Gamma  in its scope, ff is fresh for \Gamma , so [o/1/ff]\Gamma  =
+\Gamma . Then let ' = [o/1/ff]'1.
+
+Case \Gamma ; \Sigma  B e1 : o/
+
+U-! o/
+
+\Gamma ; \Sigma  B fix e1 : o/ .
+By the induction hypothesis,
+
+* \Gamma  ` o/ U-! o/ : U,
+
+63
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+and by inversion of rule K-Arr, there exists some ' such that
+
+* \Gamma  ` o/ : '.
+
+Case ` \Gamma ; \Sigma \Gamma ; \Sigma  B hi : 1 .
+
+Let ' = U.
+
+Case \Gamma ; \Sigma  B e1 : o/1 \Gamma  ` o/2 : '2\Gamma ; \Sigma  B '
+
+1 e1 : o/1 + o/2 .
+
+By the induction hypothesis,
+
+* \Gamma  ` o/1 : '1.
+Then let ' = '1 t '2.
+
+Case \Gamma ; \Sigma  B e2 : o/2 \Gamma  ` o/1 : '1\Gamma ; \Sigma  B '
+
+2 e2 : o/1 + o/2 .
+
+By symmetry from the previous case.
+
+Case
+
+\Gamma ; \Sigma 1 B e0 : o/1 + o/2`
+(\Gamma ; \Sigma 2), x1:o/1  \Gamma 1; \Sigma 21 \Gamma 1; \Sigma 21 B e1 : o/`
+(\Gamma ; \Sigma 2), x2:o/2  \Gamma 2; \Sigma 22 \Gamma 2; \Sigma 22 B e2 : o/
+
+\Gamma ; \Sigma 1, \Sigma 2 B case e0 of '1 x1 ! e2; '2 x2 ! e2 : o/ .
+By the induction hypothesis, there exists some '0 such that
+
+* \Gamma 1 ` o/ : '0.
+Note that the only potential difference between \Gamma 1 and \Gamma  is x1:o/1, so let ' = '0.
+
+Case \Gamma ; \Sigma 1 B v1 : o/1 \Gamma ; \Sigma 2 B v2 : o/2\Gamma ; \Sigma 
+
+1, \Sigma 2 B hv1, v2i : o/1 * o/2 .
+
+By the induction hypothesis twice let '1 and '2 be the kinds of o/1 and o/2. Thenlet
+
+' = '1 t '2.
+
+Case
+
+\Gamma ; \Sigma 1 B e0 : o/1 * o/2`
+(\Gamma ; \Sigma 2), x1:o/1, x2:o/2  \Gamma 0; \Sigma 0 \Gamma 0; \Sigma 0 B e1 : o/
+
+\Gamma ; \Sigma 1, \Sigma 2 B case e0 of hx1, x2i ! e1 : o/ .
+By the induction hypothesis, noting that \Gamma 0 may differ \Gamma  only in x1 and x2.
+
+Case \Gamma ; \Sigma  B e1 : o/1\Gamma ; \Sigma  B new e
+
+1 : aref o/1 .
+
+By the induction hypothesis; then let ' = A.
+
+64
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Case \Gamma ; \Sigma 1 B e1 : aref o/1 \Gamma ; \Sigma 2 B e2 : o/2\Gamma ; \Sigma 
+
+1, \Sigma 2 B swap e1 e2 : aref o/2 * o/1 .
+
+By the induction hypothesis twice; then let ' = A.
+
+Case \Gamma ; \Sigma  B e1 : aref o/1\Gamma ; \Sigma  B delete e
+
+1 : 1 .
+
+Let ' = U.
+
+A.2.4 Qualifier Soundness
+Lemma 30 (Monotonicity of kinding). If \Delta  ` o/1 <:+ o/2, \Delta  ` o/1 : '1, and \Delta  ` o/2 : '2,then
+
+\Delta  ` '1 <: '2.
+
+Proof. First, we define the weak subkinding relation, an extension of the subkindingrelation that is insensitive to variance:
+
+\Delta  |= '1 v '2
+
+\Delta  ` '1 / '2
+
+\Delta , ff:hffi ` ^1 <: ^2
+\Delta  ` \Pi ffv1.^1 / \Pi ffv2.^2
+
+It should be clear that the new relation is a preorder. If we partition weak subkindinginto a family of relations by arity, then the relation for arity 0 is a lattice isomorphic
+to the arity-0 lattice for subkinding.We now generalize the induction hypothesis as follows:
+
+If \Delta  ` o/1 <:+ o/2, \Delta  ` o/1 : ^1, and \Delta  ` o/2 : ^2, then \Delta  ` ^1 / ^2.
+Note that for qualifier expressions, subkinding and weak subkinding are identical,which means that the generalized induction hypothesis implies the original lemma.
+Now by induction on the subtyping derivation:
+
+Case o/1 j o/2 \Delta  ` o/1 : ^ \Delta  ` o/2 : ^\Delta  ` o/
+
+1 <:+ o/2 .
+
+By lemma 5, ^2 = ^ = ^1; then by reflexivity of weak subkinding.
+
+Case \Delta  ` o/1 <:
+
++ o/3 \Delta  ` o/3 <:+ o/2 \Delta  ` o/3 : ^3
+
+\Delta  ` o/1 <:+ o/2 .
+By the induction hypothesis twice,
+
+* \Delta  ` ^1 / ^3 and*
+
+\Delta  ` ^3 / ^2.
+
+Then by transitivity of weak subkinding.
+
+65
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case \Delta  ` o/2 <:
+
++ o/1
+
+\Delta  ` o/1 <:- o/2 .
+Vacuous.
+
+Case \Delta , fi:hfii ` o/
+
+01 <:+ o/ 02
+
+\Delta  ` *fi.o/ 01 <:+ *fi.o/ 02 .
+By inversion of rule K-Abs, there are some ^01 and v1 where ^1 = \Pi fiv1.^01 suchthat
+
+* \Delta , fi:hfii ` fi 2 o/ 01 l v1 and*
+
+\Delta , fi:hfii ` o/ 01 : ^01.
+
+Likewise, there are some ^02 and v2 where ^2 = \Pi fiv2.^02 such that
+
+* \Delta , fi:hfii ` fi 2 o/ 02 l v2 and*
+
+\Delta , fi:hfii ` o/ 02 : ^02.
+
+By the induction hypothesis,
+
+* \Delta , fi:hfii ` ^01 / ^02,
+which is sufficient to show that
+
+* \Delta  ` \Pi fiv1.^01 / \Pi fiv2.^02.
+
+Case
+
+\Delta  ` o/11 : \Pi fiv1.^01 \Delta  ` o/21 : \Pi fiv2.^02
+
+\Delta  ` o/11 <:+ o/21 \Delta  ` o/12 <:v1tv2 o/22
+
+\Delta  ` o/11 o/12 <:+ o/21 o/22 .
+By inversion of rule K-App twice, there are some '1 and '2 such that*
+
+\Delta  ` o/12 : '1,*
+\Delta  ` o/22 : '2,*
+^1 = ['1/fi]^01, and*
+^2 = ['2/fi]^02.
+
+By the induction hypothesis,
+
+* \Delta  ` \Pi fiv1.^01 / \Pi fiv2.^02,
+which means that
+
+* \Delta , fi:hfii ` ^01 / ^02.
+Now by cases on v2:
+
+66
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Case +.
+
+That is, \Delta  ` o/12 <:+ o/22. By the induction hypothesis,*
+
+\Delta  ` '1 / '2,
+
+and thus,*
+
+\Delta  ` ['1/fi]^01 / ['2/fi]^02.
+Case -.
+
+By lemma 28, \Delta  ` \Pi fiv2.^02 . By inversion of rule OK-Arr, this means that
+v2 = if fi 2 ftv(^02) then + else ff. Since v2 = -, we know that fi 62 ftv ^02,which means that
+
+['2/fi]^02 = ^02 = ['1/fi]^02. Thus,*
+
+\Delta  ` ['1/fi]^01 / ['2/fi]^02
+
+by reflexivity.
+Case +-.
+
+That is, \Delta  ` o/12 <:+- o/22. The only rule that can reach that conclusion is
+TSub-Eq, so by inversion, there exists some ^ such that*
+
+o/12 j o/22,*
+\Delta  ` o/12 : ^, and*
+\Delta  ` o/22 : ^.
+
+Then by lemma 5, ^ = '2, so*
+
+\Delta  ` o/12 : '2,
+and by reflexivity of weak subkinding,*
+
+\Delta  ` '2 / '2.
+Thus,*
+
+\Delta  ` ['2/fi]^01 / ['2/fi]^02.
+Case ff.
+
+By lemma 28, \Delta  ` \Pi fiv2.^02 . By inversion of rule OK-Arr, this means that
+v2 = if fi 2 ftv(^02) then + else ff. Since v2 = ff, we know that fi 62 ftv ^02,which means that
+
+['2/fi]^02 = ^02 = ['1/fi]^02. Thus,*
+
+\Delta  ` ['1/fi]^01 / ['2/fi]^02
+
+by reflexivity.
+
+Case \Delta , fi:^
+
+0 ` o/ 01 <:+ o/ 02
+
+\Delta  ` 8fi:^0.o/ 01 <:+ 8fi:^0.o/ 02 .
+By inversion of rule K-All twice and the induction hypothesis.
+
+Case \Delta  ` o/11 <:
+
+- o/21 \Delta  ` o/12 <:+ o/22 \Delta  ` '1 <: '2
+
+\Delta  ` o/11 '
+
+1-! o/12 <:+ o/21 '2-! o/22 .
+
+By the premise that \Delta  ` '1 <: '2, which is equivalent to \Delta  ` '1 / '2.
+
+67
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+Lemma 31 (No hidden locations). If \Gamma ; \Sigma  B e : o/ then locs e ` dom \Sigma .
+Proof. By induction on the typing derivation.
+Corollary 32 (Kinding finds locations). Suppose that \Gamma ; \Sigma  B v : o/ and \Gamma  ` o/ : 'where
+
+dom \Sigma  contains only locations. Then:
+
+* If locs v 6= ? then ' = A.
+
+* If ' = U then locs v = ?.
+Proof.
+
+* Assume that locs v 6= ?. By induction on the typing derivation \Gamma ; \Sigma  B v : o/ :
+
+Case \Gamma ; \Sigma  B v : o/
+
+0 \Gamma  ` o/ 0 <:+ o/ \Gamma  ` o/ : '
+
+\Gamma ; \Sigma  B v : o/ .
+By lemma 29, there is some '0 such that \Gamma  ` o/ 0 : '0, and by the inductionhypothesis,
+
+'0 = A. By lemma 30, \Gamma  ` '0 <: '.
+
+Case \Gamma ; \Sigma  B v : o/ ` \Gamma , \Gamma 
+
+0; \Sigma , \Sigma 0
+
+\Gamma , \Gamma 0; \Sigma , \Sigma 0 B v : o/ .
+By the induction hypothesis.
+
+Case `:o/ 2 \Sigma  * ` o/ : ' ` \Gamma ; \Sigma \Gamma ; \Sigma  B ptr ` : aref o/ .
+
+Then \Gamma  ` aref o/ : A.
+Case ` (\Gamma ; \Sigma ), x:o/1  \Gamma 
+
+0; \Sigma 0 \Gamma 0; \Sigma 0 B e : o/2 \Gamma  ` \Sigma  _ ' \Gamma  ` o/1 : '1
+
+\Gamma ; \Sigma  B *x:o/1.e : o/1 '-! o/2 .
+By lemma 31, locs v ` dom \Sigma , and since locs v is not empty, by rule B-ConsL,
+' = A.
+
+Case \Gamma , ff:^; \Sigma  B v
+
+0 : o/ \Delta  ` ^
+
+\Gamma ; \Sigma  B \Lambda ff:^.v0 : 8ff:^.o/ .
+By the induction hypothesis \Gamma  ` o/ : A, and ' = [A/ff]A = A.
+
+Case ` \Gamma ; \Sigma \Gamma ; \Sigma  B hi : 1 .
+
+Vacuous.
+Case \Gamma ; \Sigma  B v
+
+0 : o/1 \Gamma  ` o/2 : '
+
+\Gamma ; \Sigma  B '1 v0 : o/1 + o/2 .
+By lemma 29, there is some '1 such that \Gamma  ` o/1 : '1. If locs('1 v0) 6= ? then
+locs v0 6= ?. Then by the induction hypothesis '1 = A, and by rule K-Sumand rule
+
+K-App twice, ' = A.
+
+68
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Case \Gamma ; \Sigma  B v
+
+0 : o/2 \Gamma  ` o/1 : '
+
+\Gamma ; \Sigma  B '2 v0 : o/1 + o/2 .
+As in the previous case.
+
+Case \Gamma ; \Sigma 1 B v1 : o/1 \Gamma ; \Sigma 2 B v2 : o/2\Gamma ; \Sigma 
+
+1, \Sigma 2 B hv1, v2i : o/1 * o/2 .By lemma 29, there are some
+
+'1 and '2 such that \Gamma  ` o/1 : '1 and \Gamma  ` o/2 :
+'2.
+
+If locs(hv1, v2i) 6= ? then locs v1 6= ? or locs v2 6= ?:
+
+Case locs v1 6= ?.By the induction hypothesis,
+
+'1 = A, and by rule K-Prod andrule
+K-App twice, ' = A.
+
+Case locs v2 6= ?.By symmetry.
+
+Otherwise.
+
+The remaining cases do not apply to values.
+
+* If ' = U then ' 6= A. Then by the contrapositive of the previous part, locs v =?.
+
+A.2.5 Preservation
+Lemma 33 (Substitution). If
+
+* ` (\Gamma ; \Sigma 1), x:o/ 0  \Gamma 0; \Sigma 01,
+
+* \Gamma 0; \Sigma 01 B e : o/ , and
+
+* *; \Sigma 2 B v : o/ 0, where
+
+* the domain of \Sigma 2 contains only locations,
+then \Gamma ; \Sigma 1, \Sigma 2 B [v/x]e : o/ .
+Proof. In several cases, we will need to know that ` \Gamma ; \Sigma 1, \Sigma 2, typically in order touse rule
+
+T-Weak. By lemma 26, we have ` \Gamma 0; \Sigma 01 and ` *; \Sigma 2. By lemma 24, ` \Gamma ; \Sigma 1.Then by inversion of rule
+
+Wf twice, lemma 7, weakening, and rule Wf, we have`
+\Gamma ; \Sigma 1, \Sigma 2.Now by induction on the derivation of
+
+\Gamma 0; \Sigma 01 B e : o/ :
+
+Case \Gamma 
+
+0; \Sigma 01 B e : o/ 00 \Gamma 0 ` o/ 00 <:+ o/ \Gamma 0 ` o/ : '0
+
+\Gamma 0; \Sigma 01 B e : o/ .
+By the induction hypothesis,*
+
+\Gamma ; \Sigma 1, \Sigma 2 B [v/x]e : o/ 00.
+
+69
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+By observation 21,
+
+* \Gamma  ` o/ 00 <:+ o/ and*
+
+\Gamma  ` o/ : '0.
+
+Then by rule T-Subsume.
+
+Case \Gamma 
+
+01; \Sigma 011 B e : o/ ` \Gamma 01, \Gamma 02; \Sigma 011, \Sigma 012
+
+\Gamma 01, \Gamma 02; \Sigma 011, \Sigma 012 B e : o/ .
+We do not know whether x:o/ 0 is in \Gamma 01, \Gamma 02, \Sigma 011, or \Sigma 012:*
+
+If x:o/ 0 2 \Gamma 01, \Sigma 011, then there exist some \Gamma 1 and \Sigma 11 such that
+
+- ` (\Gamma 1; \Sigma 11), x:o/ 0  \Gamma 01; \Sigma 011 and
+- ` (\Gamma 1, \Gamma 02; \Sigma 11, \Sigma 012), x:o/ 0  \Gamma 01, \Gamma 02; \Sigma 011, \Sigma 012.
+
+Then by the induction hypothesis,
+
+- \Gamma 1; \Sigma 11, \Sigma 2 B [v/x]e : o/,
+and by rule T-Weak,
+
+- \Gamma 1, \Gamma 2; \Sigma 11, \Sigma 12, \Sigma 2 B [v/x]e : o/.*
+If x:o/ 0 2 \Gamma 02, \Sigma 012, then by lemma 22, x 62 fv e. This means that [v/x]e = e,so
+
+- \Gamma 01; \Sigma 011 B [v/x]e : o/.
+Then by rule T-Weak.
+
+Case y:o/ 2 \Gamma 
+
+0, \Sigma 01 \Gamma 0 ` o/ : '0 ` \Gamma 0; \Sigma 01
+
+\Gamma 0; \Sigma 01 B y : o/ .
+If x = y, then [v/x]y = v and o/ = o/ 0. Thus,*
+
+\Gamma ; \Sigma 2 B [v/x]y : o/.
+
+Then by rule T-Weak.
+If x 6= y, then [v/x]y = y. Furthermore, this means that y:o/ 2 \Gamma , \Sigma 1, since theonly difference between
+
+\Gamma , \Sigma 1 and \Gamma 0, \Sigma 01 is x:o/ 0. Then by rule T-Var,
+
+* \Gamma ; \Sigma 1 B [v/x]y : o/.
+Then by rule T-Weak.
+
+Case `:o/1 2 \Sigma 
+
+01 * ` o/1 : '1 ` \Gamma 0; \Sigma 01
+
+\Gamma 0; \Sigma 01 B ptr ` : aref o/1 .
+Since the only difference between \Sigma 1 and \Sigma 01 may be x:o/ 0, we know that `:o/1 2 \Sigma 1.Furthermore,
+
+[v/x](ptr `) = ptr `, so by rule T-Ptr,* *
+
+; \Sigma 1 B ptr ` : aref o/1.
+
+70
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Then by rule T-Weak.
+
+Case
+
+` (\Gamma 0; \Sigma 01), y:o/1  \Gamma 00; \Sigma 001
+\Gamma 00; \Sigma 001 B e2 : o/2 \Gamma 0 ` \Sigma 01 _ '01 \Gamma 0 ` o/1 : '1
+
+\Gamma 0; \Sigma 01 B *y:o/1.e2 : o/1
+
+'01-! o/
+
+2
+
+.
+
+Note that \Gamma , \Gamma 0, and \Gamma 00 differ only by variable bindings, so by observation 21,we can use
+
+\Gamma  in suitable judgments throughout.
+
+By lemma 29, there exists some '0 such that \Gamma  ` o/ 0 : '0. If x:o/ 0 2 \Sigma 01, thenby inversion of rule
+
+X-ConsA, there exists some ' such that \Gamma  ` \Sigma 1 _ ' and
+'01 = ' t '0. Otherwise, \Sigma 1 = \Sigma 01, so let ' = '01. In both cases,*
+
+\Gamma  ` ' <: '01 and*
+\Gamma  ` \Sigma 1 _ '.
+
+We want to find an \Sigma 02 ` \Sigma 2 and a '02 such that
+
+* \Gamma  ` '02 <: '0,*
+
+\Gamma  ` \Sigma 02 _ '02, and* *
+
+; \Sigma 02 B v : o/ 0.
+
+Let us consider whether there exists some ` 2 locs v:
+
+* If so, then by corollary 32, '0 = A. In order to type v, it must be that
+
+` 2 dom \Sigma 2, which means that \Gamma  ` \Sigma 2 _ A. Let \Sigma 02 = \Sigma 2 and '02 = A.Furthermore, since
+
+x:o/ 0 2 \Sigma 01, by lemma 7, \Gamma  ` \Sigma 01 _ A. Then '01 = A, so
+
+- \Gamma  ` ' t '02 <: '01.*
+If not, then since \Sigma 2 contains only locations, *; * B v : o/ 0. Let \Sigma 02 = * and
+'02 = U. Then ' t '02 = ', so
+
+- \Gamma  ` ' t '02 <: '01.
+
+Since \Gamma  ` \Sigma 1 _ ' and \Gamma  ` \Sigma 02 _ '02, we have by lemma 7 that
+
+* \Gamma  ` \Sigma 1, \Sigma 02 _ ' t '02.
+By lemma 23,
+
+* ` (\Gamma ; \Sigma 1), x:o/ 0, y:o/1  \Gamma 00; \Sigma 001,
+and since we identify environments up to permutation,
+
+* ` (\Gamma ; \Sigma 1), y:o/1, x:o/ 0  \Gamma 00; \Sigma 001.
+By the same lemma, let \Gamma 000 and \Sigma 0001 be such that
+
+71
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+* ` (\Gamma ; \Sigma 1), y:o/1  \Gamma 000; \Sigma 0001 and* `
+
+(\Gamma 000; \Sigma 0001 ), x:o/ 0  \Gamma 00; \Sigma 001.
+
+By the induction hypothesis,
+
+* \Gamma 000; \Sigma 0001 , \Sigma 02 B [v/x]e2 : o/2.
+Note that by sorting o/1 the same way as above, we get
+
+* ` (\Gamma ; \Sigma 1, \Sigma 02), y:o/1  \Gamma 000; \Sigma 0001 , \Sigma 02,
+and by observation 21,
+
+* \Gamma  ` o/1 : '1.
+To summarize, we have
+
+* ` (\Gamma ; \Sigma 1, \Sigma 02), y:o/1  \Gamma 000; \Sigma 0001 , \Sigma 02,*
+
+\Gamma 000; \Sigma 0001 , \Sigma 02 B [v/x]e2 : o/2,*
+\Gamma  ` \Sigma 1, \Sigma 02 _ ' t '02, and*
+\Gamma  ` o/1 : '1.
+
+Then by rule T-Abs,
+
+* \Gamma ; \Sigma 1, \Sigma 02 B *y:o/1.e1 : o/1
+
+'t'02---! o/
+
+2.
+
+Since \Gamma  ` ' t '02 <: '01, by rule K-Arr,
+
+* \Gamma  ` o/1
+
+'t'02---! o/
+
+2 <:+ o/1
+
+'01-! o/
+
+2.
+
+Noting that \Sigma 02 ` \Sigma 2, by rule T-Weak and rule T-Subsume,
+
+* \Gamma ; \Sigma 1, \Sigma 2 B *y:o/1.e1 : o/1
+
+'01-! o/
+
+2.
+
+Case \Gamma 
+
+0; \Sigma 011 B e1 : o/1 '-! o/ \Gamma 0; \Sigma 012 B e2 : o/1
+
+\Gamma 0; \Sigma 011, \Sigma 012 B e1 e2 : o/ .
+Let \Sigma 11 and \Sigma 12 be \Sigma 011 and \Sigma 012, respectively, but without x:o/ 0. We know that
+x:o/ 0 is in one of \Gamma 0, \Sigma 011, or \Sigma 012:
+
+Case x:o/ 0 2 \Gamma 0.
+
+Then* `
+
+(\Gamma ; \Sigma 11), x:o/ 0  \Gamma 0; \Sigma 11 and* `
+(\Gamma ; \Sigma 12), x:o/ 0  \Gamma 0; \Sigma 12.
+
+Furthermore, by lemma 26 and inversion of rule Wf,
+
+72
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+* \Gamma 0 ` \Gamma 0 _ U.
+By lemma 7, this means that*
+
+\Gamma 0 ` o/ 0 : U.
+By corollary 32, locs v = ?. Since we know that \Sigma 2 contains only locations,none of it is relevant to
+
+v, so* *
+
+; * B v : o/ 0.
+Then by the induction hypothesis twice,*
+
+\Gamma ; \Sigma 11 B [v/x]e1 : o/1 '-! o/ and*
+\Gamma ; \Sigma 12 B [v/x]e2 : o/1.
+
+Then by rule T-App and rule T-Weak.
+Case x:o/ 0 2 \Sigma 011.
+
+Then* `
+
+(\Gamma ; \Sigma 11), x:o/ 0  \Gamma ; \Sigma 011.
+
+Then by the induction hypothesis,*
+
+\Gamma ; \Sigma 11, \Sigma 2 B [v/x]e1 : o/1 '-! o/2.
+Furthermore, since x 62 dom(\Gamma 0, \Sigma 012), we know that x 62 fv e2, so*
+
+\Sigma 12 = \Sigma 012,*
+\Gamma  = \Gamma 0, and*
+[v/x]e2 = e2.
+
+Substituting those equalities into the appropriate premise, we get*
+
+\Gamma ; \Sigma 12 B [v/x]e2 : o/1.
+Then by rule T-App.
+Case x:o/ 0 2 \Sigma 012.
+
+Then by symmetry with the previous case.
+
+Case \Gamma 
+
+0, ff:^; \Sigma 01 B v1 : o/1
+
+\Gamma 0; \Sigma 01 B \Lambda ff:^.v1 : 8ff:^.o/1 .
+Since ` (\Gamma ; \Sigma 1), x:o/ 0  \Gamma 0; \Sigma 01, we know that ` (\Gamma , ff:^; \Sigma 1), x:o/ 0  \Gamma 0, ff:^; \Sigma 01.Then by the induction hypothesis,
+
+* \Gamma , ff:^; \Sigma 1, \Sigma 2 B [v/x]v1 : o/1.
+Then by rule T-TAbs.
+
+Case \Gamma 
+
+0; \Sigma 01 B e1 : 8ff:^1.o/2 \Gamma 0 ` o/1 : ^1
+
+\Gamma 0; \Sigma 01 B e1[o/1] : [o/1/ff]o/2 .
+By the induction hypothesis and observation 21,*
+
+\Gamma ; \Sigma 1, \Sigma 2 B [v/x]e1 : 8ff:^1.o/2 and
+
+73
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+* \Gamma  ` o/1 : ^1.
+Then by rule T-TApp, noting that [v/x](e1[o/1]) = ([v/x]e1)[o/1].
+
+Case \Gamma 
+
+0; \Sigma 01 B e1 : o/ U-! o/
+
+\Gamma 0; \Sigma 01 B fix e1 : o/ .
+By the induction hypothesis and rule T-Fix.
+
+Case ` \Gamma 
+
+0; \Sigma 01
+
+\Gamma 0; \Sigma 01 B hi : 1 .
+By lemma 18 and rule T-Unit.
+
+Case \Gamma 
+
+0; \Sigma 01 B e1 : o/1 \Gamma 0 ` o/2 : '2
+
+\Gamma 0; \Sigma 01 B '1 e1 : o/1 + o/2 .
+By the induction hypothesis, observation 21, and rule T-Inl.
+
+Case \Gamma 
+
+0; \Sigma 01 B e2 : o/2 \Gamma 0 ` o/1 : '1
+
+\Gamma 0; \Sigma 01 B '2 e2 : o/1 + o/2 .
+By the induction hypothesis, observation 21, and rule T-Inr.
+
+Case
+
+\Gamma 0; \Sigma 011 B e0 : o/1 + o/2`
+(\Gamma 0; \Sigma 012), x1:o/1  \Gamma 01; \Sigma 0121 \Gamma 01; \Sigma 0121 B e1 : o/`
+(\Gamma 0; \Sigma 012), x2:o/2  \Gamma 02; \Sigma 0122 \Gamma 02; \Sigma 0122 B e2 : o/
+
+\Gamma 0; \Sigma 011, \Sigma 012 B case e0 of '1 x1 ! e2; '2 x2 ! e2 : o/ .
+Let \Sigma 11 and \Sigma 12 be \Sigma 011 and \Sigma 012, respectively, but without x:o/ 0. By lemma 23,* `
+
+(\Gamma ; \Sigma 12), x:o/ 0, x1:o/1  \Gamma 01; \Sigma 0121 and* `
+(\Gamma ; \Sigma 12), x:o/ 0, x2:o/2  \Gamma 02; \Sigma 0122.
+
+Then by the same lemma, let \Gamma 001, \Gamma 002, \Sigma 00121, and \Sigma 00122 be such that
+
+* ` (\Gamma ; \Sigma 12), x1:o/1  \Gamma 001; \Sigma 00121,* `
+
+(\Gamma ; \Sigma 12), x2:o/2  \Gamma 002; \Sigma 00122,* `
+(\Gamma 001; \Sigma 00121), x:o/ 0  \Gamma 01; \Sigma 0121, and* `
+(\Gamma 002; \Sigma 00122), x:o/ 0  \Gamma 02; \Sigma 0122.
+
+We know that x:o/ 0 is in one of \Gamma 0, \Sigma 011, or \Sigma 012:
+
+Case x:o/ 0 2 \Gamma 0.
+
+By lemma 26 and inversion of rule Wf,*
+
+\Gamma 0 ` \Gamma 0 _ U.
+
+Then by lemma 7, this means that
+
+74
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+* \Gamma 0 ` o/ 0 : U.
+By corollary 32, locs v = ?. Since we know that \Sigma 2 contains only locations,* *
+
+; * B v : o/ 0.
+By weakening,*
+
+\Gamma 001; * B v : o/ 0 and*
+\Gamma 002; * B v : o/ 0.
+
+Then by the induction hypothesis three times,*
+
+\Gamma ; \Sigma 11, * B [v/x]e : o/1 + o/2,*
+\Gamma 001; \Sigma 00121, * B [v/x]e1 : o/, and*
+\Gamma 002; \Sigma 00122, * B [v/x]e2 : o/.
+
+By rule T-App,*
+
+\Gamma ; \Sigma 11, \Sigma 12 B [v/x](case e of '1 x1 ! e1; '2 x2 ! e2) : o/.
+Then by rule T-Weak.
+Case x:o/ 0 2 \Sigma 011.
+
+Then* `
+
+(\Gamma ; \Sigma 11), x:o/ 0  \Gamma ; \Sigma 011,
+
+so by the induction hypothesis,*
+
+\Gamma ; \Sigma 11, \Sigma 2 B [v/x]e0 : o/1 + o/2.
+Furthermore,*
+
+\Gamma  = \Gamma 0, * \Gamma 01 = \Gamma 001, * \Gamma 02 = \Gamma 002,*
+
+\Sigma 12 = \Sigma 012, * \Sigma 0121 = \Sigma 00121, and * \Sigma 0122 = \Sigma 00122.
+
+Since x:o/ 2 \Sigma 011, x 62 dom(\Gamma 0, \Sigma 012), which means that x 62 dom(\Gamma 01, \Sigma 0121)and
+
+x 62 dom(\Gamma 02, \Sigma 0122). This means that x 62 fv e1 and x 62 fv e2. Thus,
+[v/x]e1 = e1 and [v/x]e2 = e2, which gives us*
+
+\Gamma 001; \Sigma 00121 B [v/x]e1 : o/ and*
+\Gamma 002; \Sigma 00122 B [v/x]e2 : o/.
+
+Then by rule T-Choose.
+Case x:o/ 0 2 \Sigma 012.
+
+This means that \Gamma 0 = \Gamma  and \Sigma 011 = \Sigma 11. Furthermore, x 62 dom(\Gamma 0, \Sigma 011),which means that
+
+x 62 fv e0. Thus, we know that [v/x]e0 = e0, so*
+
+\Gamma ; \Sigma 11 B [v/x]e0 : o/1 + o/2.
+
+From our assumptions, we have *; \Sigma 2 B v : o/ 0. By the induction hypothesistwice,
+
+* \Gamma 001; \Sigma 00121, \Sigma 2 B [v/x]e1 : o/ and
+
+75
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+* \Gamma 002; \Sigma 00122, \Sigma 2 B [v/x]e2 : o/.
+Note that* `
+
+(\Gamma ; \Sigma 12, \Sigma 2), x1:o/1  \Gamma 001; \Sigma 00121, \Sigma 2 and* `
+(\Gamma ; \Sigma 12, \Sigma 2), x2:o/2  \Gamma 002; \Sigma 00122, \Sigma 2.
+
+Then by rule T-Choose.
+
+Case \Gamma 
+
+0; \Sigma 011 B v1 : o/1 \Gamma 0; \Sigma 012 B v2 : o/2
+
+\Gamma 0; \Sigma 011, \Sigma 012 B hv1, v2i : o/1 * o/2 .
+As in the T-App case.
+
+Case
+
+\Gamma 0; \Sigma 011 B e0 : o/1 * o/2`
+(\Gamma 0; \Sigma 012), x1:o/1, x2:o/2  \Gamma 00; \Sigma 0012 \Gamma 00; \Sigma 0012 B e1 : o/
+
+\Gamma 0; \Sigma 011, \Sigma 012 B case e0 of hx1, x2i ! e1 : o/ .
+As in the T-Choose case.
+
+Case \Gamma ; \Sigma  B e1 : o/1\Gamma ; \Sigma  B new e
+
+1 : aref o/1 .
+
+By the induction hypothesis and rule T-New.
+
+Case \Gamma ; \Sigma 1 B e1 : aref o/1 \Gamma ; \Sigma 2 B e2 : o/2\Gamma ; \Sigma 
+
+1, \Sigma 2 B swap e1 e2 : aref o/2 * o/1 .
+
+As in the T-App case.
+
+Case \Gamma ; \Sigma  B e1 : aref o/1\Gamma ; \Sigma  B delete e
+
+1 : 1 .
+
+By the induction hypothesis and rule T-Delete.
+
+Lemma 34 (Kinding weakening). If \Gamma 1 ` o/ : ^ then \Gamma 1, \Gamma 2 ` o/ : ^.
+Proof. By induction on the kinding derivation.
+Lemma 35 (Replacement). If *; \Sigma  B E[e] : o/ then there exist some contexts \Sigma 1 and
+\Sigma 2 and some type o/ 0 such that
+
+* *; \Sigma 1 B e : o/ 0 and
+
+* *; \Sigma 01, \Sigma 2 B E[e0] : o/ for any e0 such that *; \Sigma 01 B e0 : o/ 0.
+Proof. By induction on the structure of E:
+
+Case [].
+
+Let \Sigma 1 = \Sigma  and \Sigma 2 = *.
+
+Case E0 e2.
+
+That is,
+
+76
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+* *; \Sigma  B E0[e] e2 : o/.
+By inversion of rule T-App,
+
+* *; \Sigma 01 B E0[e] : o/2 '-! o/ and* *
+
+; \Sigma 02 B e2 : o/2
+
+for some \Sigma 01, \Sigma 02, ', and o/2. By the induction hypothesis at E0, there exist somecontexts
+
+\Sigma 1 and \Sigma 012 and some type o/ 0 such that
+
+* *; \Sigma 1 B e : o/ 0 and* *
+
+; \Sigma 01, \Sigma 012 B E0[e0] : o/2 '-! o/.
+
+Let \Sigma 2 = \Sigma 012, \Sigma 02. Then by rule T-App,
+
+* *; \Sigma 01, \Sigma 012, \Sigma 02 B E0[e0] e2 : o/.
+Case v1 E0.
+
+As in the previous case, mutatis mutandem.
+
+Case E0[o/2].
+
+That is,
+
+* *; \Sigma  B E0[e][o/2] : [o/2/ff]o/1
+where o/ = [o/2/ff]o/1. By inversion of rule T-TApp,
+
+* *; \Sigma  B E0[e] : 8ff:^.o/1 and* * `
+
+o/2 : ^.
+
+By the induction hypothesis at E0, there exist some contexts \Sigma 1 and \Sigma 2 andsome type
+
+o/ 0 such that
+
+* *; \Sigma 1 B e : o/ 00 and* *
+
+; \Sigma 01, \Sigma 2 B E0[e0] : 8ff:^.o/1.
+
+Then by rule T-TApp,
+
+* *; \Sigma 01, \Sigma 2 B E0[e0][o/2] : [o/2/ff]o/1.
+Case fix E0.
+
+As in the previous case.
+
+Case '1 E0.
+
+As in the previous case.
+
+77
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case '2 E0.
+
+As in the previous case.
+
+Case case E0 of '1 x1 ! e1; '2 x2 ! e2.
+
+As in the previous case.
+
+Case hE0, e2i.
+
+As in the E0 e2 case.
+
+Case hv1, E0i.
+
+As in the v1 E0 case.
+
+Case case E0 of hx1, x2i ! e1.
+
+As in the E0[o/ ] case.
+
+Case new E0.
+
+As in the E0[o/ ] case.
+
+Case swap E0 e2.
+
+As in the E0 e2 case.
+
+Case swap v1 E0.
+
+As in the v1 E0 case.
+
+Case delete E0.
+
+As in the E0[o/ ] case.
+Theorem 36 (Preservation). If B s; e : o/ and s; e 7-! s0; e0 then B s0; e0 : o/ .
+Proof. Without loss of generality, we consider only the rule R-Cxt case, s; E[e] 7-!
+s0; E[e0], where s; e 7-! s0; e0 not by rule R-Cxt. (All derivations may have exactlyone instance of rule
+
+R-Cxt at the root because the empty context is an evaluationcontext and the composition of two evaluation contexts is an evaluation context.)
+
+By inversion of rule Conf, there must be some \Sigma 1 and \Sigma 2 such that \Sigma 1 B s : \Sigma 1, \Sigma 2and *
+
+; \Sigma 2 B E[e] : o/ . Then by lemma 35, there are some o/ 0, \Sigma 21, and \Sigma 22 such that:* *
+
+; \Sigma 21 B e : o/ 0 and
+
+* *; \Sigma 021, \Sigma 22 B E[e00] : o/ for any e00 such that *; \Sigma 021 B e00 : o/ 0.
+In cases where s = s0, it is sufficient to show that *; \Sigma 21 B e0 : o/ 0, which allows usto replace
+
+e with e0 and reconstruct the same configuration typing. For cases where
+s 6= s0, we will need to rederive the configuration typing using the new store.We proceed by cases on the reduction relation, in each case inverting the typing relation. We need not consider the non-syntax-directed rules T-Subsume and
+T-Weak:
+
+78
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+* If the final rule is T-Subsume, then there must be some o/ 00 such that *; \Sigma 21 B
+
+e : o/ 00 and * ` o/ 00 <:+ o/ 0. If we can show that o/ 00 is preserved, then we canreapply rule
+
+T-Subsume to get o/ 0.
+
+* If the final rule is T-Weak, then we can push it upward in the derivation--andthus ignore it--unless we are typing an abstraction, since rule
+
+T-Abs is theonly rule affected by unused elements in the affine environment.
+
+Now by cases on the reduction relation:
+Case s; (*x:o/2.e1) v2 7-! s; [v2/x]e1.
+
+By inversion of rule T-App, there exist some contexts \Sigma 211 and \Sigma 212 and somequalifier expression
+
+' such that* *
+
+; \Sigma 211 B *x:o/2.e1 : o/2 '-! o/ 0 and* *
+; \Sigma 212 B v2 : o/2.
+
+Without loss of generality, split \Sigma 21 so that \Sigma 211 contains the bare minimum totype
+
+*x:o/2.e1, so that typing the abstraction does not require weakening.
+
+By inversion of rule T-Abs,
+
+* ` (*; \Sigma 211), x:o/2  \Gamma 0; \Sigma 0211,*
+
+\Gamma 0; \Sigma 0211 B e1 : o/ 0,* * `
+
+\Sigma 211 _ ', and* * `
+o/2 : '2.
+
+By lemma 33, *; \Sigma 211, \Sigma 212 B [v2/x]e1 : o/ 0.
+Case s; (\Lambda ff:^.v)[o/1] 7-! s; [o/1/ff]v.
+
+By inversion of rule T-TApp, there exists some type o/2 such that* * `
+
+o/1 : ^ and* *
+; \Sigma 21 B \Lambda ff:^.v : 8ff:^.o/2
+
+where o/ 0 = [o/1/ff]o/2. Then by inversion of rule T-TAbs,
+
+* ff:^; \Sigma 21 B v : o/2.
+By lemma 20, *; \Sigma 21 B [o/1/ff]v : [o/1/ff]o/2.
+Case s; fix v 7-! s; v (fix v).
+
+By inversion of rule T-Fix,
+
+* *; \Sigma 21 B v : o/ 0 U-! o/ 0.
+
+79
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Because \Sigma 21 came from the store typing of s, and a store typing does notcontain variable bindings, we can apply corollary 32 and strengthen to get
+
+*; * B v : o/ 0 U-! o/ 0. Then,
+
+*; * B v : o/ 0 U-! o/ 0 *
+
+; * B v : o/ 0 U-! o/ 0*
+
+; * B fix v : o/ 0 T-Fix*
+; * B v (fix v) : o/ 0 T-App ` *; \Sigma 21*
+
+; \Sigma 21 B v (fix v) : o/ 0 T-Weak.
+
+Case s; case '1 v of '1 x1 ! e1; '2 x2 ! e2 7-! s; [v/x1]e1.
+
+By inversion of rule T-Choose, there exist some contexts \Sigma 211 and \Sigma 212 andsome types
+
+o/1 and o/2 such that* *
+
+; \Sigma 211 B '2 v : o/1 + o/2,* `
+
+(*; \Sigma 212), x1:o/1  \Gamma 1; \Sigma 2121,*
+\Gamma 1; \Sigma 2121 B e1 : o/ 0,* `
+
+(*; \Sigma 212), x2:o/2  \Gamma 2; \Sigma 2122, and*
+\Gamma 2; \Sigma 2122 B e2 : o/ 0.
+
+By inversion of rule T-Inl, *; \Sigma 211 B v : o/1.
+By lemma 33, *; \Sigma 211, \Sigma 212 B [v/x1]e1 : o/ 0.
+
+Case s; case '2 v of '1 x1 ! e1; '2 x2 ! e2 7-! s; [v/x2]e2.
+
+As in the previous case.
+
+Case s; case hv1, v2i of hx1, x2i ! e 7-! s; [v1/x1][v2/x2]e.
+
+By inversion of rule T-Choose, there exist some contexts \Sigma 211 and \Sigma 212 andsome types
+
+o/1 and o/2 such that
+
+* *; \Sigma 211 B hv1, v2i : o/1 * o/2,* `
+
+(*; \Sigma 212), x1:o/1, x2:o/2  \Gamma 0; \Sigma 0212, and*
+\Gamma 0; \Sigma 0212 B e1 : o/ 0.
+
+By inversion of rule T-Pair, there exist some contexts \Sigma 2111 and \Sigma 2112 suchthat
+
+* *; \Sigma 2111 B v1 : o/1 and* *
+
+; \Sigma 2112 B v2 : o/2.
+
+Now consider ` (*; \Sigma 212), x1:o/1, x2:o/2  \Gamma 0; \Sigma 0212. This must be derived by eitherrule
+
+X-ConsA or X-ConsU. By cases:
+
+80
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Case X-ConsA.
+
+Then ` (*; \Sigma 212, x1:o/1), x2:o/2  \Gamma 0; \Sigma 0212. By lemma 33,* *
+
+; \Sigma 2112, \Sigma 212, x1:o/1 B [v2/x2]e1 : o/ 0.
+
+Since ` (*; \Sigma 2112, \Sigma 212), x1:o/1  *; \Sigma 2112, \Sigma 212, x1:o/2, by lemma 33 again,* *
+
+; \Sigma 2111, \Sigma 2112, \Sigma 212 B [v1/x1][v2/x2]e1 : o/ 0.
+Case X-ConsU.
+
+Then ` (x1:o/1; \Sigma 212), x2:o/2  \Gamma 0; \Sigma 0212, and by rule T-Weak,*
+
+x1:o/1; \Sigma 2112 B v2 : o/2.
+
+By lemma 33,*
+
+x1:o/1; \Sigma 2112, \Sigma 212 B [v2/x2]e1 : o/ 0.
+Since ` (*; \Sigma 2112, \Sigma 212), x1:o/1  x1:o/2; \Sigma 2112, \Sigma 212, by lemma 33 again,* *
+
+; \Sigma 2111, \Sigma 2112, \Sigma 212 B [v1/x1][v2/x2]e1 : o/ 0.
+
+Case s; new v 7-! s ] {` 7! v}; ptr `.
+
+By rule T-New, o/ 0 = aref o/ 00, where *; \Sigma 21 B v : o/ 00. Then by rule S-Cons,*
+
+\Sigma 1, \Sigma 21 B s ] {` 7! v} : \Sigma 1, \Sigma 21, \Sigma 22, `:o/ 00,
+
+and by rule T-Ptr,
+
+* *; `:o/ 00 B ptr ` : aref o/ 00.
+By lemma 35,
+
+* *; `:o/ 00, \Sigma 22 B E[ptr `] : o/,
+and by rule Conf,
+
+* B s ] {` 7! v}; E[ptr `] : o/.
+Case s1 ] {` 7! v1}; swap (ptr `) v2 7-! s1 ] {` 7! v2}; hptr `, v1i.
+
+By inversion of rules T-Swap and T-Ptr,* *
+
+; \Sigma 0211, `:o/1 B ptr ` : aref o/1 and* *
+; \Sigma 212 B v2 : o/2 where*
+\Sigma 21 = \Sigma 0211, `:o/1, \Sigma 212 and*
+o/ 0 = aref o/2 * o/1.
+
+Since s = s1 ] {` 7! v1}, we have that
+
+* \Sigma 1 B s1 ] {` 7! v1} : \Sigma 1, \Sigma 0211, \Sigma 212, \Sigma 22, `:o/1.
+By inversion of rule S-Cons,
+
+81
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+* \Sigma 11 B s1 : \Sigma 11, \Sigma 12, \Sigma 0211, \Sigma 212, \Sigma 22 and* *
+
+; \Sigma 12 B v1 : o/1.
+
+Then by rule S-Cons again,
+
+* \Sigma 11, \Sigma 212 B s1 ] {` 7! v2} : \Sigma 11, \Sigma 12, \Sigma 0211, \Sigma 212, \Sigma 22, `:o/2.
+By rule T-Ptr,
+
+* *; \Sigma 0211, `:o/2 B ptr ` : aref o/2,
+and by rule T-Pair,
+
+* *; \Sigma 12, \Sigma 0211, `:o/2 B hptr `, v1i : aref o/2 * o/1.
+By lemma 35,
+
+* *; \Sigma 12, \Sigma 22, \Sigma 0211, `:o/2 B E[hptr `, v1i] : o/,
+and by rule Conf,
+
+* B s1 ] {` 7! v2}; E[hptr `, v1i] : o/.
+Case s0 ] {` 7! v}; delete (ptr `) 7-! s0; hi.
+
+By inversion of rule T-Delete,* *
+
+; \Sigma 21 B ptr ` : aref o/ 00
+
+for some type o/ 00; by inversion of rule T-Ptr, `:o/ 00 2 \Sigma 21. Without loss ofgenerality, let
+
+\Sigma 021, `:o/ 00 = \Sigma 21.
+
+Since s = s0 ] {` 7! v}, we have that
+
+* \Sigma 1 B s0 ] {` 7! v} : \Sigma 1, \Sigma 021, \Sigma 22, `:o/ 00.
+Then by inversion of rule S-Cons, we have that
+
+* \Sigma 11 B s0 : \Sigma 1, \Sigma 021, \Sigma 22.
+By rule T-Unit,
+
+* *; \Sigma 12, \Sigma 021 B hi : 1,
+by lemma 35,
+
+* *; \Sigma 12, \Sigma 021, \Sigma 22 B E[hi] : o/,
+and finally
+
+* B s0; hi : o/
+by rule Conf.
+
+82
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+o/1 j! o/2 (parallel reduction)
+
+PR-Refl
+
+o/ j! o/
+
+PR-Arr
+
+o/11 j! o/21 o/12 j! o/22
+
+o/11 '
+
+1-! o/12 j! o/21 '2-! o/22
+
+PR-All
+
+o/1 j! o/28
+
+ff:^.o/1 j! 8ff:^.o/2
+
+PR-Abs
+
+o/1 j! o/2
+
+*ff.o/1 j! *ff.o/2
+
+PR-App
+
+o/11 j! o/21 o/12 j! o/22
+
+o/11 o/12 j! o/21 o/22
+
+PR-Beta
+
+o/11 j! o/21 o/12 j! o/22
+
+(*ff.o/11) o/12 j! [o/22/ff]o/21
+
+Figure 16: One-step parallel type reduction
+A.2.6 Type Equivalence and Parallel Reduction
+This section follows Pierce's soundness proof for F! (2002, p. 454).
+Definition 37 (Parallel type reduction). We define a one-step parallel reduction relation on types (j!) in figure 16. We will also use (j!), ( *j!), and ( *j!) to denotethe symmetric, transitive, and symmetric-transitive closures of one-step parallel reduction, respectivly.
+
+Unlike Pierce's, our parallel reduction is coarser than type equivalence, becauserule
+
+PR-Arr allows relating arrows with different qualifiers.
+
+Lemma 38 (Parallel type reduction contains type equivalence). If o/ j o/ 0 then o/ j!
+o/ 0.
+
+Proof. We give a derivation o/ = o/0 j! o/1 j! * * * j! o/k = o/ 0, by induction on thederivation of
+
+o/ j o/ 0:
+
+Case o/ j o/ .
+
+Let k = 0.
+
+Case o/
+
+0 j o/
+
+o/ j o/ 0 .
+By the induction hypothesis, we have a derivation o/ 0 = o/0 j! o/1 j! * * * j! o/k =
+o/ . Then o/ = o/k j! o/k-1 j! * * * j! o/0 = o/ 0 is also a valid derivation.
+
+Case o/ j o/
+
+00 o/ 00 j o/ 0
+
+o/ j o/ 0 .
+By the induction hypothesis we have a derivation connecting o/ to o/ 00, and bythe induction hypothesis again, we have a derivation connecting
+
+o/ 00 to o/ 0. Thenthe concatenation os these two derivations is also a valid derivation.
+
+83
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case o/11 j o/21 o/12 j o/22o/
+
+11
+
+'-! o/
+
+12 j o/21
+
+'-! o/
+
+22 .
+
+By the induction hypothesis twice, we have derivations:
+
+* o/11 = o/0 j! o/1 j! * * * j! o/k = o/21 and*
+
+o/12 = o/ 00 j! o/ 01 j! * * * j! o/ 0k = o/22.
+
+Then there is a derivation
+
+* o/11 '-! o/12 = o/0 '-! o/12 j! o/1 '-! o/12 j! * * * j! o/k '-! o/12 = o/21 '-! o/12 = o/21 '-!
+
+o/ 00 j! o/21 '-! o/ 01 j! * * * j! o/21 '-! o/ 0k = o/21 '-! o/22.
+
+Case o/ j o/
+
+0
+
+8ff:^.o/ j 8ff:^.o/ 0 .
+By the induction hypothesis twice, we have a derivation:*
+
+o/ = o/0 j! o/1 j! * * * j! o/k = o/ 0.
+
+Then there is a derivation
+
+* 8ff:^.o/ = 8ff:^.o/0 j! 8ff:^.o/1 j! * * * j! 8ff:^.o/k = 8ff:^.o/ 0.
+
+Case o/1 j o/2*ff.o/
+
+1 j *ff.o/2 .
+
+As in the previous case.
+
+Case o/11 j o/21 o/12 j o/22o/
+
+11 o/12 j o/21 o/22 .
+
+As in the arrow type case.
+
+Case (*ff.o/1) o/2 j [o/2/ff]o/1.
+
+Let k = 1, since (*ff.o/1) o/2 j! [o/2/ff]o/1.
+
+Lemma 39 (Parallel type reduction contains subtyping). If \Delta  ` o/ <:v o/ 0 then
+o/ j! o/ 0.
+
+Proof. By induction on the subtyping derivation:
+
+Case o/1 j o/2 \Delta  ` o/1 : ^ \Delta  ` o/2 : ^\Delta  ` o/
+
+1 <:v o/2 .
+
+By lemma 38.
+
+Case \Delta  ` o/1 <:
+
+v o/2 \Delta  ` o/2 <:v o/3 \Delta  ` o/2 : ^
+
+\Delta  ` o/1 <:v o/3 .
+By the induction hypothesis twice and transitivity.
+
+84
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Case \Delta  ` o/2 <:
+
+-v o/1
+
+\Delta  ` o/1 <:v o/2 .
+By the induction hypothesis and symmetry.
+
+Case \Delta , ff:hffi ` o/1 <:
+
+v o/2
+
+\Delta  ` *ff.o/1 <:v *ff.o/2 .
+By the induction hypothesis and rule PR-Abs.
+
+Case
+
+\Delta  ` o/11 : \Pi ffv1.^1 \Delta  ` o/21 : \Pi ffv2.^2
+\Delta  ` o/11 <:v o/21 \Delta  ` o/12 <:v*(v1tv2) o/22
+
+\Delta  ` o/11 o/12 <:v o/21 o/22 .
+
+By the induction hypothesis twice and rule PR-App.
+
+Case \Delta , ff:^ ` o/1 <:
+
+v o/2
+
+\Delta  ` 8ff:^.o/1 <:v 8ff:^.o/2 .
+By the induction hypothesis and rule PR-Abs.
+
+Case \Delta  ` o/11 <:
+
+-v o/21 \Delta  ` o/12 <:v o/22 \Delta  ` '1 <: '2
+
+\Delta  ` o/11 '
+
+1-! o/12 <:v o/21 '2-! o/22 .
+
+By the induction hypothesis twice and rule PR-Arr.
+Lemma 40 (Parallel substitution and reduction). If o/1 j! o/2 then [o/1/ff]o/ j! [o/2/ff]o/ .
+Proof. By induction on the structure of o/ :
+
+Case fi.
+
+If fi = ff then [o/1/ff]fi = o/1 and [o/2/ff]fi = o/2, so by the premise that o/1 j! o/2.
+If fi 6= ff then [o/1/ff]fi = [o/2/ff]fi = fi, so by rule PR-Refl.
+
+Case *fi.o/ 0.
+
+By the induction hypothesis, [o/1/ff]o/ 0 j! [o/2/ff]o/ 0. Then by rule PR-Abs.
+
+Case o/ 01 o/ 02.
+
+By the induction hypothesis twice, [o/1/ff]o/ 01 j! [o/2/ff]o/ 01 and [o/1/ff]o/ 02 j! [o/2/ff]o/ 02.Then by rule
+
+PR-App.
+
+Case o/ 01 '-! o/ 02.
+
+As in the previous case.
+
+85
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case 8fi:^.o/ 0.
+
+By the induction hypothesis, [o/1/ff]o/ 0 j! [o/2/ff]o/ 0. Then by rule PR-All.
+
+Case 1.
+
+Then [o/1/ff]1 = [o/2/ff]1 = 1, so by rule PR-Refl.
+
+Case (+).
+
+As in the previous case.
+
+Case (*).
+
+As in the previous case.
+
+Case aref.
+
+As in the previous case.
+
+Lemma 41 (Type substitution on parallel reduction). If o/1 j! o/2 and o/ 01 j! o/ 02 then
+[o/1/ff]o/ 01 j! [o/2/ff]o/ 02.
+
+Proof. By induction on the derivation of o/ 01 j! o/ 02:
+
+Case o/ 01 j! o/ 01.
+
+Then by lemma 40.
+
+Case o/11 j! o/21 o/12 j! o/22o/
+
+11
+
+'1-! o/
+
+12 j! o/21
+
+'2-! o/
+
+22 .
+
+By the induction hypothesis twice,
+
+* [o/1/ff]o/11 j! [o/2/ff]o/21 and*
+
+[o/1/ff]o/12 j! [o/2/ff]o/22.
+
+Then by rule PR-Arr.
+
+Case o/1 j! o/28ff:^.o/
+
+1 j! 8ff:^.o/2 .
+
+By the induction hypothesis and rule PR-All.
+
+Case o/1 j! o/2*ff.o/
+
+1 j! *ff.o/2 .
+
+By the induction hypothesis and rule PR-Abs.
+
+86
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Case o/11 j! o/21 o/12 j! o/22o/
+
+11 o/12 j! o/21 o/22 .
+
+By the induction hypothesis twice and rule PR-App.
+
+Case o/11 j! o/21 o/12 j! o/22(*fi.o/
+
+11) o/12 j! [o/22/fi]o/21 .
+
+By the induction hypothesis twice,
+
+* [o/1/ff]o/11 j! [o/2/ff]o/21 and*
+
+[o/1/ff]o/12 j! [o/2/ff]o/22.
+
+By rule PR-Beta,
+
+* (*fi.[o/1/ff]o/11) [o/1/ff]o/12 j! [[o/2/ff]o/22/fi][o/2/ff]o/21.
+Note that (*fi.[o/1/ff]o/11) [o/1/ff]o/12 = [o/1/ff]((*fi.o/11) o/12). Also, because fi isfresh for
+
+o/2, we know that [[o/2/ff]o/22/fi][o/2/ff]o/21 = [o/2/ff][o/22/fi]o/21. Thus,
+
+* [o/1/ff]((*fi.o/11) o/12) j! [o/2/ff][o/22/fi]o/21
+as desired.
+Lemma 42 (Single-step diamond property of parallel reduction). If o/ j! o/1 and
+o/ j! o/2 then there exists some o/ 0 such that o/1 j! o/ 0 and o/2 j! o/ 0:
+
+o/
+
+ss(v\Pi o/
+1
+
+,'
+
+o/2
+w\Sigma o/ 0
+
+Proof. We start by considering cases involving rule PR-Refl, which always applies:
+
+* If o/ j! o/1 by rule PR-Refl and o/ j! o/2 by some rule R (which may berule
+
+PR-Refl as well), then let o/ 0 = o/2. Then o/1 j! o/ 0 by rule R and o/2 j! o/ 0by rule
+
+PR-Refl.
+
+* If o/ j! o/1 by some rule R and o/ j! o/2 by rule PR-Refl then by symmetry fromthe previous case.
+
+We now need only consider derivations that do not involve rule PR-Refl at the root.By induction on the structure of
+
+o/ :
+
+Case fi.
+
+This only reduces by rule PR-Refl.
+
+87
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case *fi.o/ 00.
+
+The only two rules that allow reduction of *fi.o/ 00 are rule PR-Abs and rule PR-Refl,and we've already considered that latter. Thus, it must be that
+
+o/ j! o/1 and
+o/ j! o/2 both by rule PR-Abs. Then by inversion, there must be some types o/ 01and
+
+o/ 02 such that
+
+* o/1 = *fi.o/ 01,*
+
+o/2 = *fi.o/ 02,*
+o/ 00 j! o/ 01, and*
+o/ 00 j! o/ 02.
+
+By the induction hypothesis, there exists some o/ 000 such that
+
+* o/ 01 j! o/ 000 and*
+
+o/ 02 j! o/ 000.
+
+Then let o/ 0 = *fi.o/ 000, and both o/1 and o/2 reduce to o/ 000 by rule PR-Abs.
+Case o/ 01 o/ 02.
+
+Other that rule PR-Refl, there are two rules that might apply here in anycombination,
+
+PR-App and PR-Beta.*
+
+If o/ j! o/1 and o/ j! o/2 both by rule PR-App, that is,
+
+o/ 01 j! o/11 o/ 02 j! o/12
+
+o/ 01 o/ 02 j! o/11 o/12 and
+
+o/ 01 j! o/21 o/ 02 j! o/22
+
+o/ 01 o/ 02 j! o/21 o/22
+
+where o/1 = o/11 o/12 and o/2 = o/21 o/22.
+By the induction hypothesis twice, there exist some types o/ 001 and o/ 002 suchthat
+
+- o/11 j! o/ 001 ,
+- o/21 j! o/ 001 ,
+- o/12 j! o/ 002 , and
+- o/22 j! o/ 002 .
+
+Then let o/ 0 = o/ 001 o/ 002 , and both o/1 and o/2 reduce to o/ 0 by rule PR-App.*
+If o/ j! o/1 by rule PR-App and o/ j! o/2 by rule PR-Beta, that is,
+
+o/ 001 j! o/11 o/ 02 j! o/12
+(*ff.o/ 001 ) o/ 02 j! (*ff.o/11) o/12 and
+
+o/ 001 j! o/21 o/ 02 j! o/22
+(*ff.o/ 001 ) o/ 02 j! [o/22/ff]o/21
+
+where
+
+88
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+- o/ 01 = *ff.o/ 001 ,
+- o/1 = (*ff.o/11) o/12, and
+- o/2 = [o/22/ff]o/21.
+
+By the induction hypothesis, twice, there exist some o/ 0001 and o/ 0002 such that
+
+- o/11 j! o/ 0001 ,
+- o/21 j! o/ 0001 ,
+- o/12 j! o/ 0002 , and
+- o/22 j! o/ 0002 .
+
+Then by rule PR-Beta and lemma 41,
+
+- (*ff.o/11) o/12 j! [o/ 0002 /ff]o/ 0001 and
+- [o/22/ff]o/21 j! [o/ 0002 /ff]o/ 0001 .*
+
+If o/ j! o/1 by rule PR-Beta and o/ j! o/2 by rule PR-App, then by symme-try from the previous case.
+
+* If o/ j! o/1 and o/ j! o/2 both by rule PR-Beta, that is,
+
+o/ 001 j! o/11 o/ 02 j! o/12
+(*ff.o/ 001 ) o/ 02 j! [o/12/ff]o/11 and
+
+o/ 001 j! o/21 o/ 02 j! o/22
+(*ff.o/ 001 ) o/ 02 j! [o/22/ff]o/21
+
+where
+
+- o/ 01 = *ff.o/ 001 ,
+- o/1 = [o/12/ff]o/11, and
+- o/2 = [o/22/ff]o/21.
+
+By the induction hypothesis, twice, there exist some o/ 0001 and o/ 0002 such that
+
+- o/11 j! o/ 0001 ,
+- o/21 j! o/ 0001 ,
+- o/12 j! o/ 0002 , and
+- o/22 j! o/ 0002 .
+
+Then by lemma 41 twice,
+
+- [o/12/ff]o/11 j! [o/ 0002 /ff]o/ 0001 and
+- [o/22/ff]o/21 j! [o/ 0002 /ff]o/ 0001 .
+
+Case o/ 01 '-! o/ 02.
+
+As in the both-by-PR-App part of the previous case, but using rule PR-Arr.
+
+Case 8fi:^.o/ 0.
+
+As in the PR-Abs case, but using rule PR-All.
+
+89
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case 1.
+
+This only reduces by rule PR-Refl.
+
+Case (+).
+
+As in the previous case.
+
+Case (*).
+
+As in the previous case.
+
+Case aref.
+
+As in the previous case.
+
+Lemma 43 (Parallel reduction confluence). If o/ *j! o/1 and o/ *j! o/2 then there exists
+some o/ 0 such that o/1 *j! o/ 0 and o/2 *j! o/ 0.
+
+Proof. First by induction on length of the reduction sequence for o/ *j! o/1:
+
+Case o/ 0j! o/1.
+
+That is, o/ = o/1. Then let o/ 0 = o/2, because o/1 *j! o/2.
+
+Case o/ j! o/ 01 kj! o/1.
+
+We would like to show that there exists some o/ 00 such that o/ 01 *j! o/ 00 and o/2 j! o/ 00.
+By induction on length of the reduction sequence for o/ *j! o/2:
+
+Case o/ 0j! o/2.
+
+That is, o/ = o/2. Then let o/ 00 = o/ 01, because o/ j! o/ 01 and o/ 01 *j! o/ 01.
+
+Case o/ j! o/ 02
+
+jj! o/
+
+2.Because
+
+o/ j! o/ 01 and o/ j! o/ 02, there exists some o/ 012 such that o/ 01 j! o/ 012 and
+o/ 02 j! o/ 012, by lemma 42.
+
+Now we have that o/ 02 j! o/ 012 and o/ 02
+
+jj! o/
+
+2. Since that reduction sequence isshorter than the current case, we can apply the inner induction hypothesis,
+
+by which there exists some o/ 00 such that o/ 012 *j! o/ 00 and o/2 j! o/ 00. By
+transitivity, o/ 01 j! o/ 012 *j! o/ 00.
+
+Then by the outer induction hypothesis, there exists some o/ 0 such that o/1 *j! o/ 0
+and o/ 00 *j! o/ 0. Since o/ j! o/ 01 and o/2 j! o/ 00, we therefore have:
+
+* o/ j! o/ 01 *j! o/1 *j! o/ 0 and
+
+* o/ *j! o/2 j! o/ 00 *j! o/ 0.
+
+90
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+Lemma 44 (Parallel reduction closure confluence). If o/ *j! o/ 0 then there exists some
+type o/ 00 such that o/ *j! o/ 00 and o/ 0 *j! o/ 00.
+
+Proof. By induction on the derivation of o/ *j! o/ 0:
+
+Case o/ 0j! o/ 0.
+
+Let o/ 00 = o/ = o/ 0.
+
+Case o/ j! o/1 kj! o/ 0.
+
+By the induction hypothesis, there exists some o/ 00 such that o/1 *j! o/ 00 and o/ 0 *j!
+o/ 00. Then o/ j! o/1 *j! o/ 00 as well.
+
+o/ *4 o/1 jt k *4
+
+*
+
+^"
+
+o/ 0
+*""ff
+o/ 00
+
+Case o/ j o/1 kj! o/ 0.
+
+By the induction hypothesis, there exists some o/ 001 such that o/1 *j! o/ 001 and o/ 0 *j!
+o/ 001 . Then by lemma 43, there exists some o/ 00 such that o/ *j! o/ 00 and o/ 001 *j! o/ 00.
+Then o/ 0 *j! o/ 001 *j! o/ 00 as well.
+
+o/
+
+*\Omega ^
+
+o/1jt jt k *4
+
+*
+
+'!
+
+o/ 0
+*""ff
+o/ 00 o/ 01*jt
+
+Corollary 45 (Subtyping confluence). If \Delta  ` o/1 <:v o/2 then there exists some o/ 0
+such that o/1 *j! o/ 0 and o/2 *j! o/ 0.
+
+Proof. By lemma 39 and lemma 44.
+
+A.2.7 Progress
+Definition 46 (Faulty expressions). We define the faulty expressions with respectto store
+
+s inductively as follows:
+
+91
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Qs ::= faulty expressions|
+
+v[o/ ] where v 6ss \Lambda ff:^.v0|
+v v0 where v 6ss *x:o/.e|
+case v of '1 x1 ! e1; '2 x2 ! e2 where v 62 {'1 v1, '2 v2}|
+case v of hx1, x2i ! e where v 6ss hv1, v2i|
+swap v v0 where v 6ss ptr `|
+delete v where v 6ss ptr `|
+swap (ptr `) v0 where ` 62 dom s|
+delete (ptr `) where ` 62 dom s|
+E[Qs]
+
+We say that a configuration s; e is faulty when e is faulty with respect to s.
+
+Lemma 47 (Uniform evaluation). For all configurations with closed term e, eitherthe configuration takes a step,
+
+e is a value, or the configuration is faulty.
+
+Proof. In each case, we will show one of:
+(Q) e is faulty with respect to s,
+(V) e is a value, or
+(R) there is a configuration s0; e0 such that s; e 7-! s0; e0.
+By induction on e:
+
+Case x.
+
+Not closed, so it contradicts the antecedant.
+
+Case *x:o/.e1.
+
+Then (V).
+
+Case e1 e2.
+
+Let E1 = [] e2. By the induction hypothesis at e1, one of:
+
+Case (Q).
+
+Then E1[e1] is faulty as well, so (Q).
+
+Case (V).
+
+Let v1 = e1 and E2 = v1 []. By the induction hypothesis at e2, one of:
+
+Case (Q).Then
+
+E2[e2] is faulty as well, so (Q).
+
+Case (V).Let
+
+v2 = e2. Then by cases on v1:Case
+
+*x:o/.e11.Then
+
+s; (*x:o/.e11) v2 7-! s; [v2/x]e11 by rule R-fi, so (R).
+
+92
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Otherwise.If
+
+v1 is not an abstraction, then (Q).
+
+Case (R).That is,
+
+s; e2 7-! s0; e02. Then s; E2[e2] 7-! s0; E2[e02], so (R).
+
+Case (R).
+
+That is, s; e1 7-! s0; e01. Then s; E1[e1] 7-! s0; E1[e01], so (R).
+
+Case \Lambda ff:^.v1.
+
+Then (V).
+
+Case e1[o/ ].
+
+Let E1 = [][o/ ]. By the induction hypothesis at e1, one of:
+
+Case (Q).
+
+Then E1[e1] is faulty as well, so (Q).
+
+Case (V).
+
+Let v1 = e1. Then by cases on v1:
+
+Case \Lambda ff:^.v11.Then
+
+s; (\Lambda ff:^.v11)[o/ ] 7-! s; [o/ /ff]v11 by rule R-fi, so (R).
+
+Otherwise.If
+
+v1 is not a type abstraction, then (Q).
+
+Case (R).
+
+That is, s; e1 7-! s0; e01. Then s; E1[e1] 7-! s0; E1[e01], so (R).
+
+Case fix e1.
+
+Let E = fix []. By the induction hypothesis at e1, one of:
+
+Case (Q).
+
+Then E[e1] is faulty as well, so (Q).
+
+Case (V).
+
+Let v1 = e1. Then by rule R-Fix s; fix v1 7-! s; v1 (fix v1), so (R).
+
+Case (R).
+
+That is, s; e1 7-! s0; e01. Then s; E[e1] 7-! s0; E1[e01], so (R).
+
+Case hi.
+
+Then (V).
+
+Case '1 e1.
+
+Let E = '1 []. By the induction hypothesis at e1, one of:
+
+Case (Q).
+
+Then E[e1] is faulty as well, so (Q).
+
+93
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case (V).
+
+Let v1 = e1. Then '1 v1 is a value, so (V).
+
+Case (R).
+
+That is, s; e1 7-! s0; e01. Then s; E[e1] 7-! s0; E1[e01], so (R).
+
+Case '2 e2.
+
+As in the previous case.
+
+Case case e0 of '1 x1 ! e1; '2 x2 ! e2.
+
+Let E = case [] of '1 x1 ! e1; '2 x2 ! e2. Then by the induction hypothesis at
+e0, one of:
+
+Case (Q).
+
+Then E1[e1] is faulty as well, so (Q).
+
+Case (V).
+
+Let v0 = e0. Then by cases on v0:
+
+Case '1 v01.Then
+
+s; case '1 v01 of '1 x1 ! e1; '2 x2 ! e2 7-! s; [v01/x1]e1 by rule R-ChooseL,so (R).
+
+Case '2 v02.Likewise, but by rule
+
+R-ChooseR, (R).
+
+Otherwise.If
+
+v0 is not a sum injection, then (Q).
+
+Case (R).
+
+That is, s; e1 7-! s0; e01. Then s; E1[e1] 7-! s0; E1[e01], so (R).
+
+Case he1, e2i.
+
+As in the application case, with one change: If both e1 and e2 are values, then(V).
+
+Case case e0 of hx1, x2i ! e1.
+
+Let E = case [] of hx1, x2i ! e1. Then by the induction hypothesis at e0, one of:
+
+Case (Q).
+
+Then E1[e1] is faulty as well, so (Q).
+
+Case (V).
+
+Let v0 = e0. Then by cases on v0:
+
+Case hv1, v2i.Then
+
+s; case hv1, v2i of hx1, x2i ! e1 7-! s; [v1/x1][v2/x2]e1 by rule R-Unpair,so (R).
+
+94
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Otherwise.If
+
+v0 is not a pair, then (Q).
+
+Case (R).
+
+That is, s; e1 7-! s0; e01. Then s; E1[e1] 7-! s0; E1[e01], so (R).
+
+Case new e1.
+
+Let E = new []. By the induction hypothesis at e1, one of:
+
+Case (Q).
+
+Then E[e1] is faulty as well, so (Q).
+
+Case (V).
+
+Let v1 = e1. Then by rule R-New s; new v1 7-! s ] {` 7! v1}; ptr `, so(R).
+
+Case (R).
+
+That is, s; e1 7-! s0; e01. Then s; E[e1] 7-! s0; E1[e01], so (R).
+
+Case swap e1 e2.
+
+As in the application case, except when both e1 and e2 are values. Call them
+v1 and v2. Then by cases on v1:
+
+Case ptr `.
+
+If ` 2 dom s, then let s0 ]{` 7! v} = s, and s0 ] {` 7! v}; swap (ptr `) v2 7-!
+s0 ] {` 7! v2}; hptr `, vi by rule R-Swap, so (R). Otherwise, (Q).
+
+Otherwise.
+
+If v1 is not a store location, then (Q).
+
+Case delete e1.
+
+Let E = delete []. By the induction hypothesis at e1, one of:
+
+Case (Q).
+
+Then E[e1] is faulty as well, so (Q).
+
+Case (V).
+
+Let v1 = e1. Then by cases on v1:
+
+Case ptr `.If
+
+` 2 dom s, then let s0]{` 7! v2} = s, and s0]{` 7! v2}; delete (ptr `) 7-!
+s0; hi by rule R-Delete, so (R). Otherwise, (Q).
+
+Otherwise.If
+
+v1 is not a store location, then (Q).
+
+95
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case (R).
+
+That is, s; e1 7-! s0; e01. Then s; E[e1] 7-! s0; E1[e01], so (R).
+
+Case ptr `.
+
+Then (V).
+
+Definition 48 (Concrete types). Let T be the set of types and Kj be the set of kindsof arity
+
+j. We define the six sets of concrete types as follows:
+
+Carr = {o/1 '-! o/2 | o/1, o/2 2 T , ' 2 K0}C
+
+all = {8ff:^.o/1 | j 2 N, ^ 2 Kj, o/1 2 T }C
+unit = {1}C
+
+sum = {o/1 + o/2 | o/1, o/2 2 T }C
+prod = {o/1 * o/2 | o/1, o/2 2 T }C
+
+ref = {aref o/1 | o/1 2 T }
+
+We now define each Ti as the set of types that can reduce to each to each Ci:
+
+Ti = {o/ | o/ 2 T , o/ 0 2 Ci, o/ *j! o/ 0}
+Lemma 49 (Concrete closure). If o/ 2 Ci and o/ *j! o/ 0 then o/ 0 2 Ci.
+Proof. By induction on the length of the reduction sequence and cases on o/ :
+
+Case o/1 '-! o/2.
+
+The only rules that apply are rule PR-Refl and rule PR-Arr, neither of whichchanges the shape of the type.
+
+Case 8ff:^.o/1.
+
+The only rules that apply are rule PR-Refl and rule PR-All, neither of whichchanges the shape of the type.
+
+Case 1.
+
+The only rule that applies is rule PR-Refl, which does not change the shapeof the type.
+
+Case (+) o/1 o/2.
+
+The only rules that apply are rule PR-Refl and rule PR-App, which maychange
+
+o/1 and o/2 but cannot change (+).
+
+96
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Case (*) o/1 o/2.
+
+The only rules that apply are rule PR-Refl and rule PR-App, which maychange
+
+o/1 and o/2 but cannot change (*).
+
+Case aref o/1.
+
+The only rules that apply are rule PR-Refl and rule PR-App, which maychange
+
+o/1 but cannot change aref.
+
+Corollary 50 (Partition of types). If o/ 2 Ti and o/ 2 Tj then i = j.
+Proof. Type o/ must reduce to types in both Ci and Cj, which by lemma 43 must inturn reduce to some common type
+
+o/ 0. By lemma 49, o/ 0 is in both Ci and Cj, and sincethe six sets of concrete types are mutually disjoint, those must be the same set.
+
+Ti 3 o/ 2 Tj
+
+*
+
+*&
+*
+x\Upsilon C
+i 3 o/1 *
+
+*&
+
+o/2 2 Cj
+*
+x\Upsilon C
+i 3 o/ 0 2 Cj
+
+Corollary 51 (Subtyping preserves form). If \Delta  ` o/1 <:v o/2 and o/2 2 Ti then o/1 2 Ti.
+Proof. By the definition of Ti, there exists some o/ 02 2 Ci such that o/2 *j! o/ 02. By
+corollary 45, there exists some o/ 0 such that o/2 *j! o/ 0 and o/1 *j! o/ 0. By lemma 43, there
+exists some o/ such that o/ 0 *j! o/ and o/ 02 *j! o/ .
+
+o/1 <:
+
+v
+
+*
+
+*&
+
+o/2
+
+*\Omega ^
+
+* *4 o/ 0
+
+2 2 Ci
+
+*\Omega ^
+
+o/ 0 * *4 o/ 2 Ci
+
+Since o/ 02 2 Ci, by lemma 49, o/ 2 Ci as well. Since o/1 *j! o/ , then by the definition of Ti,
+o/1 2 Ti.
+
+Lemma 52 (Canonical forms). The concrete type of a value dictates its form. Sup-pose that *
+
+; \Sigma  B v : o/ .
+
+If o/ is . . . , then v is . . . .
+o/1 '-! o/2 2 Carr *x:o/ 0.e for some x, o/ 0 and e8
+
+ff:^.o/ 0 2 Call \Lambda ff:^.v0 for some value v0
+
+1 2 Cunit hi
+o/1 + o/2 2 Csum '1 v0 or '2 v0 for some value v0
+o/1 * o/2 2 Cprod hv1, v2i for some values v1 and v2
+
+aref o/ 0 2 Cref ptr ` for some location `
+
+97
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+Proof. We generalize the induction hypothesis to use the sets Ti in place of each setC
+
+i. Since the Ti are disjoint, by corollary 50, finding that a type is in one of the setsmeans we don't need to consider the others.
+
+By induction on the typing derivation:
+
+Case \Gamma ; \Sigma  B v : o/
+
+0 \Gamma  ` o/ 0 <:+ o/ \Gamma  ` o/ : '
+
+\Gamma ; \Sigma  B v : o/ .
+If o/ 2 Tj, then by corollary 51, o/ 0 2 Tj as well. Then by the induction hypoth-esis,
+
+v has the right form.
+
+Case \Gamma ; \Sigma  B v : o/ ` \Gamma , \Gamma 
+
+0; \Sigma , \Sigma 0
+
+\Gamma , \Gamma 0; \Sigma , \Sigma 0 B v : o/ .
+By the induction hypothesis.
+
+Case `:o/
+
+0 2 \Sigma  * ` o/ 0 : ' ` \Gamma ; \Sigma 
+
+\Gamma ; \Sigma  B ptr ` : aref o/ 0 .
+Then aref o/ 0 2 Cref ae Tref, and ptr ` has the right form.
+
+Case ` (\Gamma ; \Sigma ), x:o/1  \Gamma 
+
+0; \Sigma 0 \Gamma 0; \Sigma 0 B e : o/2 \Gamma  ` \Sigma  _ ' \Gamma  ` o/1 : '1
+
+\Gamma ; \Sigma  B *x:o/1.e : o/1 '-! o/2 .
+Then o/1 '-! o/2 2 Carr ae Tarr, and *x:o/1.e has the right form.
+
+Case \Gamma , ff:^; \Sigma  B v
+
+0 : o/ 0
+
+\Gamma ; \Sigma  B \Lambda ff:^.v0 : 8ff:^.o/ 0 .
+Then 8ff:^.o/ 0 2 Call ae Tall, and \Lambda ff:^.v0 has the right form.
+
+Case ` \Gamma ; \Sigma \Gamma ; \Sigma  B hi : 1 .
+
+Then 1 2 Cunit ae Tunit, and hi has the right form.
+
+Case \Gamma ; \Sigma  B v
+
+0 : o/1 \Gamma  ` o/2 : '
+
+\Gamma ; \Sigma  B '1 v0 : o/1 + o/2 .
+Then o/1 + o/2 2 Csum ae Tsum, and '1 v0 has the right form.
+
+Case \Gamma ; \Sigma  B v
+
+0 : o/2 \Gamma  ` o/1 : '
+
+\Gamma ; \Sigma  B '2 v0 : o/1 + o/2 .
+Then o/1 + o/2 2 Csum ae Tsum, and '2 v0 has the right form.
+
+Case \Gamma ; \Sigma 1 B v1 : o/1 \Gamma ; \Sigma 2 B v2 : o/2\Gamma ; \Sigma 
+
+1, \Sigma 2 B hv1, v2i : o/1 * o/2 .
+
+Then o/1 * o/2 2 Cprod ae Tprod, and hv1, v2i has the right form.
+
+98
+
+A ADDITIONAL PROOFS A.2 Type Soundness
+
+Otherwise.
+
+The remaining rules to not apply to values.
+
+Lemma 53 (Faulty expressions). If term e is faulty with respect to store s, then thereis no
+
+o/ such that B s; e : o/ .
+
+Proof by contradiction. Suppose that B s; e : o/ 0 and that e is faulty with respect to
+s. By inversion of rule Conf, there exist some contexts \Sigma 1 and \Sigma 2 such that
+
+* \Sigma 1 B s : \Sigma 1, \Sigma 2 and
+
+* *; \Sigma 2 B e : o/ 0.
+It may end with some amount of subsumption and weakening, but prior to that theremust be an instance of the appropriate syntax-directed rule for
+
+e, yielding
+
+* *; \Sigma 21 B e : o/
+for some \Sigma 21 and o/ .Since
+
+e is faulty, let Qs = e. We generalize the induction hypothesis over o/ andproceed by induction on the structure of
+
+Qs:
+
+Case v[o/2] where v 6ss \Lambda ff0:^0.v0.
+
+By inversion of rule T-TApp, there are some ff1, ^1, and o/1 such that* *
+
+; \Sigma 21 B v : 8ff1:^1.o/1.
+
+By lemma 52, v must therefore have the form \Lambda ff1:^1.v1, which contradicts theside-condition that
+
+v 6ss \Lambda ff0:^0.v0.
+
+Case v v0 where v 6ss *x00:o/ 00.e00.
+
+By inversion of rule T-App, there are some o/1, o/2, and '1 such that* *
+
+; \Sigma 21 B v : o/1 '-! o/2.
+
+By lemma 52, v must therefore have the form *x1:o/1.e1, which contradicts theside-condition.
+
+Case case v of '1 x1 ! e1; '2 x2 ! e2 where v 62 {'1 v01, '2 v02}.
+
+By inversion of rule T-Choose, there are some o/1 and o/2 such that* *
+
+; \Sigma 21 B v : o/1 + o/2.
+
+By lemma 52, v must therefore have either the form '1 v1 or the form '2 v1,both of which contradict the side-condition.
+
+99
+
+A.2 Type Soundness A ADDITIONAL PROOFS
+
+Case case v of hx1, x2i ! e0 where v 6ss hv01, v02i.
+
+By inversion of rule T-Unpair, there are some o/1 and o/2 such that* *
+
+; \Sigma 21 B v : o/1 * o/2.
+
+By lemma 52, v must therefore have the form hv1, v2i, which contradicts theside-condition.
+
+Case swap v v0 where v 6ss ptr `0.
+
+By inversion of rule T-Swap, there is some o/1 such that* *
+
+; \Sigma 21 B v : aref o/1.
+
+By lemma 52, v must therefore have the form ptr `, which contradicts the side-condition.
+
+Case delete v where v 6ss ptr `0.
+
+As in the previous case, but using rule T-Delete instead of rule T-Swap.
+
+Case swap (ptr `) v0 where ` 62 dom s.
+
+By inversion of rule T-Swap, there is some o/1 such that
+
+* *; \Sigma 21 B ptr ` : aref o/1,
+and by inversion of rule T-Ptr,
+
+* `:o/1 2 \Sigma 21.
+Since \Sigma 2 = \Sigma 21, \Sigma 22, this means that
+
+* `:o/1 2 \Sigma 2.
+Recall that \Sigma 1 B s : \Sigma 1, \Sigma 2. Without loss of generality, because contexts areidentified up to permutation, let
+
+\Sigma 02, `:o/1 = \Sigma 2. In other words,
+
+* \Sigma 1 B s : \Sigma 1, \Sigma 02, `:o/1.
+By S-Cons, this can only be the case if s = s0 ] {` 7! v0} for some s0 and v0,which contradicts the side condition that
+
+` 62 dom s.
+
+Case delete (ptr `) where ` 62 dom s.
+
+As in the previous case, but using rule T-Delete instead of rule T-Swap.
+
+Case E[e1] where e1 6ss Qs1.
+
+By lemma 35, there are some typing contexts \Sigma 211 and \Sigma 212 and some type o/1such that
+
+100
+
+LIST OF PROPOSITIONS AND DEFINITIONS
+
+* *; \Sigma 211 B e1 : o/1.
+By weakening,
+
+* *; \Sigma 21 B e1 : o/1,
+and by the induction hypothesis at e1 with o/1, this cannot be so.
+Theorem 54 (Progress). If B s; e : o/ then either e is a value, or there exist some s0and
+
+e0 such that s; e 7-! s0; e0.
+
+Proof. Since B s; e : o/ , by lemma 53, s; e is not faulty. Furthermore, since it types,
+e must be closed. Then by lemma 47, either e is a value or the configuration takes astep.
+
+A.2.8 Type Soundness
+Main Theorem 55 (Type soundness). If ` e : o/ then either e diverges or there
+exists some value v and store s such that {}; e *7-! s; v and B s; v : o/ .
+
+Proof. By theorem 54 (Progress), theorem 36 (Preservation), and induction on thelength of the reduction sequence.
+
+List of Figures
+
+1 An interface for reader-writer locks ($2) . . . . . . . . . . . . . . . . . 2
+2 Another interface for reader-writer locks . . . . . . . . . . . . . . . . 9
+3 Syntax (i): metavariables and terms . . . . . . . . . . . . . . . . . . . 12
+4 Syntax (ii): types . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 12
+5 Syntax (iii): Qualifier constants, variances, and variance composition 13
+6 Syntax (iv): kinds . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 13
+7 Typing contexts . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+8 Operational semantics . . . . . . . . . . . . . . . . . . . . . . . . . . 15
+9 Type system judgments . . . . . . . . . . . . . . . . . . . . . . . . . 16
+10 Statics (i): kinds . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17
+11 Statics (ii): types . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18
+12 Statics (iii): subtyping . . . . . . . . . . . . . . . . . . . . . . . . . . 19
+13 Statics (iv): typing contexts . . . . . . . . . . . . . . . . . . . . . . . 22
+14 Statics (v): terms . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24
+15 Statics (vi): stores and configurations . . . . . . . . . . . . . . . . . . 26
+16 One-step parallel type reduction . . . . . . . . . . . . . . . . . . . . . 83
+
+101
+
+LIST OF PROPOSITIONS AND DEFINITIONS
+List of Propositions and Definitions
+
+1 Definition (Consistent valuations) . . . . . . . . . . . . . . . . . . . . 172 Definition (Qualifier subsumption) . . . . . . . . . . . . . . . . . . . . 17
+3 Definition (Kind semilattices) . . . . . . . . . . . . . . . . . . . . . . 364 Lemma (Well-formed kind semilattice) . . . . . . . . . . . . . . . . . 37
+5 Lemma (Unique kinds and unique variances) . . . . . . . . . . . . . . 376 Corollary (Unique context bounds) . . . . . . . . . . . . . . . . . . . 39
+7 Lemma (Context bounding) . . . . . . . . . . . . . . . . . . . . . . . 408 Theorem (Principal function qualifiers) . . . . . . . . . . . . . . . . . 40
+9 Definition (Type substitution) . . . . . . . . . . . . . . . . . . . . . . 4110 Lemma (Type substitution on kind well-formedness) . . . . . . . . . . 41
+11 Lemma (Qualifier substitution on qualifier subsumption) . . . . . . . 4212 Corollary (Type substitution on subkinding) . . . . . . . . . . . . . . 42
+13 Lemma (Non-free type variables do not vary) . . . . . . . . . . . . . . 4214 Lemma (Type substitution on kinding and variance) . . . . . . . . . . 43
+15 Lemma (Type substitution on type equivalence) . . . . . . . . . . . . 4516 Lemma (Type substitution on subtyping) . . . . . . . . . . . . . . . . 46
+17 Lemma (Type substitution on context bounding) . . . . . . . . . . . 4718 Lemma (Type substitution on context well-formedness) . . . . . . . . 48
+19 Lemma (Type substitution on context extension) . . . . . . . . . . . 4820 Lemma (Type substitution on typing) . . . . . . . . . . . . . . . . . . 49
+21 Observation (Strengthening) . . . . . . . . . . . . . . . . . . . . . . . 5322 Lemma (Contexts close terms) . . . . . . . . . . . . . . . . . . . . . . 54
+23 Lemma (Coalescing of context extension) . . . . . . . . . . . . . . . . 5524 Lemma (Context extension soundness) . . . . . . . . . . . . . . . . . 55
+25 Lemma (Regularity of kinding) . . . . . . . . . . . . . . . . . . . . . 5726 Lemma (Regularity of typing) . . . . . . . . . . . . . . . . . . . . . . 57
+27 Lemma (Variance coherence) . . . . . . . . . . . . . . . . . . . . . . . 5928 Lemma (Type kinds are well-formed) . . . . . . . . . . . . . . . . . . 60
+29 Lemma (Term types are well-kinded) . . . . . . . . . . . . . . . . . . 6230 Lemma (Monotonicity of kinding) . . . . . . . . . . . . . . . . . . . . 65
+31 Lemma (No hidden locations) . . . . . . . . . . . . . . . . . . . . . . 6832 Corollary (Kinding finds locations) . . . . . . . . . . . . . . . . . . . 68
+33 Lemma (Substitution) . . . . . . . . . . . . . . . . . . . . . . . . . . 6934 Lemma (Kinding weakening) . . . . . . . . . . . . . . . . . . . . . . . 76
+35 Lemma (Replacement) . . . . . . . . . . . . . . . . . . . . . . . . . . 7636 Theorem (Preservation) . . . . . . . . . . . . . . . . . . . . . . . . . 78
+37 Definition (Parallel type reduction) . . . . . . . . . . . . . . . . . . . 8338 Lemma (Parallel type reduction contains type equivalence) . . . . . . 83
+39 Lemma (Parallel type reduction contains subtyping) . . . . . . . . . . 8440 Lemma (Parallel substitution and reduction) . . . . . . . . . . . . . . 85
+
+102
+
+LIST OF PROPOSITIONS AND DEFINITIONS
+
+41 Lemma (Type substitution on parallel reduction) . . . . . . . . . . . 8642 Lemma (Single-step diamond property of parallel reduction) . . . . . 87
+43 Lemma (Parallel reduction confluence) . . . . . . . . . . . . . . . . . 9044 Lemma (Parallel reduction closure confluence) . . . . . . . . . . . . . 91
+45 Corollary (Subtyping confluence) . . . . . . . . . . . . . . . . . . . . 9146 Definition (Faulty expressions) . . . . . . . . . . . . . . . . . . . . . . 91
+47 Lemma (Uniform evaluation) . . . . . . . . . . . . . . . . . . . . . . 9248 Definition (Concrete types) . . . . . . . . . . . . . . . . . . . . . . . . 96
+49 Lemma (Concrete closure) . . . . . . . . . . . . . . . . . . . . . . . . 9650 Corollary (Partition of types) . . . . . . . . . . . . . . . . . . . . . . 97
+51 Corollary (Subtyping preserves form) . . . . . . . . . . . . . . . . . . 9752 Lemma (Canonical forms) . . . . . . . . . . . . . . . . . . . . . . . . 97
+53 Lemma (Faulty expressions) . . . . . . . . . . . . . . . . . . . . . . . 9954 Theorem (Progress) . . . . . . . . . . . . . . . . . . . . . . . . . . . . 101
+55 Main Theorem (Type soundness) . . . . . . . . . . . . . . . . . . . . 101
+
+103

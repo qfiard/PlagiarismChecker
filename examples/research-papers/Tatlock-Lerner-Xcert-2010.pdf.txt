@@ -1,0 +1,212 @@
+
+
+Bringing Extensibility to Verified Compilers *
+
+Zachary Tatlock Sorin Lerner
+
+University of California, San Diego{
+
+ztatlock,lerner}@cs.ucsd.edu
+
+Abstract
+Verified compilers, such as Leroy's CompCert, are accompanied bya fully checked correctness proof. Both the compiler and proof are
+
+often constructed with an interactive proof assistant. This techniqueprovides a strong, end-to-end correctness guarantee on top of a
+small trusted computing base. Unfortunately, these compilers arealso challenging to extend since each additional transformation
+must be proven correct in full formal detail.At the other end of the spectrum, techniques for compiler correctness based on a domain-specific language for writing optimiza-tions, such as Lerner's Rhodium and Cobalt, make the compiler
+easy to extend: the correctness of additional transformations canbe checked completely automatically. Unfortunately, these systems
+provide a weaker guarantee since their end-to-end correctness hasnot been proven fully formally.
+
+We present an approach for compiler correctness that providesthe best of both worlds by bridging the gap between compiler verification and compiler extensibility. In particular, we have extendedLeroy's CompCert compiler with an execution engine for optimizations written in a domain specific language and proved that this ex-ecution engine preserves program semantics, using the Coq proof
+assistant. We present our CompCert extension, XCert, includingthe details of its execution engine and proof of correctness in Coq.
+Furthermore, we report on the important lessons learned for makingthe proof development manageable.
+
+Categories and Subject Descriptors D.2.4 [Software Engineer-ing]: Software/Program Verification - Correctness proofs; D.3.4
+[Programming Languages]: Processors - Optimization; F.3.1[Logics and Meanings of Programs]: Specifying and Verifying and
+Reasoning about Programs - Mechanical verification
+General Terms Languages, Verification, Reliability
+Keywords Compiler Optimization, Correctness, Extensibility
+
+1. Introduction
+Optimizing compilers are a foundational part of the infrastructuredevelopers rely on every day. Not only are compilers expected to
+
+produce high-quality optimized code, but they are also expected to
+* Supported in part by NSF grants CCF-0644306 and CCF-0811512.
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+PLDI'10, June 5-10, 2010, Toronto, Ontario, Canada.Copyright cfl 2010 ACM 978-1-4503-0019/10/06.. . $10.00
+
+be correct, in that they preserve the behavior of the compiled pro-grams. Even though developers hit bugs only occasionally when
+using mature optimizing compilers, getting compilers to a levelof reliability that is good enough for mainstream use is challenging and extremely time consuming. Furthermore, in the context ofsafety-critical applications, e.g. in medicine or avionics, compiler
+correctness can literally become a matter of life and death. Devel-opers in these domains are aware of the risk presented by compiler
+bugs; imagine the care you would take in writing a compiler if ahuman life depended on its correctness. To guard against disaster
+they often disable compiler optimizations, perform manual reviewsof generated assembly, and conduct exhaustive testing, all of which
+are expensive precautions.One approach to ensure compiler reliability is to implement the
+compiler within a proof assistant like Coq and formally prove itscorrectness, as done in the CompCert verified compiler [9]. Using this technique provides a strong end-to-end guarantee: eachstep of the compilation process is fully verified, from the first AST
+transformation down to register allocation. Unfortunately, becausethe proofs are not fully automated, this technique requires a large
+amount of manual labor by developers who are both compiler ex-perts and comfortable using an interactive theorem prover. Furthermore, extending such a compiler with new optimizations re-quires proving each new transformation correct in full formal detail, which is difficult and requires substantial expertise [14-16].Another approach to compiler reliability is based on using a
+domain-specific language (DSL) for expressing optimizations; ex-amples include Rhodium [8] and PEC [7]. These systems are able
+to automatically check the correctness of optimizations expressedin their DSL. This technique provides superior extensibility: not
+only are correctness proofs produced without manual effort, but theDSL provides an excellent abstraction for implementing new optimizations. In fact, these systems are designed to make compilersextensible even for non-compiler experts. Unfortunately, the DSL
+based approach provides a weaker guarantee than verified compil-ers, since the execution engine that runs the DSL optimizations is
+not proved correct.In this paper we present a hybrid approach to compiler correctness that achieves the best of both techniques by bridging thegap between verified compilers and compiler extensibility. Our
+approach is based on a DSL for expressing optimizations cou-pled with both a fully automated correctness checker and a verified execution engine that runs optimizations expressed in theDSL. We demonstrate the feasibility of this approach by extending CompCert with a new module XCert ("Extensible CompCert").XCert combines the DSL and automated correctness checker from
+PEC [7] with an execution engine implemented as a pass withinCompCert and verified in Coq.
+
+XCert achieves a strong correctness guarantee by proving thecorrectness of the execution engine fully formally, but it also provides excellent extensibility because new optimizations can be eas-ily expressed in the DSL and then checked for correctness fully
+
+automatically. In particular, while adding only a relatively smallamount to CompCert's trusted computing base (TCB), our technique provides the following benefit: additional optimizations thatare added using PEC do not require any new manual proof effort,
+and do not add anything to the TCB.The main challenge in adding a PEC execution engine to CompCert lies in verifying its correctness in Coq. The verification is dif-ficult for several reasons. First, it introduces new constructs into the
+CompCert framework including parameterized programs, substitu-tions, pattern matching, and subtle CFG-manipulation operations.
+These constructs require careful design to make reasoning aboutthe execution engine manageable. Second, the execution engine
+imports correctness guarantees provided by PEC into CompCert,which requires properly aligning the semantics of PEC and CompCert. Third, applying the PEC guarantee within the correctnessproof of the engine is challenging and tedious because it requires
+knowing information outside the engine about tests performed deepwithin the engine.
+
+We discuss three general techniques that we found extremelyuseful in mitigating these difficulties: (1) Verified Validation, a technique inspired by Tristan et al, where, for certain algorithms in thePEC engine, we reduce proof effort by implementing a verified result checker rather than directly verifying the algorithm; (2) Seman-tics Alignment, where we factor out into a separate module the issues related to aligning the semantics between PEC and CompCert,so that these difficulties do not pervade the rest of the proof; and
+(3) Witness Propagation, where we return extra information withthe result of a transformation which allows us to simplify applying
+the PEC guarantee and reduce case analyses.Our contributions therefore include:
+
+* XCert, an extension to CompCert based on PEC that provides
+
+both extensibility and a strong end-to-end guarantee. We firstreview PEC and CompCert in Section 2, and then present our
+
+system and its correctness proof in Sections 3 and 4.*
+Techniques to mitigate the complexity of such proofs andlessons learned while developing our proof (Sections 3, 4
+
+and 5). These techniques and lessons are more broadly appli-cable than our current system.
+
+* A quantitative and qualitative assessment of XCert in terms of
+
+trusted computing base, lines of code, engine complexity andproof complexity, and a comparison using these metrics with
+
+CompCert and PEC (Section 6).
+2. Background
+In this section, we review background material on the PEC sys-tem [7] and the CompCert verified compiler [9].
+
+2.1 Parameterized Equivalence Checking (PEC)
+PEC is a system for implementing optimizations and checking theircorrectness automatically. PEC provides the programmer with a
+
+domain-specific language for implementing optimizations. Onceoptimizations are written in this language, PEC takes advantage of
+the stylized forms of the optimizations to check their correctnessautomatically.
+
+Loop peeling We show how PEC works through a simple exam-ple, loop peeling. Loop peeling is a transformation that takes one
+iteration of a loop, and moves it either before or after the loop. Aninstance of this transformation is shown in Figure 1. Loop peeling
+can be used for a variety of purposes, including modifying loopbounds to enable loop unrolling or loop merging.
+
+Optimizations in PEC are expressed as guarded rewrite rules ofthe following form:
+
+G` Z=) Gr where S
+
+k := 0
+while (i < 100) {
+
+a[k] += k;
+k++;
+}
+
+k := 0
+while (k < 99) {
+
+a[k] += k;
+k++;
+}
+a[k] += k;
+k++;
+
+(a) (b)
+Figure 1. Loop peeling: (a) shows the original code, and (b) showsthe transformed code.
+
+26664 I := 0
+
+while (I < E) {
+
+S
+I++
+}
+
+37775 Z
+
+=)
+
+26666
+6664
+
+I := 0
+while (I < E-1) {
+
+S
+I++
+}
+S
+I++
+
+37777
+7775
+
+where NotMod(S, I) ^ NotMod(S, E) ^ StrictlyPos(E)
+
+Figure 2. Loop peeling expressed in PEC
+
+where G` is a code pattern to match, Gr is the code to replace anymatches with, and the side condition
+
+S is a boolean formula stat-ing the condition under which the rewrite may safely be performed.
+
+Throughout the paper we use subscript ` (which stands for "left")for the original program and subscript "r" (which stands for "right")
+for the transformed program. Figure 2 shows a simple form of looppeeling, expressed in PEC's domain-specific language. The variables S, I and E are PEC pattern variables that can match againstpieces of concrete syntax:
+
+S matches statements, I variables, and
+E expressions.The semantics of a rewrite rule
+
+G` Z=) Gr where S is that, forany substitution
+` mapping pattern variables to concrete syntax, if
+`(G`) is found somewhere in the original program (where `(G`)denotes applying the substitution
+
+` to G` to produce concretecode), then the matched code is replaced with
+
+`(Gr), as long as
+S(`(G`), `(Gr)) holds.The side condition
+
+S is a conjunction over a fixed set of sidecondition predicates, such as NotMod and StrictlyPos. These side
+
+condition predicates have a fixed semantic meaning - for example,the meaning of StrictlyPos
+
+(I) is that I is greater than 0. PEC truststhat the execution engine provides an implementation of these predicates that implies their semantic meaning: if the implementation ofthe predicate returns true, then its semantic meaning must hold.
+
+Correctness checking PEC tries to show that a rewrite rule
+G` Z=) Gr where S is correct by matching up execution statesin
+
+G` and Gr using a simulation relation. A simulation relation ,is a relation over program states in the original and transformed
+
+programs. Intuitively, , relates a given state j` of the original pro-gram with its corresponding state
+
+jr in the transformed program.The key property to establish is that the simulation relation
+
+is preserved throughout execution. Using ! to denote small-stepsemantics, this property can be stated as follows:
+
+j` , jr ^ j` ! j0` ) 9j0r, j0` , j0r ^ jr ! j0r (1)
+Essentially, if the original and transformed programs are in a pairof related states, and the original program steps, then the transformed program will also step, in such a way that the two resultingstates will be related. Furthermore, if the original states of the two
+programs are related by ,, then the above condition guarantees
+
+I:=0I < EI
+ •  ( S
+
+I++
+
+I:=0I < E - 1I
+ •  (- 1 S
+
+I++SI++
+A
+B
+
+A(1Error: /invalidaccess in --run--
+Operand stack:
+   --nostringval--   --dict:6/15(L)--   2   11   0.002   --nostringval--   --nostringval--   (   **** Error reading a content stream. The page may be incomplete.\n)
+Execution stack:
+   %interp_exit   .runexec2   --nostringval--   --nostringval--   --nostringval--   2   %stopped_push   --nostringval--   --nostringval--   --nostringval--   false   1   %stopped_push   1909   2   3   %oparray_pop   1908   2   3   %oparray_pop   1892   2   3   %oparray_pop   --nostringval--   --nostringval--   4   1   11   --nostringval--   %for_pos_int_continue   --nostringval--   --nostringval--   --nostringval--   --nostringval--   %array_continue   --nostringval--   --nostringval--
+Dictionary stack:
+   --dict:1214/1684(ro)(G)--   --dict:1/20(G)--   --dict:85/200(L)--   --dict:85/200(L)--   --dict:108/127(ro)(G)--   --dict:291/300(ro)(G)--   --dict:23/30(L)--   --dict:6/8(L)--   --dict:21/40(L)--   --dict:1/1(ro)(G)--   --dict:1/1(ro)(G)--   --dict:14/15(L)--
+Current allocation mode is local
+Last OS error: 2

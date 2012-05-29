@@ -1,0 +1,1673 @@
+
+
+A type system for bounded space and functional
+
+in-place update
+
+Martin Hofmann
+Division of Informatics
+University of Edinburgh, Mayfield Rd, Edinburgh EH9 3JZ, UK
+
+mxh@dcs.ed.ac.uk
+
+November 22, 2000
+
+Abstract
+We show how linear typing can be used to obtain functional programs which
+modify heap-allocated data structures in place.
+
+We present this both as a "design pattern" for writing C-code in a functional style
+and as a compilation process from linearly typed first-order functional programs into
+malloc()-free C code.
+
+The main technical result is the correctness of this compilation.
+The crucial innovation over previous linear typing schemes consists of the introduction of a resource type 3 which controls the number of constructor symbols such
+as cons in recursive definitions and ensures linear space while restricting expressive
+power surprisingly little.
+
+While the space efficiency brought about by the new typing scheme and the
+compilation into C can also be realised by with state-of-the-art optimising compilers
+for functional languages such as Ocaml [16], the present method provides guaranteed
+bounds on heap space which will be of use for applications such as languages for
+embedded systems or automatic certification of resource bounds.
+
+We show that the functions expressible in the system are precisely those computable on a linearly space-bounded Turing machine with an unbounded stack. By
+a result of Cook this equals the complexity class 'exponential time'. A tail recursive
+fragment of the language captures the complexity class 'linear space'.
+
+We discuss various extensions, in particular an extension with FIFO queues admitting constant time catenation and enqueuing, and an extension of the type system
+to fully-fledged intuitionistic linear logic.
+
+1 Introduction
+In-place modification of heap-allocated data structures such as lists, trees, queues in an
+imperative language such as C is notoriously cumbersome, error prone, and difficult to
+
+1
+
+teach.
+
+Suppose that a type of lists has been defined1 in C by
+
+typedef enum {NIL, CONS} kind_t;
+
+typedef struct lnode {
+
+kind_t kind;
+int hd;
+struct lnode * tl;
+} list_t;
+
+and that a function
+list_t reverse(list_t l)
+should be written which reverses its argument "in place" and returns it. Everyone who
+has taught C will agree that even when recursion is used this is not an entirely trivial task.
+Similarly, consider a function
+
+list_t insert(int a, list_t l)
+which inserts a in the correct position in l (assuming that the latter is sorted) allocating
+one struct lnode.
+
+Next, suppose, you want to write a function
+
+list_t sort(list_t l)
+which sorts its argument in place according to the insertion sort algorithm. Note that you
+cannot use the previously defined function insert() here as it allocates new space.
+
+As a final example, assume that we have defined a type of trees
+
+typedef struct tnode {
+
+kind_t kind;
+int label;
+struct tnode * left;
+struct tnode * right;
+} tree_t;
+
+(with kind t extended with LEAF, NODE) and that we want to define a function
+list_t breadth(tree_t t)
+which constructs the list of labels of tree t in breadth-first order by consuming the space
+occupied by the tree and allocating at most one extra struct lnode. While again, there
+is no doubt that this can be done, my experience is that all of the above functions are
+cumbersome to write, difficult to verify, and likely to contain bugs.
+
+Now compare this with the ease with which such functions are written in a functional
+language such as Ocaml [16]. For instance,
+
+1Usually, one encodes the empty list as a NULL-pointer, whereas here it is encoded as a list t with
+kind component equal to NIL. This is more in line with the encoding of trees we present below. If desired,we could go for the slightly more economical encoding, the only price being a loss of genericity.
+
+2
+
+let reverse l = let rec rev_aux l acc =
+
+match l with
+
+[] -> acc
+| a::l -> rev_aux l (a::acc)
+in rev_aux l []
+
+type tree = Leaf of int
+
+| Node of int*tree*tree
+
+let rec breadth t = let rec breadth_aux l =
+
+match l with
+
+[] -> []
+| Leaf(a)::t -> a::breadth_aux(t)
+| Node(a,l,r)::t -> a::breadth_aux(t @ [l] @ [r])
+in breadth_aux [t]
+
+These definitions are written in a couple of minutes and are readily verified using induction
+and equational reasoning. The difference, of course, is that the functional programs do not
+modify their argument in place but rather construct the result anew by allocating fresh heap
+space. If the argument is not needed anymore it will eventually be reclaimed by garbage
+collection, but we have no guarantee whether and when this will happen. Accordingly, the
+space usage of a functional program will in general be bigger and less predictable than that
+of the corresponding C program.
+
+The aim of this paper is to show that by imposing mild extra annotations one can have
+the best of both worlds: easy to write code which is amenable to equational reasoning, yet
+modifies its arguments in place and does not allocate heap space unless explicitly told to do
+so. We will describe a linearly2 typed functional programming language with lists, trees,
+and other heap-allocated data structure which admits a compilation into malloc()-free
+C. This may seem paradoxical at first sight because one should think that at least a few
+heap allocations would be necessary to generate initial data. However, our type system is
+such that while it does allow for the definition of functions such as the above examples, it
+does not allow one to define constant terms of heap-allocated type other than trivial ones
+like nil. If we want to apply these functions to concrete data we either move outside the
+type system or we introduce an extension which allows for controlled introduction of heap
+space. However, to develop and verify functions, as opposed to concrete computations,
+this is largely unnecessary.
+
+This is all made possible in a natural way through the presence of a special resource
+type 3 which in fact is the main innovation of the present system over earlier linear type
+systems, see Section 9.
+
+While experiments with the prototype implementation show that the generated C-code
+can compete with the highly optimised Ocamlopt native code compiler and outperforms
+the Ocaml run time system by far we believe that the efficient space usage can also be
+realised by state-of-the-art garbage collection and caching.
+
+2We always use "linear" in the sense of "affine linear", i.e. arguments may be used at most once.
+
+3
+
+The main difference is that we can prove that the code generated by our compilation
+comes with an explicit bound on the heap space used (none at all in the pure system, a
+controllable amount in an extension with an explicit allocation operator). This will make
+our system useful in situations where space economy and guaranteed resource bounds are
+of the essence. Examples are programming languages for embedded systems (see [13] for a
+survey), smart cards, or "proof-carrying code".
+
+In a nutshell the approach works as follows. The type 3 (dia t in the C examples) gets
+translated into a pointer type, say void * whose values point to heap space of appropriate
+size to store one list or tree node. It is the task of the type system to maintain the invariant
+that these pointers point to large enough space which can be overwritten without affecting
+the result.
+
+When invoking a non-leaf constructor function such as cons() or node() (but node
+nil() or leaf() one must supply an appropriate number of arguments of type 3 to provide
+the required heap space. Conversely, if in a function definition an argument of list or tree
+type is decomposed these 3-values become available again.
+
+Linear typing then ensures that overwriting the heap space pointed to by these 3-values
+is safe.
+
+It is important to realise that the C programs obtained as the target of the translation do
+not involve malloc() and therefore must necessarily update their heap allocated arguments
+in place. Traditional functional programs may achieve the same global space usage by
+clever garbage collection, but there will be no guarantee that under all circumstances this
+efficiency will be realised.
+
+We also point out that while the language we present is experimental the examples
+we can treat are far from trivial: insertion sort, quick sort, breadth first traversal using
+queues, Huffman's algorithm, and many more. We therefore are lead to believe that with
+essentially just engineering effort our system could be turned into a usable programming
+language for the abovementioned applications where resources are restricted.
+
+2 Functional programming with C
+Before presenting the language we show what the translated code will look like by way
+of some direct examples. We point out that in these examples we assume that every
+constructor function uses heap space recuperated from decomposing function arguments.
+Thus, the functions we define require no additional heap space at all. In practice, allocating
+fresh heap space will sometimes be unavoidable. We explain later in Section 2.3 on how
+this can be achieved in a controlled way.
+
+We also clarify that elements of recursive data types will be returned on the stack as a
+C-struct containing a tag field identifying the outermost constructor and fields allowing to
+access its components. We thus refrain from using the familiar optimisation of representing
+an empty list as a NULL pointer. This is done for the sake of uniformity but could be changed
+in a practical implementation.
+
+4
+
+2.1 Lists
+For the above-defined list type we would make the following definitions:
+
+typedef void * dia t;
+and
+list t nil(){
+
+list t res;
+res.kind=NIL;
+return res;}
+
+and list t cons(dia t d, int hd, list t tl){
+
+list t res;
+res.kind = CONS;
+res.hd = hd;
+*(list t *)d = tl;
+res.tl = (list t *)d;
+return res;}
+
+followed by
+
+typedef struct {
+
+kind t kind;
+dia t d;
+int hd;
+list t tl;}
+list destr t;
+
+and list destr t list destr(list t l) {
+
+list destr t res;
+res.kind = l.kind;
+if (res.kind == CONS) {
+
+res.hd = l.hd;
+res.d = (void *) l.tl;
+res.tl = *l.tl;}
+
+return res;}
+The function nil() simply returns an empty list on the stack. The function cons() takes
+a pointer to free heap space (d), an entry (hd) and a list (tl) and returns on the stack a
+list with hd-field equal to hd and tl-field pointing to a heap location containing tl. This
+latter heap location is of course the one explicitly provided through the argument d.
+
+The destructor function list destr(), finally, takes a list (l) and returns a structure
+containing a field kind with value CONS iff l.kind equals CONS and in this case containing
+in the remaining fields head and tail of l, as well as a pointer to a heap location capable of
+storing a list node (d). We will later precisely identify the circumstances under which it is
+safe to reuse, i.e., overwrite this heap location. Basically, we can do anything we like with
+the components of the returned structure, but must not anymore refer to the argument of
+list destr; it has been "destroyed".
+
+Once we have made these definitions we can implement reverse() in a functional style
+as follows:
+
+list_t rev_aux(list_t ll, list_t acc) {
+
+list_destr_t l = list_destr(ll);
+return l.kind==NIL ? acc
+
+: rev_aux(l.tl, cons(l.d, l.hd, acc));
+}
+
+list_t reverse(list_t l) {
+
+return rev_aux(l,nil());
+}
+
+5
+
+Notice that reverse() updates its argument in place, as no call to malloc() is being
+made.
+
+To implement insert() we need an extra argument of type dia t since this function,
+just like cons(), increases the length. So we write:
+
+list_t insert(dia_t d, int a, list_t ll) {
+
+list_destr_t l = list_destr(ll);
+return l.kind==NIL ? cons(d,a,nil())
+
+: a <= l.hd ? cons(d,a,cons(l.d,l.hd,l.tl))
+
+: cons(d,l.hd,insert(l.d,a,l.tl));
+}
+
+Using insert() we can implement insertion sort with in-place modification as follows:
+list_t sort(list_t ll) {
+
+list_destr_t l = list_destr(ll);
+return l.kind==NIL ? nil()
+
+: insert(l.d,l.hd,sort(l.tl));
+}
+
+Notice, how the value l.d which becomes available in decomposing l is used to feed the
+insert() function.
+
+One might object against the implementation of the resource type dia t as a void
+pointer and require it to be a pointer to a list node instead to achieve extra type safety.
+This would, however, preclude the use of recovered heap space from decomposing a list
+in order to construct elements of another datatype, e.g., a binary tree, as we will now
+show. Type safety is achieved by manipulating elements of type dia t only through the
+well-defined interface provided by the constructor and destructor functions.
+
+2.2 Trees
+Let us now look at binary int-labelled trees. We define
+
+tree t leaf(int label) {
+
+tree t res;
+res.kind = LEAF;
+res.label = label;
+return res;}
+
+and tree t node(dia t d1, dia t d2,
+
+int label, tree t l, tree t r) {
+tree t res;
+res.kind = NODE;
+res.label = label;
+*(tree t *)d1 = l;
+*(tree t *)d2 = r;
+res.left = (tree t *)d1;
+res.right = (tree t *)d2;
+return res;}
+
+followed by
+
+6
+
+typedef struct {
+
+kind t kind;
+int label;
+dia t d1, d2;
+tree t left, right;}
+tree destr t;
+
+and tree destr t tree destr(tree t t) {
+
+tree destr t res;
+res.label = t.label;
+if((res.kind = t.kind) == NODE) {
+
+res.d1 = (dia t)t.left;
+res.d2 = (dia t)t.right;
+res.left = *(tree t *)t.left;
+res.right = *(tree t *)t.right;}
+
+return res;}
+Notice that we must "pay" two 3s in order to build a tree node. In exchange, two 3s
+become available when we decompose a tree.
+
+To implement the above-mentioned function breadth we have to define a type listtree t
+of lists of trees analogous to list t with int replaced by tree t. Of course, the associated
+helper functions need to get distinct names such as niltree(), etc.
+
+We can then define a function br aux
+
+list_t br_aux(listtree_t l){
+
+listtree_destr_t l = listtree_destr(l0);
+tree_destr_t t;
+
+if(l.kind==NIL)
+
+return nil();
+else /*l.kind==CONS*/
+
+{
+
+t = tree_destr(l.hd);
+if (t.kind == LEAF)
+
+return cons(l.d,t.label,br_aux(l.tl));
+else /*t. kind == NODE*/
+
+return cons(l.d,t.label,br_aux(snoc(t.d1,snoc(t.d2,l.tl,t.left),t.right)));
+}
+}
+
+where we have used the following helper function:
+listtree_t snoc(dia_t d,listtree_t l0,tree_t t){
+
+listtree_destr_t l = listtree_destr(l0);
+if (l.kind==NIL)
+
+return constree(d,t,niltree());
+else
+
+return constree(l.d,l.hd,snoc(d,l.tl,t));
+
+which appends an element at the end of a list. This function uses linear time (and stack
+size!) which is unfortunate; we show below in Section 6 how to incorporate a queue type
+admitting constant time appending.
+
+We now obtain the desired function breadth as
+
+7
+
+list_t breadth(dia_t d, tree_t t) {
+
+return br_aux(cons(d,t,nil()));
+}
+
+Notice that the type of breadth shows that the result requires one memory region more
+than the input provides.
+
+We also remark that for the functioning of this example it was crucial that we could
+rededicate "diamonds" stemming from a tree to be used for the construction of a list.
+Conversely, in algorithms such as tree sort (which sorts a list by turning it into a binary
+search tree which is subsequently flattened in depth first-order) we must use "diamonds"
+obtained by deconstructing a list in order to construct a tree. For this to function correctly,
+we must assume that the layout of the argument list was sufficiently "spreaded out", i.e.,
+that each pointer in the list points to an otherwise unused region large enough to hold a
+tree node (as opposed to merely a list node). For this, and other reasons it is convenient
+to have a function as described in the next subsection which provides fresh heap space in
+such portions.
+
+One may object against the inherent space wastage of this policy. In situations where
+it becomes unacceptable one might be lead to introduce several kinds of "diamonds" which
+are mutually incompatible or can be "traded" against each other at fixed "exchange rates",
+e.g. in our example four "list diamonds" for three "tree diamonds". We notice though, that
+at any time this wastage is within a constant multiple of the size of the data so that the
+advantages of having only one resource type may often outweigh the wastage.
+
+2.3 Allocating fresh space
+All these functions do not use dynamic memory allocation because the heap space needed
+to store the result can be taken from the argument. To construct concrete lists in the first
+place we need of course dynamic memory allocation. This can be done in a controlled way
+using a function dia t new() which allocates heap space in portions of one "diamond":
+
+dia_t new() {
+
+return (dia_t) malloc(sizeof(max_t));
+}
+
+where max t is a union of all the datatypes used in the program. This allows us to
+write an input function
+
+list_t getlist() {
+
+int x;
+scanf("%d", &x);
+return x==-1 ? nil()
+
+: cons(new(),x,getlist());
+}
+
+Of course, for these programs to be correct it is crucial that we do not overwrite heap
+space which is still in use. The main message of this paper is that this can be guaranteed
+
+8
+
+systematically by adhering to a linear typing discipline. In other words, a function can use
+its argument at most once.
+
+For instance, the following code which attempts to double the size of its argument will
+be ruled out:
+
+list_t twice(list_t ll) {
+
+list_destr_t l = list_destr(ll);
+
+return l.kind==NIL ? nil()
+
+: cons(l.d,0,(cons(l.d,0,twice(l.tl))));
+}
+
+It is rightly ruled out because rather than returning a list of 0's twice the size of its input
+it returns a circular list! A similar effect happens, if we replace the last line of the code
+for insert() by
+
+cons(d,l.hd,insert(d,a,l.tl));
+In each case the reason is the double usage of the 3-values d and l.d.
+
+3 A linear functional programming language
+We will now introduce a linearly typed functional language (to be called LFPL for reference)
+and translate it systematically into C. This will be done with the following aims. First, it
+allows us to formally prove the correctness of the methodology sketched above, second it
+will relieve us from having to rewrite similar code many times. Suppose, for instance, you
+wanted to use lists of trees (as needed to implement breadth first search). Then all the basic
+list code (list t, nil(), cons(), etc. ) will have to be rewritten (this problem could
+presumably also be overcome through the use of C++ templates [14]). Thirdly, a formalised
+language with linear type system will allow us to enforce the usage restrictions on which
+the correctness of the above code relies. Finally, this will open up the possibility to extend
+the language to a fully-fledged functional language which would be partly compiled into C
+whenever this is possible and executed in the traditional functional way when this is not
+the case.
+
+9
+
+3.1 Syntax and typing rules
+The terms of LFPL are given by the following grammar:
+
+e ::= x (variable)|
+
+f (e1, . . . , en) function application|
+c integer constant|
+e1 ? e2 infix op., ? 2 {+, -, *, =, <= . . . }|
+if e then e0 else e00 conditional|
+inl(e) left injection|
+inr(e) right injection|
+e1 \Omega  e2 pairing|
+nil empty list|
+cons(e1, e2, e3) cons with res. arg.|
+leaf(e) leaf constructor|
+node(e1, e2, e3, e4, e5) node constr. w. two res. args.|
+match e1 with nil)e2|cons(d, h, t))e3 list elimination|
+match e1 with leaf(a))e2|
+
+node(d1, d2, a, l, r))e3 tree elim.|
+match e1 with x \Omega  y)e2 pair elim.|
+match e1 with inl(x))e2barrinr(x))e3 sum elim.
+
+Intuitively, a program consists of a series of function definitions of the form f (x1, . . . , xn) =
+e. The meaning of a program depends, however, on its being well-typed which is why we
+need to consider types now.
+
+The zero-order types are given by the following grammar.
+
+A ::= N | 3 | L(A) | T(A) | A1 \Omega  A2 | A1 + A2
+Here 3 denotes the resource type, L(A) and T(A) stand for lists and trees with entries
+of type A, respectively; A1 \Omega  A2 is the type of pairs with first component of type A1 and
+second component of type A2. The type A1 + A2, finally, is the disjoint union of A1 and
+A2.
+
+A first-order type is an expression of the form T = (A1, . . . , An)!B where A1 . . . An
+and B are zero-order types.
+
+A signature \Sigma  is a finite function from identifiers (thought of as function symbols) to
+first-order types.
+
+A typing context \Gamma  is a finite function from identifiers (thought of as parameters) to
+zero order types; if x 62 dom(\Gamma ) then we write \Gamma , x:A for the extension of \Gamma  with x 7! A.
+More generally, if dom(\Gamma ) " dom(\Delta ) = ; then we write \Gamma , \Delta  for the disjoint union of
+\Gamma  and \Delta . If such notation appears in the premise or conclusion of a rule below it is
+implicitly understood that these disjointness conditions are met. We write e[x/y] for the
+term obtained from e by replacing all occurrences of the free variable y in e by x. We
+consider terms modulo renaming of bound variables.
+
+10
+
+Types not including L(-), T(-), 3 are called heap-free, e.g. N and N \Omega  N are heap-free.
+Let \Sigma  be a signature. The typing judgement \Gamma  `\Sigma  e : A read "expression e has type A
+in typing context \Gamma  and signature \Sigma " is defined by the following rules.
+
+x 2 dom(\Gamma )
+\Gamma  `\Sigma  x : \Gamma (x) (Var)
+
+\Sigma (f ) = (A1, . . . , An)!B \Gamma i `\Sigma  ei : Ai for i = 1 . . . n
+
+\Gamma 1, . . . , \Gamma n `\Sigma  f (e1, . . . , en) : B (Sig)
+
+\Gamma , x:A, y:A `\Sigma  e : B A heap-free
+
+\Gamma , x:A `\Sigma  e[x/y] : B (Contr)
+
+c a C integer constant
+
+\Gamma  `\Sigma  c : N (Const)
+
+\Gamma  `\Sigma  e1 : N \Delta  `\Sigma  e2 : N ? a C infix opn.
+
+\Gamma , \Delta  ` e1 ? e2 : N (Infix)
+
+\Gamma  `\Sigma  e : N \Delta  `\Sigma  e0 : A \Delta  `\Sigma  e00 : A
+
+\Gamma , \Delta  `\Sigma  if e then e0 else e00 : A (If)
+
+\Gamma  `\Sigma  e : A \Delta  `\Sigma  e0 : B
+
+\Gamma , \Delta  `\Sigma  e \Omega  e0 : A \Omega  B (Pair)
+
+\Gamma  `\Sigma  e : A \Omega  B \Delta , x:A, y:B `\Sigma  e0 : C
+
+\Gamma , \Delta  `\Sigma  match e with x \Omega  y)e0 : C (Split)
+
+\Gamma  `\Sigma  e : A
+\Gamma  `\Sigma  inl(e) : A + B (Inl)
+
+\Gamma  `\Sigma  e : B
+\Gamma  `\Sigma  inr(e) : A + B (Inr)
+
+\Gamma  `\Sigma  e : A + B
+\Delta , x:A `\Sigma  e0 : C \Delta , x:B `\Sigma  e00 : C
+
+\Gamma , \Delta  `\Sigma  match e with inl(x))e0|inr(x))e00 : C (Sum-Elim)
+
+11
+
+\Gamma  `\Sigma  nil : L(A) (Nil)
+\Gamma d `\Sigma  ed : 3 \Gamma h `\Sigma  eh : A \Gamma t `\Sigma  et : L(A)
+
+\Gamma d, \Gamma h, \Gamma t `\Sigma  cons(ed, eh, et) : L(A) (Cons)
+
+\Gamma  `\Sigma  e : L(A)
+\Delta  `\Sigma  enil : B
+\Delta , d:3, h:A, t:L(A) `\Sigma  econs : B
+
+\Gamma , \Delta  `\Sigma  match e with nil)enil|cons(d, h, t))econs : B (List-Elim)
+
+\Gamma  `\Sigma  e : A
+\Gamma  `\Sigma  leaf(e) : T(A) (Leaf)
+
+\Gamma d1 `\Sigma  ed1 : 3 \Gamma d2 `\Sigma  ed2 : 3 \Gamma a `\Sigma  ea : A
+
+\Gamma l `\Sigma  el : T(A) \Gamma r `\Sigma  er : T(A)
+
+\Gamma d1, \Gamma d2, \Gamma a, \Gamma l, \Gamma r `\Sigma  node(ed1, ed2, ea, el, er) : T(A) (Node)
+
+\Gamma  `\Sigma  e : T(A) \Delta , a:A `\Sigma  eleaf : B
+\Delta , d1:3, d2:3, a:A, l:T(A), r:T(A) `\Sigma  enode : B
+
+\Gamma , \Delta  `\Sigma  match e with leaf(a))eleaf|node(d1, d2, a, l, r))enode : B (Tree-Elim)
+
+Remarks The symbol ? in rule Infix ranges over a set of binary infix operations such
+as +, - ,/ , *, <=, ==, . . . We may include more such operations and also other base
+types such as floating point numbers or characters.
+
+The constructs involving match bind variables.
+Application of function symbols or operations to their operands is linear in the sense
+that several operands must in general not share common free variables. This is because of
+the implicit side condition on juxtaposition of contexts mentioned above. In view of rule
+Contr, however, variables of a heap-free type may be shared and moreover the same free
+variable may appear in different branches of a case distinction as follows e.g. from the form
+of rule If. Here is how we typecheck x + x when x:N. First, we have x:N ` x : N and
+y:N ` y : N by Var. Then x:N, y:N ` x+y : N by Infix and finally x:N ` x+x : N by rule
+Contr. It follows by standard type-theoretic techniques that typechecking for this system
+is decidable in linear time. More precisely, we have a linear time computable function which
+given a context \Gamma , a term e, and a type A either returns a minimal subcontext \Delta  of \Gamma  such
+that \Delta  ` e : A or returns "failure" in the case where no such \Gamma  ` e : A does not hold. This
+function can be defined by primitive recursion over e.
+
+The restriction that only variables of heap-free type may be shared may seem overly
+restrictive in view of the fact that not all accesses to heap-allocated data actually modifies
+
+12
+
+it. In future work we will propose a refinement of the above type system which distinguishes
+between destructive and "read-only" uses of a variable. The issues involved are, however,
+orthogonal to the ones studied in this paper and are sufficiently complicated to warrant a
+separate publication.
+
+For the moment we can comfort the worried reader that in many cases the effect of such
+a read-only typing discipline can be simulated by returning the argument. For example,
+rather than writing, e.g., a function f : (L(N))!N which returns the first element of
+an integer list (and 0 when applied to the empty list) we would write a function g :
+(L(N))!N \Omega  L(N) which return both the first element and the list itself for subsequent use.
+
+Programs A program consists of a signature \Sigma  and for each symbol
+
+f : (A1, . . . , An)!B
+contained in \Sigma  a term ef such that
+
+x1:A1, . . . , xn:An `\Sigma  ef : B
+
+3.2 Set-theoretic interpretation
+In order to specify the purely functional meaning of programs we introduce a set-theoretic
+interpretation as follows: types are interpreted as sets by
+
+[[N]] = Z
+[[3]] = {0}
+[[L(A)]] = finite lists over [[A]]
+[[T(A)]] = binary [[A]]-labelled trees
+[[A \Omega  B]] = [[A]] * [[B]]
+[[A + B]] = {inl(a) | a 2 [[A]]} [ {inr(b) | b 2 [[B]]}
+
+To each program (\Sigma , (ef )f2dom(\Sigma )) we can now associate a mapping ae such that ae(f ) is
+a partial function from [[A1]] * . . . [[An]] to [[B]] for each f : (A1, . . . , An)!B.
+
+This meaning is given in the standard fashion as the least fixpoint of an appropriate
+compositionally defined operator, as follows.
+
+A valuation of a context \Gamma  is a function j such that j(x) 2 [[\Gamma (x)]] for each x 2 dom(\Gamma );
+a valuation of a signature \Sigma  is a function ae such that ae(f ) 2 [[\Sigma (f )]] whenever f 2 dom(\Sigma ).
+
+To each expression e such that \Gamma  `\Sigma  e : A we assign an element [[e]]j,ae 2 [[A]] [ {?}
+in the obvious way, i.e. function symbols and variables are interpreted according to the
+valuations; basic functions and expression formers are interpreted by the eponymous settheoretic operations, ignoring the arguments of type 3 in the case of constructor functions.
+The formal definition of [[-]]j,ae is by induction on terms.
+
+13
+
+Here are a few representative clauses.
+
+[[x]]j,ae = j(x)
+[[f (e1, . . . , en)]]j,ae = ae(f )([[e1]]j,ae, . . . , [[en]]j,ae)
+[[cons(e1, e2, e3)]]j,ae = [[e2]]j,ae :: [[e3]]j,ae
+[[match e with leaf(x))e1|node(d1, d2, x, l, r))e2]]j,ae
+
+= [[e1]]j[x7!a],ae
+when [[e]]j,ae = leaf(a) and
+= [[e2]]j[d17!0,d27!0,x7!a,l7!u,r7!v],ae
+when [[e]]j,ae = node(a, u, v)
+
+A program (\Sigma , (ef )f2dom(\Sigma )) is interpreted as the least valuation ae such that
+
+ae(f )(v1, . . . , vn) = [[ef ]]ae,j
+where j(xi) = vi, for any f 2 dom(\Sigma ).
+
+We stress that this set-theoretic semantics does not say anything about space usage.
+Its only purpose is to pin down the functional denotations of programs so that we can
+formally state what it means to implement a function. Accordingly, the resource type is
+interpreted as a singleton set and \Omega  product is interpreted as cartesian product.
+
+It will be our task to show that the malloc()-free interpretation of LFPL is faithful
+with respect to the set-theoretic semantics. Once this is done, the user of the language can
+think entirely in terms of the semantics as far as extensional verification and development
+of programs is concerned. In addition, he or she can benefit from the resource bounds
+obtained from the interpretation but need not worry about how these are guaranteed.
+
+3.3 Examples
+Reverse:
+
+rev aux : (L(N), L(N))!L(N)
+reverse : (L(N))!L(N)
+erev aux(l, acc) = match l with
+
+nil)acc|
+
+cons(d, h, t))rev aux(t, cons(d, h, acc))
+ereverse(l) = rev aux(l, nil)
+
+14
+
+Insertion sort
+
+insert : (3, N, L(N))!L(N)
+sort : (L(N))!L(N)
+einsert(d, a, l) = match l with
+
+nil)nil|
+
+cons(d0, b, t))if a <= b
+
+then cons(d, a, cons(d0, b, t))
+else cons(d, b, insert(d0, a, t))
+esort(l) = match l with
+
+nil)nil|
+
+cons(d, a, t))insert(d, a, sort(t))
+
+Breadth-first search
+
+snoc : (3, L(T(N)), T(N))!L(T(N))
+breadth : (L(T(N)))!L(N)
+esnoc(d, l, t) = match l with
+
+nil)cons(d, t, nil)|
+cons(d0, t0, q))cons(d0, t0, snoc(d, q, t))
+ebreadth(q) = match q with
+
+nil)nil|
+cons(d, t, q) = match t with
+
+leaf(a))cons(d, a, breadth(q))
+node(d1, d2, a, l, r))cons(d, a, breadth(snoc(d2, snoc(d1, q, l), r)))
+
+Other examples we have tried out include quicksort, treesort, and the Huffman algorithm.
+Remark 3.1 It can be shown that all definable functions are non size-increasing, e.g., if
+f : (L(N))!L(N) then, semantically, |f (l)| <= |l|. This would not be the case if we would
+omit the 3 argument in cons, even if we keep linearity. We would then, for example, have
+the function f (l) = cons(0, l) which increases the length. The presence of such a function
+in the body of a recursive definition gives rise to arbitrarily long lists.
+
+4 Compilation into C
+Our aim is to compute the meanings of programs by malloc()-free C-programs.
+
+Let a program P = (\Sigma , (ef )f2dom(\Sigma )) be given. Let types(P ) be the (finite) set of zeroorder types mentioned in P . To each A 2 types(P ) we assign a unique identifier *(A).
+Next, for each A 2 types(P ) we introduce a piece of code [[A]]C defining a C type *(A) and
+some functions (e.g. constructors and destructors) associated with A.
+
+The code [[3]]C is: typedef void * *(3);
+The code [[N]]C is:
+
+15
+
+typedef int *(N);
+The code [[A \Omega  B]]C is:
+
+typedef struct {
+
+*(A) fst;
+*(B) snd;}
+*(A \Omega  B);
+
+followed by *(A \Omega  B) *(A \Omega  B) pair
+
+(*(A) fst, *(B) snd){
+
+*(A \Omega  B) res;
+res.fst = fst;
+res.snd = snd;
+return res;}
+
+The code [[A + B]]C is:
+
+[[A + B]]C =
+typedef struct {
+
+kind t kind;
+union {
+
+*(A) inl;
+*(B) inr;}
+body;}
+*(A + B);
+
+followed by *(A + B) *(A + B) inl(*(A) x){
+
+*(A + B) res;
+res.kind = INL;
+res.body.inl = x;
+return res; }
+
+*(A + B) *(A + B) inr(*(B) x){
+
+*(A + B) res;
+res.kind = INR;
+res.body.inr = x;
+return res; }
+
+The code [[L(A)]]C is:
+
+typedef struct {
+
+kind t kind;
+*(A) hd;
+void * tl;}
+*(L(A));
+
+*(L(A)) *(L(A)) nil(void){
+
+*(L(A)) res;
+res.kind = NIL;
+return res;}
+
+*(L(A)) *(L(A)) cons
+(*(3) d, *(A) hd, *(L(A)) tl){
+
+*(L(A)) res;
+res.kind = CONS;
+res.hd = hd;
+*(*(L(A)) *)d = tl;
+res.tl = d;
+return res;}
+
+followed by typedef struct {
+
+kind t kind;
+*(A) hd;
+*(L(A)) tl;
+*(3) d;}
+*(L(A)) destr t;
+
+*(L(A)) destr t *(L(A)) destr
+(*(L(A)) l){
+
+*(L(A)) destr t res;
+res.kind = l.kind;
+if(res.kind = CONS) {
+
+res.hd = l.hd;
+res.d = (void *)l.tl;
+res.tl = *l.tl;}
+
+return res;}
+
+The code [[T(A)]]C is:
+
+16
+
+typedef struct {
+
+kind t kind;
+*(A) label;
+void * left;
+void * right;}
+*(T(A));
+*(T(A)) *(T(A)) leaf
+(*(A) label){
+
+*(T(A)) res;
+res.kind=LEAF;
+res.label=label;
+return res;}
+
+*(T(A)) *(T(A)) node
+(*(3) d1, *(3) d2, *(A) label,
+
+*(T(A)) left, *(T(A)) right){
+*(T(A)) res;
+res.kind = NODE;
+res.label = label;
+*(*(T(A)) *)d1 = left;
+*(*(T(A)) *)d2 = right;
+res.left = d1;
+res.right = d2;
+return res;}
+
+typedef struct {
+
+kind t kind;
+*(A) label;
+*(3) d1, d2;
+*(T(A)) left, right; } *(T(A)) destr t;
+
+*(T(A)) destr t *(T(A)) destr
+(*(T(A)) t){
+
+*(T(A)) destr t res;
+res.label = t.label;
+res.kind = t.kind;
+if(res.kind == NODE) {
+
+res.d1 = (*(3))t.left;
+res.d2 = (*(3))t.right;
+res.left = *(*(T(A)) *)t.left;
+res.right = *(*(T(A)) *)t.right;}
+
+return res; }
+
+We define [[types(P )]]C as the declaration
+
+typedef enum {INL, INR, NIL,
+
+CONS, LEAF, NODE} kind_t;
+
+followed by the declarations [[A]]C for A 2 types(P ) ordered in such a way that [[types(P )]]C
+is valid C code (this means that if type A occurs as a subexpression in type B then [[A]]C
+must occur before [[B]]C.)
+
+To each declaration f : (A1, . . . , An)!B in \Sigma  we associate a prototype [[f ]]C given by
+*(B) f (*(A1) x1, . . . , *(An) xn)
+
+17
+
+The interpretation of the signature [[\Sigma ]]C is given as the concatenation of [[f ]]C; (note
+the semicolon) for f 2 dom(\Sigma ).
+
+A C-valuation of a context \Gamma  is a finite function mapping identifiers in dom(\Gamma ) to
+syntactically correct C-expressions.
+
+To each expression \Gamma  `\Sigma  e : B and C-valuation oe satisfying \Gamma  we associate a C expression
+[[e]]Coe of type *(B). The definition will rely on the presence of certain C variables needed to
+store intermediate results. When we write something like "where *(A) p fresh" we mean
+that p should be a variable of type *(A) which is not used anywhere else in [[e]]Coe. This could
+be formalised by defining [[e]]Coe as a pair hV, Di where V maps C-valuations to C expressions
+and where D maps sequences of variable declarations to sequences of variable declarations
+in such a way that D(s) always contains s. We refrain, however, from such a formalisation
+to reduce notational clutter.
+
+The definition of [[e]]Coe is by induction on typing derivations of well-typed expressions.
+Recall the following usage of the comma operator in C which allows one to simulate a
+functional "let": an expression of the form (x=exp1,exp2) is evaluated by first assigning
+the value of exp1 to the variable x and then evaluating exp2 (which may involve x). Unlike
+in the case of "let" the variable x must have been declared beforehand.
+
+[[x : A]]Coe = oe(x)
+
+[[f (e1, . . . , en) : A]]Coe = f ([[e1]]Coe, . . . , [[en]]Coe)
+[[c : N]]Coe = c
+[[e1 ? e2 : N]]Coe = ([[e1]]Coe ? [[e2]]Coe)
+[[if e then e0 else e00 : A]]Coe = ([[e]]Coe ? [[e0]]Coe : [[e00]]Coe)
+
+[[e \Omega  e0 : A \Omega  B]]Coe = *(A \Omega  B) pair([[e]]Coe, [[e0]]Coe)
+[[match e with x \Omega  y)e0]]Coe = (p=[[e]]Coe,[[e0]]Coe0)
+
+where oe0 = oe[x 7! p.fst][y 7! p.snd]
+where e : P and *(P ) p is fresh.
+
+[[inlA,B(e) : A + B]]Coe = *(A + B) inl([[e]]Coe)
+[[inrA,B(e) : A + B]]Coe = *(A + B) inr([[e]]Coe)
+
+18
+
+[[match e with inl(x))e0|inr(x))e00 : C]]Coe =
+
+([[e]]Coe.kind==INL ?
+
+[[e0]]Coe[x7![[e]]Coe.body.inl] :
+
+[[e00]]Coe[x7![[e]]Coe.body.inr])
+
+[[nilA : L(A)]]Coe = *(L(A)) nil()
+[[cons(ed, eh, et)]]Coe = *(L(A)) cons([[ed]]Coe,[[eh]]Coe,[[et]]Coe)
+[[match e with nil)enil|cons(d, h, t))econs : B]]Coe =
+
+(p=*(L(A)) destr([[e]]Coe),p.kind==NIL ? [[enil]]Coe : [[econs]]Coe0 )
+where oe0 = oe[d 7! p.d, h 7! p.hd, t 7! p.tl]
+and *(L(A)) destr t p is fresh
+
+[[leaf(e) : T(A)]]Coe = *(T(A)) leaf([[e]]Coe)
+[[node(ed1, ed2, ea, el, er)]]Coe =
+
+*(T(A)) node([[ed1]]Coe, [[ed2]]Coe,[[ea]]Coe,[[el]]Coe,[[er]]Coe)
+
+[[match e with leaf(a))eleaf|node(d1, d2, a, l, r))enode : B]]Coe =
+
+(p=*(L(A)) destr([[e]]Coe),p.kind==LEAF ? [[eleaf]]Coe[a7!p.label] :
+
+[[enode]]Coe[d17!p.d1,d27!p.d2,a7!p.label,l7!p.left,r7!p.right])
+where *(T(A)) destr t p is fresh
+
+The interpretation [[P ]]C of the program P = (\Sigma , (ef )f2dom(\Sigma )), finally, is obtained as the
+concatenation of the following blocks:
+
+1. the interpretation of the types: [[types(P )]]C,
+2. the function prototypes: [[\Sigma ]]C,
+3. for each f 2 dom(\Sigma ) a function definition
+
+[[f ]]C {
+
+DECL(e)
+return [[e]]C[x17!x1,...x17!x1];}
+
+where DECL(e) consists of all the variable declarations which have occurred in the
+definition of [[e]]C[x17!x1,...x17!x1].
+
+19
+
+We state the following type-correctness property which may be proved by induction on
+typing derivations.
+
+Lemma 4.1 If \Gamma  `\Sigma  e : A and oe(x) is a C-expression of type *(\Gamma (x)) for each x 2 dom(\Gamma )
+then [[e]]Coe is a C-expression of type *(A) when it appears after the declarations [[types(P )]]C
+and [[\Sigma ]]C and DECL(e).
+
+It follows that the interpretation of a program is a legal C program which implements
+functions of the same type as the ones mentioned in the signature.
+
+4.1 Correctness of the translation
+We will now show that the translation is correct in the sense that the translation of a program computes the program's set-theoretic semantics under some reasonable assumptions
+on the semantics of C.
+
+Here we face the problem that C does not have a formally defined semantics and if it
+had it would be fairly complex. We could of course replace C with an artificial language or
+an abstract machine, but this would mean that we would have to re-define our translation
+and the question what this artificial language has to do with the translation into C must
+again be answered informally.
+
+For these reasons, we have decided to opt for a semi-formal proof based on some reasonable assumptions on the semantics of C which we now outline.
+
+4.2 Informal semantics of C
+We view addresses as integers and write L for the set of integers when used as addresses.
+
+We assume a set S of stack values comprising integers, heap addresses, as well as records
+consisting of stack values. Records may be understood as finite functions from identifiers
+to stack values. For simplicity, we view unions as records. We use dot notation to access
+components of records.
+
+For each C type A we have a subset of the stack values corresponding to that type.
+E.g. a stack value of type list t would be a 3-tuple consisting of an integer (the kind),
+another integer (the head), and an address (a pointer to the tail). Of course, in the case
+of an empty list (kind field equal to NIL) these latter entries are garbage.
+
+We assume for each C type A an integer sizeof(A) and a bijection OEA between the
+stack values of type A and sizeof(A)-tuples of integers.
+
+A heap configuration H is a function from L to integers. We write H for the set of
+heap configurations. If H is a heap configuration, h is an address, and A is a C type, then
+we define the stack value of type A pointed to by h in H, written HA(h), by
+
+HA(h) = OE-1A (H(h), H(h + 1), . . . , H(h + sizeof(A) - 1))
+If s is a stack value of type A and H is a heap configuration and h is an address then we
+define a new heap configuration H[h 7!A s] as the heap configuration which contains the
+
+20
+
+components of OEA(s) at addresses h, h + 1, . . . , h + sizeof(A) - 1 and is like H elsewhere.
+
+H[h 7!A s](h + i) = OEA(s)i, when 0 <= i < sizeof(A)
+H[h 7!A s](h0) = H(h0), when h0 62 {h, . . . , h + sizeof(A) - 1}
+
+The semantics of statements and expressions is always relative to a runtime environment
+mapping free program variables to stack values of appropriate type and also depends implicitly on prior function definitions. In a given runtime environment the semantics of a
+statement is a partial function from heap configurations to heap configurations. For example, the semantics of the statement *(A *)h = s; is the function sending H to H[h 7!A s]
+assuming that h, s are the stack values associated by the runtime environment with the
+variables h, s.
+
+The semantics of an expression in a given runtime environment is a partial function
+mapping heap configurations to pairs of stack values and heap configurations. For example,
+the semantics of the expression *(A *)h is the function mapping H to HA(h).
+
+The semantics of an n-ary function is independent of the runtime environment (if we
+disregard global variables) and consists of a partial function H * Sn + H * S.
+
+For example, let us apply the ternary function cons from the Introduction to heap
+configuration H and arguments d, h, t where d is an address, h is an integer, t is a stack
+value of type list t. The result of this will be the stack value of type list t whose
+kind field is CONS, whose hd field is h and whose tl field is d; the resulting new heap
+configuration is H[d 7!list t t].
+
+As usual, partiality arises from nontermination.
+
+4.3 The correctness theorem
+For the rest of this section we fix a program P = (\Sigma , (ef )f2dom(\Sigma )).
+Definition 4.2 For each zero-order type A occurring in P the set V(A) is given by the set
+of pairs (v, R) where v is a C-stack-value of type *(A) (under the definitions [[types(P )]]C)
+and R is a region in the heap (a set of addresses). We use the symbol ] to denote union
+of disjoint sets.
+
+For each heap configuration H and zero-order type A occurring in P we define a relation
+flHA ` V(A) * [[A]] inductively as follows:
+
+* (n, ;) flHN n0, if n = n0,
+
+* (h, R) flH3 0, if R = {h, h + 1, . . . , h + M - 1} where M = max{sizeof(*(A)) | A 2
+
+types(P )} is the size of the largest type occurring in P ,
+
+* (v, R) flHA\Omega B (a, b) if R = R1 ] R2 and (v.fst, R1) flHA a and (v.snd, R2) flHB b,
+
+* (v, R) flHA+B inl(a) if v.kind = INL and (v.body.inl, R) flHA a,
+
+* (v, R) flHA+B inr(b) if v.kind = INR and (v.body.inr, R) flHB b,
+
+21
+
+* (v, ;) flHL(A) nil if v.kind = NIL,
+
+* (v, R) flHL(A) cons(h, t), if v.kind = CONS and R = Rd ] Rh ] Rt and (v.tl, Rd) flH3 0
+
+and (v.hd, Rt) flHA h and (H*(L(A))(v.tl), Rt) flHL(A) t,
+
+* (v, R) flHT(A) leaf(a) if v.kind = LEAF and (v.label, R) flHA a,
+
+* (v, R) flHT(A) node(a, l, r) if v.kind = NODE and R = Rd1 ] Rd2 ] Ra ] Rl ] Rr
+
+and (v.left, Rd1) flH3 0 and (v.right, Rd2) flH3 0 and (v.label, Ra) flHA a and
+(H*(T(A))(v.left), Rl) flHT(A) l and (H*(T(A))(v.right), Rr) flHT(A) r.
+
+\Lambda 
+
+Notice that whenever A is heap-free and (v, R) flHA a for some a then R = ; and H is
+irrelevant.
+
+Theorem 4.3 Assume the following:
+
+* a well typed expression \Gamma  `\Sigma  e : A involving only the types in P ,
+
+* for each x 2 \Gamma  a value (vx, Rx) 2 V(\Gamma (x)) such that Rx " Ry = ; whenever x 6= y,
+
+* a heap configuration H,
+
+* a set-theoretic valuation j of \Gamma  such that (vx, Rx) flH\Gamma (x) j(x) for each x 2 dom(\Gamma ),
+Let ae be the set-theoretic interpretation of P .
+
+Then the evaluation of [[e]]C[x7!x|x2 dom(\Gamma )] in heap configuration H and runtime environment which maps x 2 dom(\Gamma ) to stack value vx and interprets function calls according to
+[[P ]]C will either not terminate or result in a C stack value v and heap configuration H 0
+such that (v, R) flH0A [[e]]j,ae for some subset R ` Ux2dom(\Gamma ) Rx and moreover the part of the
+heap outside of Ux2dom(\Gamma ) Rx will be left unaffected by the evaluation, i.e., H 0(h) = H(h)
+for h 62 Ux2dom(\Gamma ) Rx.
+
+Proof. Induction on the lexicographic product of evaluation time (if desired formalised
+using the operational semantics of C as well) and length of typing derivations with second
+priority. This second factor is needed only to cater for rule Contr.
+
+With all the previous definitional apparatus the proof itself is straightforward. We show
+four representative cases.
+
+Suppose that the last typing rule applied was Pair. Then A = A1 \Omega  A2 and e = e1 \Omega  e2
+and \Gamma  = \Gamma 1, \Gamma 2 and the induction hypothesis applies to \Gamma i ` ei : Ai for i = 1, 2. This
+subdivision of contexts partitions our heap Ux2dom(\Gamma ) Rx into two portions Ux2dom(\Gamma i) Rx
+
+for i = 1, 2 in which the computations of [[e1]]Coe1 and [[e2]]Coe2 take place. Accordingly, these
+can be carried out one after the other without interfering which each other or destroying
+each others results so that -- without any further heap operations -- the respective results
+can be put together to form the result of [[e]]Coe.
+
+22
+
+Now suppose that the last rule applied was Cons. Again, the computations of the
+subexpressions are carried out in disjoint parts of the heap; the results of the computation
+will also point to disjoint parts of the heap by the induction hypothesis. Therefore, we can
+put them together to form a valid list value.
+
+Suppose that the last rule applied was Sig, i.e., e = f (e1, . . . , en). Suppose furthermore,
+that \Gamma f flH ef : B. The induction hypothesis applied to ei and an appropriate splitting of
+j similar to the case \Omega  yields an environment jf for \Gamma f . Applying the induction hypothesis
+to [[ef ]]Cjf yields the result. Notice that since ef may itself contain calls to f we cannot rely
+on induction on typing derivations alone, but also need to induct on evaluation time.
+
+Finally, consider rule Contr. We want to apply the induction hypothesis with Rx =
+Ry = Rx. In general, this would not be possible since Rx " Ry 6= ;. In the case where
+the type A of the variables x, y is heap-free, we have Rx = Ry = ; and hence Rx, Ry are
+disjoint as required. \Lambda 
+
+It follows by specialising to the defining expressions ef that a program computes its
+set-theoretic interpretation.
+
+5 Expressivity
+In a certain trivial sense LFPL is Turing complete because every partial recursive function
+can be represented as a function of type (N) ! N. Of course, this is unrealistic, as the
+C-type int only ranges over 32 bit integers (at the time of writing!). In another extreme
+sense the system is no more powerful than a finite-state machine, since in a real computer
+even stack and heap are finite.
+
+However, it appears to be a reasonable abstraction to view the type N as finite, e.g., to
+consist of 32 bit words (or indeed to replace it by a type of booleans) and to view stack and
+heap as potentially infinite (unbounded). This means that unbounded input data must be
+presented using a heap-allocated type such as L(N). In this case, we have the following
+expressivity result:
+
+Theorem 5.1 Let f : N ! N be a non size-increasing function, i.e., f (|x|) <= |x| where|
+
+x| = dlog2(x + 1)e. The following are equivalent:
+
+* f is a computable in linear space (linear in the length of the input).
+
+* There exists a tail-recursive program containing a symbol f : (L(N))!L(N) such that
+
+[[f]](u(x)) = u(f (x)) when u : N ! {0, 1}* is a reasonable encoding of natural numbers
+as lists of 0s and 1s.
+
+Proof. If f (x) is computable in space cn where n = |x| then we use the type T =
+L(N \Omega  . . . \Omega  N) with c factors to store memory configurations. We obtain f by iterating
+a one-step function of type (T )!T and composing with an initialisation function of type
+
+23
+
+(L(N))!T and an output extraction function of type (T )!L(N) all of which are readily
+seen to be implementable in LFPL.
+
+For the other direction we simulate computations in LFPL on a space-bounded Turing
+machine which operates on an encoding of the heap using an algebraic notation for data
+structures. For example a binary tree labelled 0 with leaves labelled 1 and 2 might be
+represented as the string N 0L1L2. It is easy to see that the size of this encoding is linear
+in the size of the input.
+
+We note that the translation to C itself cannot be used to prove this direction. The
+reason is that each node requires space O(log(n) because under the assumption of a potentially infinite heap we must allow space O(log(n)) to store a pointer. \Lambda 
+
+In order to assess the expressive power of the full system we use the following result [7]
+due to Stephen Cook3 [7].
+
+Theorem 5.2 (Cook) The following are equivalent for a function f : N ! N
+
+i) f (x) is computable in time O(2c|x|) for some c,
+ii) f (x) is computable by a O(|x|)-space bounded Turing machine having as extra resource
+
+an unbounded stack.
+
+The "stack" can e.g. be formalised as a one side infinite tape undergoing the restrictions
+that all fields to the left of the read-write head must be blank.
+
+Theorem 5.3 Let f : N ! N be a non size-increasing function. f is representable in the
+sense of Theorem 5.1, i.e., with integers encoded as lists, if and only if f (x) is computable
+on a Turing machine in time O(2c|x|).
+
+Proof. For the "only if" direction we notice that we can evaluate arbitrary programs on
+a O(n) space-bounded Turing machine with unbounded stack using the encoding of heap
+contents described above and the usual encoding of general recursion as iteration with a
+stack. Cook's theorem then furnishes the result.
+
+For the "if" direction we assume an C2c|x| time-bounded Turing machine M computing
+f . For integers x, t, a with t (time) and a (address) below C2c|x| we introduce the function
+
+ss(x, t, a) = (x, t, a, q, b)
+where q is the state reached by M after t steps on input x and b is the symbol on the tape
+at position a after t steps on input x.
+
+Now, clearly, ss(x, t + 1, a) can be expressed in terms of ss(x, t, a - 1), ss(x, t, a), ss(x, t, a +
+1) thus giving rise to a definition in LFPL.
+
+Alternatively, we could use an encoding of stack computations as recursive functions
+and appeal again to Cook's theorem. \Lambda 
+
+3Cook's original result asserts more generally that Turing machines with unbounded stack and O(s(n))
+bounded tapes are equipotent to O(2cs(n)) time-bounded Turing machines provided that s(n) >= log(n).
+
+24
+
+6 Extensions
+Dynamic allocation As it stands there is no way to create a value of type 3, so in
+particular, it is not possible to create a non-nil constant of list type. The examples show
+that in order to define functions this is often not needed. Sometimes, however, dynamic
+allocation and deallocation may be required and to this end we can introduce functions
+new : ()!3 and disp : (3)!N whose interpretation is given by C-functions
+
+*(3) new(){
+
+return malloc(sizeof(T );}
+*(N) disp(*(3) d){
+
+free((T *)d);return 0;}
+
+where T is a union with one entry for each A 2 types(P ).
+
+An example, where this might come in useful is the definition of a function which
+arranges the labels of a tree in a list of lists containing one entry for each depth level of the
+tree. It is readily seen, that this requires extra space in the order of the depth of the tree
+which is best obtained dynamically. If this list of lists is subsequently flattened to compute
+the list of labels in breadth-first order then this space becomes available again and could
+be deallocated. Of course, programs involving new come with no guarantee on their space
+usage. Obtaining verifiable space bounds for programs involving this construct is left for
+future research.
+
+Nondestructive computation, I/O We can include functions print int : (N)!N
+and read int : ()!N with the obvious semantics. From these we can write recursive I/O
+functions for other datatypes.
+
+It is then advisable to type a list-printing function as of type (L(A))!L(A) so as to
+circumvent destruction. A similar typing should be used for other non destructive functions
+such as computing the length of a list, i.e., length : (L(A))!N \Omega  L(A), etc. A perhaps
+more convenient alternative would be a refined type system which allows one to express that
+a function does not destroy its argument. It appears that ideas from O'Hearn-ReynoldsTennent's SCI type system [22, 20] could be of use there.
+
+Polymorphism, higher-order functions We can extend the language with polymorphism (with two kinds of type variables ranging over zero- and first order types) and
+higher-order functions, both linear (written A ( B) and nonlinear (written !A ( B).
+Recursive functions would then be defined using a single constant
+
+rec : 8X.!(!X ( X) ( X
+where X ranges over first-order types.
+
+25
+
+The innermost ! signifies that more than one recursive call is allowed; the outermost
+! stipulates that the body of a recursively defined function must not depend on linear
+variables.
+
+To handle mutual recursion a slightly more complicated syntax involving a let rec
+construct is needed.
+
+It is then possible to compile every first-order term--even if it contains higher-order
+functions as subexpressions--into equivalent C-code, e.g., by fi-reducing all nonlinear applications and type applications and then applying the existing translation. The advantage of
+such an extension is that schematic programs such as append for arbitrary type or maplist
+for arbitrary function would need to be written only once.
+
+If we were to allow recursion with higher-order result type X not containing !4 then we
+would have to hold intermediate results of functional type (closures) in the heap. While
+the evaluation of linear such terms takes place in linear time and constant space the size
+of these terms in the course of a recursion is not bounded by the input. The complexitytheoretic strength of such a system is open. We remark, however, that if we limit recursion
+to structural recursion on lists and trees then the results in [10] guarantee in this case a
+polynomial bound on evaluation time (and space).
+
+Queues The program for breadth-first search could be made more efficient using queues
+with constant time enqueuing. In LFPL we can achieve this effect very easily by adding a
+new type former Q(A) which is interpreted as:
+
+typedef struct {
+
+*(L(A)) qu;
+*(L(A)) * end;}
+*(Q(A));
+
+We introduce (formally with typing rules) basic functions:
+
+nil : ()!Q(A)
+cons : (3, A, Q(A))!Q(A)
+snoc : (3, Q(A), A)!Q(A)
+append : (Q(A), Q(A))!Q(A)
+dequeue : (Q(A))!N + 3 \Omega  A \Omega  Q(A)
+
+The set-theoretic interpretation is given by [[Q(A)]] = [[L(A)]]. We have (v, H) flHQ(A) q iff
+(v.qu, H) flHL(A) q and v.end points to the end of v or equals NULL in case q = []. If desired
+this can be turned into a formal inductive definition.
+
+The semantics of dequeue is given by
+
+[[dequeue]]([]) = inl(0)
+[[dequeue]](a :: l) = inr(0, a, l)
+4Allowing recursion with arbitrary result type means that we can use nonlinear functions throughout
+
+and thus place no restriction whatsoever on our programs.
+
+26
+
+It should be clear from this how the basic functions associated with queues are interpreted
+and how the correctness proof extends.
+
+Notice that the linear typing allows us again to modify the data structure in place while
+allowing for equational reasoning.
+
+In a similar way we can provide other familiar data structures provided they admit an
+ADT-like functional interface.
+
+Tail recursion The type system does not impose any restriction on the size of the stack.
+If a bounded stack size is desired, all we need to do is restrict to a tail recursive fragment
+and translate the latter into iteration.
+
+More challenging would be some automatic program transformation which translates
+the existing (non-tail recursive) definition of breadth and similar functions into iterative
+code. To what extent this can be done systematically remains to be seen.
+
+Recursive types We can extend the type system and the compilation technique to
+arbitrary (even nested) first-order recursive types. To that end, we introduce (zero order)
+type variables and a new type former uX.A which binds X in A. Elements of uX.A would
+be introduced and eliminated using fold and unfold constructs
+
+\Gamma  `\Sigma  e : A[(3 \Omega  uX.A)/X]
+
+\Gamma  `\Sigma  fold(e) : uX.A (Fold)
+
+\Gamma  `\Sigma  e : uX.A
+\Gamma  `\Sigma  unfold(e) : A[(3 \Omega  uX.A)/X] (Unfold)
+
+This together with coproduct and unit types allows us to define lists and trees as recursive
+datatypes. Notice that this encoding would also charge two 3s for a tree constructor.
+Unfortunately, the type of queues mentioned above would still have to be introduced as a
+primitive. The definition of a generic syntax allowing one to specify such non-free datatypes
+is left to future research.
+
+The translation of a type uX.A would be obtained as the translation of the type A
+where the variable X is translated as void *. The definition of the auxiliary functions
+requires the definition of "functorial strength", i.e., a way of lifting a function X ! Y to
+a function A(X) ! A(Y ). Such construct can be readily obtained by induction on A.
+
+Additive rule for conditionals It is somewhat annoying that the LFPL type system
+insists that no variables be shared between guard and branches of a conditional. We will
+now discuss the implications of the following laxer typing rule which allows such sharing:
+
+\Gamma  `\Sigma  e : N \Gamma  `\Sigma  e0 : A \Gamma  `\Sigma  e00 : A
+
+\Gamma  `\Sigma  if e then e0 else e00 : A (If-Add)
+
+27
+
+This would allow us to use the program for insertion sort without changes for arbitrary
+(not necessarily heap-free) type of entries. Notice also that such typing rule would allow
+us to encode the recursive definition of the function ss from the proof of Cook's theorem
+directly.
+
+Unfortunately, the relatively straightforward translation of LFPL into C code does not
+carry over to programs typed with this more relaxed rule. Nevertheless, we can evaluate
+such programs on a linearly space bounded Turing machine with unbounded stack as
+follows. In order to evaluate a conditional expression if e then e0 else e00 where non-heap
+free variables are shared between e and the branches e0, e00 we first save on the stack a copy
+of the portion of the heap corresponding to the shared variables. Thereafter, we evaluate
+e which may work on this portion of the heap, possibly destroying its contents, but will
+eventually release it since its (heap-free) result value does not refer to the heap. We can
+then restore the old contents of the heap using the information saved previously on the
+stack and proceed to evaluate either e or e0 according to the outcome of e (which of course
+we should have stored in the finite control, i.e., a register, rather than on the stack). This
+demonstrates that the rule If-Add does not increase the expressive power of the system.
+
+One should note, however, that saving the content of the heap on the stack is a rather expensive operation and therefore use of the rule If-Add should be used with care, especially,
+when the program under consideration is otherwise tail recursive or can be transformed
+into one such and therefore does not use the stack much.
+
+7 Experiments
+A prototype version of the translation has been implemented by Nick Brown; an interactive
+version is accessible from the author's WWW page (www.dcs.ed.ac.uk/home/mxh).
+
+The C code thus resulting from the above example programs was then compared with
+equivalent functional programs written in Standard ML of New Jersey (110.0.6) and Objective Caml 3.00. While these functional programs would run slightly faster than the
+generated C-code they use about 10 times as much space. Quite surprisingly, however, native code generated with the optimising Objective Caml compiler OCAMLOPT ran faster
+and used even less space than the generated C-code.
+
+This seems to be due to clever use of caching on the one hand, and to the certain
+overhead in our translation (many function calls, unnecessary copying, recursion instead of
+iteration) which could be improved in a practical implementation tuned towards efficiency
+as opposed to clarity and compositionality.
+
+The benchmark chosen was an application of the abovedefined breadth-first traversal
+function to full binary trees of depths 12-15.
+
+Also the lazy functional language Clean slightly improves upon the generated C code
+(and OCAMLOPT!), however, due to lazyness the tree to be traversed is never laid out in
+the heap in full so that we are not really comparing like with like.
+
+I stress that these experiments are not meant to demonstrate the usefulness of the
+present approach as a new optimisation technique, but that the translated programs can
+
+28
+
+compete with state-of-the-art functional programming languages while guaranteeing static
+bounds on heap size and being evaluable without runtime garbage collection.
+
+8 Conclusion
+We have defined a linearly typed first-order language which gives the user explicit control
+over heap space in the form of a resource type.
+
+A translation of this system into malloc()-free C is given which in the case of simple
+examples such as list reversal and quicksort generates the usual textbook solutions with
+in-place update. (To strictly agree with "textbooks" we have to represent the empty list
+as a NULL pointer which as explained above we have not done for the sake of uniformity.)
+
+We have shown the correctness of this compilation with respect to a standard settheoretic semantics which disregards linearity and the resource type and demonstrated the
+applicability by a range of small examples.
+
+The main selling points of the approach are
+
+1. that it achieves in place update of heap allocated data structures while retaining the
+
+possibility of equational reasoning and induction for the verification and
+
+2. that it generates code which is guaranteed to run in a heap of statically determined
+
+size.
+
+This latter point should make the system interesting for applications where resources are
+limited, e.g. computation over the Internet, programming of smart cards and embedded
+systems. Of course further work, in particular an integration with a fully-fledged functional
+language and the possibility of allocating a fixed amount of extra heap space will be
+required. Notice, however, that this latter effect can already be simulated by using input
+of the form L(3 \Omega  A) as opposed to L(A).
+
+Also, a type inference system relieving the user from having to explicitly move around
+the 3-resource might be helpful although the present system has the advantage of showing
+the user in an abstract and understandable way where space is being consumed. And
+perhaps some programmers might even enjoy spending and receiving 3s.
+
+9 Related work
+While the idea of translating linearly typed functional code directly into C seems to be
+new there exist a number of related approaches aimed at controlling the space usage of
+functional programs.
+
+Tofte-Talpin's region calculus [23] tries to minimise garbage collection by dividing the
+heap into a list of regions which are allocated and deallocated according to a stack discipline. A type systems ensures that the deallocation of a region does not destroy data which
+is still needed; an inference system [24] generates the required annotations automatically
+for raw ML code.
+
+29
+
+The difference to the present work is not so much the inference mechanism (see above)
+but the fact that even with regions the required heap size is potentially unbounded whereas
+the present system guarantees that the heap will not grow. Also in place update does not
+take place in.
+
+Hughes and Pareto's system of sized types annotates list types with their length, e.g.
+the reversal function would get type 8n.Ln(A) ! Ln(A). While this system allows one to
+estimate the required heap and stack size it does not perform in place update either (and
+cannot due to the absence of linear types).
+
+In a similar vein Crary and Weirich [8] have given a type system which allows one to
+formalise and certify informal reasoning about time consumption of recursive programs
+involving lists and trees. Their language is a standard one and no optimisation due to
+heap space reuse is taken into account.
+
+The relationship between linear types and garbage collection has been recognised as
+early as '87 by Lafont [15], see also [11, 1, 25, 17] and [4] for a similar approach not based
+on the syntax of linear logic.
+
+But again, due to the absence of 3-types, these systems do not provide in-place update
+but merely deallocate a linear argument immediately after its use.
+
+This effect, however, is already achieved by traditional reference counting which may be
+the reason why linear functional programming hasn't really got off the ground, see also [6].
+While the runtime advantages of the present approach are also realised by state-of-the-art
+garbage collection techniques (see the above section on experiments) the distinctive novelty
+lies in the fact that one can guarantee bounded heap size and obtain a simple C program
+realising it which can be run on any machine or system supporting C.
+
+The type system itself is very similar to the system described by the author in [10]
+which in turn was inspired by Caseiro's analysis of recursive equations [5] and bears some
+remote similarity with Bounded Linear Logic [9]
+
+Mention should also be made of Baker's Linear LISP [2, 3] which bears some similarity
+to LFPL. It does not contain the resource type 3 or a comparable feature, thus it is not
+clear how the size of intermediate data structures is limited, cf. Remark 3.1. Similar ideas,
+without explicit mention of linearity are also contained in Mycroft's thesis [18]
+
+Mycroft and Sharp [19] have introduced a functional language which guarantees static
+memory bounds by restricting to tail-recursion and to stack allocated datatypes such as
+bytes, characters, and integers. They have found intriguing applications to hardware design.
+
+Remotely related works are [12, 21].
+
+Acknowledgement I would like to thank Samson Abramsky for helpful comments and
+encouragements, David Aspinall for proofreading and commenting, Neil Jones for pointing
+me to Cook's result and for encouragements, and Peter Selinger for spotting a shortcoming
+in an earlier version of this paper. Two anonymous referees made careful and detailed
+comments on presentation which have shaped this final version.
+
+30
+
+References
+
+[1] Samson Abramsky. Computational interpretations of linear logic. Theoretical Computer Science, 111:3-57, 1993.
+
+[2] Henry Baker. Lively Linear LISP--Look Ma, No Garbage. ACM Sigplan Notices,
+
+27(8):89-98, 1992.
+
+[3] Henry Baker. A Linear Logic Quicksort. ACM Sigplan Notices, 29(2):13-18, 1994.
+[4] E. Barendsen and S. Smetsers. Uniqueness typing for functional languages with graph
+
+rewriting semantics. Mathematical Structures in Computer Science, 6:579-612, 1996.
+
+[5] Vuokko-Helena Caseiro. Equations for Defining Poly-time Functions. PhD thesis,
+
+University of Oslo, 1997. Available by ftp from ftp.ifi.uio.no/pub/vuokko/0adm.
+ps.
+
+[6] J. Chirimar, C. Gunter, and J. Riecke. Reference counting as a computational interpretation of linear logic. Journal of Functional Programming, 6(2), 1995.
+
+[7] Stephen A. Cook. Linear-time simulation of deterministic two-way pushdown automata. Information Processing, 71:75-80, 1972.
+
+[8] K. Crary and S. Weirich. Resource bound certification. In Proc. 27th Symp. Principles
+
+of Prog. Lang. (POPL), pages 184-198. ACM, 2000.
+
+[9] J.-Y. Girard, A. Scedrov, and P. Scott. Bounded linear logic. Theoretical Computer
+
+Science, 97(1):1-66, 1992.
+
+[10] Martin Hofmann. Linear types and non size-increasing polynomial time computation.
+
+In Logic in Computer Science (LICS), pages 464-476. IEEE, Computer Society Press,
+1999.
+
+[11] S"oren Holmstr"om. A linear functional language. In Proceedings of the Workshop on
+
+Implemenation of Lazy Functional Languages. Chalmers University, G"oteborg, Programming Methodology Group, Report 53, 1988.
+
+[12] Paul Hudak and Chih-Ping Chen. Rolling your own mutable adt -- a connection
+
+between linear types and monads. In Proc. Symp. POPL '97, ACM, 1997.
+
+[13] J. Hughes and L. Pareto. Recursion and dynamic data structures in bounded space:
+
+towards embedded ML programming. In Proc. International Conference on Functional
+Programming (ACM). Paris, September '99., pages 70-81, 1999.
+
+[14] Kelley and Pohl. A book on C, third edition. Benjamin/Cummings, 1995.
+[15] Yves Lafont. The linear abstract machine. Theoretical Computer Science, 59:157-180,
+
+1988.
+
+31
+
+[16] Xavier Leroy. The Objective Caml System, documentation and user's guide. Release
+
+2.02. http://pauillac.inria.fr/ocaml/htmlman, 1999.
+
+[17] P. Lincoln and J. Mitchell. Operational aspects of linear lambda calculus. In Proc.
+
+LICS 1992, IEEE, 1992.
+
+[18] Alan Mycroft. Abstract interpretation and optimising transformations for applicative
+
+programs. PhD thesis, Univ. Edinburgh, 1981.
+
+[19] Alan Mycroft and Richard Sahrp. A Statically Allocated Parallel Functional Language
+
+. In Ugo Montanari et al., editor, Automata, languages, and programming (Proc.
+ICALP 2000), Lecture Notes in Computer Science 1853. Springer Verlag, 2000.
+
+[20] P. W. O'Hearn, M. Takeyama, A. J. Power, and R. D. Tennent. Syntactic control
+
+of interference revisited. In MFPS XI, conference on Mathematical Foundations of
+Program Semantics, volume 1 of Electronic Notes in Theoretical Computer Science.
+Elsevier, 1995.
+
+[21] Chris Okasaki. Purely Functional Data Structures. Cambridge University Press, 1998.
+[22] J. C. Reynolds. Syntactic control of interference. In Proc. Fifth ACM Symp. on Princ.
+
+of Prog. Lang. (POPL), 1978.
+
+[23] M. Tofte and J.-P. Talpin. Region-based memory management. Information and
+
+Computation, 132(2):109-176, 1997.
+
+[24] Mads Tofte and Lars Birkedal. Region inference algorithm. ACM Transactions on
+
+Programming Languages and Systems, 20(5):724-767, 1998.
+
+[25] D. Turner and P. Wadler. Operational interpretations of linear logic. Theoretical
+
+Computer Science, 227(1-2):231-248, 1999.
+
+32

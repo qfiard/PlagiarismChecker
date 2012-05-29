@@ -1,0 +1,1875 @@
+
+
+Type-Based Flow Analysis:
+From Polymorphic Subtyping to CFL-Reachability.
+
+Jakob Rehof Manuel F"ahndrich
+
+Microsoft Research
+One Microsoft Way, Redmond WA 98052
+
+frehof,mafg@microsoft.com
+
+Abstract
+We present a novel approach to scalable implementation of
+type-based flow analysis with polymorphic subtyping. Using
+a new presentation of polymorphic subtyping with instantiation constraints, we are able to apply context-free language
+(CFL) reachability techniques to type-based flow analysis.
+We develop a CFL-based algorithm for computing flow information in time O(n3), where n is the size of the typed
+program. The algorithm substantially improves upon the
+best previously known algorithm for flow analysis based on
+polymorphic subtyping with complexity O(n8). Our technique also yields the first demand-driven algorithm for polymorphic subtype-based flow-computation. It works directly
+on higher-order programs with structured data of finite type
+(unbounded data structures are incorporated via finite approximations), supports context-sensitive, global flow summarization and includes polymorphic recursion.
+
+1 Introduction
+Type-based program analyses have received much attention
+(see, e.g., [Hei95, PO95, Mos96, HM97, NNH99, FRD00b]).
+Attractive properties of such analyses include: they typically work directly on higher-order programs with structured datatypes, they provide a natural separation between
+the specification (type system) and implementation of the
+analysis, and standard techniques from type theory are applicable to reason about properties (e.g., soundness, completeness) of the analysis.
+
+Type-based flow analysis tracks the flow of values by annotating type structure with flow labels `, representing values at specific program points (see, e.g., [Mos96, NNH99]).
+Answering queries of the form "Does any value at program
+point `1 flow to program point `2" solves many static analysis problems such as finding potential pointer aliases, determining possible targets of indirect function calls, and delimiting storage escapement. This paper studies efficient
+techniques to answer such queries in the setting of typebased flow analysis with polymorphic subtyping. Based on
+the polymorphic type structure of the program, our analysis
+
+is context-sensitive, i.e., it avoids spurious flow between different calling contexts. Subtyping further enhances analysis
+precision by modeling a directional (non-symmetric) notion
+of value flow, see, e.g., [Hei95].
+
+While each of the features - polymorphism and subtyping - are established as practical components of type inference systems, their simultaneous combination in polymorphic subtyping is not: scaling up polymorphic subtype inference to even moderately realistic program sizes is an outstanding open problem. This paper presents a new attack on
+the scaling problem for subtyping-based polymorphic flow
+analysis.
+
+The main contributions of this paper are:
+
+ffl A novel presentation of polymorphic subtyping, using instantiation constraints (also known as semiunification constraints [Hen93]). Based on this presentation, we are able to apply Context-Free Language
+(CFL) Reachability [Yan90, RHS95, MR00] techniques
+to compute directional, context-sensitive flow information for higher-order programs in polymorphic subtyping systems (including polymorphic recursion).
+
+ffl Our resulting algorithm improves the asymptotic complexity of the best previously known algorithm [Mos96]
+based on polymorphic subtyping from O(n8) to O(n3),
+where n is the size of the typed program Programs are
+explixitly typed, and n measures the size of the program and the size of the explicit types in the program.
+In theory, n can be exponential in program size but is
+close to program size in practice [Mit96]).
+
+ffl Our results open the door to new implementation techniques for flow computation with polymorphic subtyping. First, by obviating the need to simplify and copy
+systems of subtyping constraints, our technique may
+circumvent one of the main scaling inhibitors for such
+systems. Second, our algorithm leads to demand-driven
+techniques, which, to our knowledge, have not been obtained before with polymorphic subtyping.
+
+In a previous paper [FRD00b] we have presented a flow
+analysis in polymorphic type systems based on instantiation
+constraints but without subtyping. The present paper provides a substantial generalization of [FRD00b] through the
+incorporation of subtyping.
+
+In order to keep the present paper within limits, some
+details and proofs are omitted. These can be found in
+[FRD00a].
+
+In the remainder of this introduction we describe the
+language framework we use for our flow analysis.
+
+o/ 2 Types
+
+o/ ::= int j o/ ! o/ j o/ \Theta  o/
+
+e 2 Terms
+
+e ::= x j n j (e1, e2) j *x:o/:e j e1 e2 j
+
+let f = e1 in e2 j fi j
+letrec f : o/ = e1 in e2 j
+if0 e0 then e1 else e2 j ssj e
+
+Figure 1: Object language
+` 2 Labels
+oe 2 Labeled Types
+
+oe ::= int` j oe !` oe j oe \Theta ` oe
+
+Figure 2: Annotated types
+1.1 Object language
+Figure 1 shows the language we use to illustrate our flow
+analysis. It is a higher-order functional language containing
+integers (n), pairs, lambda-abstractions, conditionals (testing for 0), recursive functions, and pair selection (ssj). Our
+language is typed using a standard monomorphic type system. Monomorphic types are ranged over by o/. The language distinguishes between *-bound variables x and let- or
+letrec-bound variables f. Our object language is explicitly
+typed, i.e., we assume that the type structure of programs
+is given in the form of type annotations on *- and letrecbound variables, written x : o/ and f : o/ , respectively. Uses
+of let- and letrec-bound variables fi are annotated with an
+instantiation site i, distinguishing all occurrences of such
+variables.
+
+1.2 Annotated types
+Since we are interested in flow, we will annotate type constructors with flow labels `, and we will allow labels on expressions, e`. Annotated types are written oe and are defined
+in Figure 2. Annotated types will be used as a technical
+device for performing flow analysis on programs of the object language shown in Figure 1, they do not belong to that
+language itself. Erasing all labels from an annotated type
+results in a monomorphic type of the object language. The
+reader should think of the flow label annotations as being
+superimposed on the types of the object language, and flow
+analysis will be specified later using a separate type system
+for assigning annotated types to programs. To distinguish
+between annotated types and the types of the object language, we sometimes refer to the latter as underlying types,
+and the type system of the object language is called the
+underlying type system.
+
+The underlying types of let- and letrec-bound variables
+are given monomorphic types in the underlying type system,
+but label annotations on types of let- and letrec-bound variables will be treated polymorphically by our flow analysis.
+We will allow polymorphic recursion [Myc84, Hen93] over
+flow labels, as found in [Mos96]. We will also allow our flow
+analysis to exploit subtyping relations over flow labels, written `1 ^ `2, to represent the fact that a value identified by
+
+let id = *x:int`1.x`2
+in
+
+((idi 0`3 )`4 , (idj 1`5)`6)
+end
+
+Figure 3: Example program e
+label `1 flows to the program point labeled `2, in the style of
+[Hei95, Mos96]. As in the case of polymorphism, subtyping
+belongs to the flow analysis framework and is not part of
+the object language.
+
+Each of the features - polymorphism and subtyping over
+flow labels - enhance the precision of type-based flow analysis [Hei95, Mos96], and when combined into one system we
+arrive at flow analysis based on polymorphic subtyping as
+studied in this paper. The polymorphic treatment of flow
+labels will allow a certain form of context-sensitivity (values
+only flow interprocedurally through well-matched call-return
+sequences of functions) and subtyping allows us to treat flow
+directionally (the fact that a value at `1 flows to `2 does not
+imply that a value at `2 flows to `1).
+
+The language- and analysis framework described above
+will be held fixed throughout most of the paper. However,
+in a later section (Section 6) we will indicate how our techniques can be extended to a language whose underlying type
+system is polymorphic.
+
+The remainder of this paper is organized as follows. Section 2 reviews problems in combining polymorphism and
+subtyping and sketches our solution. Section 3 presents
+polymorphic subtyping with instantiation constraints. Section 4 defines our flow relation based on CFL-reachability.
+Section 5 presents a cubic time algorithm for computing all
+flow queries. Section 6 shows that our techniques extend
+to polymorphic and recursive types in the underlying type
+structure. Section 7 discusses related work, and Section 8
+concludes.
+
+2 Flow analysis with polymorphic subtyping
+Scaling up type inference for polymorphism combined with
+subtyping remains a challenging problem. In this section,
+we first identify two major problems with current implementation techniques for flow analysis based on polymorphic subtyping (Section 2.1 and Section 2.2). In Section 2.3
+and Section 2.4 we then give an intuitive overview of our
+solution.
+
+We illustrate our techniques with a very simple example
+program e, as shown in Figure 3. We are interested in tracking the flow of constants 0 and 1 labeled with `3 and `5. We
+will do so by performing type inference over the annotated
+types in the program (our explanation will be intuitive, and
+the type system used will be precisely defined later).
+
+2.1 Problem 1: Constraint copying
+All previous work in polymorphic subtype inference is based
+on qualified polymorphic types. In our setting of flow analysis, a qualified polymorphic type has the form
+
+8~`:C ) oe
+In this type, quantification occurs over flow labels, and oe is
+an annotated type, which typically contains labels that are
+
+quantified. The component C is a set of captured subtyping
+constraints over flow labels of the form ` ^ `0, qualifying the
+
+type oe. Since C may contain quantified labels from ~`, such
+an approach gives rise to copies of the captured constraints
+at all instantiation sites for that type, as we will illustrate
+next.
+
+A standard 1 polymorphic constrained type (see, e.g.,
+[Smi94, TS96, Mos96]) for our example function id of Figure 3 is
+
+8`1`2:f`1 ^ `2g ) int`1 ! int`2
+In this typing, the constraint set f`1 ^ `2g captures the fact
+that any value (represented by `1) passed as argument to id
+flows to the result of the function (represented by `2).
+
+In a copy-based framework, program e is typed by copying
+the constraint set f`1 ^ `2g associated with id at each of
+the instantiation sites idi and idj. At instantiation site i,
+the label `1 on the domain type of id gets copied to the
+label `3, because `3 labels the actual argument 0 at call site
+i. The label `2 of the range type of id gets copied to the
+label `4, because `4 labels the result of the call. Because the
+type of id is constrained by `1 ^ `2, the constraint set as
+a whole gets copied into the set f`3 ^ `4g at site i. By a
+similar argument, the constraint set f`1 ^ `2g gets copied
+into f`5 ^ `6g at site j. After these steps we arrive at the
+standard polymorphic typing judgment for e
+
+f`3 ^ `4; `5 ^ `6g; ; ` e : int`4 \Theta  int`6 (1)
+Such a typing has four components, from left to right: a set
+of subtype (or flow) constraints, a type environment (here
+empty), a term and a type. From this typing we can read off
+interesting flow relations. For example, because `3 ^ `5 is a
+constraint in the type (1), we can conclude that the value 0
+(`3) flows to the first component of the resulting pair (`4).
+Similarly, we can see that the value 1 (`5) flows to the second
+(`6), as indicated by the constraint `5 ^ `6 in (1).
+
+Polymorphism over labels, here implemented via constraint copying, keeps the two instantiation sites apart,
+matching up a call site (e.g., idi 0`3) with its proper return
+(`4). This was achieved by making two distinct copies, during type inference, of the constraint set f`1 ^ `2g, one copy
+at instantiation site i, and another at site j. A monomorphic
+analysis, in contrast, typically predicts, imprecisely, that either value (`3 or `5) flows to either return point (`4 or `6).
+
+The seeming need to copy subtype constraint sets at every distinct instantiation site has been identified as a major problem, making it very difficult to scale polymorphic
+subtyping to large programs. 2 In particular, the problem
+has generated a significant amount of research on constraint
+simplification, which aims at compacting constraint sets before they are copied [FM89, Cur90, Kae92, Smi94, EST95,
+Mos96, Pot96, TS96, FA96, AWP97, Reh97, FF97]. It is
+unlikely that constraint simplification techniques alone will
+solve this problem, and complete simplification is a hard
+problem itself [Reh98, FF97].
+
+2.2 Problem 2: Demand-driven flow computation
+Constraint copying methods for polymorphic subtyping systems are not demand-driven [Mos96]. For instance, if we
+
+1Function id can be given a most general typing without any subtyping constraints, but we choose the present typing for illustrative
+purposes.
+
+2The small size of the constraint set in our toy example is illusory
+
+in practice, of course.
+
+only ask for the flow between `3 and `4 in our example program id, traditional methods still copy the constraint set
+f`1 ^ `2g into both call sites idi and idj, even though only
+the former copy is necessary to answer the question.
+
+A related, more subtle problem is that flow queries may
+originate at arbitrary program points. For example, we may
+ask which values globally flow into the formal parameter x
+of the function definition id (in our example, the answer is
+`3 and `5, since 0 is an actual parameter to id at call site i,
+and 1 is an actual parameter to id at site j). Because copying does not keep track of the source of constraint copies,
+it does not represent the flow of values between a polymorphic function and its instantiations. Recovering this information in the traditional framework has proven to be nontrivial [Mos96, FFA00], both in terms of computational expense and correctness, because it requires the entire typing
+derivation rather than merely the final typing judgement of
+the program. Furthermore, it is unclear how such techniques
+can naturally accommodate demand-driven versions.
+
+2.3 A new method based on instantiation constraints
+
+Both of the problems mentioned in Section 2.1 and 2.2 inhibit scalability of polymorphic subtype-based flow analysis.
+We tackle these problems by introducing a new presentation of polymorphic subtyping, based on instantiation constraints. Instantiation constraints were used in [FRD00b] to
+support scalable context-sensitive flow analysis. Here, we
+generalize the approach by incorporating subtyping, and, as
+we will see, this will significantly change the way flow computation is done. We refer to our system as POLYFLOWCFL.
+
+Instead of constrained types 8~`:C ) oe, POLYFLOWCFL
+uses standard quantified types of the form 8~`:oe, which are
+given meaning in combination with a global set of constraints. In POLYFLOWCFL, the term e from the example
+shown in Figure 3 receives a typing of the formae
+
+`1 _i\Xi  `3; `2 _i+ `4;
+`1 _j\Xi  `5; `2 _j+ `6 oe ; f`1 ^ `2g; ; ` e : oe (2)
+
+where oe = int`4 \Theta  int`6. A judgment in POLYFLOWCFL has
+five components, from left to right: a set of instantiation
+constraints I, a set of flow constraints C, a type environment
+(here empty), a term and a type.
+
+The instantiation constraints I explicitly represent the
+label substitutions 'i and 'j given by
+
+'i = f`1 7! `3; `2 7! `4g
+and
+
+'j = f`1 7! `5; `2 7! `6g
+These substitutions are used at instantiation sites i and j,
+respectively, to produce instances of id's type int`1 ! int`2.
+In the constraint set I, the substitution 'i is represented by
+the constraints `1 _i\Xi  `3; `2 _i+ `4, and 'j is represented
+
+by `1 _j\Xi  `5; `2 _j+ `6. In a constraint copying framework,
+'i and 'j are applied at sites i and j to copy the subtype
+constraint set f`1 ^ `2g associated with id, yielding f`3 ^
+`4g at site i and f`5 ^ `6g at site j. In our instantiation
+constraints, The indices i and j serve to keep substitutions
+at distinct instantiation sites apart.
+
+The crucial difference of POLYFLOWCFL to copy-based
+systems is that we avoid constraint copying altogether:
+
+ffl Instead of explicitly representing copies of the original
+
+constraint system (f`1 ^ `2g), only the substitutions
+necessary to create them are represented. The constraint copies are thereby implicitly given in terms of
+the original set (f`1 ^ `2g) and the instantiation constraints.
+
+Having addressed the copy-problem from Section 2.1, we
+now show how the flow at all instantiation sites is recoverable in a completely demand-driven fashion through the
+combination of flow and instantiation constraints. Suppose
+that we demand to know where `3 flows. Drawing flow constraint f`1 ^ `2g as a directed edge from `1 to `2 and drawing instantiation constraints `1 _i\Xi  `3; `2 _i+ `4 for site i as
+dotted edges, we recover the flow from `3 to `4 at instantiation site i by completing the following diagram, the lower
+dashed edge representing the "recovered" flow constraint:
+
+`1
+
+_i\Xi fflffl
+
+)) `
+
+2
+
+_i+fflffl
+
+`3 55U . i `4
+Label `3 represents the actual argument at call-site i and `4
+represents the result at call-site i. Intuitively, there is flow
+from `3 to `4 because the argument flows into the identity
+function id to the formal `1, within the identity function to
+the return value `2, and back out of the identity function
+to the result `4 at call site i. The flow is valid because the
+in-flow \Xi  and out-flow + agree on the instantiation site i.
+
+Note how the negative (\Xi ) instantiation edge `1 _i\Xi  `3
+represents the flow of an actual to a formal, and the positive
+(+) edge `2 _i+ `4 represents the flow of the result to the
+call-site i. The polarities p 2 f\Xi ; +g on instantiation edges
+indicate their flow direction (in-flow or out-flow). Negative
+\Xi  instantiation edges represent flow in the direction opposite the instantiation, whereas positive + instantiation edges
+represent flow in the direction of the instantiation.
+
+Polarities are assigned to instantiation constraints according to the polarity of the "source types" of instantiations. In our example, `1 occurs negatively, `2 positively
+in the type int`1 ! int`2 of id. Instantiation polarities
+were introduced in [FRD00b]. Disregarding polarities and
+interpreting instantiation constraints as bi-directional flow
+constraints results in a complete loss of context-sensitivity.
+
+We have sketched how to recover the flow on-demand,
+using only parts of the constraint systems needed for this
+query. This addresses the on-demand problem from Section 2.2.
+
+A further advantage of instantiation constraints, addressing the second problem in Section 2.2, is that all flow is
+present in the constraint sets I and C obtained in a typing judgment for POLYFLOWCFL. Consider for example the
+flow of both value 0 (`3) and 1 (`5) to formal parameter x
+(`1). We can recover such flow similarly to the flow above
+
+via `1 _i\Xi  `3 and `1 _j\Xi  `5. As mentioned in Section 2.2, to
+recover such flow in copy-based systems, the entire typing
+derivation is required instead of merely the final judgment.
+
+2.4 CFL-reachability
+How can we systematically recover global flow from instantiation and flow constraints? As we will show in this paper, this is best formulated as Context-Free Language (CFL)
+
+C ` L ^ L
+
+C; `1 ^ `2 ` `1 ^ `2 [Id]
+
+C ` ` ^ ` [Refl]
+C ` `0 ^ `1 C ` `1 ^ `2
+
+C ` `0 ^ `2 [Trans]
+
+Figure 4: Constraint relation
+
+reachability on a graph formed by flow and instantiation constraints (edges) and labels (nodes). Let us give the intuition
+behind this idea. We assume that in this graph negative instantiation constraints are reversed and labeled with opening parentheses (i. Positive instantiation edges are labeled
+closing parentheses )i, and flow edges with d. All flow paths
+in the graph now spell words. For example, the path
+
+`3
+
+(i\Gamma ! `
+
+1
+
+d\Gamma ! `
+
+2
+
+)i\Gamma ! `
+
+4
+
+spells the word "(id)i". The invalid flow path
+
+`3
+
+(i\Gamma ! `
+
+1
+
+d\Gamma ! `
+
+2
+
+)j\Gamma ! `
+
+6
+
+spells the word "(id)j" and corresponds to calling id at instance i, but returning to instance j. Valid and invalid flow
+are distinguished by membership in a particular language.
+For our example, the language contains the words (id)i and
+(jd)j, but no others. In general, valid flow paths are characterized by words with matching sets of parentheses. Spurious flow paths are simply not part of that language.
+
+Matched flow paths bear a close resemblance to the precise interprocedural flow paths of matching call- and return
+sequences studied in [RHS95] for the case of first order programs manipulating atomic data. In contrast to this work,
+our analysis allows context-sensitive tracking of the flow of
+values through any finite data-type, and it directly incorporates finitely typed higher-order functions, since function
+types are just another kind of data-type in type-based analysis. We note that, in higher-order programs, a function
+symbol may occur in contexts that are not call sites and
+matched flow may not correspond to actual calls and returns. Well-matched paths are also used in [MR00], where
+an analysis is described for higher-order programs manipulating arbitrary structured data. However, this analysis is
+context-insensitive, whereas the presence of polymorphism
+in our type system provides for a form of context-sensitivity.
+On the other hand, we can only handle unbounded datastructures (such as lists) in an approximative way, as shown
+in Section 6. The reader is referred to Section 7 for more
+comparisons with previous work.
+
+3 Polymorphic subtyping with instantiation constraints
+
+POLYFLOWCFL uses polymorphic types over labels of the
+form 8~`:oe without qualifying constraints. Judgments have
+the form
+
+I; C; A `CFL e : oe
+
+C ` oe ^ oe
+
+C ` `1 ^ `2
+C ` int`1 ^ int`2 [Int]
+
+C ` oe1 ^ oe01 C ` oe2 ^ oe02 C ` ` ^ `0
+
+C ` oe1 \Theta ` oe2 ^ oe01 \Theta `
+
+0 oe0
+
+2 [Pair]
+
+C ` oe01 ^ oe1 C ` oe2 ^ oe02 C ` ` ^ `0
+
+C ` oe1 !` oe2 ^ oe01 !`
+
+0 oe0
+
+2 [Fun]
+
+Figure 5: Subtype relation
+I ` oe _ip oe I ` ` _ip `
+
+I; ` _ip `0 ` ` _ip `0 [Id]
+
+I ` ` _ip `0
+I ` int` _ip int`
+
+0 [Int]
+
+I ` ` _ip `0 I ` oe1 _ip oe01 I ` oe2 _ip oe02
+
+I ` oe1 \Theta ` oe2 _ip oe01 \Theta `
+
+0 oe0
+
+2 [Pair]
+
+I ` ` _ip `0 I ` oe1 _ip oe01 I ` oe2 _ip oe02
+
+I ` oe1 !` oe2 _ip oe01 !`
+
+0 oe0
+
+2 [Fun]
+
+Figure 6: Instantiation Relation
+
+shown in Figure 7. Here, I is a set of instantiation constraints, C is a set of flow constraints on labels, and A is a
+type environment assigning types to free variables in term e.
+Such a judgment means that, under the assumptions contained in I, C and A, term e has labeled type oe.
+
+The subtyping rule [Sub] of Figure 7 uses standard logic,
+shown in Figure 4 and Figure 5, for flow judgments C ` ` ^
+`0 and subtyping judgments C ` oe ^ oe0, where C is a set of
+flow constraints on labels, ` ^ `0.
+
+Type environment A contains two kinds of assumptions.
+
+One has the form A0; f : (8~`:oe; ~`0), where f is a let- or
+letrec-bound variable. Here, 8~`:oe is the quantified type
+assumed for f, and ~`0 is a vector containing the labels that
+are free in A0. The notation fl(oe) and fl(A) denotes the free
+labels occurring in oe and A, respectively. The remaining
+type assumptions have the form A0; x : oe assigning (nonquantified) labeled types to *-bound variables.
+
+Rule [Let] binds a let-bound variable f to a quantified
+type, and rule [Rec] binds a letrec-bound variable f to a
+quantified type. Notice that, in rule [Rec], the quantified
+type is used in typing the term e1 in the letrec-binding,
+thereby allowing polymorphic recursion over labels. In rule
+[Lam] and [Rec] we use the notation joej to denote the underlying type that arises from the annotated type oe by erasing all label annotations from oe. In rule [Lam] we require
+joej = o/ , i.e., oe must have the same structure as o/ , and
+similarly in rule [Rec] for oe1 and o/.
+
+An instantiation constraint ` _ip `0 states that ` instantiates to `0 at site i with polarity p. Instantiation constraints
+represent substitutions at instantiation sites. A polarity p is
+
+either positive + or negative \Xi , and p negates the polarity
+of p. Sets of instantiation constraints are written I. Figure 6 lifts instantiations to labeled types, where I ` oe _ip oe0
+expresses that oe instantiates to oe0 given I.
+
+Instantiation constraints I must satisfy: for any particular index i and any label `, one has3:
+
+8`0: ` _ip `0 2 I ^ ` _ip0 `00 2 I ) `0 = `00 (3)
+A constraint set I thus gives rise to a collection of substitutions 'i, indexed by instantiation site i, where
+
+'i(`) = `0 if ` _ip `0 2 I
+and the identity everywhere else. We use the notation
+
+I ` oe _ip oe0 : '
+to mean that given I, oe instantiates to oe0 under ' (i.e.,
+'(oe) = oe0).
+
+Instantiation constraints are used in rule [Inst] in Figure 7. From the assumption A; f : (8~`:oe; ~`0) we derive the
+type oe0 for fi at instantiation site i, provided that
+
+I ` oe _ip oe0 : '
+holds for some ' with dom ' = ~`. Moreover, for the labels
+
+~`0, which are unquantifiable at the point of let- or letrecbinding, we require 4
+
+I ` ~`0 _i+ ~`0 and I ` ~`0 _i\Xi  ~`0
+which have the effect that for all `0 in ~`0, there are constraints
+`0 _i+ `0 and `0 _i\Xi  `0 in I.
+
+In rule [Label], oe[`] denotes the type oe with top level
+label `. The rule allows a subterm e to be labeled with the
+top-level label of its type, so that flow queries on labels can
+refer to arbitrary subterms in the program. The remaining
+rules of Figure 7 are standard type rules.
+
+4 Flow relation
+This section defines our flow relation and flow-graphs induced by typing derivations. The presence of instantiation
+constraints in the subtyping system leads to a clean flow
+logic, which is implementable via CFL-reachability.
+
+4.1 Flow logic
+Given a derivation of I; C `CFL e : oe, the flow graph G =
+(I; C; L) is defined by the set of labels L appearing in the
+derivation, along with the flow edges C and instantiation
+edges I. As was explained in Section 1, we must recover
+flow from `01 to `02 in the following situation:
+
+`1
+
+_i\Xi fflffl
+
+)) `
+
+2
+
+_i+fflffl
+
+`01 55U . i `02
+3The reader familiar with semi-unification will note that this rule
+is enforced by the algorithm of [Hen93].
+
+4For ~`0 = `0
+
+1; : : : ; `
+
+0
+n we write I ` ~`
+
+0 _ip ~`0 as shorthand for I `
+
+`0j _ip `0j, j = 1 : : : n.
+
+I; C; A `CFL e : oe
+Base Rules
+
+I; C; A; x : oe `CFL x : oe [Id] I; C; A `CFL n` : int` [Int]
+
+I; C; A `CFL e1 : oe2 !` oe1 I; C; A `CFL e2 : oe2
+
+I; C; A `CFL e1 e2 : oe1 [App]
+
+I; C; A; x : oe `CFL e : oe0 joej = o/
+
+I; C; A `CFL *`x:o/:e : oe !` oe0 [Lam]
+
+I; C; A `CFL e1 : oe1 I; C; A `CFL e2 : oe2
+
+I; C; A `CFL (e1; e2)` : oe1 \Theta ` oe2 [Pair]
+
+I; C; A `CFL e : oe1 \Theta ` oe2
+
+I; C; A `CFL ssj e : oej [Proj j = 1; 2]
+
+I; C; A `CFL e0 : int` I; C; A `CFL e1 : oe I; C; A `CFL e2 : oe
+
+I; C; A `CFL if e0 then e1 else e2 : oe [Cond]
+
+I; C; A `CFL e : oe C ` oe ^ oe0
+
+I; C; A `CFL e : oe0 [Sub]
+
+I; C; A `CFL e : oe[`]
+
+I; C; A `CFL e` : oe [Label]
+
+Polymorphic Rules
+
+I; C; A `CFL e1 : oe1
+I; C; A; f : (8~`:oe1; ~`0) `CFL e2 : oe2
+~` = gen(A; oe1) ~`0 = fl(A)
+
+I; C; A `CFL let f = e1 in e2 : oe2 [Let]
+
+I; C; A; f : (8~`:oe1; ~`0) `CFL e1 : oe1
+I; C; A; f : (8~`:oe1; ~`0) `CFL e2 : oe2
+~` = gen(A; oe1) ~`0 = fl(A) joe1j = o/
+
+I; C; A `CFL letrec f:o/ = e1 in e2 : oe2 [Rec]
+
+I ` oe _i+ oe0 : ' dom ' = ~` I ` ~`0 _i+ ~`0 I ` ~`0 _i\Xi  ~`0
+
+I; C; A; f : (8~`:oe; ~`0) `CFL fi : oe0 [Inst]
+
+gen(A; oe) = fl(oe) n fl(A)
+
+Figure 7: CFL-Based System POLYFLOWCFL
+I; C `CFL `  `
+
+C ` `1 ^ `2
+I; C ` `1 p `2 [Level]
+
+I; `1 _i+ `2; C ` `1 + `2 [Out]
+
+I; `1 _i\Xi  `2; C ` `2 \Xi  `1 [In]
+I; C ` `0 p `1 I; C ` `1 p `2
+
+I; C ` `0 p `2 [Trans]
+
+I ` `1 _i\Xi  `0 I; C ` `1 m `2 I ` `2 _i+ `3
+
+I; C ` `0 p `3 [Match]
+
+I; C ` `0 + `1 I; C ` `1 \Xi  `2
+
+I; C `CFL `0  `2 [Stage]
+
+p = +; \Xi ; m
+
+Figure 8: Flow relation for POLYFLOWCFL
+
+Our solution is given in Figure 8 axiomatizing judgments
+I; C `CFL `1  `2. This judgment means that, under constraints I and C, there is valid flow from label `1 to `2.
+Some flow paths only involve flow constraints in C and are
+deduced directly from C via rule [Level], i.e., if C ` `1 ^ `2 is
+derivable, then we deduce flow from `1 to `2. Internally, the
+rules use auxiliary judgments of the form I; C ` `1 + `2,
+I; C ` `1 \Xi  `2 and I; C ` `1 m `2, which define positive, negative and matched flow, respectively. Rules with an
+occurrence of p are actually rule schemes for all rules obtained by selecting +,\Xi  or m for p. Rule [Trans] encodes
+transitivity for all auxiliary relations.
+
+Rule [Match] introduces matched flow, of the form I; C `
+`1 m `2, capturing that the sequence of instantiation
+edges traversed along a matched flow path forms a wellparenthesized string, where *i\Xi  matches _i+. Matched flow
+allows us to recover, on demand, the flow represented by
+copies of constraint systems in constraint copying frameworks. Matched flow avoids spurious flow paths that involve negative and positive instantiation edges from distinct
+instantiations. In the first-order case, such paths correspond
+to spurious flow from one call site of a function f to another
+call site of f.
+
+The remaining rules [In], [Out], and [Stage] encode that
+some flow paths may contain unmatched initial closing
+parentheses and unmatched final open parentheses. The unmatched parentheses arise because a flow path may start and
+end in scopes other than the top-level scope of the program.
+
+4.2 CFL formulation
+We now formulate flow queries as a context-free language
+reachability problem (see for example [MR97]). Given a flow
+graph G = (I; C; L), construct the graph GCFL with nodes
+L, and the following labeled edges:
+
+`1 p\Gamma ! `2
+`1
+
+(i\Gamma ! `
+
+2
+
+if `1 _i+ `2 2 I
+
+`2 n\Gamma ! `1
+`2
+
+)i\Gamma ! `
+
+1 if
+
+`1 _i\Xi  `2 2 I
+
+`1 d\Gamma ! `2 if `1 ^ `2 2 C
+Edges with labels p (n) correspond to positive (negative)
+instantiation edges used in the [Out] ([In]) rule of the flow
+relation. Edges with labels (i and )i correspond to the instantiation edges used in the [Match] rule, and d-edges represent flow constraints.
+
+A flow relation I; C `CFL `1  `2 is derivable via rules of
+Figure 8 if and only if there exists a path in GCFL where the
+sequence of labels along the path from `1 to `2 is accepted
+by the following grammar with start symbol S:
+
+S  P N
+P  M P
+
+j p P
+j ffl
+N  M N
+
+j n N
+j ffl
+M  (i M )i
+
+j M M
+j d
+j ffl
+
+Productions for P accept paths that corresponds to positive
+flow I; C ` `1 + `2, productions for N produce negative
+flow paths, and productions for M produce matched flow
+paths.
+
+In practice, the graph GCFL need not be computed explicitly. Instead, the graph closure can be computed directly on
+the set of constraints C and I.
+
+4.3 Examples
+Figure 9 shows the flow graph and the CFL-graph for an
+example program. Function idpair is the identity on integer
+pairs. It is instantiated at site i within f, which in turn is
+instantiated at site j.
+
+The top contains the flow graph G with flow and instantiation edges. The bottom contains the corresponding CFL
+graph GCFL where we omit the d labels on flow edges. There
+is a flow path from b to z:
+
+`b
+
+(i\Gamma ! ffl d\Gamma ! ffl )i\Gamma ! `
+
+1
+
+p\Gamma ! `
+
+z
+
+where the flow from `b to `1 forms a matched flow path that
+is explicit in a system based on constraint copying.
+
+One advantage of using the type-based approach to flow
+analysis presented here is that it deals directly with higherorder programs. The type-theoretic notions of polarity and
+contra-variance are essential here, and are exploited in our
+annotation of polarities on instantiation edges. Appendix A
+contains an example (Figure 13) of a higher-order flow graph
+and its flow interpretation.
+
+Interestingly, the flow relation of [FRD00b] without subtyping emerges by collapsing all M-productions to ffl, corresponding to an equational interpretation of the subtype
+relation. The flow relation thereby becomes regular, and
+flow queries become linear time in the size of the flow graph.
+Our present results show that the addition of subtyping corresponds to a passage from regular to context-free flow.
+
+4.4 Soundness
+Soundness of our flow relation I; C `CFL `1  `2 is nonobvious and requires proof, which we provide in our technical report [FRD00a]. To prove soundness we use a labeled polymorphic subtyping system called POLYFLOWcopy
+(we refer the reader to [FRD00a] for the definition). This
+system is similar to a standard copy-based system studied by
+Mossin in [Mos96]. It induces a flow relation, denoted `cp,
+which arises from the relation `CFL (Figure 8) by removing
+rule [Match]. The soundness theorem states that our flow
+relation `CFL is a sound approximation to the relation `cp.
+Since soundness has been established for copy-based systems
+by Mossin [Mos96], soundness of our notion of flow follows.
+Technically, we show
+
+Theorem 4.1 (Soundness) For every judgment
+
+I; C; A `CFL e : oe
+derivable in POLYFLOWCFL there exist C0, I0, A0 such that
+the judgment
+
+C0; I0; C0; A0 ` e : oe
+is derivable in POLYFLOWcopy and such that, for all labels `
+and `0 occurring in e one has
+
+I0; C0 `cp `  `0 ) I; C `CFL `  `0
+
+let idpair = *x:int \Theta  int.x in
+let f = *y:int.idpairi (a`a ,b`b ) in
+let z = (ss2 (fj 0))`z
+...
+
+\Theta 
+
+_i\Xi 
+fflffl
+
+))
+\Gamma \Gamma \Gamma 
+
+\Gamma \Gamma \Gamma 
+
+\Gamma 
+
+===
+===
+= \Theta 
+
+_i+
+fflffl
+
+\Theta \Theta \Theta 
+
+\Theta \Theta \Theta 
+
+\Theta 
+
+???
+???
+?
+
+ffl
+
+_i\Xi 
+fflffl
+
+))ffl
+_i\Xi 
+fflffl
+
+55ffl
+_i+
+fflffl
+
+ffl
+
+_i+
+fflffl
+\Theta 
+\Theta \Theta \Theta 
+
+\Theta \Theta \Theta 
+
+\Theta 
+
+!!!
+!!!
+! \Theta 
+
+_j+
+fflffl
+
+\Lambda \Lambda \Lambda 
+
+\Lambda \Lambda \Lambda 
+
+\Lambda 
+
+!!!
+!!!
+!
+
+`a `b ffl
+
+_j+
+fflffl
+
+`1
+
+_j+
+fflffl
+\Theta 
+\Lambda \Lambda \Lambda 
+
+\Lambda \Lambda \Lambda 
+
+\Lambda 
+
+!!!
+!!!
+!
+
+ffl `z
+Flow graph G
+
+\Theta  ))
+\Gamma \Gamma \Gamma 
+
+\Gamma \Gamma \Gamma 
+
+\Gamma 
+
+===
+===
+= \Theta 
+
+)i
+fifi
+p
+
+``
+
+\Theta \Theta \Theta 
+
+\Theta \Theta \Theta 
+
+\Theta 
+
+???
+???
+?
+
+ffl ))ffl 55ffl
+
+)i
+fifi
+p
+
+``
+
+ffl
+
+)i
+fifi
+p
+
+``
+\Theta 
+
+(i
+
+LL
+
+n
+RR
+
+\Theta \Theta \Theta 
+
+\Theta \Theta \Theta 
+
+\Theta 
+
+!!!
+!!!
+! \Theta 
+
+)j
+fifi
+p
+
+``
+
+\Lambda \Lambda \Lambda 
+
+\Lambda \Lambda \Lambda 
+
+\Lambda 
+
+!!!
+!!!
+!
+
+`a
+
+(i
+
+LL
+
+n
+RR
+
+`b
+(i
+
+LL
+
+n
+RR
+
+ffl
+
+)j
+fifi
+p
+
+``
+
+`1
+
+)j
+fifi
+p
+
+``
+\Theta 
+\Lambda \Lambda \Lambda 
+
+\Lambda \Lambda \Lambda 
+
+\Lambda 
+
+!!!
+!!!
+!
+
+ffl `z
+CFL Graph GCFL
+
+Figure 9: POLYFLOWCFL example
+
+S  P N
+P  M P
+
+j p P
+j ffl
+N  M N
+
+j n N
+j ffl
+Ki  M )i
+
+M  (i Ki
+
+j M M
+j d
+j ffl
+
+Figure 10: Grammar for CFL queries.
+This theorem implies that, for any program typable
+in POLYFLOWCFL, the induced flow logic `CFL overapproximates the induced relation `cp of POLYFLOWcopy.
+A core step in the proof consists in showing that our notion of CFL-based flow recovers all implicit substitutions 'i
+on constraint systems needed in copy-based derivations, as
+explained in Section 2.3. The presence of polymorphic recursion is a complicating factor for the proof, and our proof
+uses ideas introduced in [Mos96].
+
+Conversely, by turning label substitutions into instantiation constraints, it is easy (tedious, but not difficult) to
+see that any typing in POLYFLOWcopy gives rise to a typing in POLYFLOWCFL such that the induced flow relation
+of POLYFLOWCFL is soundly approximated by the induced
+flow relation of POLYFLOWcopy.
+
+5 Algorithm
+Let e be an explicitly typed program, and let n denote its
+textual size. Thus, n measures the size of the program text
+together with the type annotations. Furthermore, let m denote the textual size of the type erasure of e (the type erasure
+of e arises from e by deleting all type annotations from e).
+Thus, m measures the size of e when type annotations are
+disregarded. We show how to compute flow queries for a
+term e of type-erasure size m, and with type-annotated size
+n. Our algorithm takes O(n3) time for computing individual
+or all queries. In the worst case, the size n is exponentially
+larger than m, although n will typically be close to m in
+practice [Mit96].
+
+5.1 Constraint derivation
+The type rules in Figure 7 directly serve as constraint inference rules. As is standard for inference systems, the use
+of the subsumption rule [Sub] is restricted to the argument
+derivation in [App], the branches in [Cond], and the binding
+in [Rec]. Constraints are inferred at rules [Inst] and [Sub] by
+using the rules of Figures 6 and 4 in reverse, i.e., to obtain
+the conclusion, we generate the constraints required by the
+antecedents. To guarantee the well-formedness of instantiation constraints, rule (3) must be enforced.
+
+After constraint derivation we produce the graph GCFL
+according to the description given in Section 4.2.
+
+W = edges of GCFL
+G0 = ;
+for each production A  ffl and node `
+
+add ` A\Gamma ! ` to W ;
+while W not empty
+
+remove edge e = `1 B\Gamma ! `2 from W ;
+(1) if e not in G0 do
+
+add e to G0;
+for each rule r of the form A  B
+
+(2) add `1 A\Gamma ! `2 to W ;
+
+for each rule r of the form A  B C
+
+add `1 to predr(`2);
+for each `3 in succr(`2)
+
+(3) add `1 A\Gamma ! `3 to W ;
+
+end
+end
+
+for each rule r of the form A  C B
+
+add `2 to succr(`1);
+for each `0 in predr(`1)
+
+(4) add `0 A\Gamma ! `2 to W ;
+
+end
+end
+endif
+end
+
+Figure 11: CFL algorithm
+5.2 Cubic time algorithm
+We follow [MR97, MR00] and normalize the grammar for the
+CFL problem such that the right hand sides of productions
+contain at most two symbols (terminals or non-terminals),
+resulting in the grammar shown in Figure 10. The generic
+CFL-algorithm in [MR97, MR00] has worst case complexity
+O(j\Sigma j3n3), where \Sigma  is the set of terminals and non-terminals
+used. Our grammar has j\Sigma j = O(m).
+
+As is observed in [MR97, MR00], the generic upper
+bound of O(j\Sigma j3n3) can be substantially improved in specific applications by exploiting the properties of the grammars that arise. Thus, we can improve the upper bound
+O(m3n3) by using the generic algorithm of Figure 11 and
+taking advantage of specific properties of our grammar. We
+show that the algorithm runs in time O(n3) for the grammar
+in Figure 10. The proof of the following theorem is given in
+Appendix B.
+
+Theorem 5.1 Given I, C, `, `0, answering a flow query
+I; C `CFL `  `0 is decidable in time O(n3). Moreover, the
+entire flow relation derivable from I and C is computable in
+time O(n3).
+
+This result improves the best previously known algorithm, given by Mossin [Mos96], from O(n8) to O(n3), when
+polymorphic recursion is included and from O(n7) to O(n3)
+when it is not. The gain is in both cases realized by avoiding
+repeated copies and simplifications of constraint sets, and
+also by avoiding iterating the inference to obtain fixpoints
+for the polymorphic recursive type schemes.
+
+On termination, the algorithm produces a graph G0 containing all possible edges labeled by non-terminals of the
+
+hff1 ** hff2
+
+)i
+fifi
+p
+
+``\Theta 
+(i
+
+LL
+
+n
+RR
+
+\Theta 1
+
+\Gamma \Gamma \Gamma 
+
+\Gamma \Gamma \Gamma 
+
+\Gamma  \Theta 
+
+2
+
+???
+???
+? \Theta 
+
+)j
+fifi
+p
+
+``
+
+\Theta 1
+
+\Theta \Theta \Theta 
+
+\Theta \Theta \Theta 
+
+\Theta  \Theta 
+
+2
+
+???
+???
+?
+
+`a `b ffl
+
+)j
+fifi
+p
+
+``
+
+`1
+
+)j
+fifi
+p
+
+``
+\Theta 
+\Theta 1
+
+\Theta \Theta \Theta 
+
+\Theta \Theta \Theta 
+
+\Theta  \Theta 
+
+2
+
+???
+???
+?
+
+ffl `z
+Figure 12: Type polymorphic example
+grammar. To answer a query for flow from `1 to `2 we simply need to inspect G0 for an S-edge from `1 to `2.
+
+5.3 Demand-driven algorithm
+Although the algorithm in Figure 11 is not directly demanddriven, the CFL-formulation allows straight-forward adaptation of the technique in [HRS95, Rep98], yielding a demanddriven algorithm.
+
+6 Polymorphic and recursive type structure
+In this section we show that our techniques remain effective,
+when the underlying types are polymorphic and recursive.
+
+6.1 Polymorphic type structure
+POLYFLOWCFL type derivations are polymorphic in labels
+but not in the underlying type structure. Extending polymorphism to the underlying type structure results in more
+complicated flow queries. Since type variables are instantiated to arbitrary labeled types at instances, flow paths that
+traverse a type polymorphic function may involve traversing type constructor edges from child to parent and back.
+Consider the example from Figure 9, but with idpair being
+the polymorphic identity function, instead of the identity
+on integer pairs. The resulting type instantiation graph is
+shown in Figure 12. We use hff for labels annotating type
+variable ff. The flow path from `b to `z has the form
+
+`b
+
+[\Theta 2\Gamma \Gamma ! \Theta  (i\Gamma ! hff
+
+1 ! h
+
+ff2 )i\Gamma ! \Theta  ]\Theta 2\Gamma \Gamma ! `1 p\Gamma ! `z
+
+and involves traversing constructor edges between pair types
+and their right child. We label constructor edges with the
+constructor c and the child index j. Traversing such an
+edge from child to parent corresponds to an opening parenthesis [cj , and traversing from parent to child corresponds
+
+to a closing parenthesis ]cj . At first sight, the resulting flow
+queries appear to involve interleaved matchings of instantiation parentheses and constructor parentheses. In general,
+
+in the presence of unbounded data structures such as lists,
+interleaved matchings define the intersection of two context
+free languages, and flow-relations induced from them become undecidable by a recent result of Reps [Rep00]. In
+the absence of recursive types however, polymorphic type
+structure is bounded and guarantees that there always exists a flow path where the two matchings are perfectly nested
+(this follows abstractly from the fact that the intersection of
+a context-free language and a regular language is contextfree). As a result, the path is given by a single context-free
+grammar, and all flow queries remain computable in O(n3)
+time. Our observations above show that bounded type structure can generally be exploited to eliminate the interleaved
+matching problem. This may, however, come at the cost
+of approximating the flow relation when unbounded data
+structures are present, as we will discuss next.
+
+6.2 Recursive types
+Recursive types represent regular infinite type structure.
+The most general labeling of such structures involves infinitely many distinct labels. The undecidability result of
+Reps [Rep00] suggests that there exists no partial labeling
+without loss of precision. However, we can use regular labelings of recursive types, where labels repeat in recursive
+unfoldings. Such labelings introduce spurious flow between
+unrelated parts of the recursive type but enable us to compute a finite and sound approximation of the interprocedural
+flow. This technique again amounts to exploiting bounded
+type structure (which in the case of recursive types is imposed by approximation) to eliminate the interleaved matching problem. Our report [FRD00a] has more details.
+
+7 Related work
+Mossin [Mos96] studies the problem of interprocedural flow
+computation with polymorphic subtyping including polymorphic recursion. His system is based on constraint copying and simplification. Our techniques improve the asymptotic complexity of flow computations and obviates the need
+to copy and simplify constraints during inference. We prove
+soundness by reduction to the soundness of the system studied by Mossin. In [Mos98], Mossin describes type-based,
+higher-order value flow graps. In this work, it is noted that
+it would be desirable if type-based flow graphs could be used
+to express well-matched flow paths in the style of [RHS95]
+(see below). Our work shows that, indeed, this is possible.
+
+Our use of instantiation constraints draws on Henglein's
+work on semi-unification [Hen93]. Dussart et. al. [DHM95a]
+present a copy-based algorithm for binding time analysis using subtyping and polymorphic recursion. The unpublished
+work [DHM95b] seeks a solution in terms of semi-unification.
+Our work shares motivation with [DHM95b] but our main
+results on matched flow and CFL-reachability are new.
+
+The work of Reps, Horwitz and Sagiv [RHS95, MR00]
+provided the connection between CFL-reachability problems
+and interprocedural, context-sensitive analysis. The work
+[RHS95] concerns context-sensitive (interprocedurally precise) analysis of first order programs manipulating atomic
+data. Well-matched paths are used to select interprocedurally valid call-return sequences. The work [MR00] contains a higher-order but context-insensitive analysis. Wellmatched paths are used for data-dependence analysis, i.e., to
+model cancellation properties of data constructors and destructors to track the flow of data through data-structures.
+
+Reps [Rep00] has shown that the combination of the two
+techniques - context-sensitive data-dependence analysis -
+results in an uncomputable analysis problem. In contrast,
+our type-based techniques concern context-sensitive (in the
+sense of type polymorphism) analysis of higher-order programs manipulating possibly structured data of finite type.
+Unbounded data-structures can be incorporated via finite
+approximation using recursive types. The techniques of
+[HRS95, Rep98] for answering flow queries on demand transfer to our setting via our CFL-reachability formulation.
+
+By incorporating subtyping, the present paper provides
+a substantial generalization of [FRD00b], where we describe
+a flow analysis with instantiation constraints but without
+subtyping. In this setting, CFL-reachability specializes to
+linear-time graph reachability.
+
+In Lackwit [OJ97], O'Callahan and Jackson define a relation called compatibility. Compatibility is undirected and
+can be understood as a special case of our flow relation,
+similar to the one in [FRD00b].
+
+Heintze and McAllester [HM97] present a demanddriven, type-based flow-analysis for ML. Like ours, their
+analysis traces flow paths on type graphs, but flow paths
+are not context-sensitive.
+
+Gustavsson and Svenningsson [GS00] have recently developed a usage analysis with polymorphic subtyping using constraint abstractions to succinctly represent constraint
+systems. It is possible that their constraint abstractions
+could be used to obtain flow analysis with properties similar
+to ours.
+
+8 Conclusion
+We have presented an O(n3) algorithm for computing
+context-sensitive, directional flow information for higherorder programs (n is the size of the typed program). This
+substantially improves on the best previously known )(n8)
+algorithm. Our technique is based on a novel presentation of
+polymorphic subtyping with instantiation constraints. We
+thereby applied CFL-reachability techniques to the setting
+of type-based and higher-order flow analysis with structured
+data of finite type. Unbounded data-structures can be incorporated via finite approximation using recursive types.
+A novel aspect of our techniques is that they obviate the
+need to copy constraint systems globally, and they support
+demand-driven flow computation over a clean, graph-based
+abstraction. This may turn out to be a major benefit of our
+approach in practice.
+
+Acknowledgements
+We would like to thank David Melski and Tom Reps for
+valuable discussions concerning context-free language reachability. We would also like to thank Fritz Henglein for discussions on polymorphic recursion. Finally, we would like
+to thank our reviewers for their detailed comments on this
+paper.
+
+References
+[AWP97] A. Aiken, E.L. Wimmers, and J. Palsberg. Optimal representations of polymorphic types with
+subtyping. In Proceedings Theoretical Aspects of
+Computer Software, pages 47-77. LNCS 1281,
+1997.
+
+[Cur90] P. Curtis. Constrained quantification in polymorphic type analysis. Technical Report CSL90-1, Xerox Parc, 1990.
+
+[DHM95a] Dirk Dussart, Fritz Henglein, and Christian
+
+Mossin. Polymorphic recursion and subtype
+qualifications: Polymorphic binding-time analysis in polynomial time. In Proc. 2nd Int'l Static
+Analysis Symposium (SAS), LNCS 983, 1995.
+
+[DHM95b] Dirk Dussart, Fritz Henglein, and Christian
+
+Mossin. Polymorphic recursion and subtype
+qualifications: Polymorphic binding-time analysis in polynomial time. Unpublished draft, May
+1995.
+
+[EST95] J. Eifrig, S. Smith, and V. Trifonov. Sound polymorphic type inference for objects. In Proceedings OOPSLA '95, 1995.
+
+[FA96] M. F"ahndrich and A. Aiken. Making setconstraint program analyses scale. In Workshop
+on Set Constraints, Cambridge MA, 1996.
+
+[FF97] C. Flanagan and M. Felleisen. Componential
+
+set-based analysis. In Programming Language
+Design and Implementation, June 1997.
+
+[FFA00] Jeffrey S. Foster, Manuel F"ahndrich, and
+
+Alexander Aiken. Polymorphic versus monomorphic flow-insensitive points-to analysis for c. In
+Proceedings of the 7th International Static Analysis Symposium, June 2000.
+
+[FM89] Y. Fuh and P. Mishra. Polymorphic subtype
+
+inference: Closing the theory-practice gap. In
+Proc. Int'l J't Conf. on Theory and Practice
+of Software Development, pages 167-183, March
+1989.
+
+[FRD00a] M. F"ahndrich, J. Rehof, and M. Das. From
+
+polymorphic subtyping to CFL reachability:
+Context-sensitive flow analysis using instantiation constraints. Technical Report MSRTR-99-84, Microsoft Research, 2000. Available
+at http://research.microsoft.com/~rehof/publications.html.
+
+[FRD00b] M. F"ahndrich, J. Rehof, and M. Das. Scalable
+
+context-sensitive flow analysis using instantiation constraints. In Programming Language Design and Implementation, June 2000.
+
+[GS00] J. Gustavsson and J. Svenningsson. A usage
+
+analysis with bounded usage polymorphism and
+subtyping. In Proceedings of the 12th International Workshop on Implementation of Functional Languages, number AIB-00-7 in Aachener Informatik Berichte, pages 279-294. RWTH
+Aachen, 2000.
+
+[Hei95] N. Heintze. Control-flow analysis and type systems. In Proceedings SAS '95, Second International Static Analysis Symposium, Glasgow,
+Scotland, pages 189-206. Springer Lecture Notes
+in Computer Science, vol. 983, September 1995.
+
+[Hen93] Fritz Henglein. Type inference with polymorphic
+
+recursion. ACM Transactions on Programming
+Languages and Systems, 15(2):253-289, 1993.
+
+[HM97] Nevin Heintze and David McAllester. Lineartime subtransitive control flow analysis. In Proceedings of the 1997 ACM SIGPLAN Conference
+on Programming Language Design and Implementation, number 32:6 in SIGPLAN notices,
+pages 261-272, June 1997.
+
+[HRS95] Susan Horwitz, Thomas Reps, and Mooly Sagiv. Demand interprocedural dataflow analysis.
+In ACM SIGSOFT Symposium on the Foundations of Software Engineering, ACM SIGSOFT
+Software Engineering Notes 20, 4, pages 104-
+115, 1995.
+
+[Kae92] S. Kaes. Type inference in the presence of overloading, subtyping and recursive types. In Proc.
+Conf. on LISP and Functional Programming,
+1992.
+
+[Mit96] J.C. Mitchell. Foundations for Programming
+
+Languages. MIT Press, 1996.
+
+[Mos96] Christian Mossin. Flow Analysis of Typed
+
+Higher-Order Programs. PhD thesis, DIKU, Department of Computer Science, University of
+Copenhagen, 1996.
+
+[Mos98] Christian Mossin. Higher-order value flow
+
+graphs. Nordic Journal of Computing, 5:214-
+234, 1998.
+
+[MR97] David Melski and Thomas Reps. Interconvertibility of set constraints and context-free language reachability. In Proceedings PEPM, pages
+74-89, 1997.
+
+[MR00] David Melski and Thomas Reps. Interconvertibility of set constraints and context-free language reachability. Theoretical Computer Science, 248, 2000. To appear.
+
+[Myc84] A. Mycroft. Polymorphic type schemes and recursive definitions. In Proceedings of the 6th International Symposium on Programming, pages
+217-228, 1984.
+
+[NNH99] F. Nielson, H. Nielson, and C. Hankin. Principles of Program Analysis. Springer, 1999.
+
+[OJ97] Robert O'Callahan and Daniel Jackson. Lackwit: A program understanding tool based on
+type inference. In International Conference on
+Software Engineering, May 1997.
+
+[PO95] Jens Palsberg and Patrick O'Keefe. A type
+
+system equivalent to flow analysis. Transactions on Programming Languages and Systems,
+17(4):576-599, July 1995.
+
+[Pot96] F. Pottier. Simplifying subtyping constraints.
+
+In International Conference on Functional Programming, 1996.
+
+[Reh97] J. Rehof. Minimal typings in atomic subtyping. In Symposium on Principles of Programming Languages, 1997.
+
+[Reh98] J. Rehof. The Complexity of Simple Subtyping
+
+Systems. PhD thesis, Dept. of Computer Science, University of Copenhagen, Denmark, April
+1998.
+
+[Rep98] Thomas Reps. Program analysis via graph
+
+reachability. Information and Software Technology, 40 (11-12):701-726, 1998.
+
+[Rep00] Thomas Reps. Undecidability of contextsensitive data-dependence analysis. Transactions on Programming Languages and Systems,
+2000. to appear.
+
+[RHS95] Thomas Reps, Susan Horwitz, and Mooly Sagiv. Precise interprocedural dataflow analysis
+via graph reachability. In Symposium on Principles of Programming Languages (POPL), San
+Francisco, California, pages 49-61, 1995.
+
+[Smi94] G. S. Smith. Principal type schemes for functional programs with overloading and subtyping.
+Science of Computer Programming, 23:197-226,
+1994.
+
+[TS96] V. Trifonov and S. Smith. Subtyping constrained
+
+types. In Proceedings Static Analysis Symposium, Aachen, Germany, 1996. LNCS 1145.
+
+[Yan90] Mihalis Yannakakis. Graph-theoretic methods in
+
+database theory. In Proceedings of the 9th ACM
+Symposium on Principles of Database Systems,
+pages 230-242, 1990.
+
+A Higher-order example
+Figure 13 shows a higher-order example. The app function
+takes a function f as an argument and returns a function
+(labeled `r) that in turn takes a parameter x and applies f to
+x. The figure shows the flow graph resulting from applying
+app at instance i to the identity function id (instance j) and
+a value b. We have used boxes around labels annotating
+function types to make the type structure more readable.
+First note that we can determine what functions are called
+indirectly within app, by observing what labels flow to `f .
+There is a path
+
+`id p\Gamma ! `8 ! `9 n\Gamma ! `f
+showing that the identity function (labeled `id) flows to `f .
+The flow edges connecting the types labeled by `8 and `9
+arise from the subtype relation between the instance of id
+(the argument) and the domain of the instance of app. The
+reversed edge `1 ^ `2 arises through contra-variance of the
+subtype relation for function domains.
+
+Edge `x ^ `0 represents the argument passing of x to f
+within app, and similarly, `6 ^ `7 represents the flow of the
+result of this application to the result of the function labeled
+`r. The flow path connecting b with w is then as follows:
+
+`b ! ffl
+
+(i\Gamma ! `
+
+x ! `0
+
+)i\Gamma ! `
+
+1 ! `2
+
+(j\Gamma ! `
+
+y ! `3
+
+)j\Gamma ! `
+
+4 !
+
+`5
+
+(i\Gamma ! `
+
+6 ! `7
+
+)j\Gamma ! ffl ! `
+
+w
+
+Observe how the path enters app through instance i and
+then emerges back along the edge
+
+`0
+
+)i\Gamma ! `
+
+1
+
+The polarity of this edge was determined to be positive,
+because the polarity of the argument type `f within the
+type of app is itself negative. The path then traverses id on
+instance j and reenters app at instance i through
+
+`5
+
+(i\Gamma ! `
+
+6
+
+before finally emerging along the edge
+
+`7
+
+)i\Gamma ! ffl
+
+The example shows that in the higher-order case, the traversal of an instantiation edge does not correspond directly
+to an argument passing or return step as in the first-order
+case. In this example the path traverses app twice through
+instance i.
+
+B Complexity proof
+Constraint generation produces a flow constraint set C of
+size O(n), and an instantiation constraint set of size O(mn).
+The m factor in the size of I is a direct result of the extra
+instantiation constraints added on free labels at rule [Inst].
+Without these, we generate only O(n) instantiation constraints. Our technical report [FRD00a] shows a variant
+of the algorithm presented here, producing only O(n) constraints.
+
+Constraint generation can be implemented in time proportional to the number of derived constraints. The only
+non-obvious steps are in rules [Let] and [Rec], where we
+avoid using gen(A; oe1) to find the quantifiable labels and
+
+avoid recomputing the vector ~`0 = fl(A). The first problem
+is solved with an extra subsumption step on oe1 ^ oe01 guaranteeing that all labels in oe01 are fresh. Binding this type
+in place of oe1 allows instantiation of all labels occurring in
+
+oe01 at all instances. As for the second problem, labels ~`0 can
+be accumulated incrementally in the abstraction rule [Lam]
+once and for all. The details of this are standard and can
+be found in [FRD00a].
+
+Grammar 10 has m terminals (i; )i and m non-terminals
+Ki, since the number of distinct instantiations i is linear in
+the program size and independent of the type size.
+
+Theorem 5.1 Given I, C, `, `0, answering a flow query
+I; C `CFL `  `0 is decidable in time O(n3). Moreover, the
+entire flow relation derivable from I and C is computable in
+time O(n3).
+
+Proof: The proof is in two steps. We first give a suboptimal
+bound to show that the generic algorithm in Figure 11 computes all derivable paths in time O(en + un2 + bn3). Here e
+is the number of epsilon productions, u is the number of distinct unary grammar productions of the form A  B, and
+b is the number of distinct binary grammar productions of
+the form A  B C. Applied to our particular CFL problem
+(grammar of Figure 10) where e = 3, u = 1, and b = 2m,
+we obtain an initial complexity of O(mn3) for computing all
+pairs reachability. In the second step we tighten the complexity to O(n3) by exploiting the particular structure of
+constraints generated by POLYFLOWCFL.
+
+let app = (*f.(*x. f x)`r )`app
+in
+
+let id = (*y.y)`id
+in
+
+let w = ((appi idj)`
+
+0
+r b`b )`w
+
+fflffi flfi
+\Phi \Psi  \Omega ff! `app
+
+tttt
+
+tttt
+
+t
+
+JJJJ
+JJJJ
+J
+
+p
+fflffl
+
+fflffi flfi
+\Phi \Psi  \Omega ff! `f
+
+\Omega \Omega \Omega 
+
+\Omega \Omega \Omega  44444
+
+4
+
+fflffi flfi
+\Phi \Psi  \Omega ff! `r
+
+\Omega \Omega \Omega 
+
+\Omega \Omega \Omega 
+
+\Omega 
+
+555
+555
+5
+
+p
+fflffl
+
+fflffi flfi
+\Phi \Psi  \Omega ff! `id
+
+\Psi \Psi \Psi 
+
+\Psi \Psi \Psi  555555
+
+5
+
+p
+fflffl
+
+`0
+
+)i
+fflffl
+
+`6 99`xee `7
+
+)i
+fflffl
+
+`y :: `3
+
+)j
+fflffl
+
+fflffi flfi\Phi \Psi  \Omega ff!
+ssss
+
+ssss
+
+ss
+
+KKKK
+KKKK
+KK
+
+fflffi flfi
+\Phi \Psi  \Omega ff! `9
+
+\Psi \Psi \Psi 
+
+\Psi \Psi \Psi 
+
+\Psi 
+
+555
+555
+5
+
+n
+
+OO
+
+fflffi flfi
+\Phi \Psi  \Omega ff! `0r
+
+\Omega \Omega \Omega 
+
+\Omega \Omega \Omega 
+
+\Omega 
+
+555
+555
+5
+
+fflffi flfi
+\Phi \Psi  \Omega ff! `8
+
+\Phi \Phi \Phi 
+
+\Phi \Phi \Phi 
+
+\Phi 
+
+555
+555
+5VV
+
+`1 BB`5
+
+(i
+
+OO
+
+ffl
+(i
+
+OO
+
+ffl
+
+fflffl
+
+`2
+
+(j
+
+OO
+
+`4""
+`b
+
+OO
+
+`w
+
+Figure 13: Higher-order example (only relevant edges shown)
+We assume that given an edge labeled B, we can index
+through B the rules r that apply in the for-loops without
+looking at rules that don't apply.
+
+The algorithm uses a work list W and adds edges to the
+result graph G0. For each node ` and each production r of
+the form A  B C of the grammar, we use two sets pred r(`)
+and succr(`) containing the predecessors of ` reachable via
+an edge labeled B, and the successors of ` reachable via an
+edge labeled C.
+
+Step 1. To see that the bound O(en + un2 + bn3) holds,
+consider that the number of steps needed to add all edges
+for epsilon-productions is en. Now consider the statement
+labeled (2) in the algorithm. For a fixed unary rule r and
+node `1, this statement is executed at most n times, since
+the test at (1) guarantees that we see each edge at most
+once. There are u rules and n nodes `1, thus the overall
+number of executions of statement (2) is un2 times. Next
+consider the statement labeled (3) in the algorithm dealing
+with productions of the form A  B C. For a particular
+node `2 and particular binary production r, this statement
+is executed at most n2 times, because there are at most n
+distinct predecessors in pred r(`2) and n distinct successors
+in succr(`2) that can be paired up. The test at (1) guarantees that we never add a node twice to a bucket pred r or
+succr. Since there are b distinct productions and n distinct
+nodes `2, we obtain the bound O(bn3). The argument for
+productions of the form A  C B is analogous. The overall
+complexity bound of the algorithm is thus O(en+un2+bn3).
+
+Step 2. The complexity bound given above can be tightened by considering u and b to be the average number of
+grammar rules that apply at any particular node. In that
+case it doesn't matter what the number of overall distinct
+grammar rules are. The complexity is solely determined by
+
+the average number of rules that apply at each node. The
+overall complexity improves in the case where u and b are
+constant at each node, but the productions are drawn from
+a non-constant set of distinct productions (in our case, there
+are 2m distinct productions).
+
+As an example consider the family of O(m) productions
+of the form M  (i Ki. If we can bound the average number
+of edges labeled (i on all nodes in our initial flow graph
+by a constant, then on average only a constant number of
+productions of the form M  (i Ki apply at any node. This
+hinges on the fact that the algorithm does not add any new
+edges labeled with terminals (i.
+
+If we discount the instantiation self-loops of the form
+
+`
+
+_ip\Gamma \Gamma ! ` added through rule [Inst] for the moment, we obtain the desired bounds on b. On average at any label, only
+a constant number of productions apply. However, the number of self-loops added through rule [Inst] is O(m) per label
+in the worst case. Fortunately, the complexity analysis for
+general binary rules given above can be tightened due to
+the self-loop. Consider rule M  (i Ki, when applied to a
+self-loop. The situation is as follows:
+
+`(i $$ `0
+
+Kioo
+
+For a fixed ` and fixed i, the number of times this rule
+triggers is at most n, since there are at most n labels `0
+connected to ` via an edge Ki. Since there are at most
+m such self-loops on ` and n distinct labels `, the number
+of executions of line 3 in the CFL algorithm involving selfloops is bounded by O(mn2). The same argument applies
+to Ki  M )i, thereby proving the cubic bound of the
+theorem. \Lambda 

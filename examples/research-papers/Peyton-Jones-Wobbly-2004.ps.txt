@@ -1,0 +1,2073 @@
+
+
+Wobbly types: type inference for generalised algebraic data types
+
+Simon Peyton JonesMicrosoft Research, Cambridge Geoffrey WashburnUniversity of Pennsylvania Stephanie WeirichUniversity of Pennsylvania
+
+Abstract
+Generalised algebraic data types (GADTs), sometimesknown as "guarded recursive data types" or "first-class phantom types", are a simple but powerful generalisation of thedata types of Haskell and ML. Recent works have given compelling examples of the utility of GADTs, although type in-ference is known to be difficult.
+
+It is time to pluck the fruit. Can GADTs be added to Haskell,without losing type inference, or requiring unacceptably
+heavy type annotations? Can this be done without com-pletely rewriting the already-complex Haskell type-inference
+engine, and without complex interactions with (say) typeclasses? We answer these questions in the affirmative, giving
+a type system that explains just what type annotations are re-quired, and a prototype implementation that implements it.
+Our main technical innovation is wobbly types, which ex-press in a declarative way the uncertainty caused by the incremental nature of typical type-inference algorithms.
+
+1 Introduction
+Generalised algebraic data types (GADTs) are a simple butpotent generalisation of the recursive data types that play a
+
+central role in ML and Haskell. In recent years they haveappeared in the literature with a variety of names (guarded
+recursive data types, first-class phantom types, equality-qualified types, and so on), although they have a much longer
+history in the dependent types community (see Section 6).Any feature with so many names must be useful -- and indeed these papers and others give many compelling exam-ples, as we recall in Section 2.
+
+Submitted to POPL'05: July 16, 2004
+
+We seek to turn GADTs from a specialised hobby into amainstream programming technique. To do so, we have incorporated them as a conservative extension of Haskell (asimilar design would work for ML). The main challenge is
+the question of type inference, a dominant feature of Haskelland ML. It is well known that GADTs are too expressive
+to admit type inference in the absence of any programmer-supplied type annotations; on the other hand, when enough
+type annotations are supplied, type inference is relativelystraightforward.
+
+One approach, then, is to implement a compiler that takes ad-vantage of type annotations. If the algorithm succeeds, well
+and good; if not, the programmer adds more annotations un-til it does succeed. The difficulty with this approach is that
+there is no guarantee that another compiler for the same lan-guage will also accept the annotated program, nor does the
+programmer have a precise specification of what programsare acceptable and what are not. With this in mind, our
+central focus is this: we give a declarative type system fora language that includes GADTs and programmer-supplied
+type annotations, which has the property that type inferenceis straightforward for any well-typed program. More specifically, we make the following contributions:
+
+ffl We describe an explicitly-typed target language, in thestyle of System F, that supports GADTs (Section 3).
+
+This language differs in only minor respects from thatof Xi [XCC03], but our presentation of the type system
+is rather different and, we believe, more accessible toprogrammers. In addition, some design alternatives differ and, most important, it allows us to introduce muchof the vocabulary and mental scaffolding to support the
+main payload. We prove that the type system is sound.
+ffl We describe an implicitly-typed source language, thatsupports GADTs and programmer-supplied type annotations (Section 4), and explore some design variations,including lexically-scoped type variables (Section 4.7).
+The key innovation in the type system is the notion ofa
+
+wobbly type, which models the places where an infer-ence algorithm would make a "guess". The idea is that
+
+the type refinement induced by GADTs never "looks in1
+
+side" a wobbly type, and hence is insensitive to the or-der in which the inference algorithm traverses the tree.
+We prove various properties of this system, includingsoundness.
+
+ffl We have built a prototype implementation of the systemas an extension to the type inference engine described
+
+by Peyton Jones and Shields's tutorial [PS04]. We dis-cuss the interesting aspects of the implementation in
+Section 5.
+Our focus is on type inference rather than checking, unlikemost previous work on GADTs. The exception is an excellent paper by Simonet and Pottier, written at much thesame time as this one, and which complements our work
+very nicely [SP03]. Their treatment is more general (theyuse HM(X) as the type framework), but we solve two problems they identify as particularly tricky. First, we supportlexically-scoped type variables and open type annotations;
+and second we use a single set of type rules for all data types,rather than one set for "ordinary" data types and another for
+GADTs. We discuss this and other important related work inSection 6.
+
+Our goal is to design a system that is predictable enoughto be used by ordinary programmers; and
+
+simple enough tobe implemented without heroic efforts. In particular, we
+
+are in the midst of extending the Glasgow Haskell Com-piler (GHC) to accommodate GADTs. GHC's type checker
+is already very large; not only does it support Haskell'stype classes, but also numerous extensions, such as multiparameter type classes, functional dependencies, scoped typevariables, arbitrary-rank types, and more besides. An extension that required all this to be re-engineered would bea non-starter but, by designing our type system to be typeinference-friendly, we believe that GADTs can be added asa more or less orthogonal feature, without disturbing the existing architecture.
+More broadly, we believe that the goal of annotation-freetype inference is a mirage; and that expressive languages
+
+will shift increasingly towards type systems that exploit pro-grammer annotations. Polymorphic recursion and higherrank types are two established examples, and GADTs is an-other. We need tools to describe such systems, and the wobbly types we introduce here seem to meet that need.
+
+2 Background
+We begin with a brief review of the power of GADTs --nothing in this section is new. Consider the following data
+
+type for terms in a simple language of arithmetic expres-sions:
+
+data Term = Lit Int | Inc Term
+
+| IsZ Term | If Term Term Term
+| Fst Term | Snd Term | Pair Term Term
+
+We might write an evaluator for this language as follows:
+
+data Val = VInt Int | VBool Bool | VPr Val Val
+
+eval :: Term -> Val
+eval (Lit i) = VInt i
+eval (Inc t) = case eval t of
+
+VInt i -> VInt (i+1)
+eval (IsZ t) = case eval t of
+
+VInt i -> VBool (i==0)
+eval (If b t e) = case eval b of
+
+VBool True -> eval t
+VBool False -> eval e
+..etc..
+
+There are obvious infelicities in both the data type and theevaluator. The data type allows the construction of nonsense
+
+terms, such as (Inc (IsZ (Lit 0))); and the evaluatordoes a good deal of fruitless tagging and un-tagging.
+
+Now suppose that we could instead write the data type dec-laration like this:
+
+data Term a where
+
+Lit :: Int -> Term Int
+Inc :: Term Int -> Term Int
+IsZ :: Term Int -> Term Bool
+If :: Term Bool -> Term a -> Term a -> Term a
+Pair :: Term a -> Term b -> Term (a,b)
+Fst :: Term (a,b) -> Term a
+Snd :: Term (a,b) -> Term b
+
+Here we have added a type parameter to Term, which indi-cates the type of the term it represents, and we have enumerated the constructors, giving each an explicit type signature.These type signatures already rule out the nonsense terms;
+in the example above, (IsZ (Lit 0)) has type Term Booland that is incompatible with the argument type of
+
+Inc.
+
+Furthermore, the evaluator becomes stunningly direct:
+
+eval :: Term a -> a
+eval (Lit i) = i
+eval (Inc t) = eval t + 1
+eval (IsZ t) = eval t == 0
+eval (If b t e) = if eval b then eval t else eval e
+eval (Pair a b) = (eval a, eval b)
+eval (Fst t) = fst (eval t)
+eval (Snd t) = snd (eval t)
+
+It is worth studying this remarkable definition. Note thatright hand side of the first equation patently has type
+
+Int,not
+a. But, if the argument to eval is a Lit, then the typeparameter
+
+a must be Int (for there is no way to construct a
+Lit term other than to use the typed Lit constructor), and sothe right hand side has type
+
+a also. Similarly, the right handside of the third equation has type
+
+Bool, but in a context inwhich
+a must be Bool. And so on. Under the dictum "welltyped programs do not go wrong", this program is definitely
+
+well-typed.
+The key ideas are these:
+
+2
+
+ffl A generalised data type is declared by enumerating itsconstructors, giving an explicit type signature for each.
+
+In conventional data types in Haskell or ML, a con-structor has a type of the form
+
+8ff:o/ ! T ff, where theresult type is the type constructor
+
+T applied to all thetype parameters
+ff. In a generalised data type, the resulttype must still be an application of
+
+T, but the argumenttypes are arbitrary. For example
+Lit mentions no typevariables,
+Pair has a result type with structure (a,b),and
+Fst mentions some, but not all, of its universally-quantified type variables.
+
+ffl The data constructors are functions with ordinary poly-morphic types. There is nothing special about how they
+
+are used to construct terms, apart from their unusualtypes.
+
+ffl All the excitement lies in pattern matching. Pattern-matching against a constructor may allow a
+
+type refinement in the case alternative. For example, in the Litbranch of
+
+eval, we can refine a to Int.
+
+ffl Type inference is only practicable when guided by typeannotations. For example, in the absence of the type
+
+signature for eval, a type inference engine would haveto miraculously anti-refine the
+
+Int result type for thefirst two equations, and the
+Bool result type of the third(etc), to guess that the overall result should be of type
+
+a. Such a system would certainly lack principal types.
+ffl The dynamic semantics is unchanged. Pattern-matching is done on data constructors only, and there
+
+is no run-time type passing.
+This simple presentation describes GADTs as a modest gen-eralisation of conventional data types. One can generalise
+
+still further, by regarding the constructors as having guarded,or
+
+qualified types [XCC03, SP03]. For example:
+
+Lit :: 8ff:(ff = Int) ) Term ff
+This use of explicit constraints has the advantage that it canbe generalised to more elaborate constraints, such as subtype
+constraints. But it has the disadvantage that it exposes pro-grammers to a much richer and more complicated world. In
+keeping with our practical focus, our idea is to see how farwe can get without mentioning constraints to the programmer at all - indeed, they barely show up in the presentationof the type system. Our approach is less general, but it has
+an excellent power-to-weight ratio.
+The eval function is a somewhat specialised example, butearlier papers have given many other applications of GADTs,
+
+including generic programming, modelling programminglanguages, maintaining invariants in data structures (e.g. redblack trees), expressing constraints in domain-specific em-bedded languages (e.g security constraints), and modelling
+
+Variables x;y;z
+Type variables ff;fi
+Type constructors T
+Data constructors C
+
+Programs prog ::= d t
+Data types d ::= data Tff where C::8ff:oe ! T ,
+Atoms v ::= x j C
+Terms t;u ::= v j *p:t j \Lambda ff:t j t u j t oe
+
+j let xoe = u in t
+j case(oe) t of p->t
+Patterns p;q ::= xoe j C ff p
+
+Types oe;OE;, ::= 8ff.oe j oe ! OE j T oe j ff
+Type contexts \Gamma ;\Delta  ::= ffl j \Gamma ;ff j \Gamma ;v : oe
+Constraint lists \Pi  ::= ss
+Constraint ss ::= oe1
+
+:
+= oe2
+
+Substitutions ` ::= /0 j ? j `;ff 7! oe
+
+ftv(oe) :: ff Free type variables of oe
+ftv(oe) = ...standard...
+
+ftv(\Gamma ) :: ff Type variables in domain of \Gamma 
+ftv(\Gamma ) =
+
+S
+
+fftv(oe) j (x : oe) 2 \Gamma g
+
+Figure 1: Syntax of the core language
+
+objects [Hin03, XCC03, CH03, SP04, She04]. The inter-ested reader should consult these works; meanwhile, for this
+paper we simply take it for granted that GADTs are useful.
+
+3 The core language
+Our first step is to describe an explicitly-typed language,in the style of System F, that supports GADTs. This language allows us to introduce much of our terminology andmental scaffolding, in a context that is relatively simple and
+constrained. This so-called core language is more than apedagogical device, however. GHC uses a System-F-style
+language as its intermediate language, and the language wedescribe here is very close to that used by GHC (extended
+to support GADTs). Furthermore, the source-language typesystem that we describe in Section 4 gives a type-directed
+translation into the core language, and that is the route bywhich we prove soundness for the source language.
+
+3.1 Syntax of the core language
+Figure 1 gives the syntax of the core language and its types.As in System F, each binder is annotated with its type, and
+
+type abstraction (\Lambda ff:t) and application (t oe) is explicit. The
+let binding form is recursive. In this paper, every type vari-able has kind "
+
+*"; the extension to higher kinds is straight-forward, but increases clutter. The system is impredicative,
+
+however; for example, the type application (f (8ff:ff ! ff))is legitimate.
+
+3
+
+We use overbar notation extensively. The notation ffn meansthe sequence
+
+ff1 \Delta \Delta  \Delta  ffn; the "n" may be omitted when it isunimportant. The notation
+
+a # b means that the two se-quences have no common elements. Although we give the
+
+syntax of function types in the conventional curried way, wealso sometimes use an equivalent overbar notation, thus:
+
+oen ! OE j oe1 ! \Delta  \Delta \Delta  ! oen ! OE
+We will sometimes decompose sequences one element at atime, using the following grammar.
+
+a ::= ffl j a;a
+This notation is used in the declaration of data types (Fig-ure 1), which are given by explicitly enumerating the constructors, giving an explicit type signature for each. The dec-laration of
+
+Term in Section 2 was an example.
+
+Pattern-matching over these data types is done by case ex-pressions. Each such expression
+
+(case(oe) t of p->t) is dec-orated with its result type
+oe, and patterns p may be nested.(GHC's intermediate language does not have nested patterns,
+
+but the source language certainly does, and nested patternsturn out to have interesting interactions with GADTs, so it is
+worth exploring them here.)
+Notice that a constructor pattern (C ff xoe) binds type vari-ables
+
+ff as well as term variables xoe. For example, here ispart of the definition of eval, expressed in the core language:
+
+eval :: forall a. Term a -> a
+
+= /\a. \(x:Term a).
+
+case(a) x of
+
+Lit (i:Int) -> i
+Pair b c (s::Term b) (t::Term c)
+
+-> (eval b s, eval c t)
+Fst b c (t:Term (b,c))
+
+-> fst (b,c) (eval (b,c) t)
+...etc...
+
+Each constructor pattern binds a (fresh) type variable foreach universally-quantified type variable in the constructor's
+
+type. Then, as we shall see, the same type refinement thatrefines
+
+a to Int in the Lit case will refine a to b (or viceversa) in the
+
+If case, and will refine a to (b,c) in the Fstcase. Notice, too, the essential use of polymorphic recursion:
+
+the recursive calls to eval are at different types than a. Tobe useful, a language that offers GADTs must also support
+polymorphic recursion.
+3.2 Type system of the core language
+Figure 2 gives the type system of the core language. We omitrules for data type declarations
+
+d, because they simply pop-ulate the environment
+\Gamma  with the types of the constructors.The main typing judgement
+
+\Gamma  ` t : oe is absolutely standard.
+
+The auxiliary judgement \Gamma  `
+
+k
+
+oe checks that oe is well-kinded;since all type variables have kind
+
+*, the judgement checks
+
+U(ff ; \Pi ) :: `
+
+U(ff ; ffl) = /0
+U(ff ; oe
+
+:
+= oe;\Pi ) = U(ff ; \Pi )
+
+U(ff ; fi
+
+:
+= oe2;\Pi ) = U(ff ; \Pi [oe2=fi]) ffi [fi 7! oe2]
+
+fi 62 ff;fi 62 oe2
+U(ff ; oe1
+
+:
+= fi;\Pi ) = U(ff ; \Pi [oe1=fi]) ffi [fi 7! oe1]
+
+fi 62 ff;fi 62 oe1
+U(ff ; oe1 ! oe01
+
+:
+= oe2 ! oe02;\Pi )
+
+= U(ff ; oe1
+
+:
+= oe2;oe01
+
+:
+= oe02;\Pi )
+
+U(ff ; T oe1
+
+:
+= T oe2;\Pi ) = U(ff ; oe1
+
+:
+= oe2;\Pi )
+
+U(ff ; 8fi:oe1
+
+:
+= 8fi:oe2;\Pi ) = U(fi;ff ; oe1
+
+:
+= oe2;\Pi )
+
+U(a ; o/1
+
+:
+= o/2;\Pi ) = ?
+
+Figure 3: Core-language most general unification
+
+only that the type variables of oe are in scope, and that ap-plications of type constructors
+
+T are saturated. We omit thedetails.
+
+Pattern-matching is where all the interest lies. The judge-ment
+
+\Gamma  `
+
+a
+
+p ! u : oe1 ! oe2
+
+checks each alternative of a case expression. Intuitively,both
+
+oe1 and oe2 should be considered as inputs to this judge-ment; the former is the type of the scrutinee, while the latter
+
+annotates the case (see rule CASE). The first thing that `
+
+a
+
+does is to typecheck the (possibly nested) pattern, using ajudgement of form
+
+\Gamma  ; \Delta  ; ` `
+
+p
+
+p : oe ; \Delta 0 ; `0
+
+Here, \Gamma  is the type environment giving the types of the con-structors,
+
+p is the pattern, and oe is the type of the pattern.The judgement also takes a mini-environment
+
+\Delta  describingthe type and term variables bound to the left of the pattern
+
+p in the current pattern-match, and extends it with the bind-ings in
+
+p to give \Delta 0. The bindings \Delta  are "threaded" top-downand left-to-right through the patterns, starting off empty,
+
+ffl,in rule
+ALT. The threading work is done by the auxiliaryjudgement
+
+`
+
+ps, which simply invokes
+
+`
+
+p successively on a
+
+sequence of patterns. This threading makes it easy to checkfor repeated variables -- the test
+
+x#dom(\Delta ) in rule PVAR --but our real motivation for threading
+
+\Delta  will not be apparentuntil Section 4.7.
+
+The least conventional feature of the pattern judgement is a
+substitution, or type refinement, `, to which we have alreadyreferred informally; again, the judgement takes a type refinement ` and extends it with type refinements from p to give
+`0. The type refinement is threaded in exactly the same wayas
+
+\Delta , for reasons we discuss in Section 3.4.
+
+Let us focus on rule PCON, which deals with a constructorpattern
+
+Cff p. First, we look up the type of C in \Gamma ; it hasargument types
+
+oec (where c is the arity of the constructor)
+
+4
+
+Terms \Gamma  ` t : oe
+(v : oe) 2 \Gamma 
+
+\Gamma  ` v : oe ATOM
+
+\Gamma  ` t : oe0 ! oe \Gamma  ` u : oe0
+
+\Gamma  ` t u : oe TERM-APP
+
+\Gamma  `
+
+k
+
+oe \Gamma  ` t : 8ff:oe0
+
+\Gamma  ` t oe : oe0[oe=ff] TYPE-APP
+
+\Gamma  `
+
+a
+
+p->t : oe ! oe0
+
+\Gamma  ` (*p:t) : oe ! oe0 TERM-LAM
+
+\Gamma ;ff ` t : oe ff # dom(\Gamma )
+
+\Gamma  ` (\Lambda ff:t) : 8ff:oe TYPE-LAM
+
+\Gamma ;x : oe ` u : oe \Gamma ;x : oe ` t : oe0
+
+\Gamma  ` (let xoe=u in t) : oe0 LET
+
+\Gamma  `
+
+k
+
+oe2 \Gamma  ` t : oe1 \Gamma  `
+
+a
+
+p -> u : oe1 ! oe2
+
+\Gamma  ` (case(oe2) t of p -> u) : oe2 CASE
+
+Case alternatives \Gamma  `
+
+a
+
+p ! u : oe1 ! oe2
+
+\Gamma  ; ffl ; /0 `
+
+p
+
+p : oe1 ; \Delta  ; ` `(\Gamma ;\Delta ) ` `(u) : `(oe2)
+
+\Gamma  `
+
+a
+
+p ! u : oe1 ! oe2 ALT
+
+\Gamma  ; ffl ; /0 `
+
+p
+
+p : OE ; \Delta  ; ?
+
+\Gamma  `
+
+a
+
+p ! u : OE ! oe ALT-FAIL
+
+Patterns \Gamma  ; \Delta  ; ` `
+
+p
+
+p : oe ; \Delta 
+
+0
+
+; `
+
+0
+
+\Gamma  ; \Delta  ; ? `
+
+p
+
+p : oe ; ffl ; ? PFAIL
+
+x # dom(\Delta ) `(oe) = `(OE)
+
+\Gamma  ; \Delta  ; ` `
+
+p
+
+xoe : OE ; \Delta ;(x : oe) ; ` PVAR
+
+(C : 8ff:oec ! T ,
+
+t
+
+) 2 \Gamma  ff # dom(\Gamma ;\Delta )
+
+`(OE) = T ,0
+
+t
+
+`0 = U(T ,
+
+t :
+
+= T ,0
+
+t
+
+)
+
+\Gamma  ; (\Delta ;ff) ; `0 ffi ` `
+
+ps
+
+p : oec ; \Delta 00 ; `00
+
+\Gamma  ; \Delta  ; ` `
+
+p
+
+C ff pc : OE ; \Delta 00 ; `00 PCON
+
+Pattern sequences \Gamma  ; \Delta  ; ` `
+
+ps
+
+p : oe ; \Delta 
+
+0
+
+; `
+
+0
+
+\Gamma  ; \Delta  ; ` `
+
+ps
+
+ffl ; \Delta  ; ` PEMPTY
+
+\Gamma  ; \Delta  ; ` `
+
+p
+
+p : oe ; \Delta 0 ; `0 \Gamma  ; \Delta 0 ; `0 `
+
+ps
+
+p : oe ; \Delta 00 ; `00
+
+\Gamma  ; \Delta  ; ` `
+
+ps
+
+p : oe;p : oe ; \Delta 00 ; `00 PCONS
+
+Figure 2: Core language typing rules
+and result type T ,
+
+t (where
+
+t is the arity of T). We requirethat the binding type variables
+
+ff are not already in scope, andwe quietly alpha-rename the constructor's type to use these
+
+variables. Now comes the interesting bit: we must match upthe constructor's result type
+
+T , with the pattern's type in theconclusion of the rule,
+OE. We do this in two steps. First, thetest
+`(OE) = T ,0 checks that the result type in the conclusion,
+OE, when refined by the type refinements induced by "earlier"patterns, is an application of
+
+T to some types ,0. Second, weunify the constructor's result type
+
+T , with the pattern type
+T ,0, using the function U that computes the most-generalunifier, and use the resulting substitution to extend the type
+
+refinement. The definition of U is given in Figure 3, andis standard, apart from a straightforward extension to handle
+
+polymorphic types.
+Returning to rule ALT, once `
+
+p has type-checked the pattern,
+
+we typecheck the right-hand side of the alternative, u, underthe type refinement
+
+`. To achieve this effect, we simply apply
+` to \Gamma , \Delta , u, and the result type oe2, before checking the typeof
+
+u.
+
+A subtlety of rule PCON is the separation of the third andfourth preconditions. It is possible to combine them, to obtain the single condition `0 = U(`(OE)
+
+:
+= T ,
+
+t
+
+) However, do-ing so makes too many programs typeable. For example:
+
+/\a. \x:a. case(Bool) x of { (a,b) -> True }
+This program would be regarded as ill-typed by ML orHaskell, because a variable of polymorphic type
+
+a is treated
+
+5
+
+as a pair type. The program is rejected by the third pre-condition of rule
+
+PCON, `(OE) = T ,0, which not only applies
+` but also insists that the result is an application of T. Un-der the above modification, however, it would be regarded
+
+as acceptable, because a is refined to a pair type by `; andindeed, such a modification is perfectly sound provided the
+dynamic semantics can distinguish between constructors ofdifferent types (
+
+False and Nil, say). Precisely this designchoice is made by Jay [Jay03]. Nevertheless, we adopt the
+
+Haskell/ML view here, for reasons both of principle (moreerrors are discovered at compile time) and practice (implementation of the new dynamic semantics would be difficult).
+3.3 An example
+It is instructive to see how the rules work in an example.Here is the first part of the body of
+
+eval:
+
+/\a. \(x:Term a). case(a) x of
+
+Lit (i:Int) -> i
+
+Since Lit has type Int -> Term Int, the pattern binds notype variables. Rule
+
+CASE invokes the judgement
+
+\Gamma  `
+
+a Lit (i:Int) -> i
+
+: Term a ! a
+
+In rule PCON we unify Term Int (the result type of Lit)with
+
+Term a, to obtain the type refinement [a 7! Int]. Thenrule
+ALT applies that substitution to the right-hand side i andresult type
+
+a, and type-checks the right-hand side, which suc-ceeds.
+
+The next alternative is more interesting:
+
+Pair b c (t1::Term b) (t2::Term c)
+
+-> (eval b t1, eval c t2)
+
+The pattern binds two new type variables b and c, and gen-erates the type refinement
+
+[a 7! (b,c)]; again, the right handside type-checks once this substitution is applied to the result
+
+type a. We discuss just one other constructor, Fst, which hasthe interesting property that it has an existential type variable
+(because one of the quantified type variables does not appearin the result type of the constructor):
+
+Fst b c (t:Term (b,c))
+
+-> fst (b,c) (eval (b,c) t)
+
+As with Pair, the pattern binds two fresh type variables band
+
+c. The result type of the constructor is just Term b -it does not mention
+
+a - so rule PCON forms U(Term b
+
+:
+=
+
+Term a), yielding either the substitution [a 7! b] or [b 7! a].The reader may want to confirm that in either case the right
+
+hand side is well typed.
+3.4 Nested patterns
+Consider these two functions (we omit big lambdas and sometype annotations):
+
+f1 (x::Term a) (y::a)
+
+= case(a) x of
+
+Pair p q -> case(a) y of
+
+(r,s) -> (p,s)
+f2 (x::Term a) (y::a)
+
+= case(a) (x,y) of
+
+(Pair p q, (r,s)) -> (p,s)
+
+It should be clear that f1 is well-typed, because the type re-finement induced by the pattern match on
+
+x is "seen" by theinner
+case; in that context, y has a pair type so the casemakes sense. If the two cases were reversed, the function
+
+would be ill-typed. But what about f2? Here, the two casesare merged into one; but is the left-hand match "seen" by the
+right-hand one?
+This is an open design choice, and other things being equalthe more refinement the better, so we provide for left-to-right
+
+refinement. This is the reason that we "thread" the substi-tution in our pattern judgement. A consequence is that the
+compiler must generate code that matches patterns left-to-right. In a lazy language like Haskell, termination considerations force this order anyhow, so no new compilation con-straints are added by our decision. In a strict language, however, one might argue for greater freedom for the compiler,and hence less type refinement, as indeed Simonet and Pottier do [SP03]
+3.5 Meta-theory
+We have proved that the type system of Figure 2 is soundwith respect to the obvious small-step dynamic semantics
+
+(omitted here for lack of space).
+
+THEOREM 3.1 (TYPE SOUNDNESS FOR CORE LANGUAGE).
+If ffl ` t : oe then e either evaluates to a value or diverges.
+
+Our dynamic semantics does not depend on type informationat run time - one may erase all types without affecting execution. Our definition of values is also standard. We provetype soundness using the standard progress and preservation
+lemmas.
+We have also proved that type checking is decidable. Thatis, given a well-formed context
+
+\Gamma  and an expression t, it isdecidable whether there exists a
+
+oe such that \Gamma  ` t : oe. Be-cause our rules are syntax-directed, showing that type checking is decidable is straightforward, given that U is decid-able [Rob65]. The type checking algorithm may be read
+from the inference rules.
+We are more used to seeing unification in type inference al-gorithms, and it is unusual to see it in declarative type checking rules. The best way to think about it is this. A successfulpattern match implies the truth of certain equality constraints
+among types, all of form T ,
+
+:
+= T ,0, and the case alternativeshould be checked under these constraints. However, rather
+
+than add a set of constraints to the environment, and reasonabout type equality modulo those constraints, we solve the
+
+6
+
+constraints to get their most general unifier, and apply theresulting substitution. We find that it is much easier to explain the type system to programmers in terms of an eagerly-applied substitution than by speaking of constraint sets - and
+the usual question of whether or not one can abstract overconstraints simply does not arise. In effect, we are exploiting the special case of equality constraints to simplify thetechnology.
+
+This use of U is not new - it was used in essentially thesame way by Coquand [Coq92] and by Jay [Jay03] (from
+whom we learned the trick). It is essential for soundness thatthe
+
+U function indeed delivers the most general unifier. (Incontrast, in the conventional use of unification for type inference, any unifier is sound.) Why? Because the constraintsgathered in the patterns are treated as
+
+facts in the case alter-native, and we cannot soundly invent new facts - for example, we cannot suddenly assume that ff is Int.
+Technically, the fact that U must be a most general unifiershows up in the type substitution lemma of the type soundness proof. In this case, we must show that even thougha type substitution
+
+` may produce a different refinementfor branches of a case alternative, those branches are still
+
+well typed after substitution with ` and this new refinement.However, the new refinement composed with
+
+` is a unifierfor the original types, and the original refinement was the
+
+most general unifier. Therefore, we know that the new refine-ment and
+
+` is some substitution `0 composed with the origi-nal refinement. We know the branch was well-typed with the
+
+original refinement, so by induction, it must be well-typedafter substitution by
+
+`0.
+
+Since the most-general unifier contains exactly the same in-formation as the original constraints, the choice of whether to
+
+pass constraints around or apply a unifier is a matter of taste.Both choices lead to languages that type check the same
+terms. However, the two choices require different meta-theory - the proofs of type soundness and the decidability
+of type checking are a bit different for the two alternatives,although the proofs for both alternatives seem to be of equivalent complexity.
+Most other authors have chosen the alternative path, ofdealing with constraint sets explicitly. For example, Xi
+
+et al. [XCC03] and Cheney and Hinze [CH03] designexplicitly-typed versions of System F that include equality
+constraints in the typing environment. These equality con-straints admit a straightforward type soundness proof. However, showing that type checking is decidable (done by Ch-eney and Hinze, but not by Xi et al.) is more difficult. Because the typing rules are not syntax directed (one rule allowsany expression to be typed with any equivalent type), decidable type checking requires putting these typing derivationsinto a normal form, which requires computing their most
+general unifier.
+
+4 The source language
+We now move on to consider the source language. The lan-guage is implicitly typed in the style of Haskell, but the type
+
+system is far too rich to permit type inference in the absenceof any help from the programmer, so type inference is guided
+by programmer-supplied type annotations. The type systemspecifies precisely what annotations are required to make a
+program well-typed.
+If the type system accepts too many programs, it may beeffectively un-implementable, either in theory (by being undecidable) or in practice (by being too complicated). Sincewe want to implement it, we must be careful to write typing rules that reject hard-to-infer programs. A good exampleof this principle is the treatment of polymorphic recursion
+in Haskell 98. A program that uses polymorphic recursionmight in principle have a valid typing derivation, but it is
+hard to find it. So we reject the program unless the offend-ing function has a type signature. It follows, of course, that
+programmer-supplied type annotations play a key role in thetyping judgements.
+
+Since our goal is tractable inference, we must speak, at leastinformally, about inference algorithms. A potent source of
+confusion is that, as in Section 3, unification forms part ofthe specification of the type system (when pattern-matching
+on GADTs), and also forms part of the implementation of thetype inference algorithm. We keep the two rigorously separate. Where confusion may arise we call the former matchunification and the latter inference-unification. We also de-scribe the substitution arising from match-unification as a
+
+type refinement.
+4.1 Syntax
+The syntax of the source language is in Figure 4. Unlike thecore language, binders have no compulsory type annotation,
+
+nor are type abstractions or applications present. Instead, theprogrammer may optionally supply a type annotation on a
+term, thus (t::ty). For example, here is part of eval again,in our source language:
+
+eval :: forall a. Term a -> a
+
+= \x. case x of
+
+Lit i -> i
+Pair s t -> (eval s, eval t)
+Fst t -> fst (eval t)
+...etc...
+
+Compared to the core-language version of the same functionin Section 3, the source language has implicit type abstraction and application, and variables are not annotated withtheir types (except in
+
+letrec).
+
+4.2 Source types and internal types
+We distinguish between source types, ty, and internal types,
+oe, and similarly between source type variables a and internal
+
+7
+
+Variables x;y;z
+Type constructors T
+Data constructors C
+Source type variables a;b;c
+Target type variables ff;fi
+
+Atoms v ::= x j C
+Terms t;u ::= v j *p.t j t u j t::ty
+
+j let x = u in t
+j letrec x::ty = u in t
+j case t of p -> t
+Patterns p;q ::= x j C p
+Source types ty ::= a j ty1->ty2 j T ty
+
+j forall a: ty
+
+Polytypes oe;OE ::= 8ff:o/
+Monotypes o/;AE ::= To/ j o/1 ! o/2 j ff j o/
+
+Type contexts \Gamma  ::= ffl j \Gamma ;ff j \Gamma ;(v : oe) j \Gamma ;a = o/
+
+Note: a = o/ form unused until Section 4.7
+Constraint lists \Pi  ::= ss
+Constraint ss ::= o/1
+
+:
+= o/2
+
+Substitutions ` ::= /0 j `;ff 7! o/ j ?
+
+Figure 4: Syntax of source types and terms
+
+type variables ff. The former constitute part of a source pro-gram, while the latter are used in typing judgements
+
+aboutthe program. The syntax of both is given in Figure 4. An
+
+auxiliary judgement \Gamma  `
+
+t
+
+ty  oe checks that ty is well-kinded, and gives the internal type
+
+oe corresponding to ty.We omit the details of this judgement which is standard. For
+
+the present, we assume that ty is a closed type, a restrictionwe lift in Section 4.7.
+
+The syntax of internal types is mostly conventional. It isstratified into polytypes (
+
+oe;OE), and monotypes (o/; AE); and itis
+predicative: type variables range over monotypes (typeswith no
+
+8's within them), and the argument(s) of a type con-structor are always monotypes. Predicativity makes type inference considerably easier. In our implementation in GHC,types can also have higher kinds, exactly as in Haskell 98,
+and can be of higher rank [PS04]. These two features turnout to be largely orthogonal to generalised data types, so we
+omit them here to keep the base system as simple as possible.
+There is one brand-new feature, unique to this system: the"wobbly" monotypes,
+
+o/ . The intuition is this: the un-wobblyparts of a type can all be traced to programmer-supplied
+
+type annotations, whereas the wobbly parts cannot. Wobblytypes address the following challenge. When we want to type
+a case expression that scrutinises a GADT, we must applya different type refinement to each alternative, just as in the
+explicitly-typed language of Section 3. The most straightfor-ward way to do this is to follow the type rules rather literally:
+
+ftv(oe) :: ff Free type vars of oe
+
+ftv(o/) :: ff Free type vars of o/
+ftv(\Gamma ) :: ff Free type vars of \Gamma 
+ftv(\Gamma ) =
+
+S
+
+fftv(oe) j (x : oe) 2 \Gamma g
+
+S(o/) :: o/ Strip boxes from o/
+S(ff) = ff
+S(T o/) = T S(o/)
+S(o/1 ! o/2) = S(o/1) ! S(o/2)
+
+S( o/ ) = S(o/)
+
+S(\Gamma ) :: \Gamma  Strip boxes from \Gamma 
+S(ffl) = ffl
+S(\Gamma ;ff) = S(\Gamma );ff
+S(\Gamma ;(v : oe)) = S(\Gamma );(v : S(oe))
+S(\Gamma ;(a = o/)) = S(\Gamma )
+
+push(o/) :: o/ Push boxes down one level
+push( T o/ ) = T o/
+push( o/1 ! o/2 ) = o/1 ! o/2
+
+push( o/ ) = push( o/ )
+
+`(o/) :: o/ Apply a type refinement
+`(ff) = ff if ff 62 dom(`)
+
+= o/ if [ff 7! o/] 2 `
+`(T o/) = T `(o/)
+`(o/1 ! o/2) = `(o/1) ! `(o/2)
+
+`( o/ ) = o/
+
+`(\Gamma ) :: \Gamma  Apply a type refinement to \Gamma 
+`(ffl) = ffl
+`(\Gamma ;ff) = `(\Gamma ) if ff 2 dom(`)
+
+= `(\Gamma );ff otherwise
+`(\Gamma ;(v : oe)) = `(\Gamma );(v : `(oe))
+`(\Gamma ;(a = o/)) = `(\Gamma );(a = `(o/))
+
+`*(o/) = o/
+`+(o/) = `(o/)
+
+Figure 5: Functions over types
+
+type-check the pattern, perform the match-unification, applythe substitution to the environment and the result type, and
+then type-check the right hand side. There are two poten-tial difficulties for inference: (a) the types to be unified may
+not be fully known; and (b) the types to which the substi-tution is applied may not be fully known. Type inference
+typically proceeds by using meta-variables to represent as-yet-unknown monotypes, relying on inference-unification to
+fill them out as type inference proceeds. At some interme-diate point, this filling-out process may not be complete; indeed, just how it proceeds depends on the order in which theinference algorithm traverses the syntax tree.
+
+As a concrete example, consider this:
+8
+
+f x y = (case x of { ... }, x==[y])
+Initially, x and y will be assigned distinct meta variables, ffand
+
+fi, say. If the algorithm processes the syntax tree right-to-left, the term
+
+x==[y] will force ff to be unified to [fi],and that information might influence how match-unification
+
+takes place in the case expression (if it involved a GADT).On the other hand, if the algorithm works left-to-right, this
+information might not be available when examining the caseexpression.
+
+Our goal is that the specification of the type system shouldnot constrain the inference algorithm to a particular traversal order. Wobbly types are our mechanism for achievingthis goal. The intuition is this:
+
+ffl In the places where an inference algorithm would haveto "guess" a type, we use a wobbly type to indicate that
+
+fact. For example, if lambda abstractions bound only asimple variable, the rule for abstraction would look like
+this:
+
+\Gamma ; (x : o/1 ) ` t : o/2
+
+\Gamma  ` (\x.t) : ( o/1 ! o/2)
+The argument type o/1 is "presciently guessed" by therule; an inference algorithm would use a meta type variable. So in the typing rule we use a wobbly o/1 to reflectthe fact that
+
+x's type may be developed gradually by theinference algorithm.
+
+ffl When performing match-unification in the alternativesof
+
+case expression scrutinising a GADT, we make nouse of information inside wobbly types. We will see
+
+how this is achieved in Section 4.5.
+ffl When applying the substitution from that match-unification, to refine the type environment and return
+
+type, we do not apply the substitution to a wobbly type:
+`( o/ ) = o/ (Figure 5).
+
+Wobbly types ensure the type refinements arising fromGADTs are derived only from, and applied only to, types that
+
+are directly attributable to programmer-supplied type anno-tations. We describe a type with no wobbly types inside it as
+rigid.
+4.3 Directionality
+Wobbly types allow us to record where the type system"guesses" a type but, to complete the picture, we also need a
+
+way to explain when the type system must guess, and whena programmer-supplied type annotation specifies the necessary type. Our intuition is this: when the programmer canpoint to a simple "audit trail" that links the type of a variable
+to a programmer-supplied annotation, then the system shouldgive the variable a rigid type, so that it will participate in type
+refinement. For example, if the programmer writes:
+
+foo :: a -> T a -> T a
+foo x xs = ...
+
+then he might reasonably expect the system to understandthat the the type of
+
+x is a, and the type of xs is T a. To makethis intuitive idea precise, we annotate our typing judgements
+
+with a directionality flag, ffi. For example, the judgement
+\Gamma  `* t : o/ means "in environment \Gamma  the term t has type o/,regardless of context", whereas
+
+\Gamma  `+ t : o/ means "in envi-ronment
+\Gamma , the term t in context o/ is well-typed". The up-arrow
+* suggests pulling a type up out of a term ("guessingmode"), whereas the down-arrow
+
++ suggests pushing a typedown into a term ("checking mode"). We use checking mode
+
+when we know the expected type for a term, because it isgiven by a programmer-supplied type annotation.
+
+To see how the directionality works, here is how we split therule for abstraction given in Section 4.2 into two, one for
+each direction:
+
+\Gamma ;(x : o/1 ) `* t : o/2
+\Gamma  `* (\x.t) : ( o/1 ! o/2)
+
+\Gamma ;(x : o/1) `+ t : o/2
+\Gamma  `+ (\x.t) : (o/1 ! o/2)
+
+The first rule, used when we do not know the way in whichthe term is to be used, is just as given in Section 4.2. On
+the other hand, if the type is supplied by the context, thesecond rule does not make
+
+o/1 wobbly - if there is any uncer-tainty about it, that uncertainty should already be expressed
+
+by wobbly types inside o/1.
+The idea of adding a directionality flag to typing judgementswas first published by Pierce & Turner, who called it
+
+localtype inference. We used directionality flags to support type
+
+inference for higher-rank types in [PS04], and it is a bonusthat exactly the same technology is useful here.
+
+4.4 The typing rules
+The type rules for the source language are given in Figure 6.They give a type-directed translation into the core language
+
+of Section 3. For example, the judgement \Gamma  `ffi t  t0 : o/says that term
+
+t translates into the core term t0, with type o/.
+
+We begin with rule ATOM, which deals with a variable or
+constructor by instantiating its type, oe, using `
+
+inst
+
+ffi . Thelatter chooses arbitrary, well-kinded wobbly types
+
+AE to in-stantiate
+
+oe, the wobbliness indicating that the system must"guess" the types
+
+AE. Their well-kindedness is checked by
+
+`
+
+k, whose details we omit as usual. In guessing mode we are
+
+now done, but in checking mode the wobbliness may get inthe way. For example, it is perfectly acceptable for a function with type Int ! Bool to be given an argument of type
+Int, and vice versa. Hence, the auxiliary judgement ` o/ , o/0checks for equality modulo wobbliness. The function
+
+S (o/),defined in Figure 5, removes wobbliness from an internal
+
+type.
+Rule ANNOT invokes `
+
+gen
+
++ to "push" the known type signa-ture into the term, as discussed in Section 4.3. Rule LET is
+
+quite conventional, and uses `
+
+gen
+
+* in guessing mode, while
+
+9
+
+Terms \Gamma  `ffi t  t
+
+0
+
+: o/
+
+(v : oe) 2 \Gamma  \Gamma  `
+
+inst
+
+ffi oe ^ o/  AE
+
+\Gamma  `ffi v  v AE : o/ ATOM
+
+\Gamma  `
+
+t
+
+ty  oe \Gamma  `
+
+gen
+
++ t  t
+
+0 : oe \Gamma  `inst
+
+ffi oe ^ o/  AE
+
+\Gamma  `ffi (t::ty)  t0 AE : o/ ANNOT
+
+\Gamma  `
+
+gen
+
+* u  u
+
+0 : oe (\Gamma ;x : oe) `
+
+ffi t  t
+
+0 : o/
+
+\Gamma  `ffi (let x=u in t)  (let xS(oe)=u0 in t0) : o/ LET
+
+\Gamma  `
+
+t
+
+ty  oe \Gamma ;x : oe `
+
+gen
+
++ u  u
+
+0 : oe \Gamma ;x : oe `
+
+ffi t  t
+
+0 : o/
+
+\Gamma  `ffi (letrec x::ty=u in t)  (let xS(oe)=u0 in t0) : o/ REC
+
+\Gamma  `
+
+k
+
+o/1 \Gamma  `
+
+a
+
+* p->t  p
+
+0->t0 : o/
+
+1 ! o/2
+
+\Gamma  `* *p.t  *p0.t0 : o/1 ! o/2 ABS
+
+*
+
+\Gamma  `
+
+a
+
++ p->t  p
+
+0->t0 : o/
+
+1 ! o/2
+
+\Gamma  `+ *p.t  *p0.t0 : o/1 ! o/2 ABS
+
++
+
+\Gamma  `* u  u0 : o/1 \Gamma  `
+
+a
+
+ffi p->t  p
+
+0->t0 : o/1 ! o/2
+
+\Gamma  `ffi (case u of p->t)  (case(o/2) u0 of p0->t0) : o/2 CASE
+
+\Gamma  `* t  t0 : o/ push(o/) = o/1 ! o/2
+
+\Gamma  `+ u  u0 : o/1 `ffi o/2 , o/02
+
+\Gamma  `ffi t u  t0 u0 : o/02 APP
+
+\Gamma  `
+
+gen
+
+ffi t  t
+
+0
+
+: oe
+
+\Gamma ;ff `ffi t  t0 : o/ ff # dom(\Gamma )
+
+\Gamma  `
+
+gen
+
+ffi t  \Lambda ff:t
+
+0 : 8ff.o/ GEN
+
+\Gamma  `
+
+inst
+
+ffi oe ^ o/  AE
+
+\Gamma  `
+
+k
+
+AE `ffi [ ff 7! AE ]o/1 , o/2
+
+\Gamma  `
+
+inst
+
+ffi 8ff.o/1 ^ o/2  S(AE)
+
+INST
+
+`ffi o/1 , o/2
+
+`* o/ , o/ INST
+
+* S
+
+(o/1) = S(o/2)
+
+`+ o/1 , o/2 INST
+
++
+
+Case alternatives \Gamma  `
+
+a
+
+ffi p->u  p
+
+0->
+
+u
+
+0
+
+: o/1 ! o/2
+
+\Gamma  ; ffl ; /0 `
+
+p
+
+p  p0 : o/1 ; \Delta  ; ` dom(\Delta ) # (ftv(o/2)) `(\Gamma ;\Delta ) `ffi u  u0 : `ffi(o/2)
+
+\Gamma  `
+
+a
+
+ffi p->u  p
+
+0->u0 : o/
+
+1 ! o/2
+
+ALT
+
+Patterns \Gamma  ; \Delta  ; ` `
+
+p
+
+p  p
+
+0
+
+: o/ ; \Delta 
+
+0
+
+; `
+
+0
+
+x # dom(\Delta )
+\Gamma  ; \Delta  ; ` `
+
+p
+
+x  xS(o/) : o/ ; \Delta ;(x : o/) ; ` PVAR
+
+(C : 8ff:o/c ! T AEt) 2 \Gamma  ff # dom(\Gamma ;\Delta )
+push(`(AE0)) = T AE00
+
+t
+
+`
+
+u
+
+(T AEt
+
+:
+= T AE00
+
+t
+
+)  `0
+
+\Gamma  ; \Delta ;ff ; (`0 ffi `) `
+
+ps
+
+p : o/c  p0
+
+c
+
+; \Delta 00 ; `00
+
+\Gamma  ; \Delta  ; ` `
+
+p
+
+C pc  C ff p0
+
+c
+
+: AE0 ; \Delta 00 ; `00 PCON
+
+Wobblyunification
+
+`
+
+u
+
+\Pi   `
+
+`(\Pi 0) = \Pi  dom(`) # ftv(\Pi )
+\Pi 0 is rigid `0 is a most general unifier of \Pi 0
+
+`
+
+u
+
+\Pi   (` ffi `0) jftv(\Pi ) UNIF
+
+Pattern sequences \Gamma  ; \Delta  ; ` `
+
+ps
+
+p : o/  p 0 ; \Delta 
+
+0
+
+; `
+
+0
+
+\Gamma  ; \Delta  ; ` `
+
+ps
+
+ffl  ffl ; \Delta  ; ` PEMPTY
+
+\Gamma  ; \Delta  ; ` `
+
+p
+
+p1 : o/1  p01 ; \Delta 0 ; `0 \Gamma  ; \Delta 0 ; `0 `
+
+ps
+
+p : o/  p0 ; \Delta 00 ; `00
+
+\Gamma  ; \Delta  ; ` `
+
+ps
+
+p1 : o/1;p : o/  p01;p0 ; \Delta 00 ; `00 PCONS
+
+Figure 6: Typing rules for the source language
+
+10
+
+rule REC uses checking mode to support polymorphic recur-sion.. The rule for application (
+
+APP), is a little unusual, how-ever. What one normally sees is something like this:
+
+\Gamma  ` t : o/1 ! o/2 \Gamma  ` u : o/1
+
+\Gamma  ` t u : o/2
+However, in our system, it is possible that the function t willturn out to have a wobbly type, or perhaps a doubly-wobbly
+
+type, or more. What we need is that it can be cajoled intothe form
+
+o/1 ! o/2, for some types o/1 and o/2, a predicate wecapture in the partial function
+
+push(o/) (see Figure 5). Thisfunction takes a possibly-wobbly type, and guarantees to return a type with a type constructor (such as a function arrow)at the outermost level. The function
+
+push is partial; for ex-ample,
+push(ff) gives no result, and the APP rule fails. Nowwe can check that
+
+u has the desired type, with `+. Finally,we must check that the function's result type
+
+o/2 matches theexpected result
+o/02, just as we did in rule ATOM.
+
+Rule CASE handles case expressions. First it derives thetype
+
+o/1 of the scrutinee u, and then it uses the auxiliaryjudgement
+
+`
+
+a to type-check the alternatives. Since a lambda
+
+abstraction binds a pattern, it behaves very like a single casealternative, so rules
+
+ABS* and ABS+ simply invoke the sameauxiliary judgement as for
+
+case expressions, the former witha wobbly type as discussed in Section 4.3.
+
+The judgements `
+
+a, for alternatives, and its auxiliary judgement `
+
+p for patterns, take a very similar form to those of
+
+the explicitly-typed language (Section 3). One significantdifference is the use of
+
+push in rule PCON, which appearsfor exactly the same reason as in rule
+
+APP. Another impor-tant difference, also in
+PCON, is that we invoke an auxiliaryjudgement
+`
+
+u
+
+\Pi   ` to unify \Pi ; we discuss this judgementin Section 4.5. The third major difference is that in rule
+
+ALTwe apply
+`ffi to o/2, rather than ` (Figure 4 defines `ffi). Theidea is that in guessing mode, we cannot expect to guess a
+
+single type that can be refined for each alternative by thatalternative's substitution.
+
+4.5 Type refinement with wobbly types
+Rule PCON uses an auxiliary judgement `
+
+u
+
+\Pi   ` to unifythe constraints
+
+\Pi . The key idea is that this judgement per-forms a kind of partial unification of
+
+\Pi , based only on information in \Pi  outside wobbly types. This simple intuition issurprisingly tricky to formalise.
+
+Rule UNIF in Figure 6 gives the details. It splits \Pi  into twoparts: a rigid
+
+\Pi 0, in which arbitrary types within \Pi  have beenreplaced with fresh type variables
+
+fl; and a substitution ` thatmaps the
+fl onto the excised types. (Recall that a type isrigid if it has no wobbly types inside it - Section 4.2) These
+
+two parts fit together, so that `(\Pi 0) is the original \Pi . Nowwe find a most general unifier of
+
+\Pi 0, namely `0. Finally,we re-insert the excised types into
+`0, by composing it with
+
+`, and restricting the domain of the resulting substitution tothe free type variables of
+
+\Pi  -- or, equivalently, discardingany substitutions for the intermediate
+
+fl. (The notation ` jffmeans the substitution
+` with domain restricted to ff.)
+
+The judgement leaves a lot of freedom about how to split
+\Pi  into pieces, but a complete type inference algorithm mustfind a solution if one exists. The way to do this is to split
+
+\Pi  by replacing the outermost wobbly types with fresh typevariables, so that as much rigid information as possible is exposed in \Pi 0. This algorithm is quite discerning. For example,the reader is invited to verify that, using this algorithm,
+
+`
+
+u
+
+(ff
+
+:
+= ( Int ;Bool); ff
+
+:
+= (Int; Bool ))
+
+ [ff 7! (Int; Bool)]
+
+where the result has gathered together the least-wobbly resultthat is justified by the evidence.
+
+Notice that the substitution returned by `
+
+u is not necessarily a unifier of the constraints. For example, here is a validjudgement:
+
+`
+
+u
+
+((ff;fi)
+
+:
+= (Int;Bool) )  /0
+
+where the empty substitution /0 plainly is not a unifier ofthe input constraints. This amounts to saying that the algorithm may do less type refinement than would be justified inan explicitly-typed program. Furthermore,
+
+`
+
+u may succeed
+
+even when there is no unifier of the stripped constraints. Forexample,
+
+`
+
+u
+
+((ff;Int)
+
+:
+= (Int; Bool ))  [ff 7! Int]
+
+This means that the algorithm may not detect all inacces-sible branches of a
+
+case; which is perfectly sound, be-cause such branches are admitted in the core language and
+
+need not be well-typed. Another variant of the same sort is
+`
+
+u
+
+(ff
+
+:
+= ff ! Int )  [ff 7! ff ! Int ]. Again, the strippedversion would be rejected (by the occurs check), but the
+
+source-language type system may not detect the inaccessi-ble branch.
+
+A delicate point of rule UNIF is that we are careful to say that"
+
+`0 is a most general unifier of \Pi 0" rather than "`0 = U(\Pi 0)",because it sometimes makes a difference which way around
+
+the unifier chooses to solve trivial constraints of form ff
+
+:
+= fi.For example, consider this simple Haskell 98 program:
+
+f = \x. case x of { Just y -> y }
+One valid typing derivation gives x the wobbly type
+
+Maybe ff . Now we apply rule PCON to the case pattern: the
+Maybe constructor will bind a fresh type variable, say fi, andwe try to find
+
+`00 such that ` (Maybe fi
+
+:
+= Maybe ff )  `00.To do this we split the constraints into
+
+\Pi 0 = (Maybe fi
+
+:
+=
+
+Maybe fl), and ` = [fl 7! ff ]. Now here is the subtlety:there are two possible most general unifiers
+
+`0, namely
+
+11
+
+[fi 7! fl] and [fl 7! fi]. The former produces the desired re-sult
+
+`00 = (` ffi `0) jff;fi = [fi 7! ff ]. But the latter produces
+`00 = [fl 7! fi]jff;fi= /0 which fails to type the program.
+
+Although this is tricky stuff, an inference algorithm can eas-ily find a "best" most general unifier:
+
+whenever there is a
+choice, the unification algorithm should substitute for thetype variables bound by the pattern. Specifically, when solving a trivial constraint ff
+
+:
+= fi, where fi is bound by the patternand
+
+ff is not, the unifier should substitute [fi 7! ff]; and viceversa. The intuition is that these pattern-bound type variables
+
+only scope over a single case branch, so we should do all wecan to refine them into more globally-valid types.
+
+A minor difference from Section 3 is that we treat unificationfailure as a type error, because rule
+
+UNIF simply fails if \Pi 0has no unifier. This saves two rules, and makes more sense
+
+from a programming point of view, but loses subject reduc-tion. We do not mind the latter, because we treat soundness
+by giving a type-directed translation into our core language,rather than by giving a dynamic semantics for the source language directly.
+
+4.6 Smart function application
+The rules we have presented will type many programs, butthere are still some unexpected failures. Here is an example
+(c.f. [BS02]):
+
+data Equal a b where
+
+Eq :: Equal a a
+data Rep a where
+
+RI :: Rep Int
+RP :: Rep a -> Rep b -> Rep (a,b)
+
+test :: Rep a -> Rep b -> Maybe (Equal a b)
+test RI RI = Just Eq
+test (RP a1 b1) (RP a2 b2)
+
+= case test a1 a2 of
+
+Nothing -> Nothing
+Just Eq -> case test b1 b2 of
+
+Nothing -> Nothing
+Just Eq -> Eq
+
+A non-bottom value Eq of type Equal t1 t2 is a witnessthat the types
+
+t1 and t2 are the same; that is why the con-structor has type
+
+8ff:Equal ff ff. The difficulty with typingthis comes from the guessing involved in function instantiation (rule INST). Even if we know that x : Int, say, the term
+(id x), where id is the identity function, will have type Int .In
+
+test, therefore, no useful information is exposed to typerefinement in the
+
+case expressions, because both scrutinisethe result of a call to a polymorphic function (
+
+test itself),which will be instantiated with wobbly types.
+
+This is readily fixed by treating a function application as a
+
+whole, thus:
+
+(f : 8ff:o/ ! AE) 2 \Gamma  \Gamma  `* t : o/0
+\Gamma  `
+
+m
+
+ff ; (o/
+
+:
+= o/0)  ` `ffi `(AE) , AE0
+
+\Gamma  `ffi f t : AE0 APPN
+
+The idea is that we guess (rather than check) the arguments,obtaining types
+
+o/0 that express our certainty (or otherwise)about these types. Then we use a new judgement
+
+`
+
+m to
+
+match the function's expected argument types o/ against theactual types. Finally, we check that the result types match
+
+up.
+The judgement \Gamma  `
+
+m
+
+ff ; \Pi   ` finds an instantiation of thetype variables
+
+ff that satisfies \Pi . To maximise information,we would like it to find the least-wobbly instantiation that
+
+can, something that our existing unification judgement `
+
+u
+
+also does:
+
+`
+
+u
+
+\Pi   ` \Gamma  `
+
+k
+
+AE `0 = [ ff 7! AE ] ffi ` jff
+
+8o/
+
+:
+= o/0 2 \Pi ; S(`0(o/)) = S (o/0)
+
+\Gamma  `
+
+m
+
+ff ; \Pi   `0 MATCH
+
+We use `
+
+u to solve
+
+\Pi , then restrict the domain of the result,
+
+`, because we want a one-way match only: the function typemust not influence the environment. So
+
+` jff is a substitutionthat binds some, but perhaps not all, of the
+
+ff. We expandthis substitution to instantiate the remaining
+ff with guessedtypes
+AE , yielding `0. Then we check that `0 does indeedsatisfy the constraints, modulo wobbliness.
+
+There is a strong duality between rules PCON and APPN: inpatterns, the type refinement is derived from the result type,
+and is applied to the arguments; in function applications, thetype refinement is derived from the argument types, and is
+applied to the result.
+4.7 Lexically-scoped type variables
+Thus far, all our type annotations have been closed. Butin practice, as programs scale up, it is essential to be able
+
+to write open type annotations; that is, ones that mentiontype variables that are already in scope. In the olden days,
+when type annotations were optional documentation, opentype signatures were desirable but not essential, but now that
+type annotations are sometimes mandatory, it must be possi-ble to write them.
+
+We therefore add lexically scoped type variables as an or-thogonal addition to the language we have presented so far.
+The extensions are these. First, in a type-annotated term
+(t::ty), the source type ty may be open. Second, the en-vironment
+
+\Gamma  is extended with a binding form, a = o/, whichbinds a source type variable
+
+a to a type o/. These bindings areused in the obvious way when kind-checking an open source
+
+type ty. Third, patterns are extended with a new form
+
+p ::= :: : j (p::a:ty)
+
+12
+
+This type-annotated pattern brings into scope the source typevariables
+
+a, with the same scope as the term variables boundby
+p, and ensures that p has type ty. Here is the extra rulefor the pattern judgement:
+
+\Gamma ; \Delta  `
+
+t forall
+
+a:ty  8ff:o/
+
+\Gamma  `
+
+m
+
+ff ; `(o/)
+
+:
+= `(o/0)  `0
+
+\Delta 0 = \Delta ; a = `0(ff)
+\Gamma  ; \Delta 0 ; ` `
+
+p
+
+p  p0 : `0(`(o/)) ; \Delta 00 ; `00
+
+\Gamma  ; \Delta  ; ` `
+
+p
+
+(p::a:ty)  p0 : o/0 ; \Delta 00 ; `00 PANNOT
+
+We begin by kind-checking the source type, ty, temporarily
+building a forall'd source type so that `
+
+t will generate a
+
+polymorphic type 8ff:o/. Then we use the same judgement
+`
+
+m that we introduced in Section 4.6 to instantiate this type
+
+to match the incoming type o/0, being careful to first apply thecurrent type refinement. Finally we check the nested pattern
+
+p, in the extended type environment. A lexically-scoped typevariable scopes over all patterns to the right, so that the pattern (x::a.Term a, y::a) makes sense. That is why we"thread" the environment
+
+\Delta  through the pattern judgements(c.f. Section 3.2).
+
+Notice that a lexically-scoped type variable is simply a namefor an (internal) type, not necessarily a type variable. For
+example, the term (\(x::a.a). x && x) is perfectly ac-ceptable: the source type variable
+
+a is bound to the type
+Bool. More precisely, it is bound to the type Bool , becausea scoped type variable maybe be bound to a wobbly type,
+
+and the type system indeed says that x's type will be wobblyin this case.
+
+This means that pattern type signatures cannot be used tospecify a completely rigid
+
+polymorphic type, which is aslight pity. For example, if we write
+
+eval = \(x::a.Term a). (...body... :: a)
+the type of x will be Term ff , to reflect the uncertainty aboutwhat type
+
+a will ultimately be bound to, and hence no typerefinement will take place, and the definition will be rejected
+
+(at least if ..body.. requires type refinement). The onlyway to give a completely rigid polymorphic type is using a
+type signature on a term, or on a letrec binding:
+
+eval :: forall a. Term a -> a = \x. ...body...
+4.8 Scope and implicit quantification
+A notationally awkward feature of the design we describe isthe "
+
+a:" prefix on a pattern type signature, which brings thetype variables
+
+a into scope. In our real source language, weuse an implicit-quantification rule that allows us to write, for
+
+example
+
+eval = \(x::Term a). ...etc...
+with no "a." prefix. The rule we use is this: any type vari-able that is mentioned in the pattern type annotation, and is
+
+not already in scope, is brought into scope by the pattern.This is the same rule that we use for adding implicit
+
+forallquantifiers to type signatures on terms. One could imagine
+
+other choices, but it is an orthogonal concern to this paper.
+Haskell allows separate, declaration type signatures, thus:
+
+eval :: Term a -> a
+eval = ...
+
+It is (arguably) attractive to allow the universally-quantifiedtype variables of such a signature to scope, lexically, over the
+
+body of eval [MC97, SSW04]. Again this is an orthogonalconcern, but one that readily works with our main design.
+
+4.9 Properties of the type system
+Our system is sound, in the sense that any well-typed pro-gram translates to a well-typed core-language program:
+
+THEOREM 4.1. If \Gamma  `ffi t  t0 : o/ then S(\Gamma ) ` t0 : S (o/)
+We have proved this theorem for the system of Figure 6, aug-mented with the smart function-application rule (Section 4.6)
+
+and lexically-scoped type variables (Section 4.7). The maintricky point in the proof is to show that the partial refinement
+generated by `
+
+u, if it succeeds, yields a well-typed core program. The key property is this:
+
+LEMMA 4.2. If `
+
+u
+
+\Pi   ` then either S (\Pi ) has no unifier,
+
+or S(\Pi ) has a most general unifier `0 such that
+`0 = `0 ffi S (`).
+
+We say that S (`) is a pre-unifier of S(\Pi ): it is not necessarilya unifier, but it is "on the way" to one (if one exists at all).
+
+Furthermore, our system is a conservative extension ofvanilla Haskell/ML data types. The latter have types of form
+8ff:o/ ! T ff, where the ff are distinct. Hence rule UNIF isguaranteed to succeed, and one possible solution is always of
+form [ ff 7! o/ ], where the pattern has type T o/. This substi-tution binds only the pattern-bound type variables (i.e. does
+not refine the rest of the environment) and ensures that thesub-patterns have exactly the expected types. It would be
+straightforward, albeit tedious, to formalise this argument.
+5 Implementation
+We have built a prototype type inference engine for thesource-language type system, starting from the executable
+
+prototype described by [PS04]. This baseline algorithm isquite conventional; most of the work is done by a unifier that
+implements an ever-growing substitution using side effects."Guessed" types are implemented by "flexible" meta variables, which are fleshed out by in-place updates performedby the unifier. There is no constraint gathering; in effect,
+the equality constraints are solved incrementally, as they areencountered.
+
+By design, it is quite easy to support our new type system.Some straightforward extensions are required to parse the
+
+13
+
+new data type declarations, and to extend \Gamma  with the con-structors they define. Wobbly types are simple to implement:
+they simply are the flexible meta variables that the inferenceengine already uses, and introduction of a wobbly type in the
+rules (e.g. in `
+
+inst) corresponds to the allocation of a fresh
+
+flexible meta variable. Invocations of push in the rules cor-respond to places where the inference algorithm must force
+
+a type to have a certain outermost shape (e.g. be of form
+o/1 ! o/2), which sometimes requires the allocation of fur-ther flexible meta variables. One also has to take care that
+
+the commonly-implemented path-compression optimisation,which elminates chains of flexible meta variables, does not
+thereby elide the wobbliness altogether.
+Match-unification implements the wobbly-type-aware algo-rithm of Section 4.5, and is implemented entirely separately
+
+from inference-unification. Different type refinements ap-ply in different case branches, so in-place update is inappropriate, and the match-unification algorithm instead generatesa data structure representing the type refinement explicitly.
+Rather than applying the type refinement eagerly to the envi-ronment, as the rules do, we perform this substitution lazily,
+by carrying down a pair of the type environemt and the cur-rent refinement. The inference-unifier consults (but does not
+extend) the type refinement during unification. One wrinklethat we missed at first is that the unifier must also consult the
+type refinement when performing the occurs check. Thereare also some occasions where we must eagerly apply the
+type refinement to an entire type, such as when finding thefree variables of a type at a generalisation point.
+
+On the basis of this experiment, the changes to the infer-ence algorithm do indeed appear to be extremely localised
+and non-invasive, as we hoped. The only apparently-globalchange is the requirement to pair up the type refinement with
+the environment, but the monadic framework we use makesthis change local as well.
+
+6 Related work
+In the dependent types community, GADTs have played acentral role for over a decade, under the name inductive
+
+families of data types [Dyb91]. Coquand in his work ondependently typed pattern matching [Coq92] also uses a
+unification based mechanism for implementing the refine-ment of knowledge gained through pattern matching. These
+ideas were incoporated in the ALF proof editor [Mag94],and have evolved into dependently-typed programming languages such as Cayenne [Aug98] and Epigram [MM04]. Inthe form presented here, GADTs can be regarded as a special
+case of dependent typing, in which the separation of typesfrom values is maintained, with all the advantages and disadvantages that this phase separation brings.
+Xi, et al.'s work on guarded recursive data types closely cor-responds to our work. They present a language very similar to our core language [XCC03], though with a bug thatprevents them from checking some fairly useful classes of
+nested patterns [SP03, Remark 4.27]. Instead of using unifi-cation in the specification of their type system, type-equality
+constraints are propagated around the typing rules and solvedas needed. Their type inference algorithm, like ours, is based
+upon Pierce and Turner's local type inference [PT98]. Alsoclosely related is Zenger's system of indexed types [Zen97],
+and Xi's language Dependent ML [XP99]; in both cases, in-stead of constraints over type equalities, the constraint language is enriched to include, for example, Presburger arith-metic . Finally, Xi generalises both these languages with
+what he calls an applied type system [Xi04].
+Cheney and Hinze examine numerous uses of what they call
+first class phantom types [CH03, Hin03]. Their language isessentially equivalent to ours in terms of expressiveness, but
+
+they achieve type refinement via equality constraint clauses.Sheard and Pasalic use a similar design they call
+
+equalityqualified types in the language \Omega mega [SP04].
+
+Most of this work concerns type checking for GADTs, butSimonet and Pottier explicitly tackle type inference [SP03].
+
+Their work is much more general than ours: they start fromthe HM(X) constraint framework, and generalise it to a language in which arbitrary constraints can be used to guardquantification. Our language corresponds to instantiating
+theirs with type equality constraints, and exploiting this spe-cial case seems to make the system considerably simpler. In
+their search for tractable inference, they are forced to im-pose two undesirable restrictions: type annotations must be
+closed, and their system embodies two independent rule sets,one dealing with GADTs and the other with ordinary data
+types. Our system manages to avoid both these shortcom-ings; it would be interesting to get a more detailed insight
+into these trade-offs, perhaps by expressing our solution intheir framework.
+
+Our wobbly types correspond very closely to meta-variablesin an implementation of type inference. Nanevski, Pientka,
+and Pfenning have developed an explicit account of meta-variables in terms of a modal type system [NPP03]. It would
+be worthwhile to examine whether their language can sub-sume our wobbly types. Our wobbly types also propagate
+uncertainty in a fashion that has the flavour of colouredtypes in Odersky and Zenger's coloured local type inference [OZZ01].
+7 Conclusion and further work
+We have much left to do. In this paper we have not formallypresented an inference algorithm and proved it complete with
+
+respect to our specification. Our claim that wobbly types ac-curately reflect the uncertainty of real algorithms is, therefore, not formally established. We have built a prototypeimplementation, however, and we are confident that a for14
+
+mal proof is within reach. Similarly, our claim that wobblytypes can co-exist smoothly with the other complexities of
+Haskell's type system is rooted in the authors' (rather de-tailed) experience of implementing the latter. We are engaged in a full-scale implementation in GHC, which willprovide concrete evidence.
+
+Nevertheless, we believe that this paper takes a significantstep forward. The literature on technical aspects of GADTs
+is not easy going, and the system of Section 3 is the sim-plest we have seen. There is very little literature on type
+inference for GADTs, and ours is uniquely powerful. Moregenerally, we believe that type systems will increasingly embody a blend of type inference and programmer-suppliedtype annotations: polymorphic recursion, higher-rank types,
+and GADTs, are all examples of this trend, and there areplenty of others (e.g. sub-typing). Giving a precise, predictable, and implementable specification of these blendedtype systems is a new challenge. Bidirectional type inference is one powerful tool, and we believe that wobbly types,our main contribution, are another.
+
+Acknowlegements. We gratefully acknowledge generousfeedback from James Cheney, Matthew Fluet, Ralf Hinze,
+Barry Jay, Simon Marlow, Conor McBride, Greg Morrisett,Tim Sheard, Martin Sulzmann, and Don Syme. We are particularly grateful to Franc,ois Pottier for his detailed insights.
+8 References
+[Aug98] Lennart Augustsson. Cayenne -- a language with dependent types. In ACM SIGPLAN International Conference
+on Functional Programming (ICFP'98), volume 34(1)
+of ACM SIGPLAN Notices, pages 239-250, Baltimore,
+1998. ACM.
+
+[BS02] AL Baars and SD Swierstra. Typing dynamic typing.
+
+In ACM SIGPLAN International Conference on Functional Programming (ICFP'02), pages 157-166, Pittsburgh, September 2002. ACM.
+
+[CH03] James Cheney and Ralf Hinze. First-class phantom
+
+types. CUCIS TR2003-1901, Cornell University, 2003.
+
+[Coq92] T Coquand. Pattern matching with dependent types. In
+
+Proc workshop on Logical Frameworks, Bastaad, pages
+66-79, 1992.
+
+[Dyb91] Peter Dybjer. Inductive Sets and Families in MartinL"of's Type Theory. In G'erard Huet and Gordon Plotkin,
+editors, Logical Frameworks. CUP, 1991.
+
+[Hin03] Ralf Hinze. Fun with phantom types. In Jeremey Gibbons and Oege de Moor, editors, The fun of programming, pages 245-262. Palgrave, 2003.
+
+[Jay03] Barry Jay. The pattern calculus. ACM Transactions on
+
+Programming Languages and Systems, To appear, 2003.
+
+[Mag94] L Magnusson. The implementation of ALF - a proof editor based on Martin-L"of's monomorhic type theory with
+explicit substitution. PhD thesis, Chalmers University,
+1994.
+
+[MC97] E Meijer and K Claessen. The design and implementation of Mondrian. In J Launchbury, editor, Haskell workshop, Amsterdam, 1997.
+
+[MM04] C McBride and J McKinna. The view from the left. Journal of Functional Programming, 14(1):69-111, 2004.
+
+[NPP03] Aleksandar Nanevski, Brigitte Pientka, and Frank Pfenning. A modal foundation for meta-variables. In Proceedings of MERLIN'03, Uppsala, Sweden, pages 159-
+170, 2003.
+
+[OZZ01] Martin Odersky, Matthias Zenger, and Christoph Zenger.
+
+Colored local type inference. In 28th ACM Symposium
+on Principles of Programming Languages (POPL'01),
+London, January 2001. ACM.
+
+[PS04] Simon Peyton Jones and Mark Shields. Practical type inference for higher-rank types. Unpublished manuscript,
+2004.
+
+[PT98] Benjamin C. Pierce and David N. Turner. Local type inference. In 25th ACM Symposium on Principles of Programming Languages (POPL'98), pages 252-265, San
+Diego, January 1998. ACM.
+
+[Rob65] JA Robinson. A machine-oriented logic based on the
+
+resolution principle. JACM, 12(1):23-41, January 1965.
+
+[She04] Tim Sheard. Languages of the future. In ACM Conference on Object Orientated Programming Systems, Languages and Applicatioons (OOPSLA'04), 2004.
+
+[SP03] Vincent Simonet and Franc,ois Pottier. Constraint-based
+
+type inference with guarded algebraic data types. Technical report, Inria, July 2003.
+
+[SP04] Tim Sheard and Emir Pasalic. Meta-programming
+
+with built-in type equality. In Proc 4th international
+workshop on logical frameworks and meta-languaegs
+(LFM'04), Cork, July 2004.
+
+[SSW04] Peter Stuckey, Martin Sulzmann, and Jeremy Wazny.
+
+Type annotations in Haskell. Technical report, National
+University of Singapore, 204.
+
+[XCC03] Hongwei Xi, Chiyan Chen, and Gang Chen. Guarded recursive datatype constructors. In Proceedings of the 30th
+ACM SIGPLAN-SIGACT Symposium on Principles of
+Programming Languages, pages 224-235. ACM Press,
+2003.
+
+[Xi04] Hongwei Xi. Applied type system. In Proceedings of
+
+TYPES 2003, volume 3085 of Lecture Notes in Computer Science, pages 394-408. Springer Verlag, 2004.
+
+[XP99] Hongwei Xi and Frank Pfenning. Dependent types
+
+in practical programming. In 26th ACM Symposium
+on Principles of Programming Languages (POPL'99),
+pages 214-227, San Antonio, January 1999. ACM.
+
+[Zen97] C Zenger. Indexed types. Theoretical Computer Science,
+
+pages 147-165, 1997.
+
+15

@@ -1,0 +1,1640 @@
+
+
+Proceedings of the 16th ACM Symposium on Operating Systems Principles, Saint-Malo, France, October 1997
+
+A Decentralized Model for Information Flow Control
+
+Andrew C. Myers Barbara Liskov
+
+MIT Laboratory for Computer Science
+545 Technology Square, Cambridge, MA 02139
+
+fandru,liskovg@lcs.mit.edu
+
+Abstract
+This paper presents a new model for controlling informationflow in systems with mutual distrust and decentralized authority. The model allows users to share information withdistrusted code (e.g., downloaded applets), yet still control
+how that code disseminates the shared information to others.The model improves on existing multilevel security models
+by allowing users to declassify information in a decentralizedway, and by improving support for fine-grained data sharing.
+The paper also shows how static program analysis can beused to certify proper information flows in this model and to
+avoid most run-time information flow checks.
+
+1 Introduction
+The common models for computer security are proving inad-equate. Security models have two goals: preventing accidental or malicious destruction of information, and controllingthe release and propagation of that information. Only the
+first of these goals is supported well at present, by secu-rity models based on access control lists or capabilities (i.e.,
+discretionary access control, simply called "access control"from this point on). Access control mechanisms do not support the second goal well: they help to prevent informationrelease but do not control information propagation. For example, if user A is allowed to read B's data, B cannot controlhow
+
+A distributes the information it has read. Control of in-formation propagation
+
+is supported by existing informationflow and compartmental models, but these models unduly
+
+This research was supported in part by DARPA Contract N00014-91-J-4136,monitored
+by the Office of Naval Research, and in part by DARPA Contract F30602-96-C-0303,
+monitored by USAF Rome Laboratory.
+
+Copyright cfl1997 by the Association for Computing Machinery, Inc. Permission
+
+to make digital or hard copies of part or all of this work for personal or classroom use
+is granted without fee provided that copies are not made or distributed for profit or
+commercial advantage and that new copies bear this notice and the full citation on the
+first page. Copyrights for components of this work owned by others than ACM must
+be honored. Abstracting with credit is permitted. To copy otherwise, to republish, to
+post on servers, or to redistribute to lists, requires prior specific permission and/or a
+fee. Request permissions from Publications Dept, ACM Inc., fax +1 (212) 869-0481,
+or "permissions@acm.org"
+
+restrict the computation that can be performed. The goal ofthis work is to make information flow control more useful by
+relaxing these restrictions.Information flow control is vital for large or extensible
+systems. In a small system, preventing improper propaga-tion of information is easy: you don't pass data to code whose
+implementation is not completely trusted. This simple rulebreaks down in larger systems, because the trust requirement
+is transitive: any code the data might travel to must also betrusted, requiring complete understanding of the code. As
+the system grows larger and more complex, and incorpo-rates distrusted code (e.g., web applications), complete trust
+becomes unattainable.Systems that support the downloading of distrusted code
+are particularly in need of a better security model. For ex-ample, Java [GJS96] supports downloading of code from remote sites, which creates the possibility that the downloadedcode will transfer private data to those sites. Java attempts
+to prevent these transfers by using a compartmental securitymodel, but this approach largely prevents applications from
+sharing data. Also, different data manipulated by an applica-tion have different security requirements. A security model
+is needed that supports fine-grained information sharing be-tween distrusted applications, while reducing the potential
+for information leaks.This paper contains exploratory work towards a new
+model of decentralized information flow that is also inex-pensive in both space and time. Our model allows users to
+control the flow of their information without imposing therigid constraints of a traditional multilevel security system.
+The goal of this model is to provide security guarantees tousers and to groups rather than to a monolithic organization.
+It differs from previous work on information flow control byallowing users to explicitly
+
+declassify (or downgrade) datathat they own. When data is derived from several sources,
+
+all the sources must agree to release the data.Our model can largely be checked statically, like some
+existing information flow models [DD77, AR80]. We de-fine user-supplied program annotations, called labels, that
+describe the allowed flow of information in a program. Annotated programs can be checked at compile time, in a man-ner similar to type checking, to ensure that they do not violate
+information flow rules. Compile-time checks have no run-time overhead in space or time, and unlike run-time checks,
+when they fail, they do not leak information about the datathe program is using.
+
+Our work extends existing models by allowing individu-als to declassify data they own, rather than requiring a central
+authority to do it. In addition, we extend the static checkingmodel in three ways. First, we introduce an implicit form
+of parametric polymorphism, called label polymorphism, toexpress procedures that are parametric with respect to the
+security labels of their arguments, and with respect to theprincipal on whose behalf the procedure executes. Label
+polymorphism extends the power of static analysis, and al-lows programmers to write generic code. Second, since
+purely static analysis would be too limiting for structureslike file systems, where information flow cannot be verified
+statically, we define a new secure run-time escape hatch forthese structures, with explicit run-time label checks. Uses of
+the run-time information flow mechanism are still partiallyverified statically, to ensure that they do not leak information. Third, we show that despite these features, the labels oflocal variables can be inferred automatically, easing the job
+of adding flow annotations to a program.Our goal in exploring these techniques is to eventually
+support the following useful applications:
+
+ffl Secure servers and other heavily-used applications canbe written in programming languages extended with
+
+information flow annotations, adding confidence thatsensitive information is not revealed to clients of the
+service through programming errors.
+ffl Secure compiled code may be transferred from a re-mote site and run locally with less concern that it
+
+might leak information. Code transfer is useful both forclients, which download applications from servers, and
+for servers, which upload code and data from clientsfor remote evaluation.
+
+The annotations could be used to extend many conven-tional programming languages, intermediate code (such as
+JVM [LY96]), or machine code, where the labeling systemdefined here makes a good basis for security proofs [Nec97].
+Labeled machine code and security proofs could work to-gether: proof annotations for object code would be generated as a byproduct of compiling a program that containsinformation flow annotations.
+
+The remainder of the paper describes the model and howchecking is done. The model is intended to control covert
+and legitimate storage channels; it does not deal with timingchannels, which are harder to control. The work assumes
+the existence of a reliable, efficient authentication mecha-nism, and of a trusted execution platform; for example, code
+
+may be executed by a trusted interpreter, or generated onlyby a trusted compiler. When the computational environment contains many trusted nodes connected by a network,the communication links beween the nodes must be trusted,
+which can be accomplished by encrypting communicationbetween nodes.
+
+The organization of the remainder of this paper is as fol-lows. Section 2 briefly describes some systems that can benefit from decentralized information flow control, and whichare not well supported by existing models. Section 3 introduces the fundamentals of the new information flow controlmodel. Section 4 discusses issues that arise when code using
+the new model is statically checked for correctness. Sec-tion 5 shows how the model can be integrated into a simple
+programming language. Section 6 shows how to infer mostlabels in programs automatically, making the job of annotating a program much simpler. Section 7 describes relatedwork in the areas of information flow models, access control,
+and static program analysis. We conclude in Section 8 anddiscuss future work in Section 9.
+
+2 Motivating Examples
+Let us consider two examples for which a decentralizedmodel of information flow is helpful -- the
+
+medical studyand the bank, depicted in Figures 1 and 2. The scenarios
+
+place somewhat different demands on the information flowmodel. They demonstrate that our approach permits legitimate flows that would not be allowed with conventionalinformation flow control, and that it is easy to determine that
+information is not being leaked.In the figures, an oval represents a principal within the
+system, and is labeled with a boldface character that indicatesthe authority with which it acts. For example, in the medical
+study (Figure 1), the important principals are the patient, p,a group of researchers, R, the owners of a statistical analysis
+package, S, and a trusted agent, E. Arrows in the diagramsrepresent information flows between principals; square boxes
+represent information that is flowing, or databases of somesort.
+
+Each principal can independently specify policies for thepropagation of its information. These policies are indicated
+by labels of the form fO : Rg, meaning that owner O allowsthe information to be read by readers
+
+R, where O is a prin-cipal and
+R is a set of principals. The owner is the sourceof the information and has the ability to control the policy
+
+for its use. For example, in the medical study example, thepatient's medical history may be read only by principals with
+the authority to act on behalf of either the patient principal por the hospital principal
+
+H.In the diagrams, double ovals represent trusted agents
+
+that declassify information (for example, E in the medicalstudy). These agents have the authority to act on behalf
+
+2
+
+patient  data patient p'smedical
+
+history
+
+patientdata
+extractor
+
+researchers
+
+statisticaldatabase
+
+{p:  p,H}{R:  p, R}
+E
+
+R
+
+(R:  R,S)
+
+(R:  R,S )
+
+{S: S}
+results of   study
+
+{}
+
+hospital H
+statisticspackage
+
+S
+
+Figure 1: Medical Study Scenario
+of a principal in the system, and may therefore modify thepolicies that have been attached to data by that principal.
+One goal of these two examples is show how our approachlimits the trust that is needed by participants in the system;
+the double ovals identify the places where special trust isneeded.
+
+2.1 The Medical Study
+The medical study example shows that it is possible to giveanother party private information and receive the results of its
+
+computation while remaining confident that the data given toit is not leaked. The purpose of the study is to perform a statistical analysis of the medical records of a large number ofpatients. Obviously, the patients would like to keep specific
+details of their medical history private. The patients give per-mission to the researchers performing the study to use their
+medical data to produce statistics, with the understandingthat their names and other identifying information will not
+be released. Thus, the patients put some trust in the patient
+data extractor, E, which delivers to the researchers a suitablyabridged version of the patient records. The data extractor
+
+has the authority to act for the patient (p), so it can replacethe patient's policy
+
+fp: p,Hg with the researcher-controlledpolicy,
+fR: p,Rg, which allows the extracted data to be readby the researchers and by the patient.
+
+The researchers would like to use a statistical analysispackage that they have obtained from another source, but
+the patients and researchers want the guarantee that the anal-ysis package will not leak their data to a third party. To
+accomplish this, the researchers relabel the patient data with
+fR: R,Sg. The analysis package is able to observe but not to
+
+bank
+response to   request
+
+customerC
+
+B
+
+customer  request
+
+{C: B, C}{C:  B, C}
+
+  privatebank data
+
+{B: B}per-customer
+ account data
+
+{C  :  B,C  }i i
+
+ totalassets
+         trustedindustry-standard
+         totallerT
+
+{C:  B,C}
+
+{B: B}{B: B}
+
+Figure 2: Bank Scenario
+leak the relabeled data since S is only a reader, not an owner.The analysis package performs its computations, using
+the patient data, now labeled fR: R,Sg, and its own statisticaldatabase, labeled
+
+fS: Sg. The writers of the analysis packagewould also like some assurance that their statistical database
+
+is not being leaked to the researchers. The result of thecomputation must retain the policies of both R and S, and
+therefore acquires the joint label fR: R,S; S: Sg. This labelonly allows flows to the principal
+
+S, since S is the onlyprincipal in both reader sets. The analysis package then
+
+explicitly declassifies the result of the computation, changingthe label to
+
+fR: R,Sg so the researchers can read it. Note thatsince the analysis package can declassify the analysis result,
+
+it is not forced to declassify all information extracted fromthe statistical database, which would probably require more
+careful analysis of the analysis code to show that the databasecontents were not leaked.
+
+Finally, the researchers may declassify the result of theirstudy, changing the label
+
+fR: R,Sg to the unrestricted label
+fg. This change allows the general public to see their results,and is acceptable as long as there are so many patients in the
+
+study that information about individual patients cannot beextracted from the final result.
+
+This example uses declassification in four places. Eachtime, declassification takes place according to the simple rule
+that a principal may modify its own flow policies. Conven-tional information flow control has no notion of declassification within the label system, and therefore, cannot modelthis example.
+
+3
+
+2.2 The Bank
+The bank scenario is illustrated in Figure 2. A bank servesmany customers, each of whom would like to keep his data
+
+safe from other customers and non-customers. In addition,the bank stores private information, such as its current assets
+and investments, that it would like to keep safe from allcustomers and non-customers.
+
+The bank receives periodic requests from each customer,e.g., to withdraw or deposit money. Each request should be
+able to observe only information that is owned by that cus-tomer, and none of the bank's private data. The bank is better
+than real banks in that it allows customers to control dissem-ination of their account information; each customer has a
+distinct information flow policy for his account information,which prevents the bank from leaking the information to another party. The customer's request, the account itself, andthe bank's response to the request are all labeled
+
+fC: B,Cg,allowing the bank to read the information but not to control
+
+it. However, the bank's private database, including its recordof total assets, is most naturally labeled
+
+fB: Bg.To keep the total assets up to date, information derived
+
+from the customer's request must be applied to the totalassets. To make this possible, the customer places trust in
+the totaller, T, a small piece of the bank software that actswith the authority of both the customer and the bank, and
+therefore can declassify the amount of the customer requestin order to apply it to the total asset record. Conceivably,
+the totaller is a certified, industry-standard component thatthe customer trusts more than the rest of the bank software.
+Another reasonable model is that the totaller is part of anaudit facility that is outside the bank's control.
+
+3 Decentralized Information Flow Control
+This section describes our new model of decentralized in-formation flow. The model assumes a set of
+
+principals rep-resenting users and other authority entities. To avoid loss
+
+of generality, a process has the authority to act on behalf ofsome set of principals.
+
+Computations manipulate values. Values are obtainedfrom
+
+slots--variables, objects, other storage locations--thatcan serve as sources and sinks for values, and from computations; values can also be obtained from input channels,which are read-only slots that allow information to enter the
+system. A value can be written either to a slot or to an output
+channel, which serves as an information sink that transmitsdata outside the system.
+
+Values, slots, and channels all have attached labels, whichare a more flexible form of the security classes encountered
+in most information flow models. The flexibility introducedby our labels makes decentralized declassification possible.
+
+The label on a value cannot change, but a new copy of thevalue can be created with a new label. When this happens we
+
+say the value is relabeled, though it is really only the copythat has a new label. The key to secure flow is to ensure
+that any relabeling is consistent with the security policies ofthe original labeling. Only values can be relabeled; slots
+and channels cannot. This restriction allows us to checkinformation flows at compile time. If either slots or channels
+could be relabeled, we would need run-time label checkswhenever they were used.
+
+Sections 3.1 and 3.2 present our new model. Section 3.3discusses principals in more detail and explains how we
+achieve flexibility even though slots and channels cannotbe relabeled. Section 3.4 defines the relabeling rules, Section 3.5 explains output channels further, and Section 3.6discusses how our model forms a conventional security-class
+lattice.
+
+3.1 Overview
+A label L contains a set of principals called the owner set,or owners
+
+(L). The owners are the principals whose datawas observed in order to construct the data value; they are
+
+the original sources of the information. For each owner O,the label also contains a set of principals called the reader
+set, or readers(L; O). The reader set for a particular ownerspecifies the principals to whom the owner is willing to release the value. Together, the owners and readers functionscompletely specify the contents of a label. A useful concept
+is the effective reader set of L: the set of principals that allowners of the data agree to allow to release it to. The
+
+effective
+reader set is the intersection of every reader set in L.An example of an expression that denotes a label
+
+L isthe following:
+fo1: r1,r2; o2: r2,r3g, where o1, o2, r1, r2denote principals. The owners of this label are
+
+o1 and o2, thereader sets for these owners are
+readers(L; o1) = fr1; r2gand
+readers(L; o2) = fr2; r3g, and the effective reader setis
+fr2g.This label structure allows each owner to specify an independent flow policy, and thus to retain control over thedissemination of its data. Code running with the authority of an owner can modify the flow policy for the owner'spart of the label; in particular, it can declassify that data
+by adding additional readers. Since declassification applieson a per-owner basis, no centralized declassification process
+is needed, as it is in systems that lack ownership labeling.The labels maintain independent reader sets for each owning
+principal. If, instead, a label consisted of just an owner setand a reader set, we would lose information about the individual flow policies of the owners and reduce the power ofdeclassification.
+
+The key to controlling information flow is to ensure thatthe policies of each owner are enforced as data is read and
+written. However, when a value is read from a slot, it acquiresthe slot's label, which means that whatever label that value
+had at the time it was written to the slot is no longer known
+
+4
+
+when it is read. In other words, writing a value to a slot is arelabeling. This loss of information is acceptable provided
+there is no loss of control.Therefore, we allow a value to be assigned to a slot only
+if the relabeling that occurs at this point is a restriction, arelabeling in which the new label allows fewer accesses than
+the original; this happens, for example, if the slot's labelallows fewer readers for an owner than the value's label. A
+relabeling from label L1 to label L2 is a restriction, written
+L1 v L2, if L1 has more readers and fewer owners than L2:
+
+Definition of L1 v L2
+
+owners(L1) ` owners(L2)
+8O 2 owners(L1); readers(L1; O) ' readers(L2; O)
+
+Note that the rules for readers and owners are opposites.We could have used a different model in which a slot
+stores both a value and the label of that value. However, inthat model the label that is stored in the slot becomes another
+information channel. Also, this model would not permitcompile-time label checking. Our approach does permit this
+checking, and therefore labels cause little run-time overhead.As discussed in Section 5, labels can be values themselves;
+this feature allows label checking to be deferred till run time,overcoming the limitations of doing all checking at compile
+time.In addition to slots, the system contains channels, which
+allow interaction with external devices: input channels allowinformation to be read and
+
+output channels allow informa-tion to be written. Reading from an input channel is just like
+
+reading from a slot; the value is given the channel's label.However, writing to an output channel is different from writing to a slot; as discussed further in Section 3.5, writing to anoutput channel is legal if the channel's readers are a subset
+of the readers allowed by the data being written. Creation ofnew channels is obviously a sensitive operation.
+
+In this model, it is safe for a process to manipulate dataeven though the current principal does not have the right to
+read it. This follows because all the process can do with thedata is write it to a slot or a channel provided the data's label
+allows this. Thus, access-control read checks aren't needed!Nevertheless, such checks might be desired, to reduce the
+risk of exposure through covert channels of sensitive datasuch as passwords. One possible extension would be to fold
+read access checks into label checking: a process can readinformation from a slot with label
+
+L only if the process canact for some principal
+R in the effective reader set of L.
+
+3.2 Derived Labels
+During computation, values are derived from other values.Since a derived value may contain information about its
+
+sources, its label must reflect the policies of each of its
+
+sources. For example, if we multiply two integers, the prod-uct's label must reflect the labels of both operands.
+
+When a program combines two values labeled with L1and
+
+L2, respectively, the result should have the least restric-tive label that maintains all the flow restrictions specified by
+
+L1 and L2. This least restrictive label, the join of L1 and L2(written as
+
+L1 t L2), is constructed as follows: The ownerset of
+L1 t L2 is the union of the owner sets of L1 and L2,and the reader set for each owner in
+
+L1 and L2 is the inter-section of their corresponding reader sets. This rule can be
+
+written concisely, assuming the following natural definition:readers
+
+(L; O) for an O that is not in the owner set is definedto be the set of all principals, since
+
+O imposes no restrictionson propagation. The join rule is then the following:
+
+Labels for Derived Values (Definition of L1 t L2)
+
+owners(L1 t L2) = owners(L1) [ owners(L2)
+readers(L1 t L2; O) = readers(L1; O) " readers(L2; O)
+
+(The symbol \Phi  has also been used to denote the join of twosecurity classes [DD77, AR80].)
+
+Note that L1 v L1 t L2 for all labels L1 and L2. Joiningis a restriction and therefore it does not leak information.
+
+3.3 The Principal Hierarchy
+To allow compile-time analysis, slots must be immutablylabeled. Immutable slot labels might seem like a limitation,
+
+but we provide two mechanisms to make the labels on slotsmore flexible: run-time labeling, which is discussed later,
+and modification of the rights of principals, which changesthe set of data that principals can read.
+
+Within a system, principals serve various functions: somerepresent the full authority of a user of the system; others
+represent groups of users; and still others represent roles, re-stricted forms of a user's authority. In practice, these different
+principals are used quite differently, and many systems treatthem as entirely different entities. Some principals have the
+right to act for other principals and assume their power. Forexample, every member of a group might have the right to act
+for the group principal. The acts for relation is reflexive andtransitive, defining a hierarchy or partial order of principals.
+This model is similar to a speaks for hierarchy [LABW91],though roles are treated here as first-class principals. We
+assume that the principal structure can be queried using theprimitive acts-for function to discover whether the current
+principal has the right to act for another principal.The right of one principal to act for another is recorded in
+a database. The database can be modified: for example, toalter the membership of groups, or to transfer a role from one
+employee to another. Obviously, modifications to the princi-pal structure are extremely powerful and must be restricted
+
+5
+
+by some form of access control. Also, to prevent modifi-cations to the principal structure from serving as a covert
+channel, the principal database must be labeled in a way thatprevents information leaks, just as ordinary databases in the
+system must be.
+
+3.4 Relabeling Rules
+This section restates and discusses our two relabeling rules,restriction, which defines the legality of assignment, and
+
+declassification, which allows an owner to modify its flowpolicy:
+
+Rule 1: Restriction. A relabeling from L1 to L2 is validif it is a restriction:
+
+L1 v L2. Intuitively, it removes readers,adds owners, or both.
+
+Rule 2: Declassification. A declassification either addsreaders for some owner
+
+O or removes the owner O. Thisrelabeling can be done only if the process acts for
+
+O.
+
+Relabeling by restriction is independent of the principalhierarchy and requires no special privilege to perform.
+
+Declassification, by contrast, depends on the acts-for relationand is legal only when the current process possesses the
+
+needed authority. It introduces potential security leaks, butonly leaks of information owned by the current principal. The
+current principal has the power to leak its own information,but cannot leak data owned by other principals. Information
+that is owned by a particular user can only be declassified bycode that runs with that user's authority. Note that Rule 2
+reflects the transitivity of the acts-for relation. For example,if a process can act for a principal
+
+P , it can act for any prin-cipal
+Q that P can act for, and therefore can declassify dataowned by
+
+Q.Analysis of the safety of a piece of code reduces to analysis of the uses of these rules. As we will see, the rules can belargely checked at compile time, assuming the programmer
+is willing to supply some annotations. Code that performsa relabeling according to Rule 1 can be checked entirely at
+compile time, but code that performs a relabeling accord-ing to Rule 2 requires additional checking, to ensure that the
+process acts for the owner. In the language discussed laterin the paper, we require that the use of Rule 2 be indicated
+explicitly, since legal but unintended information leaks couldoccur otherwise.
+
+An important property of these rules is that the join op-erator does not interfere with relabeling. It is possible to
+independently relabel a component of a join: if the rela-beling
+
+L1 ! L2 is legal, then for any other label L3, therelabeling
+
+L1 t L3 ! L2 t L3 is also legal. This propertyautomatically holds for Rule 1 because the set of labels forms
+
+a lattice. The property also holds for Rule 2 because the joinoperator ensures that the flow policies of
+
+L3 are not violated.This property is important because it permits code that is
+
+generic with respect to a label (or part of a label) to perform
+
+declassification. It is also helpful for writing code like thestatistical analysis package in the medical study example.
+Because Rule 2 can be applied to part of a join, the analysispackage can compute answers using values from its private
+database, then remove its label from the result that it gener-ates. Without this property, it would have to declassify the
+private database information immediately--forcing it to giveup some protection against leaks.
+
+3.5 Channels
+Data enters the system through input channels and leavesit through output channels. In either case, it is important
+
+that the channel's label reflect reality. For example, if aprinter can be read by a number of people, it is important that
+the output channel to that printer identify all of them, sinceotherwise an information leak is possible.
+
+Therefore, channel creation is a sensitive operation sinceit must get the labels right. We assume it is done by trusted
+code, which makes use of its understanding of the physicaldevices to determine whether the requested channel should
+be created, i.e., whether the label proposed by the programattempting to create the channel matches reality. The channel
+creator might additionally rely on authentication, e.g., whena user logs on, the authentication or login process might
+associate the user's principal with the channel for the displaybeing used.
+
+A value read from an input channel is labeled with thechannel's label. This is the same as what happens when
+reading a value from a slot. However, the rule for writingto an output channel is different from writing to a slot, since
+owners don't matter for writing. Instead, the rule is the fol-lowing: for any reader
+
+R of the output channel, the effectivereaders of the value's label must include a reader
+
+R0 suchthat
+R can act for R0. This rule ensures that the data canread only by readers who have been authorized to see it. The
+
+reason to use the acts-for relation is that by authorizing some
+R0, we have implicitly authorized all principals who can actfor
+
+R0. This flexibility provides functionality not easily at-tainable through other mechanisms such as declassification.
+
+For example, it allows us to write data that is readable by agroup principal to a channel that is readable by a member of
+the group, since the member principal can act for the groupprincipal.
+
+3.6 Security Class Lattice
+If we consider just Rule 1, the set of labels forms a conven-tional security-class lattice [Den76], where each element in
+
+the lattice is one of the possible labels. Labels exist in apartial order as defined by the restriction operator,
+
+v. Theleast restrictive label, denoted by
+?, corresponds to data thatcan flow anywhere; the greatest restriction,
+
+?, correspondsto data that can flow nowhere: it is readable by no one and
+
+6
+
+owned by everyone. As we go up in the lattice, labels be-come strictly more restrictive. Data can always be relabeled
+to flow upward in the lattice, because restriction does notcreate a possible information leak.
+
+The lattice has a well-defined meet operator, u. Its defini-tion is precisely dual to that of
+
+t: it takes the intersection ofthe owners and the unions of the readers. The meet operator
+
+yields the most restrictive label that is strictly less restrictivethan its operands. This operator doesn't seem to be very
+useful in describing computation, and its use is avoided inorder to preserve the ability to easily infer labels, as shown
+in Section 6.The effect of declassification is that each principal has access to certain relabelings that do not accord with the lattice.However, these relabelings do not leak information.
+
+4 Checking Labels
+Labels can be used to annotate code, and the annotated codecan be checked statically to verify that it contains no information leaks. In this section, we discuss some issues relatedto static analysis of annotated code, though we defer issues of
+how to extend a programming language till the next section.In Section 4.1, we explain the importance of static checking
+to information flow control, and the problem of implicit flows[DD77]. In Section 4.2, we describe a simple way to prevent implicit flows from leaking information by using staticanalysis.
+
+4.1 Static vs. Dynamic Checking
+Information flow checks can be viewed as an extension totype checking. For both kinds of static analysis, the compiler determines that certain operations are not permitted tobe performed on certain data values. Type checks may be
+performed at compile time or at run time, though compile-time checks are obviously preferred when applicable because
+they impose no run-time overhead. Access control checks areusually performed at run time, although some access control
+checks may be performed at compile time [JL78, RSC92].In general, it seems that some access control checks must be
+performed dynamically in order to give the system sufficientflexibility.
+
+By contrast, fine-grained information flow control is prac-tical only with some static analysis, which may seem odd;
+after all, any check that can be performed by the compilercan be performed at run time as well. The difficulty with runtime checks is exactly the fact that they can fail. In failing,they may communicate information about the data that the
+program is running on. Unless the information flow modelis properly constructed, the fact of failure (or its absence)
+can serve as a covert channel. By contrast, the failure ofa compile-time check reveals no information about the acx := 0
+if b then
+
+x := 1
+end
+
+Figure 3: Implicit information flow
+tual data passing through a program. A compile-time checkonly provides information about the program that is being
+compiled. Similarly, link-time and load-time checks provideinformation only about the program, and may be considered
+to be static checks for the purposes of this work.Implicit information flows [DD77] are difficult to prevent
+without static analysis. For example, consider the segmentof code shown in Figure 3 and assume that the storage locations b and x belong to different security classes b and
+x, respectively. (We will follow the literature in using thenotation
+
+e to refer to the label of the expression e.) In par-ticular, assume
+
+b is more sensitive than x (more generally,
+b 6v x), so data should not flow from b to x. However, thecode segment stores 1 into
+
+x if b is true, and 0 into x if b isfalse;
+x effectively contains the value of b. A run-time checkcan easily detect that the assignment
+
+x := 1 communicatesinformation improperly, and abort the program at this point.
+
+Consider, however, the case where b is false: no assignmentto
+
+x occurs within the context in which b affects the flowof control. The fact of the program's aborting or continuing
+
+implicitly communicates information about the value of b,which can be used in at least the case where
+
+b is false.We could imagine inspecting the body of the
+
+if statementat run time to see whether it contains disallowed operations,
+
+but in general this requires evaluating all possible executionpaths of the program, which is clearly infeasible. Another
+possibility is to restrict all writes that follow the if statementon the grounds that once the process has observed
+
+b, it is irre-vocably tainted. However, this approach seems too restrictive
+
+to be practical. The advantage of compile-time checking isthat in effect, static analysis efficiently constructs proofs that
+no possible execution path contains disallowed operations.To provide flexibility, some information flow checks are
+desirable at run time; such checks are allowed as long astheir success or failure does not communicate information
+improperly--which must itself be checked statically! Weexamine run-time information flow checks later, in Section 5.10.
+
+4.2 Basic Block Labels
+As described in Section 3.1, when a data value is extractedfrom a slot, it acquires the slot label. Furthermore, to ensure
+
+that writing to a slot does not leak information, the label onthe slot must be more restrictive than the label on the data
+
+7
+
+x := 0
+branch on b
+
+x := 1
+(final)
+
+F Tx := 0
+if b then  x := 1
+end
+
+ = bB
+
+  = B
+
+B =
+Figure 4: Basic blocks for an if statement
+value being written: x := v is legal only if v v x. However,while this restriction condition is
+
+necessary, it is not sufficientfor avoiding information leaks, because of the possibility of
+
+implicit information flows. The code in Figure 3 providesan example. The variables
+
+x and b are both slots. Theexpressions 0 and 1 do not give any information about other
+
+data, so they are labeled by ?. Therefore the assignment x
+:= 1 appears to be legal. However, earlier we showed thatthis assignment may be an information leak. Therefore, our
+
+simple rule is not sufficient. The problem becomes clearer ifwe rewrite the
+
+if statement:
+
+x := (if b then 1 else x)
+Clearly, the value of x after the statement completes is de-pendent on the value of
+
+b, and the assignment is legal only if
+b v x.In general, the flow of control within a program depends
+
+on the values of certain expressions. At any given pointduring execution, various values
+
+vi have been observed inorder to decide to arrive at the current program location. Any
+
+mutation that occurs can potentially leak information aboutthe observed values
+
+vi, so the slot that is being mutated mustbe at least as restricted as the labels on all these variables:
+
+G
+
+i
+
+vi = v1 t v2 t : : : t vn
+
+This label Fi vi can be determined through straightfor-ward static analysis of the program's basic block diagram,
+and will be called the basic block label, B. The basic blocklabel indicates information that might be inferred by knowing that the program is executing this basic block. Using thebasic block label, we can write the correct rule for checking assignment: assignment to a variable x with a value v ispermitted only if
+
+v t B v x.Intuitively, a basic block label must include the labels
+
+of all values that were observed to reach that point in theexecution. For example, consider the basic block diagram
+shown in Figure 4, which corresponds to the code of Fig-ure 3; each basic block, represented as a box in the diagram,
+is characterized by a single basic block label, and has one or
+
+x := 0
+branch on b
+
+x := 1b := false
+(final)
+
+F Tx := 0
+while b do  x := 1
+  b := falseend
+
+B =
+
+B =b
+B =
+
+B =b
+
+Figure 5: Basic blocks for a while statement
+two exit points. Here the basic block for x := 1 has label bbecause the value of
+
+b had to be observed to reach that pointin the program. However, the label of the "final" block is
+
+?because at that point the program has no knowledge of any
+
+values. It is true that the program could discover informationby performing tests that read from slots (e.g.,
+
+x); however, thebasic block label captures what the program knows without
+
+any further reading.Labels of basic blocks are derived as follows. The decision about which exit point to follow from a block Bi ismade based on the observation of some value
+
+vi. The label Bfor a particular basic block
+B is the join of some of the labels
+vi. A label vi is included in the join if it is possible to reach
+B from Bi, and it is also possible to reach the final nodefrom
+
+Bi without passing through B (if all paths from Bi tothe final node pass through
+
+B, then arriving at B conveys noinformation about
+vi.) The set of vi that must be included ineach
+B can be efficiently computed using standard compilertechniques. This rule for basic block label propagation is
+
+equivalent to the rule of Denning and Denning [DD77].Now, consider the execution of a "
+
+while" statement,whichcreates a loop in the basic block diagram. This situation is
+
+illustrated in Figure 5. Note that for the final basic block, weobtain
+
+B = ? by reasoning in the same way as we did for the"
+if" statement. This labeling might seem strange, since whenwe arrive at the final block, we know the value of
+
+b. However,arriving at the final block gives no information about the value
+
+of b before the code started, and there is no way to use codeof this sort to improperly transmit information.
+
+This labeling rule holds as long as all programs terminate,or at least as long as there is no way to derive information
+from the non-termination of a program [DD77, AR80]. Theway one decides that a program has not terminated is to
+time its execution, either explicitly or through asynchronouscommunication with another thread. We do not address
+timing channels in this paper.If the language allows the raising of exceptions and of
+return statements, the returned value must also be labeled bythe label of the basic block that contains the
+
+return or raise.
+
+8
+
+This fact can be seen clearly by converting a procedure thatuses a return statement into one that uses boolean variables
+to keep track of control flow.
+
+5 Application to a Language
+In this section we define a simple programming language thatincorporates our model. The goal of this exposition is not to
+seriously propose a programming language, but to demon-strate that the information flow model can be applied practically to a rich computational model, providing sound andacceptably precise constraints on information flow. These
+annotations could be applied to other programming models,such as compiled code or JVM code [LY96].
+
+The language supports the usual simple types: integers,strings, records, and arrays of any legal type including other
+array types. Procedures may contain variable declarations,assignments,
+
+if statements, and while statements; they returnresults by assigning to special return variables, as in Pascal.
+
+Variables of record or array types are references to storageon the heap, as in Java [GJS96] and CLU [LAB
+
++84], so that
+
+assignment of a record or array (e.g., r1 := r2 or a1 := a2)makes the variables aliases for each other.
+
+For simplicity, the language has no exceptions. Excep-tions complicate the propagation of basic block labels, but
+can be handled using the basic-block propagation describedin Section 4.2, assuming that procedures declare the exceptions they might raise. Not having exceptions makes someprograms clumsy, but programs written with exceptions can
+be straightforwardly translated into programs without excep-tions, so there is no loss of generality.
+
+For simplicity of presentation, the language also lacksglobal variables. In our simple language, the first basic block
+in a procedure has label ?. Global variables could be sup-ported by allowing procedures to accept a special parameter
+that defines the label of their first basic block.The language is extended with a few unusual features to
+support information flow control:
+
+ffl All variables, arguments, and procedure return valueshave labeled types. If a type is unlabeled, the label is
+
+either a parameter or is inferred, depending on context.
+ffl An explicit "declassify" operator allows the declassifi-cation of information.
+
+ffl A procedure can explicitly test with the if acts for state-ment whether it is able to act for some principal, and if
+
+it is, it may use the authority of that principal.
+ffl A call to a procedure may grant some of the authoritypossessed by the caller to the procedure being called,
+
+and the called procedure may test and use that authority.
+ffl Variables and arguments may be declared to have thespecial base type
+
+label, which permits run-time label
+
+pinfo = record [ names, passwords: stringfchkr: chkrg ]
+check password (db: array[pinfof?g]f?g,
+
+user: string f?g,
+password: stringfclient: chkrg)
+returns (ret: boolfclient: chkrg)
+% Return whether password is the password of user
+
+i: int fchkr: chkrg := 0 % ?
+match: bool fclient: chkr; %
+
+chkr: chkrg := false % ?
+while i ! db.length() do % ?
+
+if db[i].names = user & % ?
+
+db[i].passwords = password then %
+
+match := true % fclient: chkr;
+end % chkr: chkrg
+i := i + 1 % ?
+end
+ret := false % ?
+if acts for(check password, chkr) then % ?
+
+ret := declassify(match, fclient: chkrg) % ?
+end
+end check password
+
+Figure 6: Annotated password checker
+checking. Variables of type label and argument-labelparameters may be used to construct labels for types
+that are mentioned within the procedure body.
+ffl A labelcase statement can be used to determine therun-time labeled type of a value, and a special type
+
+protected conveniently encapsulates values along withtheir run-time labels.
+
+We begin with an example of a program to illustrate someof the features in the language. Then we define the language
+in more detail, including how to check the constructs usinglabel-checking rules.
+
+5.1 An Example
+Figure 6 shows the check password procedure, which ac-cepts a database of passwords, a password, and a user name,
+
+and returns a boolean indicating whether the string is the rightpassword for that user. This example is simple, yet it uses
+declassification to control information flow in a fine-grainedway that is not possible under any previous model of which
+we are aware.Two principals are mentioned in this code:
+
+chkr repre-sents the password checker role, and
+client represents theprincipal of the calling client. The password database is an
+
+array of records giving the passwords for users; it should beprotected by encapsulation (e.g.,
+
+check password should bea method) but this complexity is avoided here. In a real program, client would be a parameter to the routine rather than
+
+9
+
+a single fixed principal; a more general (and more concise)version of
+
+check password is shown later, in Figure 9.In the figure, all labels are declared explicitly by annotating types with label expressions in braces. The type T fLgdescribes a value of type
+
+T that is restricted by the label
+fLg. For example, the password argument is readable bythe checker but owned by the client, which ensures that the
+
+checker can examine the password but cannot distribute itfurther. The annotations are onerous in this case partly because variable labels are not being inferred; Section 6 showshow to infer labels for this procedure.
+
+The comments (beginning with a "%") on the right-handside of the example indicate the static value of the basic block
+label, B, and are not part of the code.To perform its work, the procedure uses the
+
+db databaseto find the password of the user. As it looks at the data, its
+
+basic block label picks up any dependencies. For example,the
+
+if predicate examines password and the fields of db[i];therefore, its body has the basic block label
+
+fclient: chkr;
+chkr: chkrg. This means that the label of match must be atleast this restrictive, or the assignment to
+
+match in the bodyof the
+if statement would leak information (i.e., would resultin a compile-time error).
+
+However, the client requires a result with label fclient:
+chkrg. To provide such a result, the checker must explicitlydeclassify
+
+match, removing chkr from the owner set. Thedeclassification can be carried out only if the procedure has
+
+the proper authority (i.e., can act for chkr). Therefore, theprocedure checks whether it runs with this authority (in the
+if acts for statement); in the then clause, the code runs withthe authority of the password checker; otherwise, it does not.
+
+Code receives authority by being granted it in the principalhierarchy; each procedure has its own principal that can
+participate in acts-for relations. Of course, granting codethe right to act for a particular principal can only be done
+by a process that acts for that principal, so chkr must haveexplicitly granted
+
+check password the right to act for it. Theexpectation of the author of the procedure
+
+check passwordis that it has been given this right. However, the procedure
+
+is constructed so that it does not leak information if the rightto act for
+
+chkr is later revoked.The need for explicit declassification is not just an artifact
+
+of our model. The return value of the procedure is owned bythe client, which means that the client has complete control
+over the value. The procedure's result could conceivablybe used to determine the contents of the password database
+through exhaustive search. In this case, the implementor ofthe procedure has made a conscious decision that the amount
+of information leaked by the boolean return value is smallenough that declassification is acceptable. Note that the
+decision about declassification is made locally, by code thatacts for the owner of the data; no appeal to an external trusted
+agent is required.It is not necessary to run the entire procedure under the
+
+chkr authority. Instead this authority is used just where it isneeded, for the declassification. Also, note that the procedure only needs to declassify its result. It is not required todeclassify everything extracted from the password database,
+and is therefore protected against accidentally leaking thedatabase contents (e.g., if it called a helping procedure that
+acted on the database).
+
+5.2 Label-Checking Rules
+Now, we explain the constructs of the language and the cor-responding label-checking rules. The process of verifying a
+
+program according to these rules involves two major steps:first, basic block labels are propagated; then, each individual
+statement is verified in the context of the basic block thatcontains it. Verifying a statement requires that we check for
+the satisfaction of corresponding label constraints, which isdiscussed in more detail in Section 6.
+
+If the language contained exceptions or gotos, B wouldneed to be computed through the basic-block label propagation rule of Section 4.2. For our simple constructs, the rulesfor propagation of
+
+B can be stated directly; since control flowis determined only by
+
+if and while statements, the basic-blockpropagation rule takes particularly simple forms. Note that
+
+in each statement rule, B represents the label for the basicblock containing the statement. Many of these rules are similar in intent to those found in Denning and Denning [DD77],though these rules are different in that they are expressed
+without using the meet operator (u).
+
+5.3 Labeled Types
+As described, values and slots have labels that restrict in-formation flow. In statically-typed languages, values and
+
+slots also have static types that can be said to restrict flow.These two restrictions can be combined, so that labels are
+considered to be part of the type. This interpretation allowsus to use standard type-checking and notions of subtyping to
+describe information flows.Every variable, argument, and return type in the language
+has a labeled type, which consists of a base type such as
+int, plus a static label. For example, the labeled type intfLgrepresents an integer restricted by
+
+L. In general, label ex-pressions, consisting of the join of several labels, may appear
+
+within the braces. For example, intfchkr : chkr t L2g is re-stricted by both
+
+fchkr : chkrg and L2.The type and label parts of a labeled type act independently. For any two types S and T where S is a subtype of T(
+
+S ^ T ), and for any two labels L1 and L2 where L1 v L2,
+SfL1g ^ T fL2g [VSI96]. This formula also implies that
+SfL1g ^ T fL1 t L3g, for any other label L3.Parametric types such as arrays and records explicitly
+
+mention labels on their type parameters. For example, wecan form the type
+
+array[intfLg]fL2g, which is an array of
+
+10
+
+labeled integers, where the integers have label L, and thearray reference has label
+
+L2. In record types, similarly, theindividual fields have labeled types.
+
+5.4 Assignment
+Given an assignment of the form v := e, where v is a variablewith type
+
+T fvg and e is an expression with type Sfeg, and
+S ^ T , the assignment is legal if e t B v v, where B isthe label for the basic block containing the statement. This
+
+condition guarantees both that the information in e is notleaked by placing it in the variable
+
+v, and that performing thestore operation does not leak information because it happens
+
+in this particular basic block.Record and array assignments are similar to variable assignment, except that they may convey information by virtueof the particular record or array being assigned to. Consider
+record assignment of the form r.f := e. In this statement, r isa record expression with label
+
+r, f is a field of the record typewith declared type
+T ffg, and e is an expression with type
+Sfeg, S ^ T . The assignment is legal if e t r t B v f. Thisrule is equivalent to the one in Denning and Denning [DD77].
+
+The rule for assignment to an array element is similar, exceptthat the label on the array index is included on the left-hand
+side. Because r appears on the left-hand side of the rule,fields and array elements become immutable if the variable
+referring to the record or array becomes more protected thanthe field or element. For example, a record field with
+
+r 6v f isimmutable, since otherwise information could be leaked by
+
+assigning to it.
+
+5.5 if and while
+The rules for if and while are similar to each other. Assumethat
+
+e is a legal boolean expression, and that S is an arbitrarystatement. The statement "
+
+if e then S end" is legal if S islegal given the basic block label
+
+B t e. The same conditionguarantees the legality of "
+while e then S end". The label
+e does not need to be part of the basic block label afterthe execution of the
+
+if or while statement, because we arenot considering covert timing channels or covert channels
+
+arising from non-termination, as discussed in Section 4.2.
+
+5.6 Authority
+A procedure executes with some authority that has beengranted to it. Authority may be granted through the principal hierarchy or because the procedure's caller grants theprocedure the right to act for other principals.
+
+At any given point within a program, the compiler under-stands the code to be running with the ability to act for some
+set of principals, which we call the effective authority of thecode at that point. The effective authority can never exceed
+the true authority at any point during execution.
+
+When a procedure starts running, it has no effective au-thority. It may increase its effective authority by testing
+whether it has the authority to act for a principal. If the testsucceeds, the effective authority is increased to include that
+principal. This test is accomplished by using the if acts forstatement:
+
+if acts for(P1, P2) then S1 [ else S2 ] end
+(The brackets around the else clause indicate that it is op-tional.)
+
+In this statement, P2 names a principal in the principalhierarchy;
+
+P1 names the current procedure or the specialkeyword
+caller. If it names the current procedure, it meansthe procedure's principal, as discussed in Section 5.1. If it
+
+names caller, it denotes the principal(s) that the procedure'scaller has granted it the right to act for, as discussed later in
+Section 5.11.The effect of
+
+if acts for is to execute the then block if thespecified acts-for relationship exists. If the
+
+if acts for testfails, the
+else block, if any, is executed with no additionalauthority. If the test succeeds, the effective authority of the
+
+then block is increased to include P2.
+
+5.6.1 Revocation
+It is possible that while a procedure is executing the thenpart of an
+
+if acts for statement, the principal hierarchy maychange in a way that would cause the test in the statement
+
+to fail. In this case, it may be desirable to revoke the code'spermission to run with that authority, and we assume the
+underlying system can do this, by halting the code's process,at some point after the hierarchy changes.
+
+If a running program is killed by a revocation, informationmay be leaked about what part of the program was being
+executed. This constitutes a timing channel, and one that canbe made slow enough that it is impractical to use.
+
+5.7 Declassification
+A program can explicitly declassify a value. The operation
+
+declassify(e; L)
+relabels the result of an expression e with the label L, usingrelabeling Rules 1 and 2 as needed.
+
+Declassification is checked statically, using the effectiveauthority at the point of declassification; the authorization
+for declassification must derive from a containing if acts forcontrol structure. Declassification is legal as long as
+
+e per-mits declassification to
+L, which implies the following rule.Let
+LA be a label in which every principal in the effectiveauthority is an owner, but with an empty reader set. The
+
+11
+
+most restrictive label that e could have and still be declassi-fiable to
+
+L is L t LA, so the declassify() expression is legalif
+e v L t LA. For example, if the principal A is part ofthe effective authority, the label
+
+fA: B,C; D: Eg can be de-classified to
+fA: C; D: Eg, since fA: C; D:Eg t fA: ;g =
+fA: ;; D: Eg, which is more restrictive than fA: B,C; D: Eg.
+
+5.8 Label Polymorphism
+Consider a library routine such as the cosine function (cos).It would be infeasible to declare separate versions of
+
+cos forevery label in the system. Therefore, we allow procedures
+
+to be generic with respect to the labels on their arguments,which means that only one
+
+cos function need exist.If a label is omitted on the type of a procedure argument
+
+a, the argument label becomes an implicit parameter to theprocedure, and may be referred to as
+
+a elsewhere in the pro-cedure signature and body. For example, the cosine function
+
+is declared as follows:
+
+cos(x: float) returns (y: floatfxg)
+cos is generic with respect to the label on the argument x,and
+
+x is an implicit argument to the routine.This signature allows
+
+cos to be used on any argument, andthe label on the return value is always the same as the label
+
+on the argument. Since the code of cos does not dependon what
+
+x really is, its code need not access the label, sothere is no need either to recompile the code for each distinct
+
+label or to pass the label at runtime. Therefore, implicit labelpolymorphism has no run-time overhead.
+
+5.9 Run-time Labels
+Implicit labels allow code to be written that is generic withrespect to labels on arguments. However, sometimes more
+
+power is needed: for example, to model the accounts databaseof the bank example, where every customer account has a
+distinct label. To allow such code to be written, we supportrun-time labels.
+
+A variable of type label may be used both as a first-class value and as a label for other values. For example,
+procedures can accept arguments with unknown labels, as inthe following procedure declaration:
+
+compute(x: int, lb: label) returns (floatfx t lbg)
+To simplify static analysis, first-class label variables areimmutable after initialization. When a label variable is used
+
+as a label, it represents an unknown but fixed label. Becauselabels form a lattice and obey the simple rules of a lattice,
+static reasoning about this label is straightforward. For ex-ample, if the procedure
+
+compute contains the assignment
+z := x + y, where y has type intflbg, the assignment is validas long as it can be statically determined that
+
+z v lbt x. This
+
+condition can be checked even when z and y do not declaretheir labels explicitly, as discussed in Section 6.
+
+Since label is a type, it too must be labeled wherever itis used. Constant labels and implicit label parameters have
+type labelf?g. Declarations of run-time labels can indicatethe label's label explicitly; if the label's label is omitted, it
+treated like any other type: it is inferred in the case of a localvariable, and it is implicit in the case of an argument (this is
+the situation for the lb argument of compute).In principle, code that is written in terms of implicit labels
+can be expresssed in terms of run-time labels. We provideimplicit labels because when they provide adequate power,
+they are easier and cheaper to use than run-time labels. Forexample, without implicit labels the signature of the
+
+cosfunction would be the following:
+
+cos (x: floatflxg, lx: labelf?g)returns
+
+(y: floatflxg)
+
+5.10 Labelcase
+The labelcase statement is used to determine the run-timelabel on a value. It effectively allows a program to examine
+
+variables of type label. For example, compute might use
+labelcase to match the label lx against other labels it hasavailable. A labelcase statement has the following form:
+
+labelcase e as vwhen
+
+L1 do S1when
+L2 do S2
+: : :
+[ else S3 ]end
+
+The effect of this statement is to execute the first statement
+Si such that e v Li, introducing a new variable v containingthe same value as
+
+e, but with the label Li.The block label in the arm of the
+
+labelcase does not reflectthe label of
+e, but it does reflect the label of e's label. Supposethe type of
+e is T fLeg where Le has the type labelfLeg. Sim-ilarly, suppose the labels
+
+Li have respective types labelfLig.The labelcase statement is valid only if each of the statements
+
+Si is valid given a basic block label Bi:
+
+Bi = B t Le t
+
+0@
+
+iG
+
+j=1
+
+Lj
+
+1A
+
+This formula says that selecting which statement to executereveals information
+
+about the labels, but does not reveal any-thing about information protected by the labels. Therefore,
+
+the basic block labels Bi depend on Lj but not on Lj. Thereason for joining all the
+
+Lj up to i is that the arms of the
+
+12
+
+labelcase are checked sequentially, so each arm that failsconveys some information to its successors.
+
+In a labelcase, neither the tested expression e nor the la-bels
+
+Li on any of the arms may mention the implicit labelson procedure arguments; rather, the
+
+labelcase is limited toconstant labels and run-time labels. Implicit procedure argument labels are only intended to help write code that doesn'tcare what the labels are on the arguments. This restriction
+on the labelcase avoids the need to pass implicit labels tothe generic code that uses them, as discussed in Section 5.8.
+Since labels may be passed as explicit arguments, and valuesof type
+
+label may be used to label types, no power is lostthrough this restriction.
+
+5.11 Procedures
+A procedure definition has the following syntax:
+
+procedure ! id h authority i
+
+( arguments )h
+
+returns ( id : Tr f Lr g ) i
+body end
+
+authority ! o/ caller AE
+arguments ! a1 : T1 hfL1gi ; : : : ; an : Tn hfLngi
+
+The optional authority clause indicates whether the proce-dure may be granted some authority by its caller. A procedure
+with an authority clause may try to claim this authority byusing
+
+caller in an if acts for statement. The ai are the namesof the arguments to the procedure. The arguments have types
+
+Ti and optional labels Li. As in variable declarations, labelsin the arguments and results of a procedure signature may be
+simple label expressions, including joins of other labels.A call to a procedure is legal only if each actual argument
+to the procedure is assignable to the corresponding formalargument. This means that the formals must have labels that
+are more restrictive than the block label of the caller at thetime of the call, i.e., the normal rule for assignment given
+in Section 5.4 applies here. Additionally, bindings mustbe found for all the implicit label parameters such that for
+each explicit or implicit formal argument label Li and actualargument label
+
+Lai, the constraint LaitB v Li holds, where
+B denotes the basic block label of the call site. Determiningthe bindings for the implicit labels that will satisfy all these
+
+constraints is not trivial, since the formal argument labelsmay be
+
+join expressions that mention other implicit argumentlabels, as in the signature
+
+f(a: int, b:int fa t Xg), where Xis some other label. The efficient solution of such constraint
+
+systems is considered in Section 6.Furthermore, if the authority clause is present, the caller
+may provide one or more principals that it acts for. Such a call
+
+protect(T: type, lb: label, v: Tflbg)
+
+returns (p: protected[T]flbg)
+
+% Create a new protected[T] containing
+% the value v and label lb.
+
+get label(p: protected[T]) returns (lb: labelfpg)
+
+% Return the label that is contained in p
+
+get (p: protected[T], expect: label)
+
+returns (success: boolfp t expectg,
+
+v: Tfexpect t expect t pg)
+% Return the value that is contained in p if
+% the label expect matches the contained label.
+% Set success accordingly.
+
+Figure 7: The operations of protected[T]
+can occur only within the scope of an if acts for statement,since otherwise the effective authority of the caller is nil. For
+example, the following call from the procedure p grants theauthority of the principal
+
+my principal to the procedure doit:
+
+if acts for(p, my principal) then
+
+doito/my principalAE(: : : )end
+
+This model for granting authority protects the caller ofa procedure because it can select what part of its authority
+to grant to the procedure. The implementor of the calledprocedure is also protected, because the procedure uses only
+the authority its implementor wishes to claim, and only whereneeded. (This is similar to the CACL model [RSC92], but
+provides more protection for the implementor.)
+
+5.12 protected[T]
+Run-time label checking is conveniently accomplished byusing the special type
+
+protected[T]. A protected[T] is animmutable object that contains two things: a value of type
+
+T, and a label that protects the value.The type
+
+protected[T] is particularly useful for imple-menting structures like file systems, where the information
+
+flow policies of individual objects cannot be deduced stati-cally. For example, a file system directory is essentially an
+array of protected file objects. Navigating the file systemrequires a series of run-time label checks, but this work is
+unavoidable.
+
+protected[T] has two methods: get, which extracts thecontained value, and
+
+get label, which extracts the containedlabel. It also has a constructor,
+
+protect, which creates a newprotected value. The signatures of these operations are shown
+
+in Figure 7. The get method requires an expected label asan argument. The value is returned only if the expected
+
+13
+
+label is at least as restrictive as the contained label, which isdetermined at run time. The expected label must be either
+a constant label or a variable label; implicit labels are notallowed.
+
+If the language is extended to support some form of dataabstraction with encapsulation, the type
+
+protected can be im-plemented in a natural manner by using the
+
+labelcase state-ment. Without these extensions, the closest approximation
+
+to protected[T]flbg is the following type:
+
+record[ lb: label, x: Tflbg ]flbg % immutable
+Like this type, the type protected[T] has the special prop-erty that the label on the reference to a
+
+protected[T] (the label
+lb) is assumed to be the label on the contained label, lb. Thisconstraint can be maintained because
+
+protected[T] is im-mutable, and because
+L1 v L2 implies protected[T]fL1g ^
+protected[T]fL2g.A
+
+protected[T] allows information flow via its containedlabel: one could pass information by storing different labels
+
+in protected[T] objects, and then seeing whether get oper-ations succeed. However, the signature of
+
+get prevents aninformation leak because the
+success result is labeled bothby the label on the label being passed in (
+
+lb), and by p's label(
+p), which is the same as the label on the contained label.Therefore, this information flow does not create a leak.
+
+5.13 The Bank Example
+The bank example from Section 2 is a good example of theneed for run-time labels. Each customer account is owned
+
+by the individual customer, rather than by the bank, whichgives the customer more confidence in the privacy offered by
+the bank. This example can be conveniently written using
+protected[T] to protect each customer's account with a labelspecific to the customer, as shown in Figure 8.
+
+For example, the customer's account can be a simplerecord type, where the customer's name is protected by (and
+accessible to) the bank, but balance is protected by boththe bank label and a customer label that is stored inside the
+protected[float]. This design gives the customers protectionagainst dissemination of their balance information.
+
+In this code, Bank represents a principal with the abilityto declassify the
+
+bank label label. The current balance of anaccount is obtained by the procedure
+
+get balance, which ac-cepts a first-class label as an argument. If the label
+
+customerthat is passed to
+get balance is at least as restrictive as thelabel in the account, the balance is returned as a float labeled
+
+by customer. The procedure fails either if no customer ex-ists by that name, or if the label passed in is insufficiently
+protected.
+
+account = record [
+
+name: stringfbank labelg,
+balance: protected[float]fbank labelg ]
+
+get balance (name: string, customer: label,
+
+accts: array[accountf?g]f?g)
+returns (success: bool fname t customer t
+
+customer g,
+balance: float fname t customer t
+
+customerg)
+: : : % find element i containing the right customer
+s: boolfname t customer t customer t bank labelg
+b: boolfname t customer t customer t bank labelg
+s, b := get(accts[i].balance, customer)
+if acts for (get balance, Bank) then
+
+success := declassify(s, fname t customer t
+
+customerg)
+balance := declassify(b, fname t customer t
+
+customerg)
+end
+end get balance
+
+Figure 8: Bank Example
+5.14 Output Channels
+Output channels show up as the special opaque type "channel" in the language. The type channel denotes an outputchannel with a hidden reader set, whose members denote the
+
+principals who are reading from the channel. Informationcan be written to a channel using the "
+
+write" procedure:
+
+write(c: channelflbg, s: stringflbg, lb: labelflbg)
+When a write is attempted, the label lb is compared againstthe hidden reader set within the channel. If it passes the tests
+of the effective reader set that are described in Section 3.5,the write is successful. Otherwise, it silently fails.
+
+It is important that lb capture all the possible informationflows that the write will cause, since otherwise
+
+write wouldnot perform a sufficiently stringent test against the channel's
+
+reader set. Because lb is used to label s, the channel cannotleak information through the contents of the data that is sent
+out. Because lb is used to label the argument c as well,the channel cannot be used to leak information by choosing
+among a set of channels to write to. Finally, because lblabels itself, the channel cannot be used to leak information
+by changing the label that is passed in as the lb argument, andtransmitting information by the fact of the write's success or
+failure.
+
+6 Verification and Label Inference
+This section describes code verification and label inferencein more detail. It demonstrates that basic block labels, labels
+
+14
+
+on local variables, and labels in declassify expressions can beinferred efficiently and automatically, making it much more
+convenient to write properly annotated code. We present asmall example of this process.
+
+6.1 Label Constraint Systems
+As described earlier, procedure verification is a two-step pro-cess that first determines basic block labels by propagating the labels of branch-determining expressions, and thenchecking all the statements in the program in the context of
+their basic blocks. While the expressions that control branchdecisions can be identified statically, their labels depend on
+the label of the basic block in which they occur. We seem tohave a chicken-and-egg problem.
+
+The difficulty can be resolved by creating a label con-straint system and solving for all the inferred labels simultaneously. We start by inventing fresh labels Li for each of thebranch expressions in blocks
+
+Bi. These labels are propagatedaccording to the rules for determining basic block labels, and
+
+fed into the statement verification stage. Verifying eachstatement requires checking of corresponding constraints involving labels. To verify code, we collect all the constraintsthat are demanded by the various statements, and solve them
+as a system. If the constraints are inconsistent and generatea contradiction, the program contains an information leak.
+
+Solving the constraint system is tractable because theconstraints all take a particularly simple form. Each constraint has either a label or a join of labels on both the left-and right-hand sides, e.g.,
+
+L1 t L2 v L3 t L4. This equa-tion is equivalent to the two equations
+
+L1 v L3 t L4 and
+L2 v L3 t L4, and in general, we can convert the constraintsto a canonical form in which there is only one label (variable
+
+or constant) on the left-hand side.Explicitly declared labels (whether constants or first-class
+labels) and implicit argument labels are treated as constants;basic block labels and undeclared labels on local variables
+are treated as variables. The goal of verification is to de-termine whether there are assignments to the local variable
+labels and basic block labels that satisfy all the constraints.This problem is similar in form to the problem of satisfying
+propositional Horn clauses; in fact, a linear-time algorithmfor satisfying Horn clauses [DG84, RM96] can be adapted
+easily to this problem. If, on the other hand, we had permitteduse of both the
+
+t and u operators in constructing label ex-pressions, the label satisfaction problem would have become
+
+NP-complete [RM96].The algorithm works by keeping track of conservative
+upper bounds for each unknown label. Initially, all the upperbounds are set to
+
+?. The algorithm then iteratively decreasesthe upper bounds, until either all equations are satisfied or
+
+a contradiction is observed. At each step, the algorithmpicks an equation that is not satisfied when all variables are
+substituted by their upper bounds. If the unsatisfied equation
+
+check password(db: array[pinfof?g], user: string,
+
+pwd: string)
+returns (ret: boolfuser t pwd t dbg)
+% Return whether pwd is the password of user
+
+i: int := 0 % ?
+match: bool := false % ?
+while i ! db.length() do % L1
+
+if db[i].names = user & % L1
+
+db[i].passwords = pwd then %
+
+match := true % L1tL2
+end %
+i := i + 1 % L1
+end %
+ret := false % ?
+if acts for(check password, chkr) %
+
+ret := declassify(match) % ?
+end
+end check password
+
+Figure 9: Password example with implicit labels
+has a constant label on its left-hand side, a contradiction hasbeen detected. Otherwise, the upper bound estimate for the
+variable label on the left-hand side is adjusted to be the meet(
+
+u) of its current upper bound and the value of the right-hand side. In evaluating the right-hand side, all variables are
+
+replaced with their current upper bound estimates.Like the algorithm for satisfying Horn clauses, this algorithm requires a number of iterations that is linear in thetotal size of the constraints; the total size of the constraints is
+at worst quadratic in the length of the code. Therefore, thisinference algorithm seems very practical.
+
+The labels found by this algorithm are the most restrictivelabels that satisfy the constraints. However, the actual values
+that the inference algorithm finds are irrelevant, because theyare never converted to first-class values of type
+
+label. Whatis important is that there is a satisfying assignment to all the
+
+labels, proving that the code is safe.
+
+6.2 Inference Example
+
+Figure 9 shows the code for a more flexible version of the
+check password procedure that was presented earlier. Thisversion of
+
+check password is usable by any client principal.Because the arguments
+
+db, user, and pwd have no declaredlabels, their labels are implicit parameters to the routine.
+
+Note that the local variables i and result do not explicitlydeclare their labels. The resulting procedure is as safe as the
+previous version of check password, and easier to implementand use. Let us now walk through the verification process
+for this code.The first step in verification is to construct the basic-block
+diagram and propagate fresh labels that represent branch
+
+15
+
+i := 0 ? v i
+match := F ? v match
+while i t db = L1
+
+if i t user t pwd t dbt fchkr: chkrg t L1 = L2
+match := T L1 t L2 v match
+i := i + 1 i t L1 v i
+ret := F ? v user t pwd t db
+declassify match v Ld t fchkr : ;g
+ret := : : : Ld v user t pwd t db
+
+Figure 10: Constraints for the password example
+
+i; match; L1; L2 = user t pwd t db t fchkr : ;g
+
+Ld = user t pwd t db
+
+Figure 11: Constraint solutions
+expressions. The comments in Figure 9 show the value ofthe basic block labels for each basic block, in terms of the
+two branch-expression labels L1 and L2 (for the if and while,respectively.)
+
+Next, the code is analyzed to generate the set of labelconstraints shown in Figure 10, which include inequalities
+corresponding to the statements in the program, plus someequalities that bind the basic-block branch-expression labels
+to the labels for the corresponding expressions. The equali-ties can be transformed into a pair of constraints to preserve
+the canonical constraint form. Note that the use of declassifygenerates an additional constraint, introducing a new variable Ld that represents the label of the declassified result.This procedure provides a good example of why it is important for declassification to be able to apply to just onecomponent of a join, as discussed in Section 3.4. The fact
+that declassification works at all in this procedure, let aloneis possible to verify automatically, is due to this property of
+the declassification rule.Applying the constraint-solving algorithm just described,
+a single backward pass through the canonical forms of theseconstraints yields labels that satisfy them, as shown in Figure 11.
+
+7 Related Work
+There has been much work on information flow control andon the static analysis of security guarantees. The lattice
+model of information flow comes from the early work of Belland LaPadula[BL75] and Denning [Den76]. More recent
+work on information flow policies has examined complexaggregation policies for commercial applications [CW87,
+BN89, Fol91]. We have not addressed policies that captureconflicts of interest, though our fine-grained tracking of ownership information seems applicable. Many of these infor-mation control models use dynamic labels rather than static
+labels and therefore cannot be checked statically. IX [MR92]is a good example of a practical information flow control system that takes this approach. Our propagation of ownershipinformation is also reminiscent of models of access control
+that merge ACLs at run time [MMN90].Static analysis of security guarantees also has a long
+history. It has been applied to information flow [DD77,AR80] and to access control [JL78, RSC92]. There has
+recently been more interest in provably-secure program-ming languages, treating information flow checks in the domain of type checking [VSI96, Vol97]. Also, integrity con-straints [Bib77] have been treated as type checking [PO95].
+
+We have avoided considering covert channels arising fromtime measurement and thread communication. A scheme
+for statically analyzing thread communication has been pro-posed [AR80]; essentially, a second basic block label is
+added with different propagation rules. This second labelis used to restrict communication with other threads. The
+same technique would remove timing channels, and couldbe applied to our scheme. It is not clear how well this
+scheme works in practice; it seems likely to restrict timingand communication quite severely. Static side-effect and
+region analysis [JG91], which aims to infer all possible side-effects caused by a piece of code, may be able to capture
+effects like timing channels.
+
+8 Conclusions
+This work was motivated by a desire to provide better se-curity when using downloaded applications, by making finegrained information flow control practical and efficient. Thispaper is a first step towards this goal.
+
+A key limitation of most multilevel security models isthat there is a single, centralized policy on how information
+can flow. This kind of policy does not match well with thedecentralized model in which each user is independent. Our
+model provides each user the ability to define informationflow policy at the level of individual data items. Each user
+has the power to declassify his own data, but declassificationdoes not leak other users' data.
+
+An important aspect of our label model is that labelsidentify the owners, or sources, of the data. Each owner
+listed in the label maintains its own separate annotation (thereader set) to control where its data may flow. When running
+on behalf of a particular principal P, a program is able to editP's portion of the label without violating other principals'
+policies. Labels form a familiar security class lattice, buteach principal has access to some non-lattice relabelings (by
+declassifying).We have also shown how the labels we define can be
+used to annotate a simple programming language, which
+
+16
+
+suggests that other programming languages and intermediatecode formats can be similarly annotated. To ensure proper
+information flows, the labels in the resulting code can bestatically checked by the compiler, in a manner similar to
+type checking. Also, as part of the label checking process,the compiler can construct a trace of its checking process.
+Some form of this trace can accompany the generated code,and can be used later to verify information flows in the code.
+
+Labels are mostly checked statically, which has benefitsin space and time. Compiled code does not need to perform
+checks, so the code is shorter and faster than with run-timechecks. Storage locations that are statically typed require no
+extra space to store a label. However, we have also defined amechanism for run-time label checking that allows the flexibility of run-time checks when they are truly needed. Thismechanism guarantees that when the run-time checks fail,
+information is not leaked by their failure. The mechanism ofimplicit label polymorphism also extends the power of static
+analysis, by allowing the definition of code that is genericwith respect to some or all of the labels on its arguments.
+We have presented a simple algorithm that, despite our ex-tensions to the label system, is able to efficiently infer labels
+for basic blocks and local variables. Label inference makesthe writing of label-safe code significantly less onerous.
+
+We have provided some simple examples of code andsoftware designs that cannot be adequately expressed using
+previous models of access control or information flow. Theseexamples demonstrate that the new features of user declassification, label polymorphism, and run-time label checking addnew power and expressiveness in capturing security policies.
+
+9 Future Work
+There are many directions to explore with this new model.An obvious next step is to implement the model by extending an existing language compiler, and developing workingapplications for examples like those in Section 2.
+
+It should also be possible to augment the Java VirtualMachine [LY96] with annotations similar to those proposed
+in Section 5. The bytecode verifier would check both typesand labels at the time that code is downloaded into the system.
+
+The computational model described in Section 5 has areasonable set of data types. However, it ought to support
+user-defined data abstractions, including both parametric andsubtype polymorphism.
+
+Formal proofs of the soundness of the model might addsome confidence. In the absence of any use of the
+
+declassifyoperation, labels are located in a simple lattice that applies
+
+equally to all users, and previous results for the security oflattice-based information flow models apply to this model as
+well. However, because declassify is intended to allow infor-mation to flow across or down the lattice, standard security
+policies such as non-interference [GM84] are intentionally
+
+inapplicable.Because integrity [Bib77] constraints have a natural lattice structure, supporting them may be an interesting exten-sion to our label model; the label model can be augmented
+to allow each owner to establish an independent integritypolicy, just as each owner now can establish an independent
+information flow policy.We have assumed an entirely trusted execution environment, which means that the model described here does notwork well in large, networked systems, where varying levels
+of trust exist among nodes in the network. Different prin-cipals may also place different levels of trust in the various
+nodes. A simple technique for dealing with distrusted nodesis to transmit opaque receipts or tokens for the data. However, more work is needed to adapt our model to this kindof system. It is also likely that the model of output channels
+should be extended to differentiate among the different kindsof outputs from the system.
+
+We have not considered the possibility of covert channelsthat arise from timing channels and from asynchronous communication between threads, which can also be used to createtiming channels. The technique of having a timing label for
+each basic block, as in Andrews and Reitman [AR80], mayhelp with this problem, but more investigation is needed.
+
+Acknowledgments
+The authors would like to acknowledge the helpful com-ments of the many people who have read this paper, including Mart'in Abadi, Atul Adya, Kavita Bala, Phil Bogle,Miguel Castro, Steve Garland, Robert Grimm, Butler Lampson, Roger Needham, Matt Stillerman, and the anonymousreviewers.
+
+References
+[AR80] Gregory R. Andrews and Richard P. Reitman.An axiomatic approach to information flow in
+
+programs. ACM Transactions on ProgrammingLanguages and Systems, 2(1):56-76, 1980.
+
+[Bib77] K. J. Biba. Integrity considerations for securecomputer systems. Technical Report ESD-TR76-372, USAF Electronic Systems Division,Bedford, MA, April 1977.
+
+[BL75] D. E. Bell and L. J. LaPadula. Secure computersystem: Unified exposition and Multics interpretation. Technical Report ESD-TR-75-306,MITRE Corp. MTR-2997, Bedford, MA, 1975.
+Available as NTIS AD-A023 588.
+[BN89] D. F. Brewer and J. Nash. The Chinese wallsecurity policy. In
+
+Proc. of the IEEE Symposium
+
+17
+
+on Security and Privacy, pages 206-258, May1989.
+[CW87] David Clark and David R. Wilson. A compari-son of commerical and military computer security policies. In Proc. of the IEEE Symposiumon Security and Privacy, pages 184-194, 1987.
+
+[DD77] Dorothy E. Denning and Peter J. Denning. Cer-tification of programs for secure information
+
+flow. Comm. of the ACM, 20(7):504-513, 1977.
+[Den76] Dorothy E. Denning. A lattice model of se-cure information flow.
+
+Comm. of the ACM,19(5):236-243, 1976.
+
+[DG84] William F. Dowling and Jean H. Gallier. Linear-time algorithms for testing the satisfiability of
+
+propositional Horn formulae. Journal of Logic
+Programming, 1(3):267-284, October 1984.
+
+[Fol91] Simon N. Foley. A taxonomy for informationflow policies and models. In
+
+Proc. of the IEEESymposium on Security and Privacy, pages 98-
+
+108, 1991.
+[GJS96] James Gosling, Bill Joy, and Guy Steele. TheJava Language Specification. Addison-Wesley,
+
+August 1996. ISBN 0-201-63451-1.
+[GM84] J. A. Goguen and J. Meseguer. Unwinding andinference control. In
+
+Proc. of the IEEE Sym-posium on Security and Privacy, pages 11-20,
+
+April 1984.
+[JG91] Pierre Jouvelot and David K. Gifford. Algebraicreconstruction of types and effects. In
+
+ACM
+Symposium on Principles of Programming Lan-guages, pages 303-310, January 1991.
+
+[JL78] Anita K. Jones and Barbara Liskov. A languageextension for expressing constraints on data access. Comm. of the ACM, 21(5):358-367, May1978.
+
+[LAB+84] Barbara Liskov, Russell Atkinson, Toby Bloom,J. Eliot Moss, J. Craig Schaffert, Robert Scheifler, and Alan Snyder. CLU Reference Manual.Springer-Verlag, 1984. Also published as Lecture Notes in Computer Science 114, G. Goosand J. Hartmanis, Eds., Springer-Verlag, 1981.
+
+[LABW91] Butler Lampson, Mart'in Abadi, Michael Bur-rows, and Edward Wobber. Authentication in
+
+distributed systems: Theory and practice. InProc. 13th ACM Symp. on Operating System
+Principles (SOSP), pages 165-182, October1991.
+
+Operating System Review, 253(5).
+
+[Lam73] Butler W. Lampson. A note on the confine-ment problem.
+
+Comm. of the ACM, 10:613-615,1973.
+
+[LY96] T. Lindholm and F. Yellin. The Java Virtual
+
+Machine. Addison-Wesley, Englewood Cliffs,NJ, May 1996.
+
+[MMN90] Catherine J. McCollum, Judith R. Messing, andLouAnna Notargiacomo. Beyond the pale of
+
+MAC and DAC -- defining new forms of accesscontrol. In
+
+Proc. of the IEEE Symposium onSecurity and Privacy, pages 190-200, 1990.
+
+[MR92] M. D. McIlroy and J. A. Reeds. Multilevel secu-rity in the UNIX tradition. Software--Practice
+
+and Experience, 22(8):673-694, August 1992.
+[Nec97] George C. Necula. Proof-carrying code. In
+
+Proc. of ACM Symp. on Principles of Program-ming Languages, pages 106-119, January 1997.
+
+[PO95] Jens Palsberg and Peter O/rbaek. Trust in the *-calculus. In Proc. 2nd International Symposium
+
+on Static Analysis, number 983 in Lecture Notesin Computer Science, pages 314-329. Springer,
+September 1995.
+[RM96] Jakob Rehof and Torben AE. Mogensen. Trac-table constraints in finite semilattices. In Proc.
+
+3rd International Symposium on Static Analysis,number 1145 in Lecture Notes in Computer Science, pages 285-300. Springer-Verlag, Septem-ber 1996.
+
+[RSC92] Joel Richardson, Peter Schwarz, and Luis-Felipe Cabrera. CACL: Efficient fine-grained
+
+protection for objects. In Proceedings of the1992 ACM Conference on Object-Oriented Programming Systems, Languages, and Applica-tions, pages 154-165, Vancouver, BC, Canada,
+October 1992.
+[Vol97] Dennis Volpano. Provably-secure programminglanguages for remote evaluation.
+
+ACM SIGPLAN Notices, 32(1):117-119, January 1997.
+
+[VSI96] Dennis Volpano, Geoffrey Smith, and Cyn-thia Irvine. A sound type system for secure
+
+flow analysis. Journal of Computer Security,4(3):167-187, 1996.
+
+18

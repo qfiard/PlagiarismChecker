@@ -1,0 +1,1697 @@
+
+
+Verifying Event-Driven Programsusing Ramified Frame Properties
+Neelakantan R. Krishnaswami
+
+Microsoft Research
+neelk@microsoft.com
+
+Lars Birkedal
+IT University of Copenhagen
+
+birkedal@itu.dk
+
+Jonathan Aldrich
+Carnegie Mellon University
+jonathan.aldrich@cs.cmu.edu
+
+Abstract
+Interactive programs, such as GUIs or spreadsheets, often maintaindependency information over dynamically-created networks of objects. That is, each imperative object tracks not only the objects itsown invariant depends on, but also all of the objects which depend
+upon it, in order to notify them when it changes.These bidirectional linkages pose a serious challenge to verification, because their correctness relies upon a global invariant overthe object graph.
+
+We show how to modularly verify programs written usingdynamically-generated bidirectional dependency information. The
+critical idea is to distinguish between the footprint of a command,and the state whose invariants depends upon the footprint. To do
+so, we define an application-specific semantics of updates, and in-troduce the concept of a ramification operator to explain how local
+changes can alter our knowledge of the rest of the heap. We illus-trate the applicability of this style of proof with a case study from
+functional reactive programming, and formally justify reasoningabout an extremely imperative implementation as if it were pure.
+
+Categories and Subject Descriptors F.3.1 [Logics and Meaningsof Programs]: Specifying and Verifying and Reasoning about Programs
+General Terms languages, verification
+Keywords separation logic, frame rule, ramification problem,dataflow, functional reactive programming, subject-observer
+
+1. Introduction
+In many interactive programs, there are mutable data structureswhich change over time, and which must maintain some relationships with one another. For example, in a spreadsheet, each cellcontains a formula, which may refer to other cells, and whenever
+the user changes a cell, all of the cells which transitively dependupon it must be updated. Since spreadsheets can get very large, this
+should ideally be done in a lazy way, so that only the cells visibleon the screen (and the cells necessary to compute them) are themselves recomputed.Typically, these dependencies are written using the subjectobserver pattern. A mutable data structure (the subject) maintains
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+TLDI '10 January 23, 2010, Madrid, Spain.Copyright cfl 2010 ACM 978-1-60558-891-9/10/01.. . $10.00
+
+a list of all of the data structures whose invariants depend upon it(the observers). Whenever it changes, it calls a function on each
+observer to update it in response to the change. (And in turn, theobservers of the subject may be subjects of still other observers.)
+
+While natural, these programs are very challenging to verify ina modular way, even when using a resource-sensitive logic adapted
+to reasoning about aliased mutable data, such as separation logic.The reason is that there are two directions of dependency, both of
+which matter for program proof. First, our program invariant musthave ownership over the subject's data (its footprint) in order to
+prove the correctness of code modifying the subject. This directionof ownership is natural to verify with separation logic.
+
+However, we must explicitly maintain the other direction ofdependency as well -- we track everything which depends upon
+the subject, and modify the dependent data appropriately wheneverthe subject changes. Hence, the natural program invariant now
+becomes a global property: we need to know the full dependencygraph covering all subjects and observers to express that the reads
+and is-read-by relations are relational transposes of one another.The global nature of this invariant means that a naive correctness
+proof will not respect the modular structure of the program -- if wemodify the dependency graph in any way, we now have to re-verify
+the entire program!But, the intention of the subject-observer pattern is precisely
+to allow the program to remain oblivious to the exact number andnature of the observers, so that the programmer may add new observers without disturbing the behavior of the rest of the program.Our goal, then, is to find a way of taking this piece of practical software engineering wisdom, and casting it into formal termsamenable to proof. Concretely, our contributions are as follows:
+
+* We define a library with a monadic API for writing demand-driven computations with dynamic dependencies and local
+
+state. This library is implemented using higher-order functionsdynamically creating networks of imperative callbacks.
+
+We then give an "abstract semantics" for this library, structuredas a set of separation logic lemmas about our dataflow library.
+These lemmas permit modular correctness proofs about pro-grams using this API, even in the face of the fact that the program invariants must be defined globally upon the whole call-back network.
+
+The key idea is to distinguish between the direct footprint ofa command, and the program state which depends upon that
+footprint. The lemmas are then phrased so that they refer onlyto the direct footprint of each command in the API. In addition,
+we structure our lemmas to justify an unusual frame propertyfor our abstract semantics, which we can use to verify different
+parts of an imperative dataflow network separately.
+Unlike typical frame properties, the frame in our frame rule isnot the same in the pre- and the post-states. Instead, the two
+
+sides of the frame are related by a ramification operator (sonamed in analogy to the "ramification problem" in AI), which
+explains how local changes can alter our knowledge of the restof the heap.
+
+* To illustrate the utility of this proof technique, we verify an imperative implementation of combinators implementing streamtransducers in the style of functional reactive programming.
+
+Ultimately, clients can reason about the behavior of the impera-tive implementation as if it were purely functional, even though
+it is implemented using local state and imperative callback pro-cedures.
+
+For space reasons, many of the detailed proofs have been omittedfrom this extended abstract, but we emphasize that full proofs have
+been carried out; in particular, each triple in the library specificationhas been proven using the specification logic in Section 2.
+
+2. Programming Language and Logic
+The formal system we present has three layers. First, we have a coreprogramming language we call Idealized ML. It is a predicativelypolymorphic functional language which isolates all side effects in-side a monadic type [24]. Our notion of side effects includes nontermination in addition to the allocation, access, and modification ofgeneral references (including pointers to closures). Then, we give
+an assertion language based on higher-order separation logic [4]to describe the state of a heap. Separation logic allows us to give
+a clean treatment of issues related to specifying and controllingaliasing, and higher-order predicates allow us to abstract over the
+heap, hiding the exact layout of a module's heap data structuresand thereby enforcing encapsulation. Finally, we have a specification logic to describe the effects of programs, which is a first-orderlogic whose atomic propositions are Hoare triples {
+
+p}c{a : A. q},which assert that if the heap is in a state described by the assertion
+
+p, then executing the command c will result in a postcondition state
+q (with the variable a referring to the return value of the command).Programming Language. The core programming language we
+
+have formalized is an extension of the polymorphic lambda cal-culus with a monadic type constructor to represent side-effecting
+computations. The types of our language are the unit type 1, thefunction space
+
+A ! B, inductive types like the natural numbertype N, the reference type
+
+ref A, as well as universal and existen-tial types 8
+ff : ^. A and 9ff : ^. A.1In addition, we have the monadic type fl
+
+A, which is the typeof suspended side-effecting computations producing values of type
+
+A. Side effects include both heap effects (such as reading, writing,or allocating a reference) and nontermination.
+
+We maintain such a strong distinction between pure and impurecode for two reasons. First, it allows us to use strong equational reasoning principles for our language: we can validate the full fi and jrules of the lambda calculus for terms of non-monadic types, such
+as functions, sums, and products. These rules simplify reasoningeven about imperative programs, because we can relatively freely
+restructure the program source to follow the logical structure of aproof. Second, when program expressions appear in assertions --
+that is, the pre- and post-conditions of Hoare triples -- they mustbe pure. However, allowing a rich set of program expressions like
+function calls or arithmetic in assertions makes it much easier towrite specifications. So we restrict which types can contain sideeffects, and thereby satisfy both requirements.
+1 These quantifiers are actually all restricted to predicative quantification
+(i.e., they can only be instantiated with terms lacking any quantifiers them-selves) in order to keep the denotational semantics simple, though recent
+
+work [7] has studied how to combine store with impredicative polymor-phism.
+
+The pure terms of the language are typed with a typing judgment
+\Theta ; \Gamma  ` e : A, which can be read as "In the type context \Theta and the variable context
+
+\Gamma , the pure expression e has type A."Computations are typed with the judgment
+
+\Theta ; \Gamma  ` c / A, whichcan be read as "In the type context
+\Theta  and the variable context \Gamma ,the computation
+c is well-typed at type A ." The rules for both ofthese judgments are standard and omitted.
+
+We have hi as the inhabitant of 1, natural numbers z and s(e),and functions
+
+*x : A. e. We also have the corresponding elimi-nations for each type, including projections for products and case
+
+statements for sum types. For the natural numbers, we add a primi-tive iteration construct
+
+iter(e, ez, x. es). If e = z, this computes ez, and if
+e = s(e0), it computes es[(iter(e0, ez, x. es))/x]. Boundediteration allows us to implement (for example) arithmetic operations as pure expressions. We will also freely make use of otherpolynomial data types (such as sum types, lists, option types, and
+trees) as needed.Suspended computations
+
+[c] inhabit the monadic type flA.These computations are not immediately evaluated, which allows
+
+us to embed them into the pure part of the programming language.Furthermore, we can take fixed points
+
+fix x : D. e of terms, to giveus a general recursion. Because we wish to permit nonterminating
+
+programs only at monadic types, we must restrict fix to a limitedfamily of types
+
+D (given in Figure 2), so that we do not contaminateour language with infinite loops at every type.2 We will write
+
+recursive functions as syntactic sugar for fix.The computations themselves include all expressions
+
+e, as com-putations that coincidentally have no side-effects. Furthermore, we
+
+have sequential composition letv x = e in c. Intuitively, the be-havior of this command is as follows. We evaluate
+
+e until we getsome
+[c0], and then evaluate c0, modifying the heap and binding thereturn value to
+
+x. Then, in this augmented environment, we run c.The fact that monadic commands have return values explains why
+
+our sequential composition is also a binding construct. Finally, wehave primitive computations
+
+newA(e), !e, and e := e0, which let usallocate, read and write references (inhabiting type
+
+ref A), respec-tively. To save space, we will also write
+run e, when e is a term ofmonadic type, as an abbreviation for
+letv x = e in x. Consider thefollowing example, which creates and swaps the contents of two
+
+references:
+1 letv r = [newN(5)] in2
+
+letv s = [newN(14)] in3
+letv x = [!r] in4
+letv y = [!s] in5
+letv = [r := y] in6
+letv = [s := x] in7
+x + y
+
+On lines 1 and 2, we allocate two references to natural numbers,
+r and s, initializing them with the contents 5 and 14. Then, onlines 3 and 4, we dereference
+
+r and s, binding their contents to thevariables
+x and y, respectively. Then, in lines 5 and 6, we swap thecontents of the two references, assigning
+
+y to r and x to s, so that rnow points to
+14 and s now points to 5. Finally, on line 7, we return
+x + y, the sum of the two contents.The primitive commands are all composed using the
+
+letv x =
+e in c construct. Because this form expects the bound term to bean expression of monadic type, each of the primitive commands
+
+(allocation, dereference, assignment) are wrapped in a suspension
+[c] before being given to the let-binder.Assertion Language. The sorts and syntax of the assertion
+
+language are given in Figure 3. The assertion language is a versionof separation logic [25], extended to higher order.
+
+2 The allowed types are those whose interpretations are pointed CPOs in
+domain theory.
+
+Kinds ^ ::= ? | ^ ! ^
+Monotypes o/ ::= 1 | o/ * o/ | o/ ! o/N |
+
+ref A | fl o/ |
+ff | o/ o/ | *ff : ^. o/
+
+Polytypes A ::= 1 | A * B | A ! BN |
+
+ref A | fl A |
+ff | o/ o/ |8
+
+ff : ^. A | 9ff : ^. A
+
+Type Contexts \Theta  ::= * | \Theta , ff : ^
+
+Figure 1. Language Types
+
+Pure expressions e ::= hi | he, e0i | fst e | snd e|
+
+x | *x : A. e | e e0|
+z | s(e) | iter(e, e0, x. e1)|
+\Lambda ff : ^. e | e o/|
+pack(o/, e) | unpack(ff, x) = e in e0|
+[c] | fix x : D. e
+
+Computations c ::= e | letv x = e in c|
+
+newA(e) | !e | e := e0
+
+Contexts \Gamma  ::= * | \Gamma , x : A
+Pointed Types D ::= 1 | fl A | D * D | A ! D| 8
+
+ff : ^. D
+
+Figure 2. Syntax of the Programming Language
+
+In ordinary Hoare logic, a predicate describes a set of programstates (in our case, heaps), and a conjunction like
+
+p ^ q means thata heap in
+p ^ q is in the set described by p and the set describedby
+q. While this is a natural approach, aliasing can become quitedifficult to treat -- if
+
+x and y are pointer variables, we need toexplicitly state whether they alias or not. So as the number of
+
+variables in a program grows, the number of aliasing conditionsgrows quadratically.
+
+With separation logic, we add the spatial connectives to addressthis difficulty. A separating conjunction
+
+p * q means that the statecan be broken into two disjoint parts, one of which is in the set
+
+described by p, and the other of which is in the set described by
+q. The disjointness property makes the noninterference of p and
+q implicit, letting us avoid the unwanted quadratic growth in thesize of our assertions. In addition to the separating conjunction, we
+
+have its unit emp, which is true of the empty heap, and the points-torelation
+
+e 7! e0, which holds of the one-element heap in which thevalue of the reference
+
+e has contents equal to the value of e0.The universal and existential quantifiers 8
+
+x : !. p and 9x : !. pare higher-order quantifiers ranging over all sorts
+
+!. The sortsinclude the language types
+A, kinds ^, the sort of propositions prop,and function spaces over sorts
+
+! ) !0. Constructors for terms ofall these sorts are given in Figure 3. For the function space, we
+
+include lambda-abstraction and application. Because our assertionlanguage contains within it the classical higher-order logic of sets,
+we will freely make use of features like subsets, indexed sums, andindexed products, exploiting their definability.
+
+Finally, we include the atomic formulas S valid, which are as-sertions that a specification
+
+S holds. This facility is useful when wewrite assertions about pointers to code -- for example, the assertion r 7! e ^ ({p}run e{a : A. q} valid) says that the reference rpoints to a monadic expression
+
+e, whose behavior is described bythe Hoare triple {
+p}run e{a : A. q}.Specification Language. Given programs and assertions about
+
+the heap, we need specifications to relate the two. We begin withthe Hoare triple {
+
+p}c{a : A. q}. This specification represents the
+
+Assertion Sorts ! ::= A | ^ | ! ) ! | prop
+Assertion p ::= e | A | x | *x : !. p | p qConstructors | ? |
+
+p ^ q | p oe q | ? | p . q|
+emp | p * q | e 7! e0| 8
+
+x : !. p | 9x : !. p | S valid
+
+Specifications S ::= {p}c{a : A. q} | {p}|
+
+S and S0 | S implies S0 | S or S0| 8
+
+x : !. S | 9x : !. S
+
+Figure 3. Syntax of Assertions and Specifications
+
+claim that if we run the computation c in any heap the predicate pdescribes, then if
+
+c terminates, it will end in a heap described bythe predicate
+q. Since monadic computations can return a value inaddition to having side-effects, we add the binder
+
+a : A to the thirdclause of the triple to let us name and use the return value in the
+
+postcondition.We then treat Hoare triples as one of the atomic proposition
+forms of a first-order intuitionistic logic (see Figure 3). The otherform of atomic proposition are the specifications {
+
+p}, which arespecifications saying that an assertion
+p is true. These formulas areuseful for expressing aliasing relations between defined predicates,
+
+without necessarily revealing the implementations. In addition, wecan form specifications with conjunction, disjunction, implication,
+and universal and existential quantification over the sorts of theassertion language.
+
+With a full logic of triples at our disposal, we can express pro-gram modules as formulas of the specification logic. We can expose a module to a client as a collection of existentially quantifiedfunctions and variables, and provide the client with Hoare triples
+describing the behavior of those functions. Furthermore, modulescan existentially quantify over predicates to grant client programs
+access to module state without revealing the actual implementa-tion. A client program that uses an existentially quantified specification cannot depend on the concrete implementation of this mod-ule, since the existential quantifier hides that from it.
+
+The language and specification logic have been given a denota-tional semantics in the first author's forthcoming PhD thesis [16].
+We do not give the semantics here both for space reasons, and be-cause it is not central to the contributions of this paper.
+
+3. Demand-Driven Notification Networks
+A simple intuition for a "demand-driven notification network" isto think of it as a generalized spreadsheet. We have a collection of
+
+cells, each of which contains a program expression whose evalua-tion may read other cells. When a cell is read, the expression within
+the cell is evaluated, recursively triggering the evaluation of othercells as they are read by the program expression. Furthermore, each
+cell memoizes its expression, so that repeated reads of the same cellwill not trigger re-evaluation.
+
+In addition, we can modify the code expression within a cell.Any time a cell is updated, its memoized value is cancelled, so that
+any future reads of that cell will force the evaluation of its newcode. Furthermore, every cell also maintains a set tracking every
+other cell which has read it, so that when its code is updated, it cannotify all of its readers -- i.e., every other cell whose value may
+depend upon it - to invalidate their own memoized values.We will call the entire collection of cells a "notification network", because we have a graph (i.e., network) structure of cells,which maintains dependency information between themselves, and
+whenever a change is made to a cell, it notifies everything that de-pends on it of the change.
+
+In this section, we will describe an implementation of a notifi-cation network library, informally explaining its design and how it
+works. Then, in the next section, we will see how to take the infor-mal explanation and turn it into a precise specification suitable for
+verification.
+3.1 Implementing Notification Networks
+Our API for creating notification networks is given in Figure 4.First, we'll describe the interface, and then discuss its implementation.The interface exposes two basic abstract data types,
+
+cell and
+code.The type
+
+cell ff (defined on line 3) is the type of dynamic datavalues. A cell contains a reference to a piece of code, a possible
+
+memoized value, plus enough information to correctly invalidateits memoized value when the cell's dependencies change. We can
+create a new cell by calling newcell ff e, which returns a brand newcell with the code expression
+
+e inside it. We can also modify a cellwith the command
+update ff cell e, which modifies the cell cellby installing the new expression
+
+e in it.The type
+code ff (defined on line 1) is a monadic type, rep-resenting the type of computations that can read cells. It supports
+
+the usual operations return ff e and bind ff fi e (*x. e0), whichembed a pure value into the
+
+code type and implement sequentialcomposition, respectively. In addition, the primitive operations on
+
+this monad include reading a cell with the read ff cell functioncall, and reading and modifying local state with the
+
+getref ff r and
+setref ff r v operations.This monadic type is not the state monad of the programming
+
+language; it is a user-level monadic type we implement as a library(as is commonly done in Haskell, for example), in order to support the transparent propagation and maintenance of dependencyinformation. For example, assuming that
+
+a and b are variables oftype
+cell N, then the following code expression will read the twocells and return their sum (suppressing obvious type arguments to
+
+functions):
+1 bind (read a) (*x : N.2
+
+bind (read b) (*y : N.3
+
+return (x + y)))
+
+This expression does not explicitly mention any dependency infor-mation; it is up to the primitive operations of our library to generate
+
+it, and up to the return and bind operations to propagate it appro-priately. In this way, we can (1) avoid the error-prone business of
+explicitly managing the dependencies, and (2) we can use typingto forbid invoking arbitrary stateful operations that might ruin the
+invariants of the library. The only state manipulations we performare the ones under our control.
+
+The actual implementation is also given in Figure 4. The ab-stract type of code is implemented using the underlying monad of
+imperative commands, so that code o/ is implemented with the typefl
+
+(o/ * cellset). The intuition is that when we evaluate a term weare allowed to read some cells along the way, and so we must return
+
+a set of all the cells that we read in order to do proper dependencymanagement. So,
+
+cellset is a type representing sets of cells3. (Theprecise specification of
+
+cellset is given in Appendix A, since de-scribing it is a distraction from the main development.)
+
+Cells, defined on line 3, are represented with a 5-tuple. (Wetake the liberty of using record syntax for this tuple.) We have a
+field code, which is a reference pointing to the code expression,as well as a field
+
+value which is a pointer to an optional value.The value field's contents will be
+
+None if the cell is in an unready,
+
+3 Properly, these are sets of cells packed inside an existential type - i.e.,
+terms of type 9ff : ?. cell ff
+
+1 code : ? ! ?2
+
+code ff = fl(ff * cellset)
+
+3 cell : ? ! ?4
+
+cell ff = {code : ref code ff;5
+
+value : ref option ff;6
+reads : ref cellset;7
+obs : ref cellset;8
+unique : N}
+
+9 ecell = 9ff : ?. cell ff
+10 return : 8ff : ?. ff ! code ff11
+
+return ff x = [hx, emptyseti]
+
+12 bind : 8ff, fi : ?. code ff ! (ff ! code fi) ! code fi13
+
+bind ff fi e f = [letv (v, r1) = e in14
+
+letv (v0, r2) = f v in15 h
+
+v0, union r1 r2i]
+
+16 read : 8ff : ?. cell ff ! code ff17
+
+read ff a = [letv o = [!a.value] in18
+
+run case(o,19
+
+Some v ! [hv, singleton ai],20
+None!21
+
+[letv exp = [!a.code] in22
+letv (v, r) = exp in23
+letv = [a.value := Some(v)] in24
+letv = [a.reads := r] in25
+letv = iterset (add observer pack(ff, a)) r in26 h
+
+v, singleton ai])
+
+27 getref : 8ff : ref ff ! code ff28
+
+getref ff r = [letv v = [!r] in hv, emptyseti]
+
+29 setref : 8ff : ref ff ! ff ! code 130
+
+setref ff r v = [letv = [r := v] in hhi, emptyseti]
+
+31 newcell : 8ff : ?. code ff ! flcell ff32
+
+newcell ff code = [letv unique =!counter in33
+
+letv = [counter := unique + 1] in34
+letv code = newcode ff(code) in35
+letv value = newoption ff(None) in
+
+36 letv reads = newcellset(emptyset) in37
+
+letv obs = newcellset(emptyset) in38
+
+(code, value, reads, obs, unique)]
+
+39 update : 8ff : ?. code ff ! cell ff ! fl140
+
+update ff exp a = [letv = mark unready pack(ff, a) in41
+
+a.code := exp]
+
+42 mark unready : ecell ! fl143
+
+mark unready cell = unpack(ff, a) = cell in44
+
+[letv os = [!a.obs] in45
+
+letv rs = [!a.reads] in46
+letv = iterset mark unready os in47
+letv = iterset (remove obs cell) rs in48
+letv = [a.value := None] in49
+letv = [a.reads := emptyset] in50
+a.obs := emptyset]
+
+51 add observer : ecell ! ecell ! fl152
+
+add observer a pack(fi, b) = [letv os = [!b.obs] in53
+
+b.obs := addset os a]
+
+54 remove obs : ecell ! ecell ! fl155
+
+remove obs a pack(fi, b) = [letv os = [!b.obs] in56
+
+b.obs := removeset os a]
+
+Figure 4. Implementation of Notification Networks
+
+un-memoized state, and will be Some v if the cell's code hasalready been evaluated to a value
+
+v. In addition there are twofields representing the dependencies. If the code expression has
+
+been evaluated and a memoized value generated, then the readsfield will point to the set of cells that the computation directly
+read while computing its value. Otherwise it will point to theempty set. Conversely, the field
+
+obs contains the cell's observers-- the set of cells that have read the current cell as part of their
+
+own computations. Obviously, this is only non-empty when thecell has been evaluated. Finally, each cell also has a numeric field
+unique, which is a unique numeric identifier for each cell createdby the dependency management library in Figure 4. It allows us to
+compare cells (even of different type) for equality, which we needto implement the
+
+cellset type.The
+return operation (defined on line 10) for the library simplyreturns its argument value and the empty set, since it does not read
+
+any cells. Likewise, bind ff fi e f (defined on line 12) will evaluatethe argument
+
+e and pass the returned value to the function f. It willthen return the function's return value, together with the union of
+
+the two read sets.There are two functions
+
+getref ff r (line 27) and setref ff r v(line 29) whose specifications say that they simply read and update
+
+their argument reference. These two functions allow us to uselocal state within a notification network, which we will need to
+implement things like accumulators when implementing reactiveprograms. They both return empty read sets, since neither of them
+read any cells.Interesting things first happen with the
+
+read ff e operation,defined on line 16. This function will first check to see if the cell
+
+has a memoized value ready. If it does, we return that immediately.Otherwise, we evaluate the cell's code, and update the current
+cell's value and read set. In addition, each cell that was read inthe evaluation of the code (i.e., the set returned as the second
+component of the monadic type's return value) also has its observerset updated with the newly-ready current cell. Now, if any of the
+dependencies change, they will be able to invalidate the current cell,which observes them. Note that the dependencies between cells are
+all dynamic -- we cannot examine the inside of a code expressionto find its "free cells", and so we rely upon the invariant that a code
+expression will return every cell it read, in addition to its returnvalue.
+
+Further interesting things happen with the newcell ff e op-eration, defined on line 31. It creates a new cell value, initializing the code field with the argument e, and generating a uniqueid by dereferencing and incrementing the variable
+
+counter. The
+counter variable occurs freely in this definition, because it is apiece of state global to this module, which must be initialized by
+
+whatever initialization routine first constructs the whole moduleas an existential package. Since
+
+counter is otherwise private, wecan generate unique identifiers by incrementing it as we create new
+
+cells.Finally, the
+
+update cell e operation (line 39) updates a cell
+cell with a new code expression e. (As an aside, it's worth notingthat this is a genuine, unavoidable, use of higher-order store: we
+
+make use of pointers to code, including the ability to dynamicallymodify them.) Once we modify a cell, any memoized value it has
+is no longer necessarily correct.Therefore, we have to drop the memoized value of the cell,
+and any cell that transitively observes the cell. The mark unreadyfunction (line 42) does this. Given a cell, it takes all of the observers
+of the current cell and recursively makes all of them unready. Thenit removes the current cell from the observer sets of all the cells it
+reads, and then it nulls out the current cell's memoized value, aswell as setting its read and observer sets to empty. Notice that there
+
+is no explicit base case to the recursive call; if there are any cyclesin the dependency graph, invalidation could go into an infinite loop.
+
+So far, we have described the implementation invariants incre-mentally. Before proceeding to describe them formally, we will
+state them again informally, all in one place:
+
+* Every cell must have a unique numeric identifier
+
+* Every cell is either ready, or unready.
+
+* Every ready cell has a memoized value, and maintains two sets,
+
+one containing every cell that it reads, and the other containingevery cell it is observed by.
+
+* Every unready cell has no memoized value, and has both an
+
+empty read set and an empty observer set.*
+
+The overall dependency graph among the valid cells must forma directed acyclic graph.
+
+* The reads and the observers must be the same, only pointing in
+
+opposite directions.
+
+Formalizing these constraints is relatively straightforward, butwe have the problem that these constraints are global in nature: we
+cannot be sure that the dependency graph is acyclic without havingit all available to examine, and likewise we cannot in general know
+that a cell is in the read set of everything in its observed set withoutknowing the whole graph. Handling this difficulty is one of the
+primary contributions of this work.
+
+4. The Abstract Semantics of Notifications
+We will formalize the informal invariants of the previous section inthree stages. In the first stage, we will describe how to accurately
+
+formalize the global invariant of the cell graph, albeit in a non-modular way. In the second stage, we will recover a basic modular
+reasoning principle through an interesting use of polymorphism,which will suffice to let us reason modularly about adding cells to
+and modifying the cells in the cell graph. However, this will notbe strong enough to reason modularly about evaluating cells in the
+network, and so in the third stage we will introduce a generalizedframe rule, which we will call a "ramified frame rule" after a similar
+concept in AI.
+4.1 The Structure of the Global Invariant
+The key to getting around our difficulties lies in the difference be-tween the implementation of
+
+update and of read. The update func-tion calls
+mark unready, which recursively follows the observers.The
+read function, on the other hand, proceeds in the opposite di-rection -- it evaluates code expressions, recursively descending
+
+into the footprint of its command. The opposite direction these twofunctions look is why we end up needing a global invariant: we
+need to know that these two directions are in harmony with oneanother.
+
+Now, note that we have given the type of mark unready themonadic type fl
+
+1. This precludes it from being called from withina
+code o/, because the user-level monadic type discipline of code o/will only let us compute with pure expressions and other
+
+code oeterms. Therefore, when we evaluate a code expression, we will
+
+never actually follow the observer fields - we will only add entriesto them whenever we evaluate a cell and change it from unready
+to ready. As a result, an abstract description of the heap whichdoes not explicitly mention the observer sets will prove sufficient
+for reasoning about the behavior of code o/ expressions.With this plan, we introduce abstract heap formulas, which are
+syntactic descriptions of the state of part of the cell heap. Thesesyntactic expressions are given by the following grammar:
+
+OE,  ::= I | OE \Omega   | cell+(a, e, v, r) | cell-(a, e, , )|
+
+local(r, v)
+
+Informally, a formula I represents an empty abstract heap, anda formula
+
+OE \Omega   represents an abstract heap that can be broken intotwo disjoint parts
+
+OE and . We will only consider formulas modulothe associativity and commutativity of \Omega , and take
+
+I to be the unitof this binary operator.
+
+The atomic form local(r, v) says that r is a piece of local stateowned by the network, currently with value
+
+v. There are two atomicforms representing cells.
+cell-(a, e, , ) says that a is a cell withcode
+e, which is unready to deliver a value -- it needs to be re-evaluated before it can yield a value.
+
+cell+(a, e, v, r) says that ais a cell with code
+e. Furthermore, it is ready to deliver the value
+v, but only if all the cells in its read set r are themselves ready.Otherwise, if anything in
+
+a's read set r is unready, then a is unreadyitself. (Because we will sometimes want to write
+
+cell+-(a, e, -, -)when we do not care whether
+a is ready or not, the cell-(a, e, , )formula has two dummy argument positions.)
+
+First, notice the must/may flavor of this reading. The for-mula
+
+cell-(a, e, , ) says that a must be unready. The formula
+cell+(a, e, v, r) says that a may be ready, conditional on the readi-ness of the elements of its read set
+
+r. Second, notice that the back-wards dependencies are entirely missing from these formulas. We
+
+have simply left out the other half of the dependency graph fromthis description. Forgetting this information will let us begin to
+regain local reasoning, as we will see in the statements of Proposi-tions 1 and 2.
+
+We have emphasized that the straightforward invariant is notobviously modular. To elaborate upon this point, we will need to
+look at the formal statement of the heap invariant, to see howexactly modularity fails. We introduce the predicate
+
+G(OE). Thispredicate describes the entire heap of cells allocated by our library
+
+and ensures they satisfy the conditions described at the end of theprevious section. It also enforces the additional constraint that the
+cell heap agree with OE.4
+G(OE) , 9H 2 CellHeap. Inv(H, OE)
+Inv(H, OE) ,
+
+R#H = OH ^ R+H strict partial order^
+
+RH ` VH * VH ^ uniqueids(H)^
+satisfies(H, OE) ^ heap(H) * localstate(OE)
+
+The auxiliary definitions we used in this definition are all given inFigure 5.
+
+We first assert the existence of a cell heap H drawn from theset
+
+CellHeap. An element of CellHeap, defined on line 1 ofFigure 5, is a collection of cells, paired with a function mapping
+
+each cell in that collection to a code expression, a possible value,a read set, an observed set, and an identifier. We will use
+
+H asa variable ranging over cell heaps, and will use the pair pattern
+
+(D, h) to range over cell heaps when we need to use the individualcomponents of the pair.
+
+In the first two lines of Inv(H, OE), we assert all of the globalconditions in terms of the mathematical cell heap
+
+H. First, weassert that the relational transpose
+(*)# of the reads relation RHis the observes relation
+OH. These two relations (defined in lines9 and 10) are computed from the cell heap.
+
+RH consists of thosepairs of cells in
+H, such that the first component reads the secondcomponent. Likewise,
+
+OH consists of those pairs of cells in H
+
+4 This is why we insisted that the abstract heap formulas are syntactic
+objects -- this permits us to define predicates on them by induction overthe structure of the formula.
+
+1 CellHeap =2
+
+\Sigma D 2 Pfin(ecell).3
+
+(\Pi (pack(ff, )) 2 D.(code ff * option ff *4 P
+
+fin(ecell) * Pfin(ecell) * N)
+
+5 code = ss1 obs = ss46
+
+value = ss2 unique = ss57
+reads = ss3
+
+8 V(D,h) = {c 2 D | 9v. value(h(c)) = Some(v)}9
+
+R(D,h) = {(c, c0) 2 D * D | c0 2 reads(h(c))}10
+O(D,h) = {(c, c0) 2 D * D | c0 2 obs(h(c))}
+
+11 uniqueids(D, h) = 9i : F in(|D|) ! D.12
+
+i ffi (unique ffi h) = id ^13
+(unique ffi h) ffi i = id
+
+14 satisfies((D, h), OE) = sat((D, h), D, OE)
+15 sat((D, h), D0, local(r, v)) = ?16
+
+sat((D, h), D0, I) = ?17
+sat((D, h), D0, OE \Omega  ) = 9D1, D2. D = D1 ] D218 ^
+
+sat((D, h), D1, OE)19 ^
+sat((D, h), D2, )20
+sat((D, h), D0, cell-(a, e, , )) =21
+
+a 2 D ^ code(h(a)) = e ^ a 62 VH22
+sat((D, h), D0, cell+(a, e, v, r)) =23
+
+a 2 D ^ code(h(a)) = e ^24 (if
+
+r " VH = r25 then
+
+value(h(a)) = Some v ^ reads(h(a)) = r26 else
+a 62 VH)
+
+27 heap(D, h) =28
+
+counter 7! |D| *29 8*
+
+c 2 D. 9vr, vo : cellset.30
+
+c.code 7! code(h(c)) *31
+c.value 7! value(h(c)) *32
+c.reads 7! vr *33
+c.obs 7! vo *34
+c.unique = unique(h(c)) ^35
+set(D, vr, reads(h(c))) ^36
+set(D, vo, obs(h(c)))
+
+37 localstate(cell+-(a, e, -, -))= emp38
+
+localstate(I) = emp39
+localstate(OE \Omega  ) = localstate(OE) * localstate()40
+localstate(local(r, v)) = r 7! v
+
+Figure 5. Definitions for Heap Invariant
+
+such that the first component is observed by the second component.Requiring that
+
+RH = O#H enforces the condition that the reads andobserve relations be the same, only pointing in opposite directions
+
+(i.e., if a reads b, then b is observed by a).Then, we require that the transitive (but not reflexive) closure
+of the reads relation, R+H form a strict partial order. Strictnessenforces the condition that there be no cycles in the dependence
+graph (because otherwise there could be elements a, such that
+(a, a) 2 R+H). Next, we require that the reads relation RH is asubset of the Cartesian product
+
+VH * VH of the set VH of cellscarrying values (defined on line 8). This ensures that (1) there are
+
+no dependencies on unready cells, and (2) all unready cells haveempty read and observe sets.
+
+Finally, we ask that all of the cells in H have unique identifiers--
+
+uniqueids(D, h) (defined on line 11) asserts that there is abijective map between
+
+F in(|D|) (the finite set consisting of thenatural numbers from 0 to the size of the cell heap) and the cells
+
+in D, and that each cell carry its uniquely identifying number in its
+unique field.In the third line of the definition of
+
+Inv(H, OE), we begin byrequiring that the cell heap
+H satisfy the abstract heap formula OE,
+
+which formalizes the informal reading of the abstract heap formulasgiven earlier. The definition of the satisfaction relation is given
+on line 14. The satisfaction relation satisfies(H, OE) asserts that OEdescribes the heap
+
+H.This relation closely follows the standard pattern of separation
+
+logic, with one exception: we need to remember the whole heap inorder to check whether or not the read sets of positive cell formulas
+like cell+(a, e, v, rs) are ready. To model this, we use an auxilliaryrelation
+
+sat((D, h), D0, OE), in which (D, h) is the whole heap, and
+D0 is the fragment of the heap within which OE must lie. The casefor the unit
+
+I, on line 16, is satisfied by any cell heap, and the tensor
+OE \Omega   (on line 17) is satisfied if we can break D0 into two disjointpieces, one of which satisfying
+
+OE and the other satisfying . Inthis sense, we are building a domain-specific separation logic on
+
+top of separation logic. The clause for cell-(a, e, , ), on line 20,says that (1) the cell
+
+a must be within D0, (2) its code must be
+e, and (3) it must be unready (i.e., have no value). The clause for
+cell+(a, e, v, r) (on line 22) is a little more complex. It also saysthat
+
+a must be in D0 and that a's code must be e. In addition, itsays that if all the cells in
+
+r have values, then a's value must be vand otherwise
+a must not have a value. The clause for local(r, v) issimply the true assertion -- since this is a piece of local state that
+
+does not participate in dependency tracking, we leave it out of thisinvariant and use an ordinary separation logic formula to track it.
+
+The second-to-last clause of Inv(H, OE) is the predicate heap(H).This predicate, defined on line 27, finally connects the cell heap,
+which is a purely mathematical object, to the actual low-level heapthe implementation uses. We ask that the global counter reference counter point to an integer field equal to the size of the cellheap, and then use the iterated separating conjunction 8* to require that for each cell in the cell heap, we have pointers to theappropriate code, value, read, observer, and unique identifier fields.
+The unique identifier field contains the natural number uniquelyidentifying the cell. The read and observer fields point to values
+of type cellset, with the predicate set(D, vr, reads(h(c))) and
+set(D, vo, obs(h(c))) asserting that the program value vr and vorespectively representing the read and observed sets of the cell.
+
+(This predicate is explained in the appendix, as part of the specifi-cation of sets of cells.)
+
+The last clause in Inv(H, OE) is localstate(OE), which finds eachlocal reference formula in
+
+OE and asserts that it is in the physicalheap.
+
+The global character of this invariant should be evident; wedescribe all of the cells in the heap at once in order to state our
+invariants. So it is not immediately clear that we have made muchprogress towards a modular proof technique. However, we are
+actually very close: with just two more ideas, we will be able togive a solution to this problem.
+
+4.2 Frame Properties via Polymorphism
+As we mentioned earlier, our abstract heap formulas essentiallygive us a small domain-specific separation logic. This means that
+
+in order to reason locally over cell heaps, we need to find anapplication-specific version of the frame rule for our library.
+
+To do this, we will adapt some ideas proposed by Birkedal et.al. [6]. They suggested interpreting the frame rule of separation
+logic as a form of quantification -- instead of having a separateframe rule that allows adding a frame to any triple, they proposed
+that all of the atomic rules of the program logic be replaced withrules possessing an extra quantifier ranging over "the rest of the
+heap":
+
+8R. {(e 7! v) * R} e := v0 {(e 7! v0) * R} EXAMPLE
+This quantifier is propagated through the proof, and any use of the
+
+frame rule can be interpreted as instantiating the universal quanti-fier appropriately. The reason this idea is fruitful for us is that it will
+allow us to give a frame rule, even though the underlying seman-tics of our library does not actually satisfy any analogues of the
+traditional safety, monotonicity, and frame lemmas. For example,the
+
+update operation certainly does not act locally - it recursivelytraverses the observers set, possibly mutating a very large part of
+
+the cell graph.Nonetheless, we can prove the soundness of the following triple
+specifying update.
+
+PROPOSITION 1. (Update Rule) For all appropriately-typed cells
+o and code expressions e and e0, the following triple is derivable inour specification logic:
+
+8 : formula. {G(cell+-(o, e0, -, -) \Omega  )}
+
+run update o e{
+
+a : 1. G(cell-(o, e, , ) \Omega  )}
+
+Proof (Sketch). The key to this proof is the conditional interpre-tation of the
+
+cell+(c, e, v, r) formula. When the update o e com-mand executes, it recursively finds every cell which depends on
+
+o,and modifies it to be unready.
+
+Now consider any positive cell formula in  which depends on
+o, directly or indirectly. The satisfaction relation for OE asserts that inorder for a positive cell formula to represent a ready cell, everything
+
+in its read set also has to be ready. So when o's formula switchesto the unready state, we now require that every positive formula
+depending on o represents an unready cell -- which is exactly theeffect of executing
+
+update. As a result, we can leave the entireframe
+ untouched, even though the physical heap it representsmay have been (quite drastically) modified, and many cells may
+
+have gone from a ready to an unready state. \Lambda We can prove the soundness of a similar specification for
+newcell as well:
+
+PROPOSITION 2. (New Cell Rule) For all code expressions e, thefollowing specification is derivable in our specification logic:
+
+8 : formula. {G()}
+
+run newcell e{
+
+a : cell o/. G(cell-(a, e, , ) \Omega  )}
+
+Proof (Sketch). This is much easier than update: after newcellallocates a new numeric id for the new cell, we can extend the cell
+
+heap with the new cell and show that it continues to satisfy theinvariant. \Lambda 
+
+As we can see, the conditional interpretation of cell+(a, e, v, r)gives us quite a strong modular reasoning property for
+
+update and
+newcell - we can simply pretend that we are locally changing orcreating a cell, and leave the frame unchanged. This property lets us
+
+write programs whose components independently modify the cellheap, without having to know what cells might be updated by the
+change.
+4.3 Ramified Frame Properties
+While this strategy is sufficient for newcell and update, it is notadequate for defining a frame property for
+
+code o/ expressions.As an example, suppose that we want to evaluate the code expression read o/ a, in a cell heap described by cell-(a, return 5, , ).Clearly, this is a sufficient footprint, and we expect to get the return
+value 5, and see the cell formula change to cell+(a, return 5, 5, ;).However, the fact that we are now changing cells from negative to
+positive means that the conditional character of readiness, whichworked in our favor with
+
+update and newcell, now works againstus.
+
+In particular, suppose that we run this command with a framedabstract heap formula
+
+ = cell+(b, read a, 17, {a}). Now, the
+
+8a0 2 r. 9v0. ready(OE, a0, v0)
+ready(OE \Omega  cell+(a, e, v, r), a, v) READY
+
+9a0 2 r. unready(OE, a0)
+unready(OE \Omega  cell+(a, e, v, r), a) UNREADYPOS
+
+unready(OE \Omega  cell-(a, e, , ), a) UNREADYNEG
+
+Figure 6. Ready and Unready Judgments
+
+closed(I, s) = ?
+closed(OE \Omega  , s) = closed(OE, s) ^ closed(, s)
+closed(local(r, v), s) = ?
+closed(cell-(a, e, , ), s) = ?
+closed(cell+(a, e, v, r), s) = r ` s
+
+Figure 7. Closedness predicate
+
+R(s, I) = I
+R(s, OE \Omega  ) = R(s, OE) \Omega  R(s, )
+R(s, local(r, v)) = local(r, v)
+R(s, cell-(a, e, , )) = cell-(a, e, , )
+
+R(s, cell+(a, e, v, r)) = ae cell
+
++(a, e, v, r) if s " r = ;
+
+cell-(a, e, , ) otherwise
+
+Figure 8. Definition of the Ramification Operator R
+
+whole starting heap will be described by the formula:
+
+cell-(a, return 5, , ) \Omega  cell+(b, read a, 17, {a})
+In any heap satisfying this formula, b will be unready, because itdepends on an unready cell. But when we execute
+
+read a, simplycopying
+ into the post-state will give us the cell formula:
+
+cell+(a, return 5, 5, ;) \Omega  cell+(b, read a, 17, {a})
+That is, our satisfaction relation now expects b to be ready and havethe value 17, even though
+
+read a never touches b at all!Clearly, we cannot expect to be able to simply copy the same
+
+frame formula into the pre- and the post-condition states in thespecification of commands like
+
+read a.To deal with this problem, we look back to the original paper introducing the frame problem [19]. They described the frame prob-lem as the problem of how to specify what parts of a state were
+unaffected by the action of a command, which inspired the name ofthe frame rule in separation logic. In that paper, he also described
+the qualification problem. He observed that many commands (suchas a flipping a light switch turning on a light bulb) have numerous implicit preconditions (such as there being a bulb in the lightsocket), and dubbed the problem of identifying these implicit preconditions the qualification problem.Some years later, Finger [11] observed that the qualification
+problem has a dual: actions can have indirect effects that are notexplicitly stated in their specification (e.g., turning on the light can
+startle the cat). He called the problem of deducing these implicitconsequences the "ramification problem" -- is there a simple way
+to represent all of the indirect consequences of an action?We can understand our difficulty as an instance of the ramification problem. When we evaluate a code expression, we may readsome unready cells and send them from an unready state in the precondition to a ready state in the postcondition. However, we mayhave had some cell formulas in our frame which claimed their corresponding cells were unready purely because one of the cells inour footprint was unready. Therefore, when we update the footprint, we must modify the frame formula to account for the rami-fications of our update in the footprint. So even though the actual
+physical storage representing the frame does not change at all, weneed to modify our abstract formula to reflect our updated state of
+knowledge.In our case, all of the effects on the frame will arise from the
+cell formulas we change from unready to ready. Thus, given the setof cells which became ready, we can repair the framing formula by
+taking each positive cell formula, and setting it to a negative state ifits read set includes anything that went from unready to ready. We
+define the ramification operator R(s, ) in Figure 8. It is a simplestructural induction over a framing formula, whose only action is
+to replace the positive cell formulas in  whose read sets intersectwith
+
+s with a corresponding negative cell formula. The ramificationoperator has a number of useful properties, which are most easily
+
+expressed after we have introduced a few auxiliary judgments andpredicates.
+
+In Figure 6 we define the two judgments unready(OE, o) and
+ready(OE, o, v), which establish whether a cell is ready or unready,from the syntactic structure of
+
+OE. ready(OE, o, v) is intended tomean that the cell
+o is ready and will return value v, in any heapdescribed by
+OE. Correspondingly, unready(OE, o) means that o is notready in any heap described by
+
+OE. Since these are purely syntacticjudgments, we need to show that they are consistent with heaps
+
+described by OE.
+
+PROPOSITION 3. (Soundness of ready(OE, o, v) and unready(OE, o))For all
+
+OE, o, and H such that H = (D, h), the following assertionsare tautologies in separation logic.
+
+* (Inv(H, OE) ^ ready(OE, o, v)) oe value(h(o)) = Some v*
+
+(Inv(H, OE) ^ unready(OE, o)) oe o 62 VH
+
+Next, in Figure 7, we define the closed(OE, s) predicate, whichasserts that every cell formula in
+
+OE reads at most the cells in s.Now, we can summarize the interactions between the ramification
+
+operator R and abstract heap formulas as follows:
+
+PROPOSITION 4. (Interaction Properties) Given sets of cells s and
+u, cell o, value v, and formula OE, we have that:
+
+* R(s, R(u, OE)) = R(s [ u, OE)*
+
+If unready(OE, o), then unready(R(u, OE), o)*
+If ready(R(u, OE), o, v), then ready(OE, o, v)*
+If closed(OE, s), then R(u, OE) = R(u " s, OE)
+
+All of these facts can be proved with simple inductive argu-ments, since they are all syntactic facts.
+
+The first property means that if we evaluate two expressions,we can simply combine their ramification effects without having to
+worry about the order that they were evaluated in. The second andthird let us know that a ramification cannot make us forget a cell is
+unready, nor can it make anything ready that was not ready before.The last property permits us to constrain the effect of a ramification
+-- if we know that two parts of the abstract heap formula do notread each other at all, we can deduce that ramifications from one
+will not affect the other.Now we can define the abstract semantics of the code monad.
+We introduce the "judgment" hOE; ei + hOE0; vi [r|u], which is readas "from an initial state
+
+OE, evaluating the code o/ expression e willresult in a modified state
+
+OE0 and a return value v of type o/. Theexpression
+e will have directly read the cells in r, and will haveevaluated the cells in
+
+u, sending them from an unready to a ready
+
+hOE; ei + hOE0; vi [r|u] ,
+
+8. {G(OE \Omega   )}
+
+run e{
+
+a : o/. G(OE0 \Omega  R(u, ) ) ^ 9z. a = (v, z) ^ set(u, z, u)}
+and{8
+
+o. (unready(OE \Omega  , o) ^ o 2 dom())oe
+
+unready(OE0 \Omega  R(u, ), o)}
+and{8
+
+c 2 r [ u. 9v. ready(OE0, c, v) ^ 8c 2 u. unready(OE, c)}
+
+Figure 9. Definition of the Abstract Semantics
+
+hI; return ff vi + hI; vi [;|;] AUNIT
+hOE; ei + \Omega OE0; v0ff [r1|u1] \Omega OE0; f v0ff + \Omega OE00; v00ff [r2|u2]h
+
+OE; bind ff fi e fi + \Omega OE00; v00ff [r1 [ r2|u1 [ u2] ABIND
+
+ready(OE, a, v)h
+OE; read ff ai + hOE; vi [{a}|;] AREADY
+
+unready(cell+-(a, e, -, -) \Omega  OE, a) hOE; ei + \Omega OE0; vff [r|u]\Omega 
+
+cell+-(a, e, -, -) \Omega  OE; read ff aff +\Omega 
+cell+(a, e, v, r) \Omega  R({a}, OE0); vff [{a}|u [ {a}]
+
+AUNREADY
+
+hlocal(r, v); getref ri + hlocal(r, v); vi [;|;] AGETREF\Omega 
+local(r, v); setref r v0ff + \Omega local(r, v0); hiff [;|;] ASETREF
+
+hOE; ei + \Omega OE0; vff [r|u]h
+OE \Omega  ; ei + \Omega OE0 \Omega  R(u, ); vff [r|u] ABSTRACTFRAME
+
+Figure 10. Abstract Semantics of Notifications
+state." The formal definition of the meaning is given in Figure 9,where our "judgment" is revealed to be a notational abbreviation
+for a formula in our logic of specifications.The step relation h
+
+OE; ei + hOE0; vi [r|u] really means threethings. First, it means that if we run
+
+e in a heap G(OE \Omega  ), thenwe will end in a heap
+G(OE0 \Omega  R(u, )), and that the return valuewill be a pair consisting of the value
+
+v and the read set u (that is,the return value is a pair
+(v, z), and the second component of thereturn value
+z is a cellset which represents the set u, as indicatedby the predicate
+
+set(u, z, u)). Note the use of quantification over
+ to describe the frame, and that furthermore we need to use theramification operator to describe the change in the frame in the
+
+postcondition.Second, we assert that anything which was unready in the frame,
+remains unready in the frame in the postcondition, which is a wayof saying that we never read anything outside the footprint
+
+OE. Third,we assert that everything that was read or evaluated (the cells in
+
+r or u) is really syntactically ready in the postcondition, and thateverything we claim we evaluated (i.e., the cells in
+
+u) was reallysyntactically unready in the precondition.
+
+The reason we have to maintain these conditions is that thereadiness judgments are syntactic derivations which do not know
+anything about the effect of the execution of the command e. So weneed to explicitly construct syntactic facts reflecting any changes in
+
+the semantic heap if we wish to use them in further reasoning aboutthe syntactic description. In particular, we need these facts to prove
+the rules given in Figure 10, where we finally show that terms oftype
+
+code ff behave as we claimed in our informal description. Wegive a number of implications over specifications in inference rule
+
+format, mimicking the structure of a big-step semantics. Again, weemphasize that these rules are really just implications in specification logic -- the inference rule format is just a suggestive notationfor the actual specifications we use.
+
+In rule AUNIT, we give a specification for the return com-mand, which simply returns its argument and neither reads nor updates any cells or state. The ABIND rule explains how sequentialcomposition works -- as expected, we evaluate the first monadic
+argument, and pass the result to the functional argument, and eval-uate that. The read and update sets are simply the union of the
+two executions. Reading a cell comes in two variants, AREADYand AU
+
+NREADY. If a cell is ready, we simply return its memo-ized value without any further computation. If a cell is unready, we
+
+need to evaluate its code body, and then update the cell with itsnew value. Note that we have to apply the ramification operator in
+
+AUNREADY, because the cell we are reading goes from unready toready itself. We can also read (AG
+
+ETREF) and write (ASETREF)local state, which do not have any effect on the cells.
+
+Finally, we have the ABSTRACTFRAME rule, which allows usto extend the abstract heap formulas in the style of the frame rule
+of separation logic -- the signal difference being that we have toapply the ramification operator
+
+R to the frame in the post-state.
+
+PROPOSITION 5. (Soundness of Abstract Semantics) All of therules of the abstract semantics in Figure 10 are derivable in our
+
+specification logic.
+
+We can now reason about the behavior of our imperative notifi-cation network library in terms of its action on the abstract heap.
+
+Quantification and ramification give us a domain-specific frameproperty, which allows us to modularly prove the correctness of
+programs that construct and use this dependency-tracking library.
+
+5. Verifying an Imperative Implementation ofFunctional Reactive Programming
+
+In this section, we will see how to verify an imperative implementa-tion of a simple synchronous functional reactive programming system. We will begin by giving the purely functional/mathematicalsemantics of stream transducers. This semantics is easy to reason
+about, but too inefficient to consider as an implementation. Then,we'll give an imperative implementation of the reactive primitives,
+which is intended to be driven by an event loop. Finally, we willprove the correctness of a realization relation between the imperative and functional implementations, which will let us reason aboutthe imperative implementation as if it were functional.
+
+5.1 Specifying Functional Reactive Programs
+Functional Reactive Programming [10] is a style of writing inter-active programs based on the idea of stream transducers. The idea
+
+is to model a time-varying input signal of type A as an infinitestream of
+
+A's, and to model an interactive system as a function thattakes a stream of inputs
+
+stream(A) and yields a stream of outputs
+stream(B). Note that a stream can be viewed either as an infinitesequence of values, or isomorphically as a function from natural
+
+numbers to values (i.e., a function from times to values). In ourdiscussion, we'll switch freely between these two views, using the
+most convenient viewpoint.5
+5 Given an infinite stream vs, we will use use take n vs to denote the finite
+list consisting of the first n elements of the stream vs. Correspondingly,
+
+1 ST(A, B) = {f 2 stream(A) ! stream(B) | causal(f)}
+2 lift : (A ! B) ! ST(A, B)3
+
+lift f as = map f as
+
+4 seq : ST(A, B) ! ST(B, C) ! ST(A, C)5
+
+seq p q = q ffi p
+
+6 par : ST(A, B) ! ST(C, D) ! ST(A * C, B * D)7
+
+par p q abs = zip (p (map ss1 abs)) (q (map ss2 abs))
+
+8 switch : N ! ST(A, B) ! ST(A, B) ! ST(A, B)9
+
+switch k p q = *as. (take k (p as)) * (q (drop k as))
+
+10 loop : A ! ST(A * B, A * C) ! ST(B, C)11
+
+loop a0 p = (map ss2) ffi (cycle a0 p)
+
+12 cycle : A ! ST(A * B, A * C) ! ST(B, A * C)13
+
+cycle a0 p = *bs. *n. last(gen a0 p bs n)
+
+14 gen : A! ST(A * B, A * C) ! stream(B)15 ! N !
+
+list (A * C)16
+gen a0 p bs 0 = ^p [(a0, bs0)]17
+gen a0 p bs (n + 1) =18
+
+^p (zip(a0 :: (map ss1 (gen a0 p bs n))) (take (n + 2) bs))
+
+Figure 11. Semantics of Stream Transducers
+
+However, not all functions stream(A) ! stream(B) are legiti-mate stream transducers: we need to restrict our attention to causal
+functions. A transducer is causal if we can compute the first n ele-ments of the output having read at most
+
+n elements of the input.
+
+causal(f : stream(A) ! stream(B)) j9
+
+^f : list A ! list B. 8as : stream(A), n : N.
+
+take n (f as) = ^f (take n as)
+
+Given a causal transducer p, we will write ^p to indicate the cor-responding list function which computes its finite approximations.
+
+In Figure 11, we define a family of combinators acting on causaltransducers.
+
+The type ST(A, B) of stream transducers (defined on line 1)is the set of causal functions from
+
+stream(A) to stream(B). Theoperation
+lift f (line 2) creates a stream transducer that simplymaps the function
+
+f over its input. Calls to seq p q (line 4) aresequential composition: it feeds the output of
+
+p into the input of
+q. The operator par p q (line 6) defines parallel composition -- ittakes a stream of pairs, and feeds each component to its arguments,
+
+respectively, and then merges the two output streams to produce thecombined output stream. The function
+
+switch k p q (line 8) is avery simple "switching combinator". It behaves as if it were
+
+p forthe first
+k time steps, and then behaves as if it were q, only startingwith the input stream beginning at time
+
+k.The combinator
+loop a0 p is a feedback operation. It acts upona transducer
+p which takes pairs of As and Bs, and yields pairs of
+As and Cs. It turns it into a combinator that takes Bs to Cs, bygiving
+
+p the value a0 (and its B-input) on the first time step, anduses the output
+
+A at time n as the input A at time n + 1. Thisis useful for constructing transducers that do things like sum their
+
+inputs over time, and other stateful operations.Because this function involves feedback, it should not be surprising that it makes use of the causal nature of its argument operdrop n vs is the infinite stream with vs with its first n elements cut off.With a function
+
+f, map f vs maps f over the elements of vs, and givenanother infinite stream
+
+us, the call zip us vs returns the infinite streamof pairs of elements of
+
+us and vs. If v is an element, v :: vs will denoteconsing
+v to the front of vs, and if xs is a finite list, then xs *vs will denoteappending the finite sequence
+
+xs to the front of vs. Finally, we will write
+vsn to denote the n-th element of the stream vs, and last xs to denote thelast element of a non-empty finite list.
+
+ation. The loop function is defined in terms of cycle, which alsoreturns the sequence of output
+
+As, and cycle is defined in terms of
+gen, which is a function that given an argument n returns a list ofoutputs for the time steps from
+
+0 to n. Notice that gen a0 p bs nwill always return
+n + 1 elements (e.g., at argument 0, it will returna 1 element list containing the output at time step 0), which means
+
+that the call to last in cycle is actually safe. In order to calculate
+gen, we need to recursively calculate the outputs for all smallertime steps, and this is why
+
+p must be a causal stream function --we need to be able to call the approximation
+
+^p to operate on the listconsisting of the first
+n elements.All of these definitions are familiar to functional programmers,
+
+and there are many techniques to prove properties of these func-tions -- coinductive proofs, the
+
+take-lemma of Bird and Wadler[5], arguments based on the isomorphism between streams and
+
+functions from natural numbers. All of these serve to make prov-ing properties about stream transducers very pleasant. For example,
+one property we will need in the next section is the following:
+
+LEMMA 1. (Loop Unrolling) We have that
+
+cycle a0 p bs = p (zip (a0 :: (map ss1 (cycle a0 p bs))) bs)
+
+Proof (Sketch). This is easily proved using take-lemma of Birdand Wadler [5], which states that two streams are equal if all their
+finite prefixes are equal. \Lambda 
+5.2 Realizing Stream Transducers with Notifications
+While the definitions in the previous subsection yield very cleanproofs, they are not suitable as implementations -- e.g.,
+
+loop re-computes an entire history at each time step! We can derive better
+
+implementations by looking at how imperative event loops work.The intuition underlying event-driven programming is that a
+stream transducer is implemented with the combination of a no-tification network, and an event loop. The event loop is a (possiblyinfinite) loop which does the following on each time step. First, itupdates an input cell, to reflect any input events that occurred on
+that time step. Then, it reads the output cell of the network, to dis-cover the output value for that time step. When the input cell is updated, invalidations propagate throughout the dependency network,and when the outputs are read, only the necessary re-computations
+are performed.Before formalizing this idea, we will first discuss the implementation given in Figure 12 in informal terms. (In the definitions, wesuppress the type arguments to functions in order to make the code
+more readable.) We define the type of imperative stream transduc-ers from types
+
+ff to fi as the type cell ff ! fl(cell fi). This typeshould be read as saying that the implementation is a function that,
+
+given an input cell of type A, will construct a dataflow networkrealizing a transducer, and which returns the output cell of type
+
+Bthat the event loop should read.
+
+The simplest example of this is lift f, defined on line 3. It willtake an input cell
+
+input, and build a new cell which reads input,and return
+f applied to that value. Likewise, given two imperativeimplementations
+
+p and q, seq p q (defined on line 6) will take aninput cell, and feed the input to
+
+p to build a network whose outputis named
+middle, and will then give middle to q to get the finaloutput cell. The overall network will be the network built by the
+
+calls to both p and q, which interact via p's network installing avalue in
+
+middle, which q's network reads and processes.The operation
+
+switch k p q (defined on line 23) is the first ex-ample that uses local state. Given an
+
+input cell, we first create alocal reference
+r, initialized to 0. Then, we build networks corre-sponding to
+p and to q (with outputs a and b, respectively). Finally,we build a cell
+
+out, whose code reads and increments r, and whichwill read
+a or b depending on whether the reference's contents are
+
+1 ST : ? ! ? ! ?2
+
+ST(ff, fi) j cell ff ! flcell fi
+
+3 lift : 8ff, fi : ?. (ff ! fi) ! ST(ff, fi)4
+
+lift ff fi f input =5
+
+newcell (bind (read input) (*x : ff. return (f x)))
+
+6 seq : 8ff, fi : ?. ST(ff, fi) ! ST(fi, fl) ! ST(ff, fl)7
+
+seq ff fi p q input = [letv middle = p input in8
+
+letv output = q middle in9
+
+output]
+
+10 par : 8ff,fi, fl, ffi : ?.11
+
+ST(ff, fi) ! ST(fl, ffi) ! ST(ff * fl, fi * ffi)12
+par ff fi fl ffi p q input =13
+
+[letv a = newcell (bind (read input)14
+
+(*x : ff * fi. return (fst x))) in15
+letv b = p a in16
+letv c = newcell (bind (read input)17
+
+(*x : ff * fi. return (snd x))) in18
+letv d = q c in19
+letv output = newcell (bind (read b) (*b : fi.20
+
+bind (read d) (*d : ffi.21
+
+return hb, di)))] in22
+output]
+
+23 switch : 8ff, fi : ?. N ! ST(ff, fi) ! ST(ff, fi) ! ST(ff, fi)24
+
+switch ff fi k p q input =25
+
+[letv r = newN(0) in26
+
+letv a = p input in27
+letv b = q input in28
+letv out = newcell (bind (getref r) (*i : N.29
+
+bind (setref r (i + 1)) (*q : 1.30
+
+if(i < k, read a, read b)))) in31
+out]
+
+32 loop : 8ff, fi, fl : ?. ff ! ST(ff * fi, ff * fl) ! ST(fi, fl)33
+
+loop ff fi fl a0 p input =34
+
+[letv r = newff(a0) in35
+
+letv ab = newcell (bind (read input) (*b : fi.36
+
+bind (getref r) (*a : ff.37
+
+return ha, bi))) in38
+letv ac = p ab in39
+letv c = newcell (bind (read ac) (*v : ff * fl.40
+
+bind (setref r (fst v)) (*q : 1.41
+
+return (snd v)))) in42
+c]
+
+Figure 12. Imperative Stream Transducers
+
+less than or equal to k. The demand-driven nature of evaluationmeans that we never redundantly evaluate
+
+p or q's networks -- weonly ever execute one of them.
+
+The operation loop a0 p builds a feedback network by explicitlycreating a reference to hold an accumulator parameter. It constructs
+a local reference initialized to a0, and then constructs a cell abwhich reads the input and the local reference to produce a pair
+of type A * B. This cell is given to p, to construct a networkwith an output cell
+
+ac, yielding pairs of type A * C. Finally, weconstruct the overall output cell
+
+c, which reads ac and updates thelocal reference with a new value of type
+
+A, and returns a value oftype
+C. The use of a local reference (rather than a cell) to storethe current state of
+
+A is essential, because we need to maintain theacyclicity of the dataflow graph.
+
+With these ideas in mind, we come to the definition of what itmeans for a dataflow network to realize a stream transducer. This
+property is quite large, but despite its size is pleasant to work with.
+1 Realize(i, \Phi , o, f) ,
+2 8v : stream(A). 9OE : stream(formula), u : stream(Pfin(ecell)).
+3 {8n : N. closed(OEn, dom(OEn) [ {i}) ^
+
+4 dom(OEn) = dom(OEn+1) ^5 8
+
+. unready(, i) oe unready( \Omega  OEn, o)}6
+and {\Phi  = OE0}7
+and Transduce(i, OE, o, u, f, v)
+
+8 Transduce(ri, OE, o, u, f, v) ,9 8
+
+n : N, OEin, OE0in, uin.
+
+10 hOEin; read ii + \Omega OE0in; vnff [{i}|uin] ^
+11 {dom(OEin) = dom(OE0in) ^12
+
+closed(OEin, dom(OEin)) ^ closed(OEin, dom(OE0in))^13
+unready(OEin, i) ^ i 2 uin}14
+implies
+
+15 hOEin \Omega  OEn; read oi + \Omega OE0in \Omega  OEn+1; (f v)nff [{o}|uin [ un]
+16 and {u ` dom(OEn) ^ o 2 u}17
+
+We read Realize(i, \Phi , o, f) as saying "the dataflow network \Phi realizes the stream transducer
+
+f, when the event loop writes inputsinto
+i and reads outputs from o".We have highlighted the key pieces of this definition with boxes.
+
+On line 2, for each input stream v, we existentially assert the ex-istence of a stream of abstract heap formulas
+
+OE. This stream rep-resents the evolving state of the network over time -- because our
+
+notification networks contain local state, that state can potentiallyhave a different value at each time step.
+
+Then, in the unboxed formulas, we assert some well-formednessproperties. On lines 3 to 5, we assert that (1) the only external
+cell the network may read is i, (2) that the domain of the network(i.e., the cells whose atomic formulas are in that formula) remains
+constant over time, and (3) that if the input cell is ever unready, so isthe output (i.e, the output genuinely depends on the input). Then, on
+line 6, we assert that the initial state of the evolution of the networkis
+
+\Phi . (All of these conditions could be relaxed, but in this paperthere is no need. It would be necessary if we added combinators
+
+that dynamically created new transducers as the program ran, sincewe could then create new cells at each time step.)
+
+Finally, we assert the network implements the stream transducerproperty on line 7, using the
+
+Transduce sub-predicate. On line 9,we first quantify over all times
+
+n, and then over OEin, OE0in, and uin.These extra parameters exist because reading
+
+i to get the input, mayrequire evaluating some auxiliary network state.
+
+We read OEin as the network state needed to read i, and OE0in isthat state after
+
+i has been read, with uin being the cells in OEinupdated during that execution. And indeed, on the next line in
+
+the boxed formula, we give an abstract triple making exactly thisassumption - that reading
+
+i will give us the vn, the n-th element ofthe stream
+v, and that doing so requires the state OEin, which willbecome
+OE0in during the execution. (The unboxed formulas are moresyntactic conditions we push along.)
+
+The conclusion of this implication over triples, the secondboxed formula, says that reading
+
+o will give us the (fv)n, the n-thoutput of the stream transducer, and that in doing so it will also
+
+update the input state OEin to OE0in, in addition to sending the trans-ducer state from
+
+OEn to OEn+1. With this definition, we can prove thefollowing specifications:
+
+PROPOSITION 6. (FRP Correctness) We define the Relate predi-cate:
+RelateA,B(p, f) ,8
+
+ : formula, i : cell A.{
+
+G()} p i {o : cell B. 9\Phi . G(\Phi  \Omega  ) ^
+
+Realize(i, \Phi , o, f) valid}
+
+Then, the following specifications are provable:8
+
+f : A ! B. Relate(lift f, lift f)8
+p, f, q, g. Relate(p, f) and Relate(q, g)
+
+implies Relate(seq p q, seq f g)
+
+8p, f, q, g. Relate(p, f) and Relate(q, g)
+
+implies Relate(par p q, par f g)8
+
+k, p, f, q, g. Relate(p, f) and Relate(q, g)
+
+implies Relate(switch k p q, switch k f g)8
+
+a0, p, f. Relate(p, f) implies Relate(loop a0 p, loop a0 f)
+
+These lemmas permit us to reason about our transducer imple-mentation as if it is a pure implementation -- for each combinator
+in the interface, we have a proof that shows the corresponding im-plementation combinator lifts related arguments to related results.
+As a result, we can show that, for example, seq (lift f) (lift g) and
+lift (g ffi f) both realize the same pure lift (g ffi f).
+
+6. Future Work
+We foresee many further applications of the idea of ramifications.First, there are numerous algorithms -- such as unification, the
+
+union-find algorithm, and the chaotic iteration constraint propaga-tion algorithm used in dataflow analysis -- which rely on using
+mutation and assignment as a way of globally broadcasting infor-mation to the rest of the program state. These algorithms have all
+been resistant to modular proof, because of the apparent need toknow "the rest of the world" in the program invariant. It would be
+interesting to see if ramifications can help.Second, we would like to investigate the relationship between
+ramification operators and methods based on rely-guarantee [13].Rely-guarantee imposes a mutual contract between a piece of code
+and the rest of the world. This is conceptually similar to the idea ofa ramification, though we see no obvious direct relationship.
+
+Third, we introduced ramifications as a style of specificationuseful for verifying a particular library. Might it be useful to make
+ramification operators part of the basic logical framework? If so,what are their logical properties?
+
+R(u, OE) looks like a family ofmodal operators on the formula
+OE, but we needed a number ofauxiliary interaction lemmas to make them truly useful.
+
+7. Related Work
+Versions of separation logic [25] supporting higher-order languagesand quantification over predicates have been proposed by Nanevski
+
+et al. [21] with Hoare Type Theory, and by Parkinson and Bierman[23]. It would be interesting to adapt the proof techniques in this
+paper to their settings.Prior work on verifying the observer pattern using separation
+logic includes work by Krishnaswami et al. [14, 15] and work byParkinson [22]. Similar techniques have also been applied in the
+setting of regional logic by Banerjee et al. [2].In all of these works, the program invariant explicitly tracks
+the observers listening to a particular subject, and the invariantsfor each observer. Thus there is an invariant for a cluster of objects (subjects and observers). For a chain of observers only onelevel deep, this works reasonably well, but it breaks down when
+there are chains of dependencies -- when we have an object whichboth observes and is observed by yet other objects. Roughly speaking, it is difficult to locally add an observer to a subject, since wethen need to touch the invariants of everything the subject itself observes, forcing us to know the transitive closure of the reachabilitygraph of object clusters from the subject.
+
+Even though all of these methods are modular in the sense thatsubjects and observers can be verified independently, they are nonmodular in the sense that clients will have have to track entiredependency graphs when verifying nested uses of the observer
+pattern. In fact, our present work began when we realized that thisstyle of observer invariant made it difficult to verify the modelview-controller pattern.
+
+Shaner et al. [26] studied using gray-box model programs tomodel higher-order method calls (which can be understood as a
+variant of techniques from refinement calculus) in JML, and Bar-nett and Naumann [3] added a friendship system to the Boogie system, with which it is possible to describe some forms of clusters ofcollaborating objects, including the subject-observer pattern. These
+works are also non-modular in the above sense, since they requireknowing what all of the observers are.
+
+Leino and Schulte [17] have applied the idea of history invari-ants [18] to model observers. The use of monotonic predicates does
+give rise to a modular proof technique, but it sharply restricts thekinds of invariants that can be used, in ways that make it very difficult to model the code-update-based protocol seen in our FRP ex-ample.
+
+Acar et al. [1] have proposed self-adjusting computation as atechnique for using change propagation to write programs that incrementally recompute answers as the inputs are adjusted. Carlsson[8] showed how to build a monadic combinator library for selfadjusting computation using techniques strikingly similar to themonadic library described in this paper. This gives us confidence
+that this is a natural implementation style, and makes us hope thatramifications can help in verifying implementations of this technique.FRP was proposed by Elliott and Hudak [10] as a declarative
+formalism for interactive programming. The API in our paper dif-fers from theirs in two ways. First, our interface is a variation of
+the arrowized FRP interface proposed in Hudak et al. [12], andsecondly, we use a discrete rather than continuous model of time
+-- though we found the idea of using a declarative semantics asa specification for the interface an inspiring one. Our work could
+also serve as a bridge between the work on purely functional andimperative implementations, such as the work done by McDirmid
+and Hsieh [20] on SuperGlue and by Cooper and Krishnamurthi [9]on the FrTime system.
+
+Acknowledgments
+We would like to thank Peter O'Hearn for pointing out the connec-tion of our work with the ramification problem of AI. This work
+
+was partially supported by the US NSF grants CCF-0916808 andCCF-0546550, and US DARPA grant HR00110710019.
+
+References
+
+[1] U.A. Acar, G.E. Blelloch, and R. Harper. Adaptive functional pro-gramming. ACM Transactions on Programming Languages and Systems (TOPLAS), 28(6):990-1034, 2006.
+[2] Anindya Banerjee, David A. Naumann 2, and Stan Rosenberg. Re-gional logic for local reasoning about global invariants. In ECOOP,
+
+pages 387-411, 2008.
+[3] Mike Barnett and David A. Naumann. Friends need a little bit more:Maintaining invariants over shared state. In MPC, pages 54-64, 2004.
+
+[4] Bodil Biering, Lars Birkedal, and Noah Torp-Smith. BI-hyperdoctrines, higher-order separation logic, and abstraction. ACM
+
+TOPLAS, 29(5):24, 2007. ISSN 0164-0925.
+[5] R. Bird and P. Wadler. An introduction to functional programming.Prentice Hall International (UK) Ltd. Hertfordshire, UK, UK, 1988.
+
+[6] L. Birkedal, N. Torp-Smith, and H. Yang. Semantics of separation-logic typing and higher-order frame rules. In Proc. of LICS'05, pages
+
+260-269, 2005.
+[7] Lars Birkedal, Kristian Sto/vring, and Jacob Thamsborg. Realizabil-ity semantics of parametric polymorphism, general references, and recursive types. In Luca de Alfaro, editor, FOSSACS, volume 5504 ofLNCS, pages 456-470. Springer, 2009. ISBN 978-3-642-00595-4.
+
+[8] Magnus Carlsson. Monads for incremental computing. In ICFP, pages26-35, 2002.
+
+[9] Gregory H. Cooper and Shriram Krishnamurthi. Embedding dynamicdataflow in a call-by-value language. In Peter Sestoft, editor, ESOP,
+
+volume 3924 of LNCS, pages 294-308. Springer, 2006. ISBN 3-540-33095-X.
+
+[10] C. Elliott and P. Hudak. Functional reactive animation. In Proceedingsof ICFP'97, pages 263-273. ACM New York, NY, USA, 1997.
+[11] J. J. Finger. Exploiting constraints in design synthesis. PhD thesis,Stanford University, Stanford, CA, USA, 1987.
+[12] Paul Hudak, Antony Courtney, Henrik Nilsson, and John Peterson. Ar-rows, robots, and functional reactive programming. In Johan Jeuring
+
+and Simon L. Peyton Jones, editors, Advanced Functional Program-ming, volume 2638 of LNCS, pages 159-187. Springer, 2002. ISBN
+3-540-40132-6.
+[13] Cliff B. Jones. Tentative steps toward a development method forinterfering programs. ACM Transactions on Programming Languages
+
+and Systems (TOPLAS), 5(4):596-619, 1983.
+[14] N. Krishnaswami, J. Aldrich, and L. Birkedal. Modular verificationof the subject-observer pattern via higher-order separation logic. In
+
+Proceedings of FTfJP: Formal Techniques for Java-like Programs,2007.
+
+[15] N. Krishnaswami, J. Aldrich, L. Birkedal, K. Svendsen, and A. Buisse.Design patterns in separation logic. In Proceedings of TLDI'09, pages
+
+105-116. ACM New York, NY, USA, 2009.
+[16] Neelakantan R. Krishnaswami. Verifying Higher-Order ProgrammingLanguages with Higher-Order Separation Logic. PhD thesis, forthcoming. Carnegie Mellon University, Pittsburgh, PA, USA, 2009.
+[17] K. Rustan M. Leino and Wolfram Schulte. Using history invariants toverify observers. In Rocco De Nicola, editor, ESOP, volume 4421 of
+
+LNCS, pages 80-94. Springer, 2007. ISBN 978-3-540-71314-2.
+[18] Barbara H. Liskov and Jeannette M. Wing. Behavioural subtypingusing invariants and constraints. In Formal Methods for Distributed
+
+Processing: a Survey of Object-Oriented Approaches, pages 254-280.Cambridge University Press, New York, NY, USA, 2001. ISBN 0-
+521-77184-6.
+[19] John McCarthy and Patrick J. Hayes. Some philosophical prob-lems from the standpoint of artificial intelligence. In B. Meltzer and
+
+D. Michie, editors, Machine Intelligence 4, pages 463-502. EdinburghUniversity Press, 1969.
+
+[20] Sean McDirmid and Wilson C. Hsieh. Superglue: Component pro-gramming with object-oriented signals. In Dave Thomas, editor,
+
+ECOOP, volume 4067 of LNCS, pages 206-229. Springer, 2006.ISBN 3-540-35726-2.
+
+[21] Aleksandar Nanevski, Greg Morrisett, and Lars Birkedal. Polymor-phism and separation in hoare type theory. In Proceedings ICFP,
+
+pages 62-73, New York, NY, USA, 2006. ACM. ISBN 1-59593-309-3.
+
+[22] M. Parkinson. Class invariants: The end of the road. ProceedingsIWACO, 2007.
+[23] Matthew J. Parkinson and Gavin M. Bierman. Separation logic,abstraction and inheritance. In George C. Necula and Philip Wadler,
+
+editors, POPL, pages 75-86. ACM, 2008. ISBN 978-1-59593-689-9.
+[24] Frank Pfenning and Rowan Davies. A judgmental reconstruction ofmodal logic. Mathematical Structures in Computer Science, 11(4):
+
+511-540, 2001. ISSN 0960-1295.
+[25] John C. Reynolds. Separation logic: A logic for shared mutable datastructures. In Logic in Computer Science (LICS 2002), pages 55-74.
+
+IEEE Computer Society, 2002. ISBN 0-7695-1483-9.
+[26] Steve M. Shaner, Gary T. Leavens, and David A. Naumann. Modularverification of higher-order methods with mandatory calls specified by
+
+model programs. In OOPSLA, pages 351-368, 2007.
+
+A. Appendix: The cellset Interface
+In this section we describe the interface to the cellset type, repre-senting pure collections of existentially quantified cells (terms of
+
+type 9ff : ?. cell ff). Specifying this interface is not entirely trivial,because of the way equality works for this type.
+
+Ordinarily, we give a two-place predicate set(v, elts) relatinga value
+
+v, and the mathematical set of elements elts it represents.However, this approach is not sufficient in our case. In order to
+
+manage dependencies, we need to be able to test cells of differentconcrete type for equality, and the natural equality for references
+only permits testing references of the same type. As a result, wecannot unpack an existentially-quantified cell and compare the
+elements in its tuple, because we do not know that the two cellsare of the same type (and indeed, they might not be).
+
+To deal with this problem, we assign a unique integer identifierto each cell we create, and compare those identifiers to establish
+equality. Since these identifiers are generated dynamically alongwith the cells, the precise partial equivalence relation we need to
+use is determined dynamically as well. So we add an additionalindex to the set predicate
+
+set(W, v, elts). The extra parameter Wis the world, the set of all the cells allocated so far, whose elements
+
+must be equal if and only if their identifier fields match.The usual set operations are supported: the expression
+
+emptysetrepresents an empty set of cells;
+addset v x adds the element xto the set
+v represents; and removeset v x removes x from theset
+v represents. We also have iterset f v, which iterates overthe elements of
+
+v's set and applies f to each element in somesequential order. (The specification makes use of two auxiliary
+
+predicates: matches, which assert that a set and a list have the sameelements; and
+
+iterseq, which constructs a command representingthe sequential execution over those elements.)
+
+We have three axioms any implementation must satisfy. First,if a
+
+cellset value v represents a set elts in a world W , it mustalso represent a set in any larger world
+
+W 0 -- i.e., allocating newcells cannot disturb already-existing cells. Second, the values in
+
+a set are always a subset of the world W . Third, we require that
+set(W, v, elts) is a pure predicate (i.e., is not heap-dependent).That is, we ask that
+
+cellset have a purely functional implementation(for example, as a binary tree). This is not necessary, but does
+
+simplify the other invariants in this paper.
+1 W orld =
+2 {D 2 Pfin(ecell) | 8c, d 2 D. unique(c) = unique(d)3 ()
+
+c = d}
+
+4 9cellset : ?.5 9
+
+set : W orld ) cellset ) Pfin(ecell) ) prop.6 9
+emptyset : cellset.7 9
+addset : cellset ! ecell ! cellset.8 9
+removeset : cellset ! ecell ! cellset.9 9
+iterset : cellset ! (ecell ! fl1) ! 1.
+
+10 {8W 2 W orld. set(W, emptyset, ;)} and
+11 {8W 2 W orld, v : cellset, x : ecell, elts 2 Pfin(ecell).12
+
+set(W, v, elts) ^ x 2 W oe set(W, addset v x, elts [ {x})} and
+
+13 {8W 2 W orld, v : cellset, x : ecell, elts 2 Pfin(ecell).14
+
+set(W, v, elts) ^ x 2 W oe set(W, removeset v x, elts - {x})} and
+
+15 {8W 2 W orld, v : cellset, elts 2 Pfin(ecell), f : (ecell ! fl1).16
+
+set(W, v, elts) oe 9L : seq ecell. matches elts L ^17
+
+iterset f v = iterseq f L} and
+
+18 {8W, W 0 2 W orld, v, elts.19
+
+set(W, v, elts) ^ W ` W 0 oe set(W 0, v, elts)} and
+
+20 {8W, W 0 2 W orld, v, elts.21
+
+set(W, v, elts) oe elts ` W } and
+
+22 {8W, v, elts. Pure(set(W, v, elts))}
+23 matches elts [] = elts = ;24
+
+matches elts (v :: vs) = v 2 elts ^ matches (elts - {v}) vs
+
+25 iterseq f [] = [hi]26
+
+iterseq f (v :: vs) = [letv hi = f v in run iterseq f vs]

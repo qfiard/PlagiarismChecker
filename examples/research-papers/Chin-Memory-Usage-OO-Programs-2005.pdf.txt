@@ -1,0 +1,845 @@
+
+
+Memory Usage Verification for OO Programs
+
+?
+
+Wei-Ngan Chin1
+
+;2, Huu Hai Nguyen1, Shengchao Qin3, and Martin Rinard4
+
+1 Computer Science Programme, Singapore-MIT Alliance
+2 Department of Computer Science, National University of Singapore
+
+3 Department of Computer Science, University of Durham
+4 Laboratory for Computer Science, Massachusetts Institute of Technology
+
+{chinwn,nguyenh2}@comp.nus.edu.sg
+shengchao.qin@durham.ac.uk, rinard@lcs.mit.eduAbstract. We present a new type system for an object-oriented (OO) language
+
+that characterizes the sizes of data structures and the amount of heap memory
+required to successfully execute methods that operate on these data structures.
+Key components of this type system include type assertions that use symbolic
+Presburger arithmetic expressions to capture data structure sizes, the effect of
+methods on the data structures that they manipulate, and the amount of memory
+that methods allocate and deallocate. For each method, we conservatively capture
+the amount of memory required to execute the method as a function of the sizes
+of the method's inputs. The safety guarantee is that the method will never attempt
+to use more memory than its type expressions specify. We have implemented a
+type checker to verify memory usages of OO programs. Our experience is that
+the type system can precisely and effectively capture memory bounds for a wide
+range of programs.
+
+1 Introduction
+
+Memory management is a key concern for many applications. Over the years re-searchers have developed a range of memory management approaches; examples include explicit allocation and deallocation, copying garbage collection, and region-basedmemory allocation. However, an important aspect that has been largely ignored in past
+work is the safe estimation of memory space required for program execution. Overal-location of memory may cause inefficiency, while underallocation may cause software
+failure. In this paper, we attempt to make memory usage more predictable by staticverification on the memory usage of each program.
+
+We present a new type system, based on dependent type[21], that characterizes theamount of memory required to execute each program component. The key components
+of this type system include:
+
+- Data Structure Sizes and Size Constraints: The type of each data structure in-cludes index parameters to characterize its size properties, which are expressed in
+
+terms of the sizes of data structures that it contains. In many cases the sizes of thesedata structures are correlated; our approach uses size constraints expressed using
+symbolic Presburger arithmetic terms to precisely capture these correlations.- Heap Recovery: Our type system captures the distinction between shared and unaliased objects and supports explicit deallocation of unaliased objects.
+? slightly revised from SAS'05 version
+
+- Preconditions and Postconditions: Each method comes with a precondition thatcaptures both the expected sizes of the data structures on which it operates and any
+
+correlations between these sizes. The method's postcondition expresses the newsize and correlations of these data structures after the method executes as a function
+of the original sizes when the method was invoked.- Heap Usage Effects:
+
+Each method comes with two memory effects. These effectsuse symbolic values (present in method precondition) to capture (i)
+
+memory requirement which specify the maximum heap space that the method may consume,(ii) memory release which specify the minimum heap space that the method will
+
+recover. Heap effects are expressed at the granularity of classes and can capturethe net change in the number of instances of each class.
+
+Our paper makes several new technical contributions. Firstly, we design a formalverification system in the form of a type system, that can
+
+formally and statically capturememory usage for the object-oriented (OO) paradigm. We believe that ours is the first
+
+such formal type system for OO paradigm. Secondly, we advocate for explicit heap recovery to provide more timely reclamation of dead objects in support of tighter boundson memory usage. We show how such recovery commands may be automatically inserted. Thirdly, we have proven the soundness of our type checking rules. Each well-typed program is guaranteed to meet its memory usage specification, and will
+
+never faildue to insufficient memory whenever its memory precondition is met. Lastly, we have
+
+implemented a type checker and have shown that it is fairly precise and can handle areasonably large class of programs. Runtime stack space to hold methods' parameters and local variables is another aspect of memory needed. For simplicity, we omit itsconsideration in this paper.
+
+2 Overview
+Memory usage occurs primarily in the heap to hold dynamically created objects. In ourmodel, heap space is consumed via the
+
+new operation for newly created objects, whileunused objects may be recovered via an explicit deallocation primitive, called
+
+dispose.Memory usage (based on consumption and recovery) should be calculated over the
+
+entire computation of each program. This calculation is done in a safe manner to helpidentify the high watermark on memory space needed. We achieve this through the use
+of a conservative upper bound on memory consumed, and a conservative lower boundon memory recovered for each expression (and method).
+
+To safely predict the memory usage of each program, we propose a size-polymorphic
+type system for object-oriented programs with support for interprocedural size analysis.In this type system, size properties of both user-defined types and primitive types are
+
+captured. In the case of primitive integer type inthvi, the size variable v captures its in-teger value, while for boolean type
+
+boolhbi, the size variable b is either 0 or 1 denoting
+false or true, respectively. (Note that size variables capture some integer-based prop-erties of the data structure. For simple types, the values are directly captured.) For userdefined class types, we use chn1, : : : , npi where OE ; OEI with size variables n1, : : : , np todenote size properties that are defined in size relation
+
+OE, and invariant constraint OEI. As
+
+an example, consider a user-defined stack class, that is implemented with a linked list,and a binary tree class as shown below.
+
+class Listhni where n=m+1 ; n>=0 { Objecthi@S val; Listhmi@U next; * * * }
+class Stackhni where n=m ; n>=0 { Listhmi@U head; * * * }
+class BTreehs, di where s=1+s1+s2^d=1+max(d1, d2) ; s>=0^d>=0 {
+
+Objecthi@S val; BTreehs1, d1i@U left; BTreehs2, d2i@U right; * * * }
+
+Listhni denotes a linked-list data structure of size n, and similarly for Stackhni. Thesize relations
+
+n=m+1 and n=m define some size properties of the objects in terms ofthe sizes of their components, while the constraint
+
+n>=0 signifies an invariant associatedwith the class type. Class
+BTreehs, di represents a binary tree with size variables s and
+d denoting the total number of nodes and the depth of the tree, respectively. Due tothe need to track the states of mutable objects, our type system requires the support of
+
+alias controls of the form A=U | S | R | L. We use U and S to mark each reference thatis (definitely) unaliased and (possibly) shared, respectively. We use
+
+R to mark read-only fields which must never be updated after object initialization. We use
+
+L to markunique references that are temporarily borrowed by a parameter for the duration of
+
+its method's execution. Our alias annotation mechanism are adapted from [5, 8, 1] andreported in [9]. Briefly, they allow us to track unique objects from mutable fields, as
+well as shareable objects from read-only fields.
+
+To specify memory usage, we decorate each method with the following declaration:
+
+t mn (t1v1, : : : , tnvn) where OEpr; OEpo; fflc; fflr {e}
+
+where OEpr and OEpo denote the precondition and postcondition of the method, expressedin terms of constraints/formulae on the size variables of the method's parameters and
+result. Precondition OEpr denotes an applicability condition of the method in terms ofthe sizes of its parameters. Postcondition
+
+OEpo can provide a precise size relation for theparameters and result of the declared method. The memory effect is captured by
+
+fflc and
+fflr. Note that fflc denotes memory requirement, i.e., the maximum memory space that
+may be consumed, while fflr denotes net release, i.e., the minimum memory space that
+will be recovered at the end of method invocation. Memory effects (consumption andrecovery) are expressed using a bag notation of the form
+
+{(ci, ffi)}mi=1, where ci denotesa class type, while
+ffi denotes its symbolic count.
+
+class Stackhni where n=m ; n>=0 { Listhmi@U head;
+L || voidhi@S push(Objecthi@S o) where true; n0=n+1; {(List, 1)}; {}
+
+{ Listhi@U tmp=this:head; this:head=new List(o, tmp)}
+L || voidhi@S pop() where n>0; n0=n-1; {}; {(List, 1)}
+
+{ Listhi@U t1 = this:head; Listhi@U t2 = t1:next; t1:dispose(); this:head = t2}
+L || boolhbi@S isEmpty() where n>=0; n0=n ^ (n=0^b=1 . n>0^b=0); {}; {}
+
+{ Listhi@U t = this:head; boolhi@S v = isNull(t); this:head = t; v}
+L || voidhi@S emptyStack() where n>=0^d=n; n0=0; {}; {(List, d)}
+
+{ boolhi@S v = this:isEmpty(); if v then () else {this:pop(); this:emptyStack()}}
+L || voidhi@S push3pop2(Objecthi@S o) where true; n0=n+1; {(List, 2)}; {(List, 1)}
+
+{ this:push(o); this:push(o); this:pop(); this:push(o); this:pop()}}
+
+Fig. 1. Methods for the Stack Class
+
+Examples of method declarations for the Stack class are given in Fig 1. The nota-tion (
+
+A || ) prior to each method captures the alias annotation of the current this para-meter. Note our use of the primed notation, advocated in [13, 16], to capture imperative
+
+changes on size properties. For the push method, n0=n+1 captures the fact that the sizeof the stack object has increased by 1; similarly, the postcondition for the
+
+pop method,
+n0=n-1, denotes that the size of the stack is decreased by 1 after the operation. Thememory requirement for the
+
+push method, fflr={(List, 1)}, captures the fact that one
+List node will be consumed. For the pop method, fflr={(List, 1)} indicates that one
+List node will be recovered.
+
+{flMfleflmfl.flRfleflqfl.fl
+
+NflefltflRflefllfleflaflsflefl}fl
+
+pfluflsflhfl pfluflsflhfl pfluflsflhflpfloflpfl pfloflpfl tfliflmflefl
+Fig. 2. push3pop2: Heap Consumption and Recovery
+
+For the isEmpty method,
+n0=n captures the fact thatthe size of the receiver object (this) is not changed bythe method. Furthermore, its
+output of type boolhbi@S isrelated to the object's size
+through a disjunctive con-straint
+
+n=0^b=1.n>0^b=0.Primitive types are annotated with alias
+S because their values are immutable and can befreely shared and yet remain trackable. The
+
+emptyStack method releases all List nodesof the
+Stack object. For push3pop2 method, the memory consumed (or required) fromthe heap is
+
+{(List, 2)}, while the net release is {(List, 1)}, as illustrated in Fig. 2.
+Size variables and their constraints are specified at method boundary, and need notbe specified for local variables. Hence, we may use
+
+boolhi@S instead of boolhvi@S forthe type of a local variable.
+
+3 Language and Annotations
+We focus on a core object-oriented language, called MEMJ, with size, alias, and mem-ory annotations in Fig 3. M
+
+EMJ is designed to be an intermediate language for Javawith either supplied or inferred annotations. A suffix notation
+
+y* denotes a list of zeroor more distinct syntactic terms that are suitably separated. For example,
+
+(t v)* denotes
+(t1 v1, : : : , tn vn) where n>=0. Local variable declarations are supported by block struc-ture of the form:
+
+(t v = e1; e2) with e2 denoting the result. We assume a call-by-valuesemantics for M
+EMJ, where values (primitives or references) are passed as argumentsto parameters of methods. For simplicity, we do not allow the parameters to be updated
+
+(or re-assigned) with different values. There is no loss of generality, as we can alwayscopy such parameters to local variables for updating.
+
+The MEMJ language is deliberately kept simple to facilitate the formulation of staticand dynamic semantics. Typical language constructs, such as multi-declaration block,
+sequence, calls with complex arguments, etc. can be automatically translated to con-structs in M
+
+EMJ. Also, loops can be viewed as syntactic abbreviations for tail-recursivemethods, and are supported by our analysis. Several other language features, including downcast and a field-binding construct are also supported in our implementation.For simplicity, we omit them in this paper, as they play supporting roles and are not
+
+P ::= def* meth*
+def ::= class c1hn1..pi [ extends c2hn1..qi ] where OE ; OEI { fd* (A || meth)* }
+meth ::= t mn ((t v)*) where OEpr; OEpo; fflc; fflr {e}
+
+fd ::= t f t ::= o/ hn*i@A A ::= U | L | S | R
+
+o/ ::= c | pr w ::= v | v:f pr ::= int | bool | void
+
+e ::=(c) null | k | w | w = e | t v = e1 ; e2 | new c(v*)
+
+| v:mn (v*) | mn (v*) | if v then e1 else e2 | v:dispose()
+
+ffl = {(c, ff)*} (Memory Space Abstraction)
+OE 2 F (Presburger Size Constraint)
+
+::= b | OE1 ^ OE2 | OE1 . OE2 | ~OE | 9n * OE | 8n * OE
+b 2 BExp (Boolean Expression)
+
+::= true | false | ff1 = ff2 | ff1 < ff2 | ff1 <= ff2
+ff 2 AExp (Arithmetic Expression)
+
+::= kint | n | kint * ff | ff1+ff2 | -ff | max(ff1,ff2) | min(ff1,ff2)
+
+where k
+
+int 2 Z is an integer constant; n 2 SV is a size variable
+
+f 2 Fd is a field name; v 2 Var is an object variable
+
+Fig. 3. Syntax for the MEMJ Language
+
+core to the main ideas proposed here. The interested reader may refer to our companiontechnical report[10] for more information.
+
+To support sized typing, our programs are augmented with size variables and con-straints. For size constraints, we restrict to Presburger form, as decidable (and practical)
+constraint solvers exist, e.g. [19]. We are primarily interested in tracking size propertiesof objects. We therefore restrict the relation
+
+OE in each class declaration of c1hn1, ::, npiwhich extends
+c2hn1, ::, nqi to the form Vpi=q+1 ni=ffi whereby V(ffi) " {n1, ::, np} = ;.Note that
+V(ffi) returns the set of size variables that appeared in ffi. This restricts sizeproperties to depend solely on the components of their objects.
+
+Note that each class declaration has a set of instance methods whose main purposeis to manipulate objects of the declared class. For convenience, we also provide a set
+of static methods with the same syntax as instance methods, except for its access to the
+this object. One important feature of MEMJ is that memory recovery is done safely(without creating dangling references) through a
+
+v:dispose() primitive.
+
+4 Heap Usage Specification
+
+To allow memory usage to be precisely specified, we propose a bag abstraction ofthe form
+
+{(ci, ffi)}ni=1 where ci denotes its classification, while ffi is its cardinality. Inthis paper, we shall use
+
+ci 2 CN where CN denotes all class types. For instance, \Upsilon 1 =
+{(c1, 2), (c2, 4), (c3 , x + 3)} denotes a bag with c1 occurring twice, c2 four times and
+c3 x + 3 times. We provide the following two basic operations for bag abstraction tocapture both the domain and the count of its element, as follows:
+
+dom(\Upsilon  ) =df {c | (c, n) 2 \Upsilon  } \Upsilon  (c) =df \Phi  n, if (c, n) 2 \Upsilon 0, otherwise
+
+We define union, difference, exclusion over bags as:
+
+\Upsilon 1 ] \Upsilon 2 =df {(c, \Upsilon 1(c)+\Upsilon 2(c)) | c 2 dom(\Upsilon 1) [ dom(\Upsilon 2)}
+\Upsilon 1 - \Upsilon 2 =df {(c, \Upsilon 1(c)-\Upsilon 2(c)) | c 2 dom(\Upsilon 1) [ dom(\Upsilon 2)}
+\Upsilon  \ X =df {(c, \Upsilon  (c)) | c 2 dom(\Upsilon  ) - X}
+
+To check for adequacy of memory, we provide a bag comparator operation under asize constraint
+
+\Delta , as follows:
+
+\Delta  ` \Upsilon 1 w \Upsilon 2 =df (\Delta  ) (8c 2 Z * \Upsilon 1(c) >= \Upsilon 2(c))) where Z = dom(\Upsilon 1) [ dom(\Upsilon 2)
+The bag abstraction notation for memory is quite general and can be made more pre-cise by refining its operations. For example, some class types are of the same size and
+
+could replace each other to increase memory reuse. To achieve this we can use a bagabstraction that is grouped by
+
+size(ci) instead of class type ci.
+
+4.1 Heap Consumption
+Heap space is consumed when objects are created by the new primitive, and also bymethod calls, except that the latter is aggregated to include recovery prior to consumption. Our aggregation (of recovery prior to consumption) is designed to identify a highwatermark of maximum memory needed for safe program execution. For each expression, we predict a conservative upper bound on the memory that the expression mayconsume, and also a conservative lower bound on the memory that the expression
+
+willrelease. If the expression releases some memory before consumption, we will use the
+
+released memory to obtain a lower memory requirement. Such aggregated calculationson both consumption and recovery can help capture both a net change in the level of
+memory, as well as the high watermark of memory needed for safe execution.For example, consider a recursive function which does
+
+p pops from one stackobject, followed by the same number of pushes on another stack.
+
+voidhi@S moverec(Stackhai@L s, Stackhbi@L t, inthpi@S i)
+
+where a>=p>=0; a0=a-p^b0=b+p; {} ; {}
+{ if i<1 then ()
+
+else {Objecthi@S o = s:top(); s:pop(); moverec(s, t, i-1); t:push(o)} }Due to aggregation (involving recovery before consumption), the heap space that
+
+may be consumed is zero. For each recursive call, the space for a List node is releasedby
+
+s:pop() before it is reused by t:push(o). Aggregated over the recursive calls, we willhave
+
+p number of List nodes that have been released before the same number of nodesare consumed. Hence, no new heap space is needed. Such aggregation is sensitive to
+
+the order of the operations.Consider now a different function which performs
+
+p pushes on t, followed by thesame number of pops from
+s.
+voidhi@S moverec2(Stackhai@L s, Stackhbi@L t, inthpi@S i)
+
+where a>=p>=0; a0=a-p^b0=b+p; {(List, p)}; {(List, p)}
+{ if i<1 then ()
+
+else {Objecthi@S o = s:top(); t:push(o); moverec2(s, t, i-1); s:pop()} }Though the net change in memory usage is also zero, the memory effect for this
+
+function is different as we require p number of List nodes to be consumed on entry,
+
+before the same number of List nodes are recovered. This new memory effect has thepotential to push up the high watermark of memory needed by
+
+p List nodes.
+
+4.2 Heap Recovery
+
+Explicit heap space recovery via dispose has several advantages. It facilitates thetimely recovery of dead objects, which allows memory usage to be predicted more
+
+accurately (with tighter bounds). It also permits the use of more efficient custom allo-cators[4], where desired. Moreover, we shall provide an automatic technique to insert
+dispose primitives with the help of alias annotation. With such a technique, we onlyneed to ensure that objects that are being disposed are non-null. This non-nullness property can be captured by a non-nullness analyser, such as [12]. This property is requiredas we always recover memory space for each
+
+dispose primitive.
+Memory recovery via dispose should occur when unique references that are stillalive (not in dead-set) are being discarded. This could occur at four places1 : (i) end
+
+of local block, (ii) end of method block, (iii) prior to assignment operation, and (iv)at conditional expression. We would like to recover the memory space for each nonnull reference that is about to become dead. For example, consider the pop method'sdefinition:
+
+L | voidhi@S pop() where * * * { Listhi@U t1 = this:head; head = t1:next}
+The object pointed to by head is about to become dead prior to the operation,
+head = t1:next. To recover this dead object, we insert a dispose command to obtain
+head = (t1:next <; head:dispose()) where e1<;e2j(t v = e1;e2;v). Consider the defin-ition of the
+
+destroy method which calls emptyStack with an L-mode parameter.
+voidhi@S destroy(Stackhni@U s) where * * * {emptyStack(s)}
+A unique s object is about to become dead at the end of the destroy method. Torecover this space, we can insert
+
+s:dispose() prior to the method's exit.Let us formalise an automatic technique for the explicit recovery of dead objects
+
+that are known at compile-time. Given an expression e, we utilize the alias annotationto obtain a new expression
+
+e1 where suitable explicit heap dispose operations have beensafely inserted. This is achieved by a translation below with
+
+\Gamma  to denote a type environ-ment mapping program variables to their annotated types, and
+
+\Theta (\Theta 1) to denote the setof dead references (of the form
+v or v:f) before (after) the evaluation of expression e.
+
+\Gamma  ; \Theta  ` e ,!H e1 :: t, \Theta 1
+Most rules are structure-preserving (or identity) rewritings, except for four rules givenin Fig 4. A sequence of disposals can be effected through
+
+dispose(D), with D containinga set of variable/field references that are about to be dead at the end of expression
+
+e.
+
+For the assignment rule [H:ASSIGN], we add w to the disposal set if it is unique andis not yet in dead-set using
+
+D = {w | ann(t)=U}-\Theta 1. The function isParam(w) returns
+true if w is a parameter variable, otherwise it returns false (for fields and local vari-ables). The function
+
+ann extracts the alias of an annotated type, ann(o/ hv*i@A) = A. A
+
+1 Note that unique reference cannot escape through e1 in e1; e2 as we require e1 to be of the
+
+void type.
+
+[H:ASSIGN]
+~ isParam(w) \Gamma  (w) = t
+D = {w | ann(t) = U} - \Theta 1
+
+\Gamma  ; \Theta  ` e ,!H e1 :: t1, \Theta 1
+
+` t1 <: t
+e2 = (e1 \Delta  D=; \Lambda  e1<; dispose(D))
+
+\Gamma  ; \Theta  ` w = e ,!H
+
+w = e2 :: void@S, \Theta 1\w
+
+[H:IF]
+\Gamma  (v) = boolhbi@S
+\Gamma  ; \Theta  ` ei ,!H ^ei :: ti, \Theta i i = 1, 2
+
+t = msst(t1, t2) \Theta 3 = \Theta 1 [ \Theta 2
+
+Di = \Theta 3-\Theta i i = 1, 2
+Ei = (^ei \Delta  Di=; \Lambda  ^ei<; dispose(D)) i = 1, 2
+
+\Gamma  ; \Theta  ` if v then e1 else e2 ,!H
+
+if v then E1 else E2 :: t, \Theta 3
+
+[H:METH]
+\Gamma 1 = \Gamma  + {v1 :: t1, ::, vp :: tp}
+
+\Gamma 1; ; ` e ,!H e1 :: t, \Theta 
+` t <: t0 ann(t0) 6= L
+8i21::p*(ann(ti) =L))(8f*vi:f62\Theta )
+D = {w | (w :: t) 2 \Gamma 1, ann(t)=U}-\Theta 
+
+e2 = (e1 \Delta  D=; \Lambda  e1<; dispose(D))
+
+\Gamma  `meth t0 mn((ti vi)i:1::p){e}
+
+,!H t0 mn((ti vi)i:1::p) {e2}
+
+[H:LOCAL]
+\Gamma  ; \Theta  ` e1 ,!H e3 :: t1, \Theta 1
+
+` t1 <: t
+ann(t) 62 {L, R}
+\Gamma  +{v :: t}; \Theta 1 ` e2 ,!H e4 :: t2, \Theta 2
+
+D = {v | ann(t) = U} - \Theta 2
+e5 = (e4 \Delta  D=; \Lambda  e4<; dispose(D))
+
+\Gamma  ; \Theta  ` (t v = e1 ; e2) ,!H
+
+(t v = e3 ; e5) :: t2, \Theta 2\v
+
+Fig. 4. Automatic Insertion of dispose operation
+
+conditional is expressed as ,1 \Delta  b \Lambda  ,2 =df \Phi  ,1, if b;,
+
+2, otherwise: Furthermore, we have:
+
+\Theta \v =df \Theta  - {v, v:f*} \Theta \v:f =df \Theta  - {v:f}
+For the method declaration rule [H:METH], we add to the disposal set those parameterswhich are unique but not yet dead using
+
+{w | (w :: t) 2 \Gamma 1, ann(t) = U} - \Theta . For the localdeclaration rule
+[H:LOCAL], we add v to the disposal set if it is unique but not yet deadusing
+{v | ann(t) = U} - \Theta 2. For the [H:IF] rule, the uniqueness that are consumed in onebranch may have their heap spaces recovered in the other branch. This is captured by
+
+Di = \Theta 3-\Theta i , i = 1, 2. Notice that msst(t1, t2) returns the minimal supertype of both t1and
+
+t2, as follows:
+
+o/1 <: o/ o/2 <: o/ 8o/3 * (o/1, o/2 <: o/3)o/ <: o/3)
+
+A1<=aA A2<=aA 8A3 * (A1, A2<=aA3)A<=aA3)
+
+msst(o/1@A1, o/2@A2) =df o/ @A
+
+Note that o/1 <: o/2 denotes the subtype relation for underlying types (without anno-tations). Alias subtyping rules (shown below) allow unique references to be passed to
+
+shared and lent-once locations (in addition to other unique locations), but not vice-versa.
+
+A <=a A U <=a L U <=a S
+In the rest of this paper, we shall present a new static type system for verifyingmemory heap usage, followed by a set of safety theorems on the type rules.
+
+5 Rules for Memory Checking
+We present type judgements for expressions, method declarations, class declarationsand programs to check for adequacy of memory, using relations of the form:
+
+\Gamma  ; \Delta ; \Upsilon  ` e :: t, \Delta 1, \Upsilon 1 \Gamma  `meth meth `class def ` P
+Note that \Gamma  is the type environment as explained earlier; \Delta (\Delta 1) denotes the sizeconstraint, which holds for the size variables associated with
+
+\Gamma  (\Gamma  and t) for expression
+e before (after) its evaluation; t is an annotated type. Also, \Upsilon  (\Upsilon 1) is used to denote theavailable memory space in terms of bag abstraction before (after) the evaluation.
+
+We present a few key syntax-directed type rules in Fig 5, with the rest of the rules inthe technical report. Before that, let us describe some notations used by the type rules.
+
+[ASSIGN]
+\Gamma  ; \Delta ; \Upsilon  ` e :: t1, \Delta 1, \Upsilon 1 \Gamma  ` w :: t, OE, Y
+` t1<:t, ae X=V(t1)[V(t) \Delta 2=9X*(\Delta 1ffiYaeOE)
+
+\Gamma  ; \Delta ; \Upsilon  ` w = e :: voidhi@S, \Delta 2, \Upsilon 1
+
+[DISPOSE]
+\Gamma  (v) = chn*i@U \Upsilon 1 = \Upsilon  ] {(c, 1)}
+\Gamma  ; \Delta ; \Upsilon  ` v:dispose() :: voidhi@S, \Delta , \Upsilon 1
+
+[NEW]
+fdList(chn*i) = ([(^ti fi)]pi=1, OE0)
+
+r* = fresh() ti = prime(\Gamma  (vi))
+
+` ti <: [R 7! S]^ti, aei i21::p
+
+ae = [n* 7! r*] [ Spi=1aei
+\Delta  ` \Upsilon  w {(c, 1)} X = Spi=1 V(^ti)
+\Delta 1 = \Delta ^(9X*aeOE0) \Upsilon 1 = \Upsilon  -{(c, 1)}
+\Gamma  ; \Delta ; \Upsilon  ` new c(v1::p) :: chr*i@U, \Delta 1, \Upsilon 1
+
+[IF]
+\Gamma  (v) = boolhbi@S
+\Gamma  ; \Delta  ^ b0 = 1; \Upsilon  ` e1 :: t1, \Delta 1, \Upsilon 1
+\Gamma  ; \Delta  ^ b0 = 0; \Upsilon  ` e2 :: t2, \Delta 2, \Upsilon 2
+(t, \Upsilon 3, \Delta 3) = unify(t1, t2, \Upsilon 1, \Upsilon 2, \Delta 1, \Delta 2)
+\Gamma  ; \Delta ; \Upsilon  ` if v then e1 else e2 :: t, \Delta 3, \Upsilon 3
+
+[OVERRIDE]
+methk = t mn((ti vi)i:1::p) where
+
+OEprk; OEpok; fflkm; fflkn {* * * }, k = 1, 2
+
+OEpr1)OEpr2 OEpo2)OEpo1
+OEpr1 ` ffl1mwffl2m OEpr1 ` ffl2nwffl1n
+
+` OverridesOK(meth1, meth2)
+
+[IMI]
+` (A || ^t mn((^ti ^vi)i:1::p) where OEpr; OEpo; fflc; fflr{e})2chn*i
+t = fresh(^t) t0 = chn*i@A \Gamma  (vi) = ti i2 0::p ` ti <: ^ti, aei i2 1::p
+
+aep = Spi=1 aei \Delta 1 ` \Upsilon  wfflc ae=rename(^t, t)[aep[prime(aep)
+
+\Delta ss>V(\Gamma ) 9V(fflc)[V(fflr)*ae OEpr \Delta 1 = \Delta  ffiL 9Y * ae(OEpr^OEpo)
+\Upsilon 1 = \Upsilon  -fflc ]fflr X = Spi=1 V(^ti) Y = X [ prime(X) L = Spi=0 V(ti)
+
+\Gamma  ; \Delta ; \Upsilon  ` v0:mn(v1::p) :: t, \Delta 1, \Upsilon 1
+
+[METH]
+\Gamma 1 = \Gamma  [ {v1 :: ^t1, ::, vp :: ^tp} \Delta  = noX (\Gamma 1)^OEpr^inv(\Gamma 1) \Delta  `fflcw;
+
+\Gamma 1; \Delta ; fflc ` e :: t, \Delta 1, \Upsilon 1 OEpr^\Delta 1 `\Upsilon 1 w fflr \Delta  `fflrw; ` t <: ^t, ae
+( , , Ni) = Vfield(^ti), i2 1::p Y = Spi=1 Ni (9 prime(Y)*\Delta 1))ae(OEpo)
+
+\Gamma  `meth ^t mn((^ti vi)i:1::p) where OEpr; OEpo; fflc; fflr {e}
+
+Fig. 5. Some Type Rules for Memory Checking
+
+5.1 Notations
+We use function V to return size variables of a formula, e.g. V(x0=z+1^y=2)={x0, y, z}.We extend it to annotated type, type environment, and memory specification, e.g.,
+
+V(o/hn*i@A)={n*}, V({(c, 4*d+8)})={d}. The function prime takes a set of size vari-ables and returns their primed version, e.g.
+
+prime({s1, : : : , sn})={s01, : : : , s0n}. Note thatprime operation is idempotent, namely
+(v0)0=v0. We extend this to (annotated) type, typeenvironment, and even substitution. For example,
+
+prime(o/ hn1, : : : , nki) = o/ hn01, : : : , n0ki,and
+prime([x7!a, y7!b]) = [x07!a0, y07!b0]. Often, we need to express a no-change con-dition on a set of size variables. We define a
+
+noX operation as follows which returns aformula for which the original and primed variables are made equal.
+
+noX ({}) =df true noX ({x}[X) =df (x0=x)^noX (X)
+We extend this function to annotated types (and type environments), as follows: noX (t)
+=df noX (V(t)). Also, we use n* = fresh() to generate new size variables n*. We extend itto annotated type, so that
+
+^t = fresh(t) will return a new type ^t with the same underlying
+
+type as t but with fresh size variables instead. Function rename(t1, t2) returns anequality substitution, e.g.
+
+rename(Inthri, Inths0i)=[r7!s0]. The operator [ combines twodomain disjoint substitutions into one.
+
+The function fdList is used to retrieve a full list of fields for a given class, togetherwith its size relation. The function
+
+inv is used to retrieve the size invariant that is asso-ciated with each type. This function shall also be extended to type environment and list
+
+of types. The function Vfield classifies size variables from each field into three groups :(i) immutable, (ii) mutable but unique, (iii) otherwise (non-trackable).
+
+To effect a change OE to an existing poststate \Delta , we provide an operator, ffiY , with
+Y = {s*} to denote the set of size variables that is to be updated, as follows:
+
+\Delta  ffiY OE =df 9 r1 * * * rn * ae2(\Delta ) ^ ae1(OE)
+where Y = {s1, : : : , sn} ; {r1, : : : , rn} = fresh() ; ae1 = [si 7! ri]ni=1 ; ae2 = [s0i 7! ri]ni=1
+
+5.2 Assignment
+The [ASSIGN] rule captures imperative updates (to object fields and variables) by mod-ifying the current size constraint to a new updated state with changes to the imperative
+
+size variables from the LHS. From the rule, note that \Gamma  ` w :: t, OE, Y is to identify Y as aset of imperative size variables and also to gather a constraint
+
+OE for this set. The subtyperelation
+` t1 <: t, ae will return a substitution that maps the size variables of supertypeto that of the subtype. This mapping ignores all non-trackable size variables that may
+
+be globally aliased, but immutable and unique mutable size variables are captured.
+
+5.3 Memory Operations
+The heap space is directly changed by the new and dispose primitives. Their corre-sponding type rules, [
+
+NEW] and [DISPOSE], would ensure that sufficient memory isavailable for consumption by
+
+new and will credit back space relinquished by dispose.The memory effect is accumulated according to the flow of computation. Consider:
+
+\Delta `\Upsilon  w{(List, 1)} \Delta 1=\Delta ffi{x}x0=x+1
+\Gamma  ; \Delta ; \Upsilon  ` x = new List(o, x) :: voidhi@S, \Delta 1, \Upsilon  -{(List, 1)}
+
+\Upsilon 1=(\Upsilon  -{(List, 1)})]{(List, 1)}
+\Gamma  ; \Delta 1; \Upsilon  -{(List, 1)} ` y:dispose() :: voidhi@S, \Delta 1, \Upsilon 1
+\Gamma  ; \Delta ; \Upsilon  ` x = new List(o, x); y:dispose() :: voidhi@S, \Delta 1, \Upsilon 
+
+The new operation consumes a List node, while the dispose operation releasesback a
+
+List node. The net effect is that available memory \Upsilon  is unchanged. However,due to the order of the two operations, we require
+
+\Delta `\Upsilon  w{(List, 1)} which affects themaximum memory required.
+
+Another rule which has a direct effect on memory is the method invocation rule[
+IMI]. Sufficient memory must be available for consumption prior to each call (as spec-ified by
+
+\Delta 1 ` \Upsilon  wfflc), with the net memory release added back in the end (as specifiedby
+\Upsilon 1 = \Upsilon  -fflc ]fflr). Each method precondition must be met by the pre-state of its caller.This is checked by
+
+\Delta ss>V(\Gamma ) 9V(fflc)[V(fflr)*ae OEpr which uses a relation ss>X, defined as:
+
+\Delta  ss>X OE =df (\Delta  ) aeOE), where ae = [s1 7! s01, ::, sn 7! s0n] ^ Vu(OE) " X = {s1, ::, sn}:
+
+Note that Vu returns size variables in unprimed form, e.g. Vu(x0=z+1^y=2) = {x, y, z}.
+
+5.4 Conditional
+Our type rule for conditional [IF] is able to track both the size-constraints and memoryusages in a path-sensitive manner. Path-sensitivity is encoded by adding
+
+b0=1 and b0=0to the pre-states of the two branches, respectively. We achieve path-sensitivity for memory usage specification by integrating it with relational size constraints derived. Takenote that the
+
+unify operation merges the post-state constraints and memory usages fromthe two branches via a disjunction, a formal definition and an example can be found in
+
+our report [10]. Path-sensitivity makes our analysis more accurate and is critical foranalysing the memory requirement of recursive methods.
+
+5.5 Method Declaration
+Each method declaration is checked to see if its definition is consistent with the mem-ory usage specification given in its declaration header by the [
+
+METH] rule. The initialmemory is
+fflc. The final available memory of the method body e is \Upsilon 1 which must notbe less than the declared net memory release (as specified by
+
+OEpr^\Delta 1 ` \Upsilon 1 w fflr).
+
+Function subtyping for the OO paradigm is used to support method overriding. Thisis captured by the [
+
+OVERRIDE] rule in Fig 5. Each method which overrides anotheris expected to be
+contravariant on its precondition (and memory consumption) andcovariant on its postcondition (and memory releases)
+
+6 Soundness of Type System
+We have proposed a small-step operational semantics (denoted by ,! transitions) instru-mented with alias and size notations[10], and have also formalised two safety theorems
+for our type rules. The first theorem states that each well-typed expression preservesits type under reduction with a runtime environment
+
+\Pi  and a store $ that are consistentwith the compile-time counterparts,
+\Gamma  (type environment) and \Sigma  (store typing). Also,final size constraint is consistent with the value obtained on termination.
+
+Theorem 1 (Preservation).
+
+(a) (Expression) If \Gamma  ; \Sigma ; \Delta ; \Theta ; \Upsilon  ` e :: t, \Delta 1, \Theta 1, \Upsilon 1 \Gamma  ; \Sigma ; \Delta ; \Theta ; \Upsilon  |= h\Pi , $, oei
+
+h\Pi , $, oei [e] ,! h\Pi 1, $1, oe1i [e1]then there exist
+\Sigma ff ' \Sigma , \Gamma ff, \Delta ff, \Theta ff, and \Upsilon ff, such that
+
+\Gamma  - diff(e, e1) = \Gamma ff - diff(e1, e) \Gamma ff; \Sigma ff; \Delta ff; \Theta ff; \Upsilon ff ` e1 :: t, \Delta 1, \Theta 1, \Upsilon 1
+
+\Gamma ff; \Sigma ff; \Delta ff; \Theta ff; \Upsilon ff |= h\Pi 1, $1, oe1i :
+
+(b) (Value) If \Gamma  ; \Sigma ; \Delta ; \Theta ; \Upsilon  ` (A, ffi) :: t, \Delta 1, \Theta 1; \Upsilon 1 \Gamma  ; \Sigma ; \Delta ; \Theta ; \Upsilon  |= h\Pi , $, oei
+
+then the following hold:
+
+\Theta  = \Theta 1 \Gamma  + {x :: t}; \Sigma ; \Delta 2; \Theta 1; \Upsilon 1 |= h\Pi  + {x 7! (A, ffi)}, $, oe i
+where x = fresh() , \Delta 2 = [v 7! v0]v2V(t)\Delta 1.
+Proof: By induction over the depth of type derivation for expression e. Details are givenin the technical report [10].
+
+2
+
+The second safety theorem on progress captures the fact that well-typed programscannot go wrong. Specifically, this theorem guarantees that no memory adequacy errors
+are ever encountered for well-typed MEMJ programs, as follows:
+
+Theorem 2 (Progress). If \Gamma  ; \Sigma ; \Delta ; \Theta ; \Upsilon  `e :: t, \Delta 1, \Theta 1, \Upsilon 1 and \Gamma  ; \Sigma ; \Delta ; \Theta ; \Upsilon  |= h\Pi , $, oei,
+then either e is a value, or h\Pi , $, oei [e] ,! Err-Null, or there exist \Pi 1, $1, oe1, e1 such
+that h\Pi , $, oei [e] ,! h\Pi 1, $1, oe1i [e1]:
+
+Proof: By induction over the depth of type derivation for expression e. Details are givenin the technical report [10].
+
+2
+
+7 Implementation
+We have constructed a type checker for MEMJ, and have also built a preprocessor toallow a more expressive language to be accepted. The entire prototype was built using
+a Haskell compiler[18] where we have added a library (based on [19]) for Presburgerarithmetic constraint-solving.
+
+The main objective of our initial experiments is to show that our memory usagespecification mechanism is expressive and that such an advanced form of type checking
+is viable. We converted to MEMJ a set of programs from the Java version of the Oldenbenchmark suite [7] and another set of smaller programs from the RegJava benchmark[11], before subjecting them to memory adequacy checking. Our initial experi-mental results are encouraging; however this is a proof-of-concept implementation and
+there is scope for optimization and more exhaustive experimentation.
+
+Programs Size (lines) Checking (in sec.) Verified
+
+Source Ann. Alias Memory Methods
+bisort 340 7 0.01 2.56 6/6
+
+em3d 462 19 0.05 1.14 20/20
+health 562 22 0.05 6.37 15/15
+
+mst 473 31 0.02 1.26 22/22
+power 765 24 0.06 4.28 19/19
+treeadd 195 6 0.02 0.32 4/4
+
+tsp 545 10 0.02 3.54 9/9
+perimeter 745 12 0.02 21.81 8/8
+
+n-body 1128 31 0.60 1.25 22/22
+Voronoi 1000 45 0.03 3.51 39/40
+
+stack 122 12 0.01 0.08 10/10
+
+sieve 88 7 0.01 0.09 6/6
+m-sort 183 13 0.01 0.36 12/12
+
+life 164 9 0.02 2.95 7/7
+Mandelbrot 194 11 0.01 1.72 10/10
+
+Reynolds3 98 6 0.01 0.18 4/4
+
+Fig. 6. Type Checking Experimental Results
+
+Figure 6 summarises the sta-tistics obtained for each program
+that we have verified via our typechecker. Column 3 illustrates the
+size and memory annotation over-heads which must be made in
+the header declarations of eachclass and method. Columns 4 and
+5 highlight the CPU times used(in seconds) for alias and memory checking, respectively. Our ex-periments were done under Redhat Linux 9.0 platform on Pen-tium 2.4 GHz with 768MB main
+memory. Except for the perimeterprogram (which has more conditionals from using a quadtree datastructure), all programs take under
+10 seconds to verify, despite thembeing medium-sized programs and
+the high complexity of Presburger solving. We attribute this to the fact that memory dec-larations are verified in a summary-based fashion for each method definition. The last
+column highlights the number of methods that have been successfully verified as usingmemory spaces that are bounded by symbolic Presburger formulae. All methods' heap
+usage could be statically bounded, except2 for a method in Voronoi that has an allocationinside a loop, with a complex termination condition. Apart from the memory checking system described above, we have also conducted some preliminary investigation onmemory inference which is described in [17].
+
+8 Related Work
+Past research on memory models for object-oriented paradigm have focused largely onefficiency and safety. We are unaware of any prior type-based work on analysing heap
+memory usage by OO programs for the purpose of checking for memory adequacy. Theclosest related work on memory adequacy are based on first-order functional paradigm,
+where data structures are mostly immutable and thus easier to handle.Hughes and Pareto [15] proposed a type and effect system on space usage estimation
+for a first-order functional language, extended with region language constructs of Tofteand Talpin's[20]. The use of region model facilitates recovery of heap space. However,
+as each region is only deleted when all its objects become dead, more memory thannecessary may be used, as reported by [4].
+
+Hofmann and Jost [14] proposed a solution to obtain linear bounds on the heapspace usage of first-order functional programs. A key feature of their solution is the use
+
+2 For Olden programs which built tree-like data structure, we make a minor change to take total
+
+nodes rather than heights as parameters. This avoids exponential formulae.
+
+of linear typing which allows the space of each last-use data constructor (or record) tobe directly recycled by a matching allocation. With this approach, memory recovery can
+be supported within each function, but not across functions in general. Moreover, theirmodel does not track the symbolic sizes of data structures. Nevertheless, one significant
+advance of their work is an inference mechanism through linear programming (LP)technique. The main advantage of LP technique is that no fix-point analysis is required,
+but it restricts the memory effects to a linear form without disjunction.Apart from the above memory analysis work on high level languages, Aspinall and
+Compagnoni [3] presented a first-order linearly typed assembly language to allow safereuse of heap space. Their system is a target for the compilation of a functional programming language with a similar type systems (e.g. Hofmann's LFPL) . More recently,Cachera et. al. [6] proposed a constraint-based memory analysis for Java Bytecode-like
+languages. For a given program their loop-detecting algorithm can detect methods andinstructions that execute an unbounded number of times, thus can be used to check
+whether the memory usage is bounded or not. However, their analysis cannot checkwhether a given amount of memory is adequate or not, while our system does.
+
+9 Concluding Remarks
+We have proposed a memory usage type system for a non-trivial object-oriented corelanguage. We have designed a flexible specification mechanism to allow memory needs
+of user programs to be declared abstractly, and then verifies if memory adequacy prop-erty holds for the given definitions. Our approach requires heap space to be explicitly
+deallocated, which can be handled automatically. We have also built a prototype typechecker to confirm the viability and practicality of our approach. We envision our framework to be useful for embedded system, where memory is considered to be a criticalresource. We also envision the synergy of predicable memory bounds with region-based
+memory management systems. In particular, bounded memory regions can result in bet-ter performance. Synergistically, region-based system can provide timely recovery for
+shared objects that are dead, providing us with tighter memory bounds.Acknowledgement The authors would like to acknowledge the invaluable help of Florin
+Craciun with the evaluation of a set of the benchmark programs.
+
+References
+
+1. J. Aldrich, V. Kostadinov, and C. Chambers. Alias Annotation for Program Understanding.
+
+In ACM OOPSLA, Seattle, Washington, November 2002.2. B. Alpern, D. Attanasio, J. J. Barton, A. Cocchi, S. F. Hummel, D. Lieber, M. Mergen,
+
+T. Ngo, J. Shepherd, and S. Smith. Implementing Jalape~no in Java. In ACM OOPSLA,
+Denver, Colorado, November 1999.3. D. Aspinall and A. Compagnoni. Heap bounded assembly language. Journal of Automated
+
+Reasoning, 31:261-302, 2003.4. E. D. Berger, B. G. Zorn, and K. S. Mckinley. Reconsidering Custom Memory Allocation.
+In ACM OOPSLA, November 2002.5. J. Boyland, J. Noble, and W. Retert. Capabilities for Sharing: A Generalization of Uniqueness and Read-Only. In ECOOP, Budapest, Hungary, June 2001.
+
+6. D. Cachera, T. Jensen, D. Pichardie, and G. Schneider. Certified Memory Usage Analysis.
+
+In 13th International Symposium of Formal Methods Europe (FM'05), July 2005.
+7. M. C. Carlisle and A. Rogers. Software caching and computation migration in Olden. In 4th
+
+Principles and Practice of Parallel Programming, Santa Barbara, California, May 1993.
+8. E. C. Chan, J. Boyland, and W. L. Scherlis. Promises: Limited Specifications for Analysis
+
+and Manipulation. In Proceedings of the International Conference on Software Engineering,
+pages 167-176, Kyoto, Japan, April 1998.
+9. W.N. Chin, S.C. Khoo, S.C. Qin, C. Popeea, and H.H. Nguyen. Verifying Safety Policies
+
+with Size Properties and Alias Controls. In 27th International Conference on Software Engineering (ICSE05), St. Louis, Missouri, May 2005.
+10. W.N. Chin, H.H. Nguyen, S.C. Qin, and M. Rinard. Predictable Memory Usage for ObjectOriented Programs. Technical report, SoC, Natl Univ. of Singapore, November 2004. avail.
+at http://www.dur.ac.uk/shengchao.qin/papers/memj.ps.gz.
+11. M. V. Christiansen and P. Velschow. Region-Based Memory Management in Java. Master's
+
+Thesis, Department of Computer Science (DIKU), University of Copenhagen, 1998.
+12. M. Fahndrich and R. Leino. Declaring and checking non-null types in an object-oriented
+
+language. In ACM OOPSLA, Anaheim, CA, October 2003.
+13. C. A. R. Hoare and J. He. Unifying Theories of Programming. Prentice-Hall, 1998.
+14. M. Hofmann and S. Jost. Static prediction of heap space usage for first order functional
+
+programs. In ACM POPL, New Orleans, Louisiana, January 2003.
+15. J. Hughes and L. Pareto. Recursion and Dynamic Data-Structures in Bounded Space: Towards Embedded ML Programming. In Proceedings of the International Conference on
+Functional Programming (ICFP '99), September 1999.
+16. L. Lamport. The temporal logic of actions. ACM Trans. on Programming Languages and
+
+Systems, 16(3):872-923, May 1994.
+17. H. H. Nguyen. Memory Usage Inference for Object-Oriented Programs. Technical report,
+
+CS Programme, Singapore-MIT Alliance, July 2004. (Term Paper).
+18. S Peyton-Jones and et al. Glasgow Haskell Compiler. http://www.haskell.org/ghc.
+19. W. Pugh. The Omega Test: A fast practical integer programming algorithm for dependence
+
+analysis. Communications of the ACM, 8:102-114, 1992.
+20. M. Tofte and J. Talpin. Region-based memory management. Information and Computation,
+
+132(2), 1997.
+21. H. Xi and F. Pfenning. Eliminating array bound checking through dependent types. In ACM
+
+PLDI. ACM Press, June 1998.
+
+A Alias Checking
+We introduce four alias control mechanisms U | S | R | L adopted from [5, 8, 1]. Thesealias mechanisms shall be used to support precise size tracking in the presence of mutable objects, and also for the automatic recovery of dead unique objects. For size-tracking, we introduce
+
+R-mode fields to allow size-immutable properties to be accu-rately tracked for all objects. For example, an alternative class declaration for the list
+
+data type is given below, where its next field is marked as read-only (or immutable).Note that the
+
+val field remains mutable.
+class RListhni where n=m+1 ; n>=0 { Objecthi@S val; RListhmi@R next; * * * }The size property of such an
+
+RList type can be analysed at compile-time, whileallowing its objects to be freely shared. However, this comes at the cost of losing both
+
+mutability and uniqueness.
+
+We make use of L-mode parameters, with the limited unique (or lent-once) property[8], to capture unique references that are temporarily lent out to method calls. They
+allow the preservation of uniqueness together with precise size-tracking across methods.Consider the following method with two
+
+List parameters.
+voidhi@S join(Listhmi@L x, Listhni@U y) where n > 0; m0=n+m; * * *
+
+{ if isNull(x:next) then x:next = y else join(x:next, y) }The first parameter is annotated as lent-once and can thus be tracked for size properties without loss of uniqueness. However, the second parameter is marked unique as itsreference escapes the method body (into the tail of the
+
+List from the first parameter). Inother words, the parameter
+y can have its uniqueness consumed but not x, as reflectedin the body of the above method declaration. Given two unique lists,
+
+a and b, the call
+join(a, b) would consume the uniqueness of b but not that of a. Our lent-once policy ismore restrictive than normal lending [1] as we require each lent-once parameter to be
+
+unaliased within the scope of its method. For example, join(a, a) is allowed by the typerules of [1], but disallowed by our lent-once's policy.
+
+In our alias type system, uniqueness may be transferred from one location (variable,field or parameter) to another location. Consider a type environment
+
+{x::Objecthi@U,
+y::Objecthi@U, z::Objecthi@S} where variables x and y are unique, while z is shared. Inthe following code,
+
+{x = y; z = x}, the uniqueness of y is first transferred to location x,followed by the consumption of uniqueness of
+
+x that is lost to the shared variable z. Inour type judgement, we track variables/fields that have become dead using:
+
+\Gamma  ; \Theta  ` e :: t, \Theta 1
+Here, each dead-set \Theta (\Theta 1) captures the set of references with consumed uniquenessbefore(after) the evaluation of expression
+
+e. \Gamma  is a type enviroment which maps vari-ables to their annotated types. Other type judgements for methods, classes and programs
+
+have the following forms.
+
+\Gamma  `meth meth `def def `P defi:1::p methi:1::q
+The full set of alias checking rules are given in our technical report [10]).

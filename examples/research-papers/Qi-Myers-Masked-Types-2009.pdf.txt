@@ -1,0 +1,1514 @@
+
+
+Masked Types for Sound Object Initialization
+
+Xin Qi Andrew C. Myers
+
+Computer Science DepartmentCornell University
+
+{qixin,andru}@cs.cornell.edu
+
+Abstract
+This paper presents a type-based solution to the long-standing prob-lem of object initialization. Constructors, the conventional mechanism for object initialization, have semantics that are surprisingto programmers and that lead to bugs. They also contribute to the
+problem of null-pointer exceptions, which make software less reli-able. Masked types are a new type-state mechanism that explicitly
+tracks the initialization state of objects and prevents reading fromuninitialized fields. In the resulting language, constructors are ordinary methods that operate on uninitialized objects, and no spe-cial default value (
+
+null) is needed in the language. Initializationof cyclic data structures is achieved with the use of conditionally
+
+masked types. Masked types are modular and compatible with dataabstraction. The type system is presented in a simplified object calculus and is proved to soundly prevent reading from uninitializedfields. Masked types have been implemented as an extension to
+Java, in which compilation simply erases extra type information.Experience using the extended language suggests that masked types
+work well on real code.
+Categories and Subject Descriptors D.2.4 [Software/ProgramVerification]: Class invariants, programming by contract; D.3.2
+
+[Language Classifications]: Object-oriented languages
+General Terms Languages, Reliability
+Keywords invariants, null pointer exceptions, conditional masks,cyclic data structures, data abstraction
+
+1. Introduction
+Object initialization remains an unsatisfactory aspect of object-oriented programming. In the usual approach, objects of a given
+
+class are created and initialized only by class constructors. There-fore, when implementing class methods, the programmer can assume that object fields satisfy an invariant established by the con-structors. However, in the presence of inheritance, the methods of
+partly initialized objects may be invoked before the invariant hasbeen established. As a result, reasoning about object initialization
+can be challenging and non-modular. No fully satisfactory solutionto object initialization currently exists.
+
+This paper presents a new solution to the object initializationproblem, based on a new type mechanism, masked types. As SecPermission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+POPL'09, January 18-24, 2009, Savannah, Georgia, USA.Copyright cfl 2009 ACM 978-1-60558-379-2/09/01.. . $5.00.
+
+tion 2 describes, a masked type keeps track of the parts of an objectthat have not been initialized. For example, the type T \ f describes
+an object of type T whose field f may not be initialized yet, andthe type T \* represents an object none of whose fields are necessarily initialized. As an object is constructed, the type of the objectchanges to reflect the fields that are initialized. Thus, the type system for masked types is flow-sensitive; it has typestate [31]. Thetype of an object conservatively tracks its initialization state, so a
+partially initialized object cannot be used where a fully initializedobject is expected.
+
+The problem of object initialization is intertwined with the prob-lem of null pointer exceptions, which significantly hurt software
+reliability [2]. Because object initialization is unsound, most lan-guages aiming for type safety (e.g., Java, C#, Modula-3) first initialize fields with null. This semantics implies that null must be alegal value for all object types, leading to ubiquitous, implicit null
+checks that can generate null pointer exceptions. Recently there hasbeen interest in controlling null pointer exceptions through nonnull annotations and other means [7, 2, 19, 6]. Non-null annotationsby themselves do not solve the problem of object initialization; in
+fact, they make it more important because non-null fields must beinitialized before use. But with masked types, there is no need for
+a default initialization value. It is then straightforward to eliminate
+null values entirely from the language. There are legitimate usesof
+
+null other than as an initialization placeholder, but for theseuses, an "option" or "maybe" type is a better approach, because it
+
+makes null checks explicit and rare.A language with masked types can be simpler in another way.
+There is no need to give constructors a special status in the lan-guage, because types track initialization state. Rather than a language feature, constructors become a design pattern: they are ordi-nary methods that change the initialization state of the receiver.
+
+Cyclic data structures pose a challenge for object initialization.However, conditionally masked types make it possible to create
+cyclic data structures, such as doubly-linked lists and trees withparent pointers, without resorting to placeholder
+
+null values. Con-ditional masks record dependencies between initialization of different fields, so that initializing one field can "tie the knot", changingthe initialization state of many fields at once.
+
+Perhaps the most closely related prior work is that of F"ahndrichand Xia [9], who introduce delayed types for static reasoning about
+partially initialized objects. Masked types support cyclic data struc-tures that delayed types do not. Masked types also support richer
+initialization abstractions: for example, helper methods for par-tial initialization and reinitialization of recycled objects. Abstract
+masks, described in Section 3, support initialization abstractionsthat are compatible with data abstraction and inheritance.
+
+Masked types have been formalized for a simplified object lan-guage, described in Section 4. The key soundness theorem is formalized and has been proved for this language: well-typed pro-grams never read uninitialized fields.
+
+1 class Point {2
+
+int x, int y;3
+Point(int x, int y) {4
+
+this.x = x;5
+this.y = y;6
+display();7
+}8
+void display() {9
+
+System.out.println(x + " " + y);10
+}11
+}12
+
+13 class CPoint extends Point {14
+
+Color c;15
+CPoint(int x, int y, Color c) {16
+
+super(x, y);17
+this.c = c;18
+}19
+void display() {20
+
+System.out.println(x + " " + y + " " + c.name());21
+}22
+}
+
+Figure 1. Code with an initialization bug
+
+Section 5 reports on the implementation of masked types as amostly backward-compatible extension to the Java language called
+J\mask. Section 6 discusses experience using J\mask in the con-text of the Java Collections Framework, where masked types are
+shown to do a good job of capturing desirable initialization idioms.Related work is discussed in Section 7. Section 8 concludes.
+
+2. Masked types
+Figure 1 illustrates a bug that can easily happen in an object-oriented language like Java. In the class
+
+Point, representing a 2Dpoint, the constructor calls a virtual method
+
+display that prints thecoordinates of the point. The two fields
+x and y are properly initial-ized before
+display is called. However, in the subclass CPointrepresenting a colored point, the
+
+display method has been over-ridden in a way that causes the added
+
+c field to be read before it isinitialized, resulting in a null pointer exception.
+
+This example is simple, but in general, initialization bugs aredifficult to prevent in an automatic way. It would be too restrictive
+to rule out virtual method calls on partially constructed objects.Further, the bug involves the interaction of code from two different
+classes (Point and CPoint). An implementer of CPoint might nothave access to the code of
+
+Point and would not realize the dangerof overriding the
+display method in this seemingly reasonableway.
+
+Our goal is to prevent code like that of class Point from type-checking, but to allow complex, legitimate initialization patterns.
+The key observation is that before the call to display on line 6,the fields in
+
+Point are initialized, but fields of subclasses of Pointare not. However, the type of the method
+
+display does not preventthe partially initialized receiver from being passed to an overridden
+
+version of the method that reads uninitialized fields, as in CPoint.
+2.1 Types for initialization state
+A masked type T \M, where M is a mask that denotes some objectfields, is the type T but without read access to the denoted fields.
+
+Masked types are a completely static mechanism, so a J\maskprogram is compiled by erasing masks. No run-time penalty is paid
+for safe object initialization.The simplest form of a mask is just the name of a field. For
+example, an object of type CPoint\c is an instance of the CPoint
+
+class whose field c cannot be read, perhaps because it has not beeninitialized. We say that the field
+
+c is masked in this type.A type with no mask means that the object is fully initialized.
+
+In typical programming practice, this would be the ordinary stateof the object, in which its invariant is already established.
+
+On entry to a constructor such as Point(), the newly createdobject has all its fields masked. The actual class of the new object
+might be a subclass (for example, CPoint), so on exit, subclassfields remain to be initialized. A subclass mask, written C
+
+.sub, isused to mask all fields introduced in subclasses of C, not including
+
+those of C itself. Therefore, just before line 4 in Figure 1, theobject being constructed has type
+
+Point\x\y\Point.sub. (Whilethis type looks complicated, it can be inferred automatically.)
+
+When a field is initialized by assigning to it, the correspond-ing mask is removed from the type of the object. For example,
+line 4 in Figure 1 assigns to field x, so the type of this becomes
+Point\y\Point.sub. After the assignment to y on the next line,the type of
+
+this becomes Point\Point.sub. Thus, the initializa-tion of various fields is recorded in the changing type of
+
+this.Because variables may have different types at different program
+
+points, J\mask has a flow-sensitive type system.Subclass masks such as
+
+Point.sub can be removed when theexact run-time class of an object is known, because there are no
+
+subclass fields left to initialize. The type of a new expression isknown exactly, as is the type of a value of any class known not to
+have a subclass (in Java, a "final" class).J\mask has a special mask * as a convenient shorthand for
+masking all fields, including those masked by the subclass mask.On entry to the
+
+CPoint constructor, the object can be given type
+CPoint\*, which is equivalent to CPoint\x\y\c\CPoint.sub.
+
+2.2 Mask effects
+In J\mask, methods and constructors can have effects [23] thatpropagate mask information across calls. For example, the J\mask
+
+signatures for the Point constructor and the display method canbe annotated explicitly with effect clauses:
+
+Point(int x, int y) effect * -> Point.sub
+void display() effect {} -> {}
+
+The effect of this Point constructor says that at entry to theconstructor, all fields are uninitialized (precondition mask
+
+*) andtherefore unreadable; at the end of the constructor, only fields introduced by subclasses of Point remain uninitialized (postcondi-tion mask
+
+Point.sub). Because the initial and final masks of the
+display method are both {}, denoting the absence of any mask,the method can be called only with a fully initialized object, and it
+
+leaves the object fully initialized.With these effects, the bug in Figure 1 would be caught statically. The method display cannot be invoked on line 6, becausethere the type of
+
+this is Point\Point.sub, which does not sat-isfy the precondition of
+
+display. The J\mask compiler detects thisunsafe call without inspecting any subclass of
+
+Point.This example suggests how mask effects make the J\mask type
+
+system modular. Mask effects explicitly represent the contract oninitialization states that a method is guaranteed to follow. This
+explicit contract allows the compiler to type-check programs oneclass at a time, and also enables programmers to reason about
+initialization locally.Indeed, masked types and mask effects capture changes to initialization state with enough precision that constructors in J\maskare essentially ordinary methods that remove masks from the receiver. However, for convenience and backward compatibility, theJ\mask language still has constructors.
+
+To reduce the annotation burden, the J\mask language providesdefault effects for methods and constructors. Programmers do not
+
+normally have to annotate code with effects or masks. For ordinarymethods, the default is
+
+{} -> {}; for constructors, the defaulteffect is close to that shown above (see Section 2.3).
+
+The effects shown capture changes to the initialization stateof the parameter
+
+this, the receiver object. J\mask also supportseffects on other parameters, as shown in Section 2.5.
+
+For simplicity, exceptions, which are rarely thrown during ini-tialization anyway, have been ignored in this paper. However, exceptions can be supported by providing a postcondition for eachexceptional exit path in the effect clause.
+
+2.3 Must-masks
+All the masks shown in Section 2.1 are simple masks. A simplemask S, e.g., f , *, or C
+
+.sub, means that the fields it describe maybe uninitialized. Thus, there is a subtyping relationship T <= T \S,
+
+because it is safe to treat an initialized field as one that may beuninitialized.
+
+However, when an object is created, it is known that all thefields must be uninitialized. J\mask uses must-masks, written S!, to
+describe fields that must definitely be uninitialized. A must-maskedtype T \S! is also a subtype of T \S, but T is not a subtype of T \S!.
+
+One use of must-masks is for initialization of "final" fields,which is only allowed when the field is must-masked, ensuring that
+the field is initialized exactly once. Must-masks and the absence ofmasks roughly correspond to the notions of definite unassignment
+and definite assignment in the Java Language Specification [12].However, J\mask ensures that a final field cannot be read before it
+is initialized, while Java does not. J\mask also lifts the limitation inJava that final fields can only be initialized in a constructor or an
+initializer.Must-masks are also used to express the default effect of a constructor of class C, which is *! -> C.sub!. Objects start with allfields definitely uninitialized, which is represented with the initial
+mask *!. Constructors usually do not initialize fields declared insubclasses, so the default postcondition mask is
+
+C.sub!.Must-masks impose restrictions on how an object can be
+
+aliased: if there is a reference with a must-masked type, it mustbe the only reference through which the object may be accessed;
+otherwise, the must-masked field might be initialized through an-other reference to the object, invalidating the must-mask. This does
+not preclude aliasing, but implies rather that other references haveto be through fields that are themselves masked.
+
+J\mask uses typestate to keep track of initialization state. Aproblem with most previous typestate mechanisms is that they require reasoning about potential aliasing, to prevent aliases to thesame object that disagree about the current state. Aliasing makes
+it notoriously difficult to check whether clients and implementa-tions are compliant with protocols specified with typestate [1], and
+much previous work on typestates requires complicated aliasing an-notations or linear types. J\mask is designed to work with no extra
+aliasing control mechanism, which provides the added benefit ofsoundness in a multi-threading setting, since operations on an object through aliases from other threads do not invalidate typestatesin the current thread.
+
+The key to avoiding reasoning about aliasing is that if an assign-ment creates an unmasked alias, then must-masks on both sides are
+conservatively converted to corresponding simple ("may") masks.For example, after the following code, the type of both
+
+x and y isthe simply masked type
+C\f:
+
+C\f! x = ...;
+C\f! y = x;
+
+Similarly the following code also removes the must annotationfrom the type binding of variable
+
+x, because z.g becomes an aliasand the field
+g is not masked in the type D of variable z:
+
+C\f! x = ...;
+D z = ...;
+z.g = x;
+
+The non-aliasing requirement on must-masks might seem re-strictive, but it is usually not a problem: must-masks typically appear near allocation sites, where no alias has been created.
+2.4 Reinitialization
+Beyond initialization, masked types can help reasoning about reini-tialization. A mask can represent not only an uninitialized field, but
+
+also a field that must be reassigned before further read accesses. Toenforce reinitialization, a mask can be introduced on the field, via
+the subtyping rule T <= T \ f .For example, Figure 2 illustrates a custom memory management
+system that manages a pool of recycled objects of the class Node.Actively used objects are not in the pool and store data in their
+
+dfields. Objects in the pool are threaded into a freelist using their
+
+next fields. When a Node object is no longer used, it is put intoa pool by calling the
+
+recycle method; when a new instance of
+Node is needed, the getNode method returns an object from thepool, if there is any. Masked types can help ensure that the field
+
+d is reinitialized whenever a Node object is retrieved from thepool and gets a second life. Of course, like most custom memory
+management systems, the code in this example does not guaranteethat no alias exists after an object is recycled. Masked types are not
+intended to enforce this kind of general correctness.
+1 class Node {2
+
+Data d;3
+Node\d next;4
+}5
+
+6 class Pool {7
+
+Node\d head;8
+...9
+Node\d\next getNode() {10
+
+if (head != sentinel) {11
+
+Node\d\next result = head;12
+head = head.next;13
+return result;14
+} else15
+
+return new Node();16
+}17
+void recycle(Node\next n) {18
+
+n.next = head;19
+head = n;20
+}21
+}
+
+Figure 2. Object recycling
+The type Node is a subtype of Node\d, and therefore the sec-ond assignment (line 19) in method
+
+recycle type-checks, causing
+Node objects in the pool to "forget" about the data stored in field d.Masked types provide an additional benefit here. Objects in
+
+active use have type Node\next, preventing traversal of the freelistfrom outside the
+
+Pool class.
+
+2.5 Initializing cyclic data structures
+Many data structures that arise in practice contain circular refer-ences: for example, doubly linked lists and trees whose nodes have
+
+parent pointers. Safe initialization of these cyclic data structuresposes a challenge. In object-oriented languages, storing a reference
+to a partially initialized object is normally required, with no guar-antee that the object is fully initialized before use.
+
+J\mask explicitly tracks fields that point to partially ini-tialized objects with conditionally masked types, written
+
+T \ f [x1.g1,...,xn.gn]. The conditional mask f [x1.g1,...,xn.gn]describes a field f referencing a partially initialized object, which
+will become fully initialized when all fields xi.gi are initialized. Inother words, the removal of the mask on f is conditioned on the
+removal of all masks on xi.gi.Conditional masks are normally introduced by an assignment to
+a must-masked field f , when the right-hand side of the assignmenthas more masks than the declared field type. Consider, for example,
+a field assignment x.f = y, where x has type T \ f !, y has typeT 0\g, and the field
+
+f of class T has type T 0. Note that T 0\g is nota subtype of T 0. J\mask makes this assignment safe by changing
+
+the type of x to T \ f [y.g] after the assignment, showing that thefield
+
+x.f is still masked, but its mask should be removed upon theremoval of the mask on
+
+y.g.
+
+1 class Node {2
+
+Node parent;3
+Node() effect *! -> *! { }4
+}5
+
+6 final class Leaf extends Node {7
+
+Leaf() effect *! -> parent! { }8
+}9
+
+10 final class Binary extends Node {11
+
+Node left, right;12
+Binary(13
+
+Node\parent!\Node.sub[l.parent] -> *[this.parent] l,14
+Node\parent!\Node.sub[r.parent] -> *[this.parent] r)15
+effect *! -> parent!, left[this.parent],16
+
+right[this.parent] {17
+this.left = l;18
+this.right = r;19
+l.parent = this;20
+r.parent = this;21
+}22
+}23
+
+24 Leaf\parent! l = new Leaf();25
+
+Leaf\parent! r = new Leaf();26
+Binary\parent!\left[root.parent]\right[root.parent]27
+
+root = new Binary(l, r);28
+root.parent = root; // Now root has type Binary.
+
+Figure 3. Initialization of a tree with parent pointers
+Figure 3 shows how to safely initialize a binary tree with parentpointers. For convenience, we assume all local variables, including
+formal parameters, are final. (Section 5 discusses how to relaxthis.)
+
+Figure 3 also demonstrates effects on parameters other than thereceiver
+
+this: the parameters l and r of the Binary constructorboth have the type
+
+Node\*[this.parent] upon the exit of theconstructor.
+
+In this example, initialization is bottom-up, as it would be,for example, in a shift-reduce parser. Child nodes are created,
+initialized, and then used to construct their parent node. However,child nodes cannot be fully initialized before their
+
+parent fields areset, and moreover, they cannot even be considered fully initialized
+
+before the fields of all the objects that are transitively reachable areset. (Top-down initialization of this data structure creates similar
+issues.)The
+
+parent field of a node will eventually point to an objectthat is created later and that contains child pointers pointing back
+
+to the current node, creating parent-child cycles. Of course, the
+parent field of the root of the tree must point to something special.For example, it can point to the root itself, as shown on line 28, or
+
+to a sentinel node.
+
+The dependencies between masks after line 20 in Figure 3 aresummarized in Figure 4, where the mask at the tail of an arrow
+is removed when the mask at its head is removed. The masks on
+this.left and this.right after line 20 transitively depend onthe mask on
+
+this.parent.
+
+\Delta \Theta \Lambda \Xi \Pi \Sigma \Upsilon \Phi \Psi A\Delta 
+
+\Delta \Theta \Lambda \Xi \Pi B\Psi C\Delta 
+
+B\Pi \Sigma \Upsilon \Phi \Psi A\Delta  \Phi \Pi \Sigma \Upsilon \Phi \Psi A\Delta 
+
+\Delta \Theta \Lambda \Xi \Pi \Phi \Lambda D\Theta \Delta 
+B\Pi EFi\Psi \Pi \Xi j` \Phi \Pi EFi\Psi \Pi \Xi j`
+
+Figure 4. Mask dependencies
+The postcondition in the effect of the Binary construc-tor summarizes the dependencies in the figure: parameters
+l and r both have mask *[this.parent], which means thatall their fields are conditionally masked, and
+
+this has type
+Binary\parent!\left[this.parent]\right[this.parent],which is compatible with the parameter type of the
+
+Binaryconstructor. Therefore, the construction can proceed to build
+
+higher trees. Finally, the tree is fully initialized when the parentfield of the root is initialized, because removing its mask enables
+removing all the masks in Figure 4.In general, a field f should be unreadable unless every object
+transitively reachable through f has been appropriately initialized.That is, its masks have been removed at least to the level according
+to the type of the field through which the object is referenced.Therefore, there are three ways to remove a conditional mask
+on field f :
+
+* Like other kinds of masks, the conditional mask can be removed
+
+by directly initializing the field f .*
+
+As shown in Figure 3, on line 28, conditional masks on
+root.left and root.right are removed by removing themask
+
+root.parent they (transitively) depend on.*
+
+The last way to remove a conditional mask is by creating cyclicdependencies. For example, the following code creates cyclic
+
+dependencies between x.f and y.g, which cancel each other.
+
+// x starts with type C\f!, and y starts with D\g!
+x.f = y; // now x has type C\f[y.g]
+y.g = x; // now y has type D\g[x.f]
+
+// x can be typed C, and y can be typed D
+
+In general, if some dependencies form a strongly connectedcomponent in which no mask depends on a mask outside the
+
+component, they can all be removed together.
+Subtyping generalizes to conditionally masked types: T <=T \ f [x
+
+1.g1,...,xn.gn] <= T \ f . In fact, a type T with unmasked fieldf can be viewed as a type that has empty conditions for the mask
+
+on f , that is, T \ f [], and a simply masked type T \ f can be seenas having an unsatisfiable condition on f , because a simple mask
+cannot be removed by removing other masks.Conditional masks and simple masks do not impose any restriction on aliasing, because mask subtyping ensures that they cannotbe invalidated by any future change to the object. This property has
+been called heap monotonicity [8].Conditional masks also provide a way to create temporarily
+unreadable aliases for must-masked objects. Because the aliases areunreadable, the must annotations need not be removed. In Figure 3,
+for example, the assignment on line 17 creates an alias this.leftfor the left child object stored in variable
+
+l, but l remains oftype
+Node\parent!, since the field this.left is masked withthe conditional mask
+
+left[l.parent] after line 17. Not losing the
+
+must information means the initialization state of l is tracked moreprecisely.
+
+For simplicity, fields currently must be declared with unmaskedor simply masked types; no conditional masks or must-masks are
+allowed. It should be straightforward to add support for condition-ally masked field types, but this is left for future work.
+
+3. Abstract masks
+With the exception of * and C.sub, the masks we have seen sofar are concrete, explicitly naming instance fields. Concrete masks
+
+create difficulties for data abstraction, because the fields might notbe visible where the masks are needed. For example, in Figure 3,
+if the two fields left and right of class Binary were private, itwould be impossible to declare the local variable
+
+root as shown online 26, because its type mentions the names of the fields outside
+
+the class definition.
+1 class Node {2
+
+mask Children;3
+...4
+}5
+
+6 final class Binary extends Node {7
+
+private Node left, right;8
+mask Children += left, right;9
+Binary(...)10
+effect *! -> parent!,11
+
+Children[this.parent] { ... }12
+...13
+}14
+...15
+Binary\parent!\Children[root.parent]16
+
+root = new Binary(l, r);17
+root.parent = root;
+
+Figure 5. The tree example with abstract masks
+Therefore J\mask introduces abstract masks that abstract oversets of concrete fields, providing a way to write types that mask
+fields that are not visible. Figure 5 shows an updated version of thecode from Figure 3, where the two fields
+
+left and right are nowprivate, and an abstract mask
+Children is introduced to mask themoutside the class
+Binary. The Children mask is first declared inclass
+Node (line 2), with an empty set of fields, and is overriddenin
+Binary (line 8) to include the two children of a binary node.J\mask currently allows abstract masks to be overridden only to
+
+include more fields; more complex overriding is left to future work.The * mask, introduced in Section 2.1, is not much different
+from any other abstract mask, except that it is built-in, and isautomatically overridden in every class to include all the fields
+declared in that class.
+3.1 Modular checking of abstract masks
+Subclass masks. The Point/CPoint example in Section 2.1showed that unsafe calls to overridden methods could be
+
+caught in a modular way with the help of the subclass mask
+Point.sub. The mask Point.sub can be connected to theabstract mask * through the equivalence of the two types
+
+Point\* and Point\x\y\Point.sub. Any type with an ab-stract mask can be similarly expanded. For example, given
+the code in Figure 5, the masked type Binary\Childrenis equivalent to
+
+Binary\left\right\Binary.Children.sub,where
+Binary.Children.sub represents all the concrete masksthat are added into overriding declarations of
+
+Childrenin subclasses of
+Binary, excluding Binary itself. The set{
+left,right,Binary.Children.sub} is the interpretation of
+Children in the context of Binary.
+
+In general, C.M.sub represents the subclass mask of abstractmask M with respect to class C, and the interpretation of M in the
+context of C is a set consisting of all the concrete masks added intoM in C and its superclasses, together with subclass mask C
+
+.M.sub.Before type checking, the J\mask compiler internally expands all
+
+abstract masks into their interpretations.Subclass masks are important for modular type checking, because they make it possible to distinguish the current definition ofan abstract mask and overriding definitions in subclasses, which are
+generally unavailable in a modular setting.
+
+1 class C {2
+
+T f;3
+mask M += f;4
+void initM() effect M -> {} {5
+
+this.f = ...;6
+}7
+}8
+
+9 class D extends C {10
+
+T g;11
+mask M += g;12
+void initM() effect M -> {} {13
+
+this.g = ...;14
+super.initM();15
+}16
+}
+
+Figure 6. Code that needs mask constraints
+
+Mask constraints. Subclass masks help prevent unsafe calls, butsince they describe fields that are generally not known in the current class, safely removing them by initialization requires someadditional mechanism. Figure 6 illustrates an initialization helper
+method initM, which is intended to remove the abstract mask Mfrom its receiver. It is properly overridden in the subclass
+
+D to han-dle the overridden abstract mask
+M. However, the initM methodwould not type-check as written in Figure 6, because right after
+
+line 5, the type of this is actually C\C.M.sub, rather than the un-masked type
+
+C.J\mask uses mask constraints to solve this problem. Every J\mask method can declare a mask constraint of the form
+captures M1,...,Mn, where M1,...,Mn are abstract masks. Thisconstraint means that the body of the method is type-checked assuming that the masks Mi are the same as their concrete definitionin the class where the method is defined, with no subclass masks.
+
+For example, the signature of initM on lines 4 and 12 can beupdated with a mask constraint:
+
+void initM() effect M -> {} captures M
+The example then type-checks, because at the entries to initMin classes
+
+C and D, the type of this becomes C\f and D\f\grespectively, rather than
+
+C\f\C.M.sub and D\f\g\D.M.sub.However, when type-checking callers against the public signature of the method, the abstract mask should still be interpreted toinclude the subclass mask.
+
+A method defined in class C with a mask constraint on anabstract mask M depends on the set of fields that M denotes in
+C. It would be unsound to allow that method to be inherited bya subclass that overrides the abstract mask. Therefore, the type
+
+system requires such methods to be overridden when the masksthey depend on are overridden. Consequently, constructors, final
+methods, and static methods cannot have mask constraints, becausethey cannot be overridden in subclasses.
+
+programs Pr ::= hL,ei
+class declarations L ::= class C extends C0 {F Mt}
+field declarations F ::= T f
+method declarations Mt ::= T m(T x) effect M1  M2 {e}
+simple masks S ::= f | subC
+masks M ::= S | S! | S[p.Sp]
+paths p ::= ` | x
+unmasked types U ::= ffi | C | C!
+types T ::= U | T\M
+expressions e ::= (T p) | new C | e1; e2 | e. f| (T
+
+1 p1). f = (T2 p2) | (T0 p0).m((T p))|
+let T x = e1 in e2
+
+typing environments \Gamma  ::= /0 | \Gamma ,x:T | \Gamma ,`:T
+heaps H ::= /0 | H,` 7! o
+objects o ::= C!\M{ f = `}
+evaluation contexts E ::= [*] | E. f | E; e | let T x = E in e
+
+Figure 7. Grammar
+
+3.2 Mask algebra
+J\mask supports two algebraic operations on masks that make ab-stract masks more useful: (M
+
+1 + M2) and (M1 - M2).An abstract mask can be interpreted as a set of concrete masks
+
+on fields and possibly a subclass mask. The two operators on maskscorrespond to the set union (+) and set difference (-) of the
+interpretations of the abstract masks. Concrete masks can appearin algebraic masks, where they are interpreted as singleton sets.
+
+Algebraic masks enable the programmer to express initializa-tion state abstractly, without knowing all the fields masked by an
+abstract mask. For example, suppose there is a local variable x,starting with the type T \M where M is an abstract mask, and field
+x. f is initialized:
+
+T\M x = ...;
+x.f = ...; // The type of x is now T\(M - f)
+
+Here, one needs not know which concrete masks are included in M,nor even whether M includes f .
+
+Mask algebra also helps programmers compose masks to keepthe typestates in J\mask compact. For example, if a class has n
+fields, each of which might independently be initialized or unini-tialized, it would require 2n different typestates to represent all possible initialization states, were there no mask algebra. With maskalgebra, one can simply use the "sum" of the masks corresponding
+to all the uninitialized fields.J\mask currently only supports these two algebraic operations
+on masks, but they seem to suffice. Richer operators on masks areleft to future work.
+
+4. The J\mask calculus
+We now formalize masked types as part of a simple object calculus.Unfortunately, previous object calculi are not suitable for modeling
+
+masked types.
+4.1 Grammar
+Figure 7 shows the grammar of the core J\mask calculus. We usethe notation a for both the list a
+
+1,...,an and the set {a1,...,an}, forn >= 0. We abbreviate terms with list subterms in the obvious way,
+
+e.g., T x stands for T1 x1,...,Tn xn, T \M stands for T \M1\...\Mn,and p
+
+.S stands for p.S1,..., p.Sn.A program Pr is a pair hL
+
+,ei of a set of class declarations L andan expression e (the
+main method). Each class C is declared witha superclass C0, a set of field declarations F and a set of method
+
+declarations Mt. To simplify presentation, all the class declarationsare assumed to be global information.
+
+J\mask only supports single inheritance. The root of the classhierarchy is denoted by ffi. We write C OE C0 to mean that class C
+is a direct subclass of C0, and the relation OE* is the reflexive andtransitive closure of OE.
+
+Notably, there is no null value in the language, because noneis needed for object initialization.
+There are three kinds of masks: simple masks S, must-masksS!, and conditional masks S[p
+
+.Sp]. The auxiliary function simpleelides the must annotation and conditions of a mask.
+
+simple(S) = S
+simple(S!) = S
+simple(S[p.Sp]) = S
+
+There are two kinds of simple masks: concrete field masks f ,and subclass masks
+
+subC, that is, C.sub in the J\mask language.The calculus does not explicitly model the abstract mask
+
+*, becauseit can be expanded into a collection of field masks and a subclass
+
+mask. For the simplicity of the semantics, other abstract masks andmask constraints are omitted.
+
+We require that in a well-formed type, no two masks mentionthe same field, and every variable appearing in a condition is in the
+domain of the typing environment. The order of masks in a typedoes not matter, so T \ f
+
+1\ f2 = T \ f2\ f1.An unmasked type U is either a normal class type C or an exact
+
+class type C!. An object of C! must be an instance of class C, andnot of any proper subclass of C. (This overloads the "!" symbol,
+which is also used for must-masks.) The source of exactly typedvalues is object creation, because the expression
+
+new C has typeC!. Exact types are useful because they make removal of subclass
+
+masks possible, as discussed in Section 2.1.An object is created with expression
+
+new C, which adds a freshmemory location to the heap, with all fields uninitialized. Uninitialized fields are not represented in the heap, so there is no need for
+null. Initialization is done by calling appropriate methods.To simplify presentation of the semantics and the proof of
+
+soundness, we allow only paths p (local variables x at compile time,or heap locations
+
+` at run time) to appear in field assignments andmethod calls. This does not restrict expressiveness, because of
+
+letexpressions.
+
+Every read through a path p is represented as an expression(T p), where the annotation T is a statically known type. The
+annotation is primarily to make the proof of soundness easier; inthe actual J\mask implementation, T is inferred by the compiler.
+
+Typing environments \Gamma  contain type bindings for both variablesx and heap locations
+
+`. Bindings for locations are extracted fromthe heap and are used to type-check expressions during evaluation.
+
+The J\mask calculus models the heap as a function from mem-ory locations l to objects o. The formalization attaches a type to every object on the heap, in addition to value bindings for the fields.The object type is always based on some exact class type, which
+is known at run time. The type might also have masks, and sincethe base class is always exact, no subclass mask may appear on the
+heap. Masks in the operational semantics are included only for thesoundness proof and can be erased in the implementation.
+
+4.2 Class member lookup
+Figure 8 shows auxiliary functions for looking up class mem-bers. For a class C,
+
+ownFields(C) and ownMethods(C) are theset of fields and methods declared in C itself, and
+
+fields(C) and
+methods(C) also collect those declared in all the superclasses ofC.
+
+fnames(F) is the set of all the field names in field declarationsF. For simplicity, we assume no two fields have the same name.
+
+\Gamma  ` T <= T0
+
+\Gamma  ` T <= T (S-REFL) \Gamma  ` T1 <= T2 \Gamma  ` T2 <= T3\Gamma  ` T1 <= T3 (S-TRANS) ` C OEC0\Gamma  ` C <=C0 (S-SUP) \Gamma  ` C!<=C (S-EXACT)
+
+\Gamma  ` T1 <= T2
+\Gamma  ` T1\M <= T2\M (S-MASK) \Gamma  ` T \S[] ss T (S-EMPTY-COND) \Gamma  ` T\S[p.Sp] <= T\S[p.Sp, p0.S0] (S-COND-SUB)
+
+S = simple(M)
+\Gamma  ` T\M <= T\S (S-SIMPLE)
+
+subC = simple(M)
+
+\Gamma  ` C!\M ss C! (S-EXACT-MASK)
+
+p0 :C!\M 2 \Gamma 
+\Gamma  ` T \S[p.Sp, p0.subC] ss T\S[p.Sp] (S-EXACT-COND)
+
+` C OEC0 fnames(ownFields(C)) = f subC0 = simple(M)
+
+\Gamma  ` T\M ss T\expand(M,{ f ,subC}) (S-SUBMASK) `
+
+C OEC0 fnames(ownFields(C)) = f
+\Gamma  ` T\M[p.subC0, p0.S] ss T\M[p. f , p.subC, p0.S] (S-SUBMASK-COND)
+
+\Gamma  ` p:T
+
+p:T 2 \Gamma 
+\Gamma  ` p:T (TP-PATH)
+
+\Gamma  ` `:T1 \Gamma  ` T1 <= T2
+
+\Gamma  ` `:T2 (TP-SUB)
+
+\Gamma  ` p:T \ f [p. f , p0.S]
+
+\Gamma  ` p:T \ f [p0.S] (TP-COND-CYCLE)
+
+\Gamma  ` p:T\S[p0. f , p00.S0] \Gamma  ` p0 :T 0 f 62 masked(T0)
+
+\Gamma  ` p:T\S[p00.S00] (TP-COND-ELIM)
+
+\Gamma  ` p:T\S[p0.S0, p00.S00] \Gamma  ` p0 :T 0\S0[p000.S000]
+
+\Gamma  ` p:T\S[p00.S00, p000.S000] (TP-COND-TRANS)
+
+\Gamma  `R e:T,\Gamma 0
+
+\Gamma  ` x:T x:Tx 2 \Gamma \Gamma 0 = \Gamma {{x:
+
+noMust(Tx)}}\Gamma 0 `
+noMust(T ) <= T0
+
+\Gamma  `R (T x):T0,\Gamma 0 (TR-VAR)
+
+\Gamma  ` `:T \Gamma  ` T <= T0
+
+`:T` 2 \Gamma \Gamma 0 = \Gamma {{
+
+`:noMust(T`)}}
+
+\Gamma  `R (T `):T0,\Gamma 0 (TR-LOC)
+
+\Gamma  ` e1 :T1,\Gamma 1\Gamma 
+
+1 `R e2 :T2,\Gamma 2\Gamma  `
+
+R e1; e2 :T2,\Gamma 2 (TR-SEQ)
+
+\Gamma  ` e:T,\Gamma 0e 6= (T x) ^ e 6= e
+
+1; e2\Gamma  `
+R e:T,\Gamma 0 (TR-OTHER)
+
+\Gamma  ` e:T,\Gamma 0
+
+\Gamma  ` e:T1,\Gamma 0\Gamma  ` T
+
+1 <= T2\Gamma  `
+e:T2,\Gamma 0 (T-SUB)
+
+\Gamma  ` p:T
+\Gamma  ` (T p):T,\Gamma  (T-PATH)
+
+\Gamma  ` e1 :T1,\Gamma 1\Gamma 
+
+1 ` e2 :T2,\Gamma 2\Gamma  `
+
+e1; e2 :T2,\Gamma 2 (T-SEQ)
+
+f = fnames(fields(C))
+
+\Gamma  ` new C:C!\ f !,\Gamma  (T-NEW)
+
+\Gamma  `R e1 :T,\Gamma 1 x 62 dom(\Gamma 1)\Gamma 
+
+1,x:T ` e2 :T2,\Gamma 2\Gamma 
+2 = \Gamma 02,x:T0 \Gamma 002 = remove(\Gamma 02,x)\Gamma  `
+
+let T x = e1 in e2 :T2,\Gamma 002 (T-LET)
+
+\Gamma  ` e:T,\Gamma 0T
+f = ftype(T, f )\Gamma  `
+
+e. f :Tf ,\Gamma 0 (T-GET)
+
+\Gamma  ` (T1 p1):T1,\Gamma  T1 6= T01\ f !\Gamma  `
+R (T2 p2):ftype(grant(T1, f ), f ),\Gamma 0p
+1 :T 2 \Gamma 0 \Gamma 00 = \Gamma 0{{p1 :grant(T, f )}}\Gamma  `
+
+(T1 p1). f = (T2 p2):ffi\subffi,\Gamma 00 (T-SET)
+
+\Gamma  ` (T1\ f ! p1):T1\ f !,\Gamma \Gamma  ` (T
+
+2 p2):T2,\Gamma  T2 = U2\M
+ftype(T1, f ) = Uf \Sf \Gamma  ` U2 <=Uf
+
+S = {S|S 2 simple(M) ^ (S! 2 M . S 62 Sf )}
+
+p1 :T \ f ! 2 \Gamma  \Gamma 0 = \Gamma {{p1 :T\ f [p2.S]}}
+
+\Gamma  ` (T1\ f ! p1). f = (T2 p2):ffi\subffi,\Gamma 0 (T-SET-COND)
+
+\Gamma  ` (T0 p0):T0,\Gamma  T0 = U\M p0 :U0\M0 2 \Gamma 
+mbody(T0,m) = T 0n+1 m(T 0 x) effect M1  M2 {e}\Gamma  `
+
+T0 <=U\M1{p0/this}{p/x}8i 2 1
+..n + 1. T00i = T0i {p0/this}{p/x}8i 2 1
+
+..n. \Gamma  ` (Ti pi):T00i ,\Gamma 8i 2 0
+..n. Ti = T000\S! ) (T 00i = T0000\S! ^ 8 j 6= i. pi 6= pj)\Gamma 0
+
+= \Gamma {{p0 :update(p0,M0,U0\M2{p0/this}{p/x})}}
+
+\Gamma  ` (T0 p0).m((T p)):T 0n+1,\Gamma 0 (T-CALL)
+
+Figure 9. Static semantics
+
+class C extends C0 {F Mt}
+
+ownFields(C) = F
+ownMethods(C) = Mt
+
+fields(C) = [
+
+C0 : COE*C0
+
+ownFields(C0)
+
+methods(C) = [
+
+C0 : COE*C0
+
+ownMethods(C0)
+
+F = U f
+fnames(F) = f
+
+Figure 8. Class member lookup
+
+4.3 Subtyping
+Subtyping rules are defined in Figure 9. The judgment \Gamma  ` T1 <= T2states that type T
+
+1 is a subtype of T2 in context \Gamma . The judgment
+
+\Gamma  ` T1 ss T2 is sugar for the pair of judgments \Gamma  ` T1 <= T2 and\Gamma  ` T
+
+2 <= T1.Most subtyping rules are intuitive. S-COND-SUB states that
+
+adding conditions makes a conditional mask more conservative.SSIMPLE states that a type with a must-mask or a conditional maskis a subtype of the corresponding simply masked type.
+
+The subtyping rule S-SUBMASK uses an auxiliary function
+expand, which expands a mask S into a set of masks S0, while pre-serving any annotation on S:
+
+expand(S,S0) = S0
+expand(S!,S0) = S0!
+expand(S[p.Sp],S0) = S0[p.Sp]
+
+As shown in Figure 9, there are often a number of dif-ferent ways of writing equivalent types. The five type equivalence rules (S-EMPTY-COND, S-EXACT-MASK, S-EXACT-COND,SSUBMASK, and S-SUBMASK-COND) can be read as normalizamasked(U) = /0
+masked(T\S!) = masked(T\S)
+masked(T\S[p.Sp]) = masked(T\S)
+
+masked(T\ f ) = { f } [ masked(T )
+masked(T \subC) = masked(T)
+
+class(C) = C
+class(C!) = C
+class(T\M) = class(T )
+
+C = class(T)f 62
+
+masked(T )
+fields(C) = FF
+
+i = Tf f
+ftype(T, f ) = Tf
+
+C = class(T) C OEC0Mt =
+
+... m(...) ...`
+Mt 2 ownMethods(C).Mt 62
+
+ownMethods(C) ^ mbody(C0,m) = Mt '
+
+mbody(T,m) = Mt
+
+noMust(U) = U
+noMust(T \M) = (noMust(T )\S if M = S!noMust(T )\M otherwise grant(T, f ) = 8???!???:
+
+T 0 if T = T 0\ f
+T 0 if T = T 0\ f [p.S]
+T 0 if T = T 0\ f !
+T otherwise
+
+remove(/0,x) = /0
+remove((\Gamma , p:T ),x) = remove(\Gamma ,x), p:remove(T,x)
+
+remove(U,x) = U
+remove(T\S[x.Sx,...],x) = remove(T,x)\S
+
+update(x,M,T ) = T
+update(`,M,U) = U
+
+update(`,M,T\M0) = 8?!?:
+
+update(`,M,T)\M0 if Mi = simple(M0)!
+update(`,M,T)\Mi if simple(Mi) = simple(M0)
+update(`,M,T) otherwise
+
+Figure 10. Auxiliary definitions
+
+tion rules, where the types on the left-hand side of ss are reducedto those on the right-hand side. Note that in each of the five rules,
+the type on the right-hand side is either syntactically simpler thanthat on the left-hand side, or converts an occurrence of a class on
+the left-hand side to its subclass. This ensures type normalizationterminates. Normalized types have the following characteristics:
+
+* A type C\M has at most one subclass mask, which must be
+
+subC. A type C!\M has no subclass mask.*
+
+The condition p.subC does not show up if the path p has anexact type.
+
+* Conditional masks have non-empty conditions.
+
+For convenience of presentation, from now on, types are as-sumed to be in normal form, unless otherwise noted.
+
+4.4 Expression typing
+In the J\mask language, the evaluation of an expression might up-date some type bindings. For example, initializing a field removes
+
+the mask on that field, if there is one. Therefore, typing judgments,shown in Figure 9, are of the form \Gamma  ` e : T
+
+,\Gamma 0, where \Gamma 0 is thetyping environment after evaluating e. We write \Gamma {{p: T }} for environment \Gamma  with the type binding of p updated to T .There are two other kinds of judgments in Figure 9. The judgment \Gamma  ` p: T types a path p without updating the typing environ-ment. The subsumption rule TPSUB is limited to locations l, notany variables x, to ensure that the expression (T x) has the most precise type annotation T (see T-PATH and TR-VAR). The judgment\Gamma  `
+
+R e : T,\Gamma 0 is used in T-LET and T-SET for typing the right-handside of assignment, and in M-OK for typing the return expression
+
+(see Section 4.5). It avoids creating aliases for variables with typebindings that have must-masks. However, aliases are allowed if
+they are created with conditional masks, as shown in T-SET-COND,where no TR- rule is used.
+
+Figure 10 defines auxiliary functions used in the typing rules.Most of them are self-explanatory. The function
+
+update, used inTCALL, updates the type binding of the receiver according to theeffect, and ensures monotonicity if the receiver is a location.
+
+J\mask has several expression well-formedness rules, written` e
+
+wf, shown in Figure 11. The important rule is LET-WF, whichimposes two requirements on
+
+let expressions:
+
+* A let expression cannot end with a variable bound outside thescope of the
+
+let. For example, one cannot write let T x =e
+1 in (e2; y) where y is free in the let expression, but rather theequivalent expression (
+
+let T x = e1 in e2); y. This helps sim-plify type-checking of right-hand sides of assignments (\Gamma  `
+
+R e:T,\Gamma 0), so that a separate TR-LET is not necessary.
+
+* If the variable x is bound to a location already in the scope of the
+
+let expression, the declared type of x cannot have any must-mask. This prevents x from being an alias with must-masks.
+
+The expression well-formedness rules help simplify the proof ofthe substitution lemma (Lemma 4.5), without limiting the expressiveness of the calculus.
+
+` e1 wf ` e2 wf8x0 2
+FV(let T x = e1 in e2). e2 6= x0 ^ e2 6= e0; x0((e
+
+1 = (T` `) . e1 = e00; (T` `)) ^ ` 2 locs(e2)) ) T 6= T0\S!`
+
+let T x = e1 in e2 wf (LET-WF)
+
+` e1 wf ` e2 wf`
+
+e1; e2 wf (SEQ-WF) `
+
+e wf`
+e. f wf (GET-WF)
+
+e 6= let T x = e1 in e2 e 6= e1; e2 e 6= e0. f`
+
+e wf (OTHER-WF)
+
+Figure 11. Well-formed expressions
+
+4.5 Program typing
+Figure 12 shows the rules for checking the well-formedness of fieldand method declarations in a class C.
+
+For a field declaration, the declared type may not use must-masks or conditional masks.
+For a method declaration, the special variable this is assumedto have the precondition masks M
+
+1 at the entry point of the method,and it must be typable with the postcondition masks M
+
+2 when themethod exits. Method parameters other than the receiver should
+
+remain typable with the same types at the entry. J\mask permitseffects on other parameters, but for simplicity, the calculus does
+not support this feature. M-OK also specifies some constraints onthe method effect: it cannot introduce must-masks, which is only
+allowed with the new expression; a mask in the precondition that isnot a must-mask can only be replaced with a corresponding mask
+that is more conservative.
+
+T = U\S
+C ` T f ok (F-OK)
+
+` e wf \Gamma  = this:C\M1,x:T \Gamma  `R e:Tr,\Gamma r\Gamma 
+
+r ` this:C\M2 \Gamma r ` x:TS! 2 M
+
+2 ) S! 2 M1` M 2 M
+1 ^ M0 2 M2 ^ M 6= S!^simple(M) = simple(M0) ' ) ` C\M <=C\M0
+
+C ` Tr m(T x) effect M1  M2 {e} ok (M-OK)
+
+Figure 12. Program typing
+
+4.6 Decidability of type checking
+The type system of J\mask is decidable:
+
+* For T-SUB and TP-SUB, we disallow the use of reflexivity of
+
+subtyping, and require all the rules about type equivalence (ss)to be used in the direction of normalization (see Section 4.3).
+
+* The three rules TP-COND-CYCLE, TP-COND-ELIM, and
+
+TP-COND-TRANS actually characterize a graph-theoreticreachability problem on the dependency graph (such as in Figure 4), which can be solved with depth-first search.
+All other rules are syntax-directed. Therefore, type checking isdecidable for J\mask.
+
+4.7 Operational semantics
+Figure 13 shows the judgments for the small-step operational se-mantics of J\mask, where e
+
+,H -! e0,H0 means that expression eand heap H step to expression e0 and heap H0.
+
+Most of the rules in Figure 13 are standard, and the notable onesare those for field assignments (RSET and R-SET-COND), whichare similar to the corresponding expression typing rules (TSET andTSET-COND).In the operational semantics and in the soundness proof, typing
+
+environments are extracted from the heap, represented as bHc:b
+
+/0c = /0b
+H,` 7! T { f = `}c = bHc,`:T
+The notation H{{` := o}} means that the value binding of ` in theheap H is updated to another object o.
+
+Figure 14 shows the heap typing rules. A heap H is well-formed,written ` H, if every field that is not masked in its container's
+type is bound to a location, and that location can be given a typecompatible with the declared type of the field.
+
+In H-LOC, H(`, f ) refers to the value binding of the field f ofthe object stored in H(
+
+`).
+
+4.8 Type safety
+The soundness theorem of the J\mask calculus states that if anexpression e is well-typed, and it can reduce to a value (T
+
+` `),then (T
+` `) has the same type as e. A corollary of this theoremis that object initialization is sound in the sense used elsewhere
+
+in the paper: if a program tried to read an uninitialized field, theevaluation would get stuck according to RGET.
+
+THEOREM 4.1. (Soundness) If ` e wf, and ` e : T , and e, /0 !*(T
+
+` `),H, then bHc ` (T` `):T .
+
+The proof uses the standard technique of proving subject reduc-tion and progress [35].
+
+LEMMA 4.2. (Subject reduction) If ` e wf, and ` H, and bHc `e :T
+
+,\Gamma , and e,H -! e0,H0, then ` e0 wf, and ` H0, and bH0c ` e0 :T
+,\Gamma 0, and \Gamma 0 is an extension of \Gamma .
+
+e,H -! e0,H0
+
+e,H -! e0,H0
+E[e],H -! E[e0],H0 (R-CONG)
+
+let T x = (T` `) in e,H -! e{`/x},H (R-LET)
+
+H(`) = T { f = `} Ti = ftype(T, fi)
+
+(T` `). fi,H -! (Ti `i),H (R-GET)
+
+H(`) = T { f = `} T` 6= T 0\ f !H0 = H{{
+
+` := grant(T, f ) {..., f = `0}}}
+
+(T` `). f = (T0` `0),H -! (ffi\subffi `0),H0 (R-SET)
+
+H(`) = T\ f ! { f = `} ftype(T, f ) = Uf \Sf
+
+S = {S|S 2 simple(M) ^ (S! 2 M . S 62 Sf )}
+
+H0 = H{{` := T \ f [`0.S] {..., f = `0}}}
+
+(T`\ f ! `). f = (U\M `0),H -! (ffi\subffi `0),H0 (R-SET-COND)
+
+mbody(T0,m) = Tr m(Tx x) ... {e}
+(T0 `0).m((T `)),H -! e{`0/this}{`/x},H (R-CALL)
+
+` 62 dom(H) fnames(fields(C)) = f
+
+H0 = H,` 7! C!\ f !{}
+
+new C,H -! (C!\ f ! `),H0 (R-ALLOC)
+
+(T `); e,H -! e,H (R-SEQ)
+Figure 13. Small-step operational semantics
+
+`:C!\M 2 bHc f = fnames(fields(C)) bHc ` `:T
+
+8 f 2 f . ` f 62 masked(T) )H(`, f ) = `0 ^ bHc ` `0 :ftype(T, f ) '
+
+H ` ` (H-LOC)
+8` 2 dom(H). H ` ``
+
+H (HEAP-WF)
+
+Figure 14. Well-formed heaps
+
+LEMMA 4.3. (Progress) If ` H, and bHc ` e : T then either e =(T
+
+` `) or there is an expression e0 and a heap H0 such that e,H -!e0,H0.
+
+Progress is proved by structural induction on e. To prove subjectreduction, we need some preliminary lemmas.
+Lemma 4.4 characterizes extensions of typing environments. Atyping environment \Gamma 0 is an extension of \Gamma  if:
+
+* For every type binding x :T 2 \Gamma , there is x:T 2 \Gamma 0;
+
+* For every type binding ` : T 2 \Gamma , there is ` : T 0 2 \Gamma 0 and \Gamma 0 `
+
+T 0 <= T .
+
+LEMMA 4.4. If \Gamma 2 is an extension of \Gamma 1, and \Gamma 1 ` e : T,\Gamma 01, then\Gamma 
+
+2 ` e:T,\Gamma 02, and \Gamma 02 is an extension of \Gamma 01.
+
+PROOF: By induction on the derivation of \Gamma 1 ` e:T,\Gamma 01. \Lambda 
+
+Lemma 4.5 shows that substituting a location for a variablepreserves typing. It is used in the proof of Lemma 4.2 for method
+calls and let expressions. Before stating the substitution lemma,we first define substitution for typing environments:
+
+An environment \Gamma 0 is the result of substituting a location `of type T for a variable x in \Gamma , written \Gamma 0 = \Gamma {{
+
+`/x; ` : T }}, if\Gamma  = \Gamma 00
+,` : T`,x : Tx, and \Gamma 0 = \Gamma 00{`/x},` : T , and \Gamma 0 ` ` : T`{`/x},and \Gamma 0 `
+
+`:Tx{`/x}.
+
+LEMMA 4.5. If \Gamma  = \Gamma 0,`:T`,x:Tx, and \Gamma  ` e:T,\Gamma r, and T` 6= T 0\S!,and T
+
+x 6= T 0\S! when ` 2 locs(e), then \Gamma {{`/x; ` : T 0` }} ` e{`/x} :T {
+`/x},\Gamma r{{`/x; ` :T 00` }} for some T 00` .
+
+PROOF: By induction on the derivation of \Gamma  ` e:T,\Gamma r. \Lambda 
+
+With these lemmas, we prove subject reduction by an inductionon the derivation of bHc ` e : T
+
+,\Gamma . Then soundness (Theorem 4.1)follows directly. The proofs appear in the companion technical
+
+report [27].
+
+5. Implementation
+We have implemented a prototype compiler of J\mask as an exten-sion in the Polyglot framework [26]. The extension code has about
+
+3,700 lines of code, excluding blank lines and comments.J\mask is implemented as a translation to Java. The translation
+is mostly by erasure, that is, by erasing all the masks, effects, andmask constraints from the code.
+
+The compiler also applies several transformations to the J\masksource code, before erasing masks. Default effects are inserted
+for constructors and methods that do not have them already. Tosimplify type checking, initialization code, including initializers,
+constructors, and new expressions, is also transformed.J\mask requires that in a conditionally masked type T \ f [x
+
+.g],every x
+
+i, including this, is a final local variable. However, thecompiler uses a simple analysis to automatically insert the
+
+finalmodifier for local variables that are assigned only once, and for
+
+formal parameters that are never reassigned.
+5.1 Inserting default effects
+For a constructor of class C, the default effect is *! -> C.sub!,which describes the behavior of most constructors. The constructor starts with all the fields uninitialized, and it initializes allthe fields inherited from superclasses of
+
+C--by calling the superconstructor--and the fields declared by
+C, leaving the fields in sub-classes of
+C uninitialized.The default effect for a virtual method is
+
+{} -> {} becausevirtual methods normally work on fully initialized objects.
+
+In our experience with using J\mask (see Section 6), thesedefault effects work well. Programmers only have to annotate code
+that uses interesting initialization patterns.
+5.2 Transforming initialization code
+Java field declarations can include initialization expressions thatare implicitly called from constructors in the same order that they
+
+appear in the class body. The J\mask compiler collects all theseinitializers and inserts them directly in constructors, right after
+super constructor calls. This initializer code is type-checked in thesame way as any other constructor code.
+
+A constructor in J\mask is just an initialization method that iscalled after an object is allocated on the heap. The J\mask compiler
+converts every constructor in the source code to a final method withthe same name as the class. The transformed constructor can then
+be type-checked just as any other method. The compiler also insertsan empty default constructor in the generated Java code.
+
+Every new expression new C(...) is split into a call to theempty default constructor to allocate the memory on the heap,
+and then a call to the initialization method generated from thecorresponding constructor, as shown in the following piece of code:
+
+final C!\(* - C.sub)! temp = new C();
+temp.C(...);
+
+Then the fresh local variable temp replaces the original expression.
+
+5.3 Type checking
+Flow sensitivity in the J\mask type system shows up only on masks,and not on any of the classes appearing in masked types. Therefore,
+
+each method is type-checked in two phases. The first phase is justnormal Java type checking of the erased method code; the second
+phase, built upon the dataflow analysis framework provided inPolyglot, is flow-sensitive, and uses the result of the first phase as
+its starting point.Once type checking is complete, masks are erased to generate
+Java code. This works because resolution of method overloadingdoes not depend on parameter masks.
+
+5.4 Inner classes
+A (nonstatic) inner class is a class that is nested in the body of an-other class and contains an implicit reference to an instance (the
+
+outer instance) of the enclosing class. Every constructor of an in-ner class has an implicit formal parameter for the outer instance.
+J\mask assumes that the type of the outer instance has no masks,that is, the outer instance has been fully initialized before an instance of the inner class is created. If an inner class with a partiallyinitialized outer instance is really needed, a transformation as described in [15] can be applied to make the outer instance explicit.J\mask currently does not directly support local classes and anonymous classes, which are inner classes nested in method bodies, al-though these could be converted to normal inner classes.
+
+6. Experience
+The language was evaluated by porting several classes in the JavaCollection Framework (Java SDK version 1.4.2) to J\mask. The
+
+ported classes are ArrayList, HashMap, LinkedList, TreeMap,and
+
+Vector, together with all the classes and interfaces that theydepend on. There are in total 29 source files, comprising 18,000
+
+lines of J\mask code (exclusive of empty lines and comments).Porting these classes to J\mask was not difficult. It was completed by one of the authors within a couple of days, including timeto debug the compiler. Only 11 constructors and methods required
+annotation with effects or mask constraints, thanks to the defaulteffects provided by the compiler (Section 5.1). Besides effects and
+mask constraints, only 11 other masked types were needed, a verysmall number compared to the size of the code.
+
+The port of this code eliminated all nulls used as placeholdersfor initialization. However, some
+
+nulls were not removed:
+
+* Java allows storing the null value into collections and maps.
+
+* Some method parameters and local variables can be intentionally set to null, indicating that they are not available.
+
+Among the classes we ported, the following three exhibitednontrivial initialization patterns:
+
+6.1 LinkedList
+The LinkedList class implements a doubly-linked cyclic list.When an instance of
+
+LinkedList is constructed, a sentinel node,which is an instance of the nested class
+
+Entry, needs to be createdwith its
+previous and next fields both pointing to itself.The Java code first constructs an instance of
+
+Entry with its
+previous and next fields set to null, and then initializes the twofields with the header node itself. The following code is extracted
+
+from the constructor of LinkedList, where header is the fieldpointing to the sentinel node:
+
+header = new Entry(null, null, null);
+header.previous = header.next = header;
+
+With masked types, the two fields cannot be read before theyare initialized. In the constructor of the ported
+
+LinkedList class,the field
+header is initialized as follows:
+
+header = createHeader();
+The method createHeader is shown below:
+
+private static Entry createHeader() {
+
+Entry\(* - Entry.sub)! h = new Entry();
+h.element = dummyElement;
+h.next = h;
+h.previous = h;
+return h;
+}
+
+The static field dummyElement points to an object of
+java.lang.Object because the header node does not storeany real data element. Therefore, there is no need to use
+
+null.
+
+6.2 HashMap
+The HashMap class has an empty method init, which, accordingto comments in the source code, is an "initialization hook for
+
+subclasses". When a subclass of HashMap is created, it shouldoverride the
+
+init method to initialize any new subclass fields, butJava has no way to enforce this. With effects and mask constraints,
+
+the J\mask version of HashMap can explicitly express the contractin the signature of the method
+
+init:
+
+void init() effect HashMap.sub -> {} captures *
+
+6.3 TreeMap
+TreeMap implements a map as a red-black tree where elements aresorted according to their keys. Each node in the tree contains fields
+
+for the left and right children, and a field pointing to its parent.A method
+
+buildFromSorted is used to build the tree from thebottom up, similarly to the example shown in Figure 3. Masked
+
+types support sound initialization of TreeMap nodes without using
+null.
+
+6.4 Summary
+Our experience is that J\mask is expressive, since it was easyto port classes with the various initialization patterns found in
+
+the Java Collection Framework. The explicit annotations in theported code are infrequent and seem easy to understand, suggesting
+masked types are a natural way for programmers to enforce properinitialization of objects.
+
+7. Related work
+Non-null types. The importance of distinguishing non-null ref-erences from possibly-null references at the type level has long
+
+been recognized. Many languages, including CLU [21], Theta [22],Moby [11], Eiffel [16], ML [24], and Haskell [17], support some
+form of non-null and possibly-null types in their type system. Inthe context of Java, several proposals [2, 19, 6] have been made to
+support non-null types.With non-null types, sound object initialization is usually accomplished by severely restricting expressiveness. Most existinglanguages with non-null types restrict how objects can be initialized; for example, some require all (non-null) fields to be initial-ized at once [11, 22]. This means fields and methods of an object
+under construction cannot be used. Further, cyclic data structuresare impossible to initialize without using a placeholder value such
+as null.Masked types are different from non-null types: when a field is
+masked, it is potentially uninitialized and unreadable, and thereforereading that field is statically disallowed; with non-null types, a
+field is always accessible regardless of how it is declared.
+
+F"ahndrich and Leino [7] make use of raw types to represent ob-jects that are in the middle of being constructed, that is, objects with
+some non-null fields containing nulls. Methods can be declared toexpect raw objects, and therefore can be called from within the constructors. Delayed types [9], extended from [7], provide a solutionto the problem of safely initializing cyclic data structures, by introducing labels on object types, which represent the time by which anobject is fully initialized. Delay times are associated with scopes,
+and form a stack at run time. Objects created with a delay timeremain raw until execution exits the corresponding scope. Initialization of cyclic structures is supported by giving objects the samedelay, and they become initialized together at once.
+
+Compared to raw types, masked types provide a finer-grainedrepresentation of objects under construction. Conditional masks
+and delayed types are both means to track dependencies betweenobjects under construction. However, delay times are an indirect
+way to represent dependencies, whereas conditional masks capturedependencies directly and explicitly. Moreover, the fact that delay times must form a stack restricts the expressiveness of delayedtypes in initializing cyclic structures. For example, trees where
+nodes have parent pointers cannot be built from the bottom up withdelayed types, because one cannot coordinate the delay times of
+child nodes. Masked types, on the other hand, easily support thispattern, as shown in Figure 3. Masked types also have richer subtyping relationships, which can be used to enforce reinitialization.
+Typestates. In most object-oriented programming languages, anobject has the same type for its entire lifetime. However, objects
+
+often evolve over time, that is, having different states at differenttimes. Typestates [31] abstractly describe object states, and when
+an object is updated, its typestate may also change.Typestates have been used to express and verify various protocols [31, 4, 5, 1, 10]. Typestates have been interpreted as abstractstates in finite state machines and as predicates over objects.
+
+Masked types are not intended for checking general protocols,but rather just focus on safe object initialization. However, masks
+cannot be easily encoded in terms of previous typestate mecha-nisms. Algebraic masks, for instance, provide compact representations of partial initialization states without requiring abstract statespotentially exponential in the number of fields. Conditional masks
+represent dependencies generated at use sites, rather than beingfixed at declaration sites of predicates. Mask subtyping enriches
+the state space, and previous work on typestates does not appear tohave anything like it.
+
+J\mask uses subclass masks and mask constraints to ensuremodular type checking. These techniques are related to rest typestates and sliding methods in Fugue [5]. However, Fugue requiresthat sliding methods are overridden in every subclass, whereas
+mask constraints in J\mask force methods to be overridden onlywhen their watched abstract masks are overridden.
+
+Aliasing has always been a hard problem for any typestatemechanism: first, it is not easy to maintain correct typestate information in the presence of aliasing; second, although there aretyping mechanisms like linear types that help keep track of aliases,
+they are inconvenient for ordinary programmers. Previous work ontypestates has proposed various treatments to the aliasing problem:
+Nil [31] completely rules out aliasing; Vault [4] and Fugue disal-low further state changes once an object becomes aliased unless
+the changes are temporary; Bierhoff and Aldrich [1] refine the twoaliasing annotations "not aliased" and "maybe aliased" in Fugue to
+a richer set of permissions; F"ahndrich and Leino [8] also identify akind of typestates that are heap-monotonic and work without aliasing information; Fink et al. [10] conduct whole-program verifica-tion and rely on a global alias analysis. The treatment of the aliasing problem in J\mask is inspired by [8]: simple masks and con-ditional masks are heap-monotonic, and must-masks, though not
+
+heap-monotonic, are associated with newly created objects whosealiasing information is easy to track. We believe J\mask achieves a
+good trade-off between expressiveness and simplicity for the alias-ing problem in the context of object initialization.
+
+Masked types are reminiscent of type-based access controlmechanisms that statically restrict access to individual fields or
+methods, e.g., [18, 28]. However, masked types are very different;they are designed for reasoning about initialization, and access is
+"granted" by the act of assignment to the resource, which makeslittle sense as an access control feature.
+
+Static analysis. J\mask, similar to other typestate mechanisms,has a flow-sensitive type system, which can be viewed as a dataflow
+analysis. An alternative to masked types is an interprocedural def-use analysis, but this would lose many of the advantages of masked
+types. Java already has an intraprocedural analysis [32] to ensurethat every local variable is definitely assigned before it is used.
+However, Java cannot safely prevent reading from uninitializedfields. There has been work on interprocedural def-use analysis
+in the context of object-oriented languages [30, 29], with varyingcost and precision. This prior work detects initialization bugs on
+fields, but requires non-modular whole-program def-use analysesand is subject to the typically limited accuracy of whole-program
+alias/points-to analyses. By contrast, type checking in J\mask ismodular and therefore scalable. Masked types bring another benefit
+because they specify the initialization contracts of methods, help-ing programmers reason about the code. Explicitly capturing this
+aspect of programmer intent seems valuable.FindBugs [13] contains an analysis [14] that is designed specifically to detect null-pointer bugs. The analysis is neither sound norcomplete, but focuses on improving accuracy. The basic analysis is
+interprocedural, but extensions are proposed in which non-null an-notations are inserted into method signatures to represent contracts.
+
+Shape analyses are aimed at extracting heap invariants that de-scribe the "shape" of recursive data structures [34]. Conditional
+masks capture some part of the shape information of the data struc-ture under construction. However, conditional masks are not concerned with initialized fields, and also are more about dependenciesthan the shape of references, and therefore have transitivity and
+cycle cancellation. Shape analyses are normally built upon aliasanalyses, and contain explicit representation of heap locations, neither of which is present in the J\mask language. J\mask only tracksmask changes on local variables, which gives it a flavor of local
+reasoning somewhat similar to the analysis in [3].Because they summarize a set of concrete fields, abstract masks
+have some similarity to data groups [20], a mechanism used formodular program verification. Data groups do not have the equivalent of mask algebra. Moreover, masked types are about more thanjust abstracting fields; must-masks and conditional masks are new
+mechanisms that enable sound initialization of complicated datastructures.
+
+Other kinds of languages. The initialization problem is notunique to object-oriented languages. In a purely functional programming style, values are constructed all at once, avoiding the cre-ation of partially initialized values. However, functional languages
+typically do not easily support the construction of cyclic data struc-tures well, though it can be achieved in some cases with value recursion [33]. The typed assembly language in [25] supports initial-ization flags that are similar to the simple masks in J\mask.
+
+8. Conclusions and future work
+This paper introduces masked types, implemented in the languageJ\mask, as a solution to the problem of object initialization. Masked
+
+types provide a strong safety guarantee for initialization: unini-tialized fields are never read. Further, masked types are expressive enough to support many useful initialization idioms, includ-ing objects with cyclic references. Methods and constructors in the
+J\mask languages explicitly express their initialization contractsthrough effects, which enable modular type checking, rather than
+requiring an expensive whole-program analysis. Because defaultannotations are very effective, and J\mask requires little reasoning about aliasing, J\mask has a low annotation burden. This couldmake the language more accessible to average programmers. Finally, by placing object initialization on a sound footing, we believemasked types can also enable other language mechanisms.
+
+Acknowledgments
+We would like to thank Sigmund Cherem, Steve Chong, MichaelClarkson, Jed Liu, and Ruijie Wang for helpful feedback on early
+
+drafts of this paper, and Doug Lea, Wojciech Moczydlowski, andNate Nystrom for discussions. Thanks also to Jonathan Aldrich and
+the POPL reviewers for useful comments and suggestions.This work was supported by National Science Foundation
+grants 0430161, 0627649, and CCF-0424422 (TRUST), and bythe Air Force Research Laboratory, under contract #FA8750-08-2-
+0079. The views and conclusions contained herein are those of theauthors and should not be interpreted as necessarily representing
+the official policies or endorsements, either express or implied, ofthese organizations or the U.S. Government. The U.S. Government
+is authorized to reproduce and distribute reprints for Governmentalpurposes notwithstanding any copyright notation thereon.
+
+References
+
+[1] Kevin Bierhoff and Jonathan Aldrich. Modular typestate checking ofaliased objects. In Proc. 22nd ACM Conference on Object-Oriented
+
+Programming Systems, Languages and Applications (OOPSLA),pages 301-320, October 2007.
+[2] Patrice Chalin and Perry James. Non-null references by default inJava: Alleviating the nullity annotation burden. In Proceedings of the
+
+21st European Conference on Object-Oriented Programming, 2007.
+[3] Sigmund Cherem and Radu Rugina. Maintaining doubly-linked listinvariants in shape analysis with local reasoning. In Verification,
+
+Model Checking, and Abstract Interpretation, 8th InternationalConference (VMCAI 2007), Nice, France, January 2007.
+[4] Robert DeLine and Manuel F"ahndrich. Enforcing high-level protocolsin low-level software. In Proc. SIGPLAN 2001 Conference on
+
+Programming Language Design and Implementation, pages 59-69,June 2001.
+[5] Robert DeLine and Manuel F"ahndrich. Typestates for objects.In Proceedings of 18th European Conference on Object-Oriented
+
+Programming (ECOOP'04), 2004.
+[6] Torbj"orn Ekman and G"orel Hedin. Pluggable checking andinferencing of non-null types for java. Journal of Object Technology,
+
+6(9):455-475, October 2007.
+[7] Manuel F"ahndrich and K. Rustan M. Leino. Declaring and checkingnon-null types in an object-oriented language. In Proc. 2003 ACM
+
+Conference on Object-Oriented Programming Systems, Languages,and Applications (OOSPLA), pages 302-312, October 2003.
+[8] Manuel F"ahndrich and K. Rustan M. Leino. Heap monotonictypestate. In Proceedings of the first International Workshop on
+
+Alias Confinement and Ownership (IWACO), July 2003.
+[9] Manuel F"ahndrich and Songtao Xia. Establishing object invariantswith delayed types. In Proc. 22nd ACM Conference on ObjectOriented Programming Systems, Languages and Applications(OOPSLA), October 2007.
+[10] Stephen Fink, Eran Yahav, Nurit Dor, G. Ramalingam, and EmmanuelGeay. Effective typestate verification in the presence of aliasing. In
+
+ISSTA '06: Proceedings of the 2006 international symposium onSoftware testing and analysis, pages 133-144, 2006.
+[11] Kathleen Fischer and John Reppy. The design of a class mechanismfor Moby. In Proc. SIGPLAN 1999 Conference on Programming
+
+Language Design and Implementation, pages 37-49, 1999.
+
+[12] James Gosling, Bill Joy, Guy Steele, and Gilad Bracha. The JavaLanguage Specification. Addison Wesley, 3rd edition, 2005. ISBN
+
+0321246780.
+[13] David Hovemeyer and William Pugh. Finding bugs is easy. InOOPSLA '04: Companion to the 19th annual ACM SIGPLAN
+
+conference on Object-oriented programming systems, languages,and applications, pages 132-136, 2004.
+[14] David Hovemeyer, Jaime Spacco, and William Pugh. Evaluatingand tuning a static analysis to find null pointer bugs. In PASTE
+
+'05: Proceedings of the 6th ACM SIGPLAN-SIGSOFT workshop onProgram analysis for software tools and engineering, pages 13-19,
+2005.
+[15] Atsushi Igarashi and Benjamin C. Pierce. On inner classes. InInformal Proceedings of the Seventh International Workshop on
+
+Foundations of Object-Oriented Languages (FOOL 7), Boston, MA,January 2000.
+[16] ECMA International. Eiffel analysis, design and programminglanguage. ECMA Standard 367, June 2005.
+[17] Haskell 98: A non-strict, purely functional language, February 1999.Available at
+
+http://www.haskell.org/onlinereport/.
+
+[18] Anita K. Jones and Barbara Liskov. A language extension forexpressing constraints on data access. Comm. of the ACM, 21(5):358-
+
+367, May 1978.
+[19] JSR 308: Annotations on Java Types. Available at
+
+http://groups.csail.mit.edu/pag/jsr308/.
+
+[20] K. Rustan M. Leino. Data groups: specifying the modification ofextended state. In Proc. 13th ACM Conference on Object-Oriented
+
+Programming Systems, Languages and Applications (OOPSLA),pages 144-153, 1998.
+[21] B. Liskov and J. Guttag. Data abstraction. In Abstraction andSpecification in Program Development, chapter 4, pages 56-98. MIT
+
+Press and McGraw Hill, 1986.
+[22] Barbara Liskov, Dorothy Curtis, Mark Day, Sanjay Ghemawat, RobertGruber, Paul Johnson, and Andrew C. Myers. Theta Reference Manual. Programming Methodology Group Memo 88, MIT Laboratoryfor Computer Science, Cambridge, MA, February 1994. Available at
+http://www.pmg.lcs.mit.edu/papers/thetaref/.
+[23] J. M. Lucassen and D. K. Gifford. Polymorphic effect systems. InProc. 15th ACM Symp. on Principles of Programming Languages
+
+(POPL), pages 47-57, 1988.
+[24] Robin Milner, Mads Tofte, and Robert Harper. The Definition ofStandard ML. MIT Press, Cambridge, MA, 1990.
+
+[25] Greg Morrisett, David Walker, Karl Crary, and Neal Glew. FromSystem F to typed assembly language. ACM Transactions on
+
+Programming Languages and Systems, 21(3):528-569, May 1999.
+[26] Nathaniel Nystrom, Michael R. Clarkson, and Andrew C. Myers.Polyglot: An extensible compiler framework for Java. In Proc. 12th
+
+International Compiler Construction Conference (CC'03), pages138-152, April 2003. LNCS 2622.
+[27] Xin Qi and Andrew C. Myers. Masked types. Technical report,Computer and Information Science, Cornell University, October
+
+2008. http://hdl.handle.net/1813/11563.
+[28] Joel Richardson, Peter Schwarz, and Luis-Felipe Cabrera. CACL:Efficient fine-grained protection for objects. In Proc. 1992 ACM
+
+Conference on Object-Oriented Programming Systems, Languages,and Applications, pages 154-165, Vancouver, BC, Canada, October
+1992.
+[29] Amie L. Souter and Lori L. Pollock. The construction of contextualdef-use associations for object-oriented systems. IEEE Trans. Softw.
+
+Eng., 29(11):1005-1018, 2003.
+[30] Amie L. Souter, Lori L. Pollock, and Dixie Hisley. Inter-class def-useanalysis with partial class representations. In PASTE '99: Proceedings
+
+of the 1999 ACM SIGPLAN-SIGSOFT workshop on Program analysisfor software tools and engineering, pages 47-56, 1999.
+[31] Robert E. Strom and Shaula Yemini. Typestate: A programming lan-guage concept for enhancing software reliability. IEEE Transactions
+
+on Software Engineering (TSE), 12(1):157-171, January 1986.
+[32] Sun Microsystems. Java Language Specification, version 1.0 beta edi-tion, October 1995. Available at
+
+ftp://ftp.javasoft.com/docs/
+javaspec.ps.zip.[33] Don Syme. Initializing mutually referential abstract objects: The
+
+value recursion challenge. Electronic Notes in Theoretical ComputerScience, 148(2):3-25, 2006.
+[34] Reinhard Wilhelm, Shmuel Sagiv, and Thomas W. Reps. Shape anal-ysis. In Proc. 9th International Compiler Construction Conference
+
+(CC'00), pages 1-17, 2000.
+[35] Andrew K. Wright and Matthias Felleisen. A syntactic approach totype soundness. Information and Computation, 115(1):38-94, 1994.

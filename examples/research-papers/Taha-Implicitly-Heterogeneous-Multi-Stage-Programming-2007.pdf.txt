@@ -1,0 +1,1846 @@
+
+
+Implicitly Heterogeneous Multi-Stage Programming 1
+Implicitly Heterogeneous Multi-Stage Programming
+
+J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, andW. TAHA
+Rice UniversityDepartment of Computer Science
+P.O. Box 1892, MS 132Houston, TX 77005, USA
+
+{jle,roumen,pasalic,kswadi,taha}@cs.rice.edu
+Received 30 August 2005
+Abstract Previous work on semantics-based multi-stage programming (MSP) language design focused on homogeneous designs, where the
+generating and the generated languages are the same. Homogeneous designs simply add a hygienic quasi-quotation and evaluation mechanism to
+a base language. An apparent disadvantage of this approach is that the
+programmer is bound to both the expressivity and performance characteristics of the base language. This paper proposes a practical means to
+avoid this by providing specialized translations from subsets of the base
+language to different target languages. This approach preserves the homogeneous "look" of multi-stage programs, and, more importantly, the
+static guarantees about the generated code. In addition, compared to an
+explicitly heterogeneous approach, it promotes reuse of generator source
+code and systematic exploration of the performance characteristics of the
+target languages.
+
+Supported by NSF SoD-0439017 "Synthesizing Device Drivers", NSF ITR-0113569
+"Putting Multi-Stage Annotations to Work", Texas ATP 003604-0032-2003 "Advanced
+Languages Techniques for Device Drivers" and NSF ITR-0205303 "Building Practical
+Compilers Based on Adaptive Search."
+
+This is a revised version based on a conference paper of the same title 4).
+
+2 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+
+To illustrate the proposed approach, we design and implement a translation to a subset of C suitable for numerical computation, and show that
+it preserves static typing. The translation is implemented, and evaluated
+with several benchmarks. The implementation is available in the online
+distribution of MetaOCaml.
+
+Keywords Functional Programming, Multi-Stage Programming.
+
+$1 Introduction
+
+Multi-stage programming (MSP) languages allow the programmer to use
+abstraction mechanisms such as functions, objects, and modules, without having
+to pay a runtime overhead for them due to the generation of specialized code.
+Operationally, these languages provide quasi-quotation and eval mechanisms
+similar to those of LISP and Scheme. In addition, to avoid accidental capture,
+bound variables are always renamed, and values produced by quasi-quotes can
+only be de-constructed by eval. This makes reasoning about quoted terms as
+programs sound 18), even in the untyped setting. Several type systems have
+been developed that statically ensure that all programs generated using these
+constructs are well-typed (see for example 19, 1)).
+
+Currently, the main examples of MSP languages include MetaScheme 7),
+MetaML 20), MetaOCaml 10), and Metaphor 11). They are based, respectively, on
+Scheme, Standard ML, OCaml, and Java/C#. In all these cases,
+the language design is homogeneous, in that quoted values are fragments of
+the base language. Homogeneity has three distinct advantages. First, it is convenient for the language designer, as it often reduces the size of the definitions
+needed to model a language, and makes extensions to arbitrary stages feasible at
+little cost. Second, it is convenient for the language implementor, as it allows the
+implementation of the base language to be reused: In all three examples above,
+as in LISP and Scheme implementations, the eval-like construct calls the underlying implementation. In the case of MetaOCaml, the MetaOCaml compiler
+and the bytecode runtime system can be used to execute generated programs at
+runtime. Third, it is convenient for the programmer, as it requires learning only
+a small number of new language constructs.
+
+While the homogeneous approach described above has its advantages,
+there are situations where the programmer may wish to take advantage of the
+capabilities of other compilers that are only available for other languages. For
+example, very well-developed, specialized compilers exist for application domains
+
+Implicitly Heterogeneous Multi-Stage Programming 3
+such as numerical computing, embedded systems, and parallel computation.
+
+At first glance, this situation might suggest a need for heterogeneous
+quotation mechanisms, where quoted terms can contain expressions in a different
+language. Indeed, this approach has been used successfully for applications
+such as light-weight components 8, 9), FFT 6), and computer graphics 5). But a
+heterogeneous quotation mechanism also introduces two new complications:
+
+1. How do we ensure that the generated program is statically typed?
+2. How do we avoid restricting a generator to a particular target language?
+
+One approach to addressing the first issue is to develop specialized two-level type
+systems. This means the language designer must work with type systems and
+semantics that are as big as both languages combined. Another possibility is to
+extend meta-programming languages with dependent type systems 13) and thus
+give the programmers the ability to write data-types that encode the abstract
+syntax of only well-typed object-language terms. Currently, such type systems
+can introduce significant notational overhead for the programmer, as well as
+requiring familiarity with type systems that are not yet available in mainstream
+languages.
+
+In principle, the second problem can be avoided by parameterizing the
+generators themselves by constructs for the target language of choice. However,
+this is likely to reduce the readability of the generators, and it is not clear how
+a quotation mechanism can be used in this setting. Furthermore, to ensure
+that the generated program is statically typed, we would, in essence, need to
+parameterize the static type of the generator by a description of the static type
+system of the target language.
+
+GADTs are beginning to gain increasing acceptance for statically encoding object-language type systems and for statically checking program generators
+22, 23, 24, 25). However, writing type-preserving program generators with GADTs
+
+can be awkward: absence of quotation mechanisms makes programs difficult to
+read; the encodings of object-language type systems tend to be awkward and
+elaborate (e.g., using de Bruijn indexes for variables, explicit substitutions for
+manipulating binding constructs). Currently, this kind of typing infrastructure
+needed is likely to be beyond what has gained acceptance in mainstream programming.
+
+4 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+1.1 Contributions
+
+This paper proposes a practical approach to avoiding the two problems,
+which can be described as implicitly heterogeneous MSP. In this approach, the
+programmer does not need to know about the details of the target-language
+representation. These details are addressed by the meta-language designer once
+and for all and invoked by the programmer through the familiar interface used to
+execute generated code. The language implementer provides specialized translations from subsets of the base language to different target languages. Thus, the
+homogeneous "look" of homogeneous MSP is preserved. An immediate benefit
+is that the programmer may not have to make any changes to existing generators to target different languages. Additionally, if the translation itself is type
+preserving, the static guarantee about the type correctness of generated code is
+maintained.
+
+The proposed approach is studied in the case when the target language
+is C. After a brief introduction to MSP (Section 2), we outline the details of
+what can be described as an offshoring translation that we have designed and
+implemented. Designing the translation begins by identifying the precise subset
+of the target language that we wish to make available to the programmer (Section
+3). Once that is done, the next challenge is to identify an appropriate subset in
+the base language that can be used to represent the target subset.
+
+Like a compiler, offshoring translations are provided by the language
+implementor and not by the programmer. But the requirements on offshoring
+translators are essentially the opposite of those on compilers (or compiling translators, such as Tarditi's 21)): First, offshoring is primarily concerned with the
+target, not the source language. The most expressive translation would cover
+the full target language, but not necessarily the source language. In contrast,
+a compiler must cover the source but not necessarily the target language. Second, the translation must be a direct mapping from source to target, and not
+a complex, optimizing translation. The direct connection between the base and
+target representations is essential for giving the programmer access to the target
+language.
+
+To ensure that all generated programs are well typed, we show that the
+offshoring translation is type preserving (Section 4). Again, this is something
+the language designer does once and benefits any programmer who uses the
+offshoring translation.
+
+Having an offshoring translation makes it easier for the programmer to
+
+Implicitly Heterogeneous Multi-Stage Programming 5
+experiment with executing programs either in OCaml or C (using different C
+compilers). We present a detailed analysis of changes in performance behavior
+for a benchmark of dynamic programming algorithms (Section 5). Not surprisingly, C consistently outperforms the OCaml bytecode compiler. We also find
+that in several cases, the overhead of marshalling the results from the OCaml
+environment to the C environment and back can be a significant bottleneck,
+especially in cases where C is much faster than the OCaml bytecode compiler.
+And while C outperforms the OCaml native code compiler in many cases, there
+are exceptions.
+
+Postscript: The key features of multi-stage programming (MSP) languages are that they 1) support statically-typed, hygienic quasi-quotations, and
+2) that they have a run construct. While the name suggests an emphasis on
+multi-level computation (rather than just two-level computation), this is not the
+intention. Its proper use is to refer to writing staged programs in a language
+that has the two above mentioned properties. This paper is concerned primarily
+with offshoring in a two-level setting.
+
+$2 Multi-Stage Programming
+
+MSP languages 20, 16) provide three high-level constructs that allow the
+programmer to divide computations into distinct stages. These constructs can
+be used to construct, combine, and execute code fragments. Standard problems
+associated with the manipulation of code fragments, such as accidental variable
+capture and the representation of programs, are hidden from the programmer
+(see for example 16)). The following minimal example illustrates MSP programming in MetaOCaml:
+
+let rec power n x = if n=0 then .<1>. else .< .~x * .~(power (n-1) x)>.
+let power3 = .! .<fun x -> .~(power 3 .<x>.)>.
+
+Ignoring the staging constructs (brackets .<e>., escapes .~e, as well as run .! e)
+the above code is a standard definition of a function that computes xn, which is
+then used to define the specialized function x3. Without staging, the last step
+simply returns a function that would invoke the power function every time it gets
+invoked with a value for x. In contrast, the staged version builds a function that
+computes the third power directly (that is, using only multiplication). To see
+how the staging constructs work, we can start from the last statement in the code
+above. Whereas a term fun x ->e x is a value, an annotated term .<fun x ->
+.~(e .<x>.)>. is not, because the outer brackets contain an escaped expression
+
+6 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+that still needs to be evaluated. Brackets mean that we want to construct
+a future stage computation, and escapes mean that we want to perform an
+immediate computation while building the bracketed computation. In a multistage language, these constructs are not hints, they are imperatives. Thus, the
+application e .<x>. must be performed even though x is still an uninstantiated
+symbol. The expression power 3 .<x>. is performed immediately, once and for
+all, and not repeated every time we have a new value for x. In the body of the
+definition of the function power, the recursive application of power is escaped
+to ensure its immediate execution in the first stage. Evaluating the definition of
+power3 first results in the equivalent of
+
+.! .<fun x -> x*x*x*1>.
+Once the argument to run (.!) is a code fragment that has no escapes, it
+is compiled and evaluated, and returns a function that has the same performanceas if we had explicitly coded the last declaration as:
+
+let power3 = fun x -> x*x*x*1
+Applying this function does not incur the unnecessary overhead that the
+unstaged version would have had to pay every time power3 is used.
+
+$3 Offshoring for Numerical Computation in C
+
+This section presents an example of an offshoring translation aimed at
+supporting implicitly heterogeneous MSP for basic numerical computation. The
+method for defining the types and the syntax is presented, along with the resulting formal definitions. It bears repeating that the programmer will not need
+to write her program generators to explicitly produce the target language presented in this section. Rather, the interface to generating target programs is
+written using the source-language syntax (Section 3.3); however, the programmer does need to be aware of the target subset definitions to be able to express
+her algorithms in a way that makes the generated code amenable to translation.
+(Translation is formally defined in Section 3.5.) This section concludes by presenting the details of the programmer's interface to offshoring, and discussing
+the practical issue of marshalling values between the runtime systems of the base
+and target languages.
+
+3.1 Types for Target Subset
+
+Implicitly Heterogeneous Multi-Stage Programming 7
+
+The types in the target C subset include:
+1. Base numerical types int, double and char.
+2. One- and two- dimensional arrays of these numerical types. Onedimensional arrays are represented as C arrays. Two-dimensional arrays are implemented as an array of pointers (C type *[]). While this
+representation is less efficient than two-dimensional arrays in C, it was
+chosen because it allows for a simpler translation, since it is a better
+semantic match with OCaml arrays. OCaml array types do not explicitly declare their size, so it is not always possible to obtain a valid
+two-dimensional array type in C from a type of two-dimensional arrays
+in OCaml.
+3. Functions that take base types or arrays of base types as arguments and
+
+return base type values. This subset does not include function pointers,
+functions with variable number of arguments, or functions that return
+void.
+
+The C subset types are described by the following BNF:
+
+Base types b 2 {int, double, char}
+Array types a ::= b [] | * b []
+Types t ::= b | a
+Funtypes f ::= b (t0, . . . , tn)
+
+3.2 Syntax for Target Subset
+
+Figure 1 presents the BNF of the target C subset. The set is essentially
+a subset of C that has all the basic numerical and array operations, first order
+functions, and structured control flow operators. The target subset is not determined in a vacuum but also involves considering what can be expressed naturally
+in the source language. The main restrictions we impose on this subset are:
+
+1. All declarations are initialized. This restriction reflects the fact that
+
+OCaml does not permit uninitialized bindings for variables, and representing uninstantiated declarations in OCaml can add complexity.
+2. No unstructured control flow statements (i.e., goto, break, continue and
+
+fall-through non-defaulted switch statements). This restriction is motivated by the lack of equivalent unstructured control flow operators in
+OCaml. For the same reason, the increment operations are also limited.
+
+8 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+
+Constant c 2 Int [ Float [ Char
+Variable x 2 X
+Type keyword t ::= int | double | char
+Declaration d ::= t x = c | t x[n] = {c*} | t *x[n] = {x*}
+Arguments a ::= t x | t x[ ] | t *x[ ]
+
+Unary operator f(1) ::= (float) | (int) | cos | sin | sqrt
+Binary operator f[2] ::= + | - | * | / | % | && | || | & | | | ^ | << | >> | == | != | < | > | <= | >=
+For loop op. opr ::= <= | >=
+
+Expression e ::= c | x | f(1) e | e f[2] e | x (e*) | x[e] | x[e][e] | e ? e : e
+Incr.expression i ::= x++ | x--
+Statement s ::= e | return e | | {d*; s*} | x=e | x[e]=e | x[e][e]=e|
+
+if (e) s else s | while (e) s | for(x = e; x opr e;i) s|
+switch (e) {w*default: s}
+Switch branch w ::= case c: s break;
+Fun. decl. g ::= t x (a*){d*; s*}
+Program p ::= d*; g*
+
+Fig. 1 Grammar for the C target
+
+3. Two-dimensional arrays are represented by an array of pointers (e.g.,
+
+int *x[]) instead of standard two-dimensional arrays.
+4. For-loops are restricted to the most common case where the initializer is
+
+a single assignment to a variable, and the mutator expression is simply
+increment or decrement by one. This covers the most commonly used
+C idiom, and matches the OCaml for loops.
+5. No do-while loop commands. OCaml does not have control flow statements that correspond naturally to a do-while loop.
+6. Return statements are not permitted inside switch and for statements.
+
+A return can only appear at the end of a block in a function declaration
+or in a terminal positions at both branches of the if statement. This
+restriction is enforced by the type system (See Appendix 1).
+
+While this subset is syntactically restricted compared to full C, it still
+provides a semantically expressive first-order language. Many missing C constructs can be effectively simulated by the ones included: for example, arithmetical mutation operators (e.g., +=) can be simulated by assignments. Similarly
+do-while loops can be simulated with existing looping constructs. Since staging
+in MetaOCaml gives the programmer complete control over what code is generated, this imposes little burden on the programmer. This subset is particularly
+well-supported by many industrial-strength compilers. Giving the programmer
+safe access to such compilers is the main purpose of implicitly heterogeneous
+MSP.
+
+Implicitly Heterogeneous Multi-Stage Programming 9
+
+Constant ^c 2 Int [ Bool [ Float [ Char
+Variable ^x 2 X
+
+Unary op. ^f(1) 2 {cos, sin, sqrt, float of int, int of float}
+Limit op. ^f(2) 2 {min, max}
+Binary op. ^f[2] 2 {+, -, *, /, +., -., *., /., **, mod, land, lor, lxor,
+
+lsl, lsr, asr, =, <>, <, >, <=, >=, &&, ||}
+
+Expression ^e ::= ^c | ^x | ^x (^e*) | ^f(1) ^e | ^f(2) ^e ^e | ^e ^f[2] ^e | if ^e then ^e else ^e|
+
+!^x | ^x.(^e) | ^x.(^e).(^e)
+
+Statement ^d ::= ^e | ^d; ^d | let ^x = ^e in ^d | let ^x = ref ^c in ^d|
+
+let ^x = Array.make ^c ^c in ^d | ^x.(^e)  ^e|
+let ^x = Array.make matrix ^c ^c ^c in ^d | ^x.(^e).(^e)  ^e|
+
+^x:= ^e | if ^e then ^d else ^d | while ^e do ^d done|
+for ^x=^e to ^e do ^d done | for ^x=^e downto ^e do ^d done|
+match ^e with ((^c ! ^d)* | ! ^d)
+Program ^s ::= *(x*).( ^d : ^b) | let ^x = ^c in ^s | let f(^x*) = ^d in ^s|
+
+let ^x = ref ^c in ^s | let ^x = Array.make ^c ^c in ^s|
+let ^x = Array.make matrix ^c ^c ^c in ^s
+
+Fig. 2 OCaml subset grammar
+
+3.3 Types in Base Language
+
+We now turn to the base language representation of the target language
+subset: the types in the OCaml subset must match those of the C subset. OCaml
+base types int, bool, char, and float map to C int, char and double*2, (OCaml
+booleans are simply mapped to C integers). The OCaml reference type (ref) is
+used to model C variables of simple type. One- and two-dimensional arrays are
+represented by OCaml ^b array and ^b array array types. To reflect the different restrictions on them, we will also distinguish types for function arguments,
+variable types and function declarations. The resulting types are as follows:
+
+Base ^b 2 {int, bool, char, float}
+Reference ^r ::= ^b ref
+Array ^a ::= ^b array | ^b array array
+Argument ^p ::= ^b | ^a
+Variables ^t ::= ^b | ^r | ^a
+Function ^u ::= (^p0, . . . , ^pn) ! ^b
+
+3.4 Syntax for Base Language
+
+The syntax of the source subset is presented in Figure 2. For readability,
+*2 The OCaml type float corresponds semantically to the C type double.
+
+10 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+meta-variables that range over the source (OCaml) syntax are decorated with
+hats (e.g., ^e) to distinguish them from meta-variables ranging over target (C)
+syntax. Semantically, the syntactic subset defined in this figure represents a
+first-order subset of OCaml with arrays and reference cells. Syntactically, let
+bindings are used to represent C declarations. Bindings representing C function
+declarations are further restricted to exclude function declarations nested in
+the bodies of functions. Assignments in C are represented by updating OCaml
+references or arrays. The grammar for a Program ensures there is exactly one
+top level entry function. This top level function will be mapped to main in the
+generated C program.
+
+3.5 Offshoring Translation
+
+This section formalizes the translation from the source subset to C.
+OCaml types and expressions are translated directly into C types and expressions. J
+
+^tK J
+
+intK = intJ
+boolK = intJ
+charK = charJ
+floatK = doubleJ
+^b arrayK = J^bK [ ]J
+
+^b array arrayK = *J^bK[ ]
+
+J^eK J
+
+^cK = cJ
+^xK = xJ
+^x( ^e1, . . . , ^en)K = x(J ^e1K, . . . , J ^enK)J
+
+^f(1)^eK = J ^f(1)KJ^eKJ
+
+^f(2) ^e1 ^e2K = J ^f(2)KJ ^e1KJ ^e2KJ
+
+^e1 ^f[2] ^e2K = J ^e1KJ ^f[2]KJ ^e2KJ
+if ^e1 then ^e2 else ^e3K = J ^e1K?J ^e2K : J ^e3KJ
+
+!^xK = xJ
+^x.(^e)K = x[J^eK]J
+^x.( ^e1).( ^e2)K = x[J ^e1K][J ^e2K]
+
+Recall that we distinguish meta-variables ranging over OCaml- and Cconstructs using the hat notation x vs. ^x. Moreover, the translations from
+OCaml to C subset that map variable names in the source language to the
+(same) variable names in the target language are written by erasing the hat
+notation from the meta-variable: J^xK = x. This meta-level operation of "erasing
+the hat" is in fact an identity, since both syntactic subsets share the same set
+of variable names X, i.e., for any x 2 X, we have ^x and x refer to the same
+(object-level) variable. A similar convention is employed for constants as well
+throughout our formal development.
+
+The statement subset of OCaml is translated to a pair (l, s), where l are
+declarations of variables that are bound in OCaml let expressions, and s, the sequence of C statements that corresponds to OCaml statements. The translation
+for OCaml statements {| ^d|} is written with a return context which can be ? or ?.
+
+Implicitly Heterogeneous Multi-Stage Programming 11
+
+Return context a ::= ? | ?
+If the return context is ?, the translation does not generate return statements at the leaves; on the other hand, if the return context is ?, bottoming
+out at a leaf OCaml expression produces the appropriate C return statement.
+
+{| ^d|}a = (l, s)
+
+{|^e|}? = (*, J^eK) {|^e|}? = (*, return J^eK) {|^x := ^e|}? = (*, x = J^eK) {| ^x.( ^e1)  ^e2|}? =
+
+(*, x[J ^e1K] = J ^e2K)
+
+{|^x.( ^e1).( ^e2)  ^e3|}? =
+
+(*, x[J ^e1K][J ^e2K] = J ^e3K)
+
+{| ^d|}a = (l, s)
+{|j let ^x : ^t = ^ein ^d ff|}a = ((J^tKx; l), (x = J^eK; s))
+
+{| ^d1|}? = (l1, s1){|
+
+^d2|}a = (l2, s2)
+
+{| ^d1; ^d2|}a = (l1; l2, s1; s2) {|
+
+^d|}a = (l, s)
+{|let ^x : ref ^t = ref ^c in ^d|}a = ((JtK x; l), (x = c; s))
+
+{| ^d|}a = (l, s)
+{|j letx : ^t array =Array.make ^c1 ^c2 in ^d ff|}a =
+
+(JtK x[] = {c2c1 times}, l ; s)
+
+{| ^d|}a = (l, s) ym fresh{|
+
+let ^x : ^tarray array =
+Array.make matrix ^e ^c2 ^c3 in ^d|}a =
+
+(J^tK ym = {JeKc2 times}
+
+c1 times;J
+
+^tK * x[ ] = {y1, . . . , yc1}; l, s){|
+^d1|}a = (l1, s1){|
+^d2|}a = (l2, s2)
+
+{|if (^e) then ^d1 else ^d2|}a =
+(*, if(J^eK){l1; s1} else {l2; s2})
+
+{| ^d|}? = (l, s){|
+while (^e) do ^d done|}? =
+
+(*, while(J^eK){l; s})
+
+{| ^d|}? = (l, s){|
+for ^x = ^e1 to ^e2 do ^d done|}? =
+(int x, for (x = J ^e1K; x<=J ^e2K; x++){l; s})
+
+{| ^d|}? = (l, s){|
+for ^x = ^e1 downto ^e2 do ^d done|}?
+= (int x, for (x = J ^e1K; x>=J ^e2K; x--){l; s})
+
+{| ^dn|}?n = (ln, sn) {| ^d|}? = (l, s)
+{|match ^e with ^cn ! ^dnn | ! ^d|}? =
+
+switch(J^eK){
+case cn : {ln; sn; break};
+default : {l; s}}
+
+OCaml programs ^s are translated into a pair (g, l), where g is a sequence
+of function definitions and l is a sequence of variable declarations. Note, we use
+the name procedure for our main function, which we assume to be different from
+the name of any other function to avoid name clashes with other procedure
+names.
+
+12 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+
+h|^s|i = (g, l)
+
+h|^s|i = (g, l)h|
+let ^x : ^t = ^c in ^s|i =
+
+(g, (J^tK x = c; l))
+
+h|^s|i = (g, l)h|
+let ^x : ref ^t = ref ^c in ^s|i =
+
+(g, J^tKx = c; l)
+
+h|^s|i = (g, l)
+h|j let ^x : ^t array =Array.make ^c1 ^c2 in ^s ff|i =
+
+(g, J^tK x[ ] = {c2c1 times}; l)
+
+h| ^d|i = (g, l) (yi fresh)i2{1...c1}h|
+let ^x : ^t array array = Array.make matrix ^e ^c2 ^c3 in ^d|ia =
+
+(g, "J^tK yi = {JeKc2 times}"
+
+i2{...c1} ;J
+
+^tK * x[ ] = {y1, . . . , yc1}; l)
+h|^s|i = (g, l) {| ^d|}? = (ld, sd)h|
+let ^f ( ^xi : ^pi)i2{...n} : ^b = ^d in ^s|i =
+(J^bKf (JpKi xi)i2{...n} {ld; sd; }; g, l)
+
+{| ^d|}? = (l, s)h|
+* ( ^xi : ^pi)i2{...n} . ( ^d : ^b)|i =
+((J^bK procedure (JpiK xi)i2{...n} {l; s}), *)
+
+3.6 What the Programmer Sees
+
+The programmer is given access to offshoring simply by making MetaOCaml run construct (.!e) customizable. In addition to this standard form,
+the programmer can now write .!{Trx.run_gcc}e or .!{Trx.run_icc}e to indicate that offshoring should be used, and that either the gcc or icc compilers,
+respectively, should be used to compile the resulting code. Additional arguments
+can also be passed to these constructs. For example, the programmer can write
+{Trx.run_gcc}e (resp. {Trx.run_icc}e) as follows:
+
+.!{Trx.run_gcc with compiler = "cc"; compiler_flags="-g -O2"} ...
+to use an alternative compiler cc with the flags -g -O2.
+
+Programming with offshoring We illustrate offshoring in MetaOCaml with
+a small example and comment on the specific issues that arise when writing program generators that produce offshorable code. Consider the following generator
+that produces the body of a exponentiation function, specialized on the exponent, by repeatedly multiplying an accumulator variable by the base:
+
+(* bodyGen: int -> int code -> (int ref) code -> int code *)
+let rec bodyGen n x accum =
+
+if n = 0
+then .< ! .~(accum) >.
+else .< (.~(accum) := .~x * ! .~(accum); .~(bodyGen (n-1) x accum)) >.
+
+If n is 3, bodyGen generates 3 updates to the accumulator and returns the accumulator. Using bodyGen, we can write a function powerGen which generates
+a specialized exponentiation function, and passes it as an argument to another
+
+Implicitly Heterogeneous Multi-Stage Programming 13
+program generator f, which produces another piece of code which may splice in
+the specialized power function at function call sites:
+
+(* powerGen : int -> ((int -> int) code -> 'a code) -> 'a code *)
+let powerGen n f =
+
+.< let pwr x =
+
+let accum = ref 1 in .~(bodyGen n .<x>. .<accum>.)
+in .~(f .<pwr>. ) >.
+
+If the programmer wants to offshore the results of powerGen, he must
+ensure that any use of powerGen respects the following invariants: (1) powerGen
+should only be spliced into a context representing top-level C programs (i.e.,
+wherever the nonterminal ^s in Figure 2 can be used); (2) any "consumer" code
+generator f given to powerGen should only produce a top-level C program; (3)
+f's argument should only be spliced into a function application context ( ^x in
+the production ^e ::= ^x (^e*) of Figure 2). Understanding and maintaining such
+invariants is the programmer's responsibility, but it is relatively easy in practice
+because MSP gives him complete control over the structure of the generated
+code. Below, we show a correct use of powerGen (the corresponding C code
+
+produced by offshoring translation is shown to the right of code generated by
+MetaOCaml):
+
+let program = powerGen 3 (fun cube -> .< fun x -> (.~cube x)-1>. )
+let result = .!{Trx.run_gcc} program
+
+val program : ('a, int -> int) code =
+.<let pwr3 x = (* int pwr3 (int x) *)
+
+(* { *)
+let accum = ref 1 in (* int accum; *)
+
+(* accum = 1; *)
+accum := x * ! accum; (* accum = x * accum; *)
+accum := x * ! accum; (* accum = x * accum; *)
+accum := x * ! accum; (* accum = x * accum; *)
+! accum in (* return accum; *)
+
+(* } *)
+(* int procedure_main (int x) { *)
+(* { *)
+fun x -> (pwr3 x)-1>. (* return (pwr3(x)-1); *)
+
+(* } *)
+val result : int -> int = <fun>
+
+In the following example, however, the invariant (1) is violated, because
+powerGen is used inside a function body definition, and results in code that
+cannot be offshored (evaluating (.!{Trx.run_gcc} wrong) raises an exception):
+
+let wrong = .< fun x -> .~(powerGen 2 (fun square -> .< .~square (x) >.)) >.
+
+14 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+
+val wrong : ('a, int -> int) code =
+
+.<fun x ->
+
+let pwr_2 x =
+
+let accum = (ref 1) in
+accum := x * ! accum;
+accum := x * ! accum;
+! accum in
+(pwr_2 x)>.
+
+3.7 Marshalling and Dynamic Linking
+
+The C and OCaml runtime systems use different representations for
+values. Therefore, inputs and outputs of offshored functions must be marshalled
+from one representation to the other.
+
+The offshoring implementation automatically generates a marshalling
+wrapper C function for the top-level entry point of the offshored function. The
+marshalling function depends only on the type of the top-level function. First,
+the OCaml runtime values are converted to their C representations. The standard OCaml library provides conversions for base types. We convert arrays by
+allocating a new C array, converting each element of the OCaml array, and storing it in the C array. The C function is invoked with the marshalled C values. Its
+results are collected, and marshalled back into OCaml. To account for updates
+in arrays, the elements of the C are converted and copied back into the OCaml
+array.
+
+Once a C program and the marshalling code has been produced, the result is then compiled into a shared library (a .so) file. To load this shared library
+into MetaOCaml's runtime system, we extend Stolpmann's dynamic loading library for OCaml 14) to support dynamic loading of function values.
+
+$4 Type Preservation
+
+Showing that an offshoring translation can preserve typing requires formalizing the type system for the target language, the source language, as well
+as the translation itself.
+
+The type system for top-level statements in OCaml programs is defined by the derivability of the judgment ^\Gamma  ` ^p : ^t (Appendix 2). Similarly, the type system for C programs is defined by a judgment \Gamma  ` g (Appendix 1). Section 3.5 provided the definition of translation functions. For
+example, h|^s|i = (l1, . . . , lm, g1, . . . , gn) translates a top-level OCaml program
+
+Implicitly Heterogeneous Multi-Stage Programming 15
+into a set of C variable declarations and function definitions, and J^\Gamma K translates the OCaml variable and function environment, ^\Gamma , into the corresponding
+C environment. We define an operation |*| on variable declarations and function
+definitions that translates them into a C type environment (Appendix 4).
+
+Any valid term in the base language translates to a valid one in the
+target language.
+
+Theorem 4.1 (Type Preservation)
+If ^\Gamma  ` ^s : ^an ! ^b and h|^s|i = (g, l), then J^\Gamma K [ |l| [ |g| ` g.
+
+Proof By induction over the height of first derivation. The details of the
+proof are presented in Appendix 4.
+
+Proving this theorem is work that is done only once per offshoring translation, and is done by the language designer. Users of offshoring are relieved
+from the difficulty of ensuring that their program generators produce well-typed
+target-language (C) programs. The programmer only needs to establish, on
+a per-generator basis, the relatively easier invariant that a particular program
+generator produces code that is in the offshorable syntactic subset.
+
+$5 Effect on Performance Characteristics
+
+This section summarizes the empirical measurements gathered to evaluate the performance impact of offshoring. The questions we want these experiments to answer are: How does the performance of offshored code compare to
+that of the same code executed with run? Does marshalling impose a significant overhead on offshoring? As MetaOCaml currently only supports bytecode
+OCaml execution, would extending MetaOCaml to support native OCaml-style
+compilation be an acceptable alternative to offshoring?
+
+5.1 Benchmarks
+
+As a benchmark, we use a suite of staged dynamic programming algorithms. These algorithms were initially implemented to study staging of dynamic programming algorithms 15). The benchmark consists of (both unstaged
+and staged) MetaOCaml implementations of the following algorithms 2):*
+
+forward, the forward algorithm for Hidden Markov Models. Specialization size (size of the observation sequence) is 7.*
+gib, the Gibonacci function, a minor generalization of the Fibonacci sequence. Specialization is for n = 25.
+
+16 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+
+Fig. 3 Speedups and break-even points
+
+fwd gib ks lcs obst opt
+10
+
+100
+1000 3700 gccicc
+
+bytecode
+
+fwd gib ks lcs obst opt
+10
+
+100
+1000
+
+gcc
+icc
+bytecode
+
+Speedup factors BEPs
+
+* ks, the 0/1 knapsack problem. Specialization is for size 32 (number of
+
+items).*
+lcs, the least common subsequence problems. Specialization is for string
+sizes 25 and 34 for the first and second arguments, respectively.*
+obst, the optimal binary search tree algorithm. Specialization is a leafnode-tree of size 15.*
+opt, the optimal matrix multiplication problem. Specialization is for 18
+matrices.
+
+To evaluate offshoring, we compare executing the result of these algorithms in MetaOCaml to executing the result in C using offshoring. Appendix 5
+documents the measurements in tabular from. In this section, graphs will be
+used to summarize the results. Timings were collected on a Pentium 4 machine (3055MHz, 8K L1 and 512K L2 cache, 1GB main memory) running Linux
+2.4.20-31.9. All experiments are fully automated and available online 3). We
+report results based on version DP 002/1.25 of the benchmark. It was executed
+using MetaOCaml version 308 alpha 020 bytecode compiler, Objective Caml
+version 3.08.0 native code compiler, and GNU's gcc version 2.95.3 20010315,
+and Intel's icc version 8.0 Build 20031016Z C compilers.
+
+5.2 Offshoring vs. OCaml Byte Code Compiler
+
+Because of engineering issues with OCaml's support for dynamic loading, MetaOCaml currently extends only the bytecode compiler with staging constructs, but not the native code compiler. We therefore begin by considering the
+impact of offshoring in the bytecode setting.
+
+Implicitly Heterogeneous Multi-Stage Programming 17
+
+Each of the benchmark programs comes in two versions: unstaged and
+staged. A staged version is obtained by turning the unstaged version into a
+program generator by specializing it with respect to a subset of its arguments.
+The resulting program computes the same result as the unstaged version, but in
+two stages: the first, where a program is generated and compiled; the second,
+where the generated program is executed with the remaining arguments. The
+ratio between the execution time of the unstaged version and the second stage
+of the staged version (with the same inputs and producing the same outputs) is
+reported as the speedup. A break-even point (BEP) is the number of times that
+the second stage must be executed until the initial overhead of generating and
+compiling it (i.e., the first stage) pays off. For example, although the speedup
+gained by staging the forward algorithm and compiling it with gcc is 530 times,
+we need at least 180 uses of it before is cheaper to use the staged version than
+to just use the unstaged one.
+
+The left-hand side of the Figure 3 summarizes the comparative speedups
+gained by staging the benchmark algorithms with (gcc and icc) and without
+offshoring (bytecode). Performance of offshoring is measured using two different
+C compilers (the GNU gcc and Intel's icc). The right-hand side of the Figure 3
+compares the break-even points for the same executions.
+
+In general, the results obtained for offshoring to C are encouraging. The
+speedups from offshoring and compiling with the C compilers are always greater
+than 1, and are often an order of magnitude greater. But it should be noted that
+the BEP's are higher for offshored than for the non-offshored staged execution
+within MetaOCaml. This is primarily a result of the C compilation times being
+higher than OCaml bytecode compilation times.
+
+5.3 Marshalling overhead
+
+To assess the impact of marshalling on the runtime performance, we
+compare the time to execute the benchmarks from within MetaOCaml against
+the time it took to execute the same functions in a C program with no marshalling. Each benchmark program is compiled by the gcc and icc compilers.
+Figure 4 displays the percentage of the total execution time for each benchmark
+spent in marshalling (gcc or icc).
+
+In the forward example, we marshall a 7-element integer array. In gib,
+we marshall only two integers, and thus have a low marshalling overhead in
+absolute terms. But because the total computation time in this benchmark
+
+18 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+
+Fig. 4 Marshalling overhead for gcc and Intel's icc compiled offshored code
+
+fwd gib ks lcs obst opt
+0%
+10%
+20%
+30%
+40%
+50%
+60%
+70%
+
+80%
+90%
+100% gcc
+
+icc
+
+is small, the marshalling overhead percentage is high. In ks, we marshall a
+32-element integer array, and in lcs benchmark, we marshall two 25- and 34-
+element character arrays, which accounts for the high marshalling overhead in
+these benchmarks in absolute terms. Since both these benchmarks perform a
+significant amount of computation, the proportion of time spent marshalling
+may be lower than gib or forward. Similarly, obst and opt have significant
+marshalling overheads in absolute terms since they must marshall 15-element
+floating-point and 18-element integer arrays.
+
+The data indicates that marshalling overhead is significant. We chose
+the current marshalling strategy for implementation simplicity, and not for efficiency. These results suggest that it would be useful to explore an alternative
+marshalling strategy that allows sharing of the same data-structures across the
+OCaml/C boundary.
+
+5.4 Offshoring vs. OCaml Native Compiler
+
+One motivation for offshoring is that standard implementations of highlevel languages are unlikely to compile automatically generated programs as
+effectively as implementations for lower-level languages such as C. The figures
+reported so far relate to the MetaOCaml bytecode compiler. How does offshoring
+perform against the native code compiler?
+
+Figure 5 reports the speedup factor achieved by offshored programs over
+the same programs compiled using the native-code OCaml compiler (known as
+opt), where speedup factor greater than one mean that the offshored version is
+faster. Two kinds of comparisons are made: first, where stage two programs are
+compiled using the native OCaml compiler (labeled opt vs. gcc and opt vs.
+
+Implicitly Heterogeneous Multi-Stage Programming 19
+
+Fig. 5 The speedup of offshored vs. OCaml optimizing native compiler code
+
+fwd gib ks lcs obst opt
+0x
+
+5x
+10x
+15x
+20x
+25x gcc vs. 
+
+opt
+gcc vs. 
+tweaked
+
+1x
+
+fwd gib ks lcs obst opt
+0x
+
+5x
+10x
+15x
+20x
+25x 380x icc vs. 
+
+opt
+
+icc vs. 
+tweaked
+
+1x
+Ocaml opt/gcc Ocaml opt/ icc
+icc); and second, where stage two programs are first hand-modified ("tweaked")
+before they are compiled by the native OCaml compiler (labeled tweaked vs.
+gcc and tweaked vs. icc). The tweaking modifications involve applying the
+following simple transformations to the code generated by MetaOCaml: currying the arguments to functions, replacing the uses of the polymorphic OCaml
+operators min and max by their monomorphic versions, and moving array initializations outside the generated functions.*3
+
+Tweaking has been used to obtain a fairer performance comparison by
+addressing some issues that arise only with the OCaml native compiler. For
+example, the benchmark ks contains a large number of calls to the max function.
+The default OCaml implementation of max is polymorphic to allow it to work
+on all numeric types, and involves a runtime check to determine the type of its
+arguments.*4 Replacing the polymorphic max with a monomorphic version in
+the tweaked code can easily account for vast speedups of C over OCaml in the
+untweaked case, and a significant performance benefit from tweaking.
+
+Without tweaking, offshoring always outperforms the native code compiler. After tweaking the generated code, the situation is slightly different. In
+
+*3 Thanks to Xavier Leroy for pointing out that these changes would improve the relative
+
+performance of the OCaml native code compiler.
+*4 The code generated by the native code compiler for the library function max takes about
+
+15 assembly instructions on the x86 architecture, including a costly indirect function call
+to a C function in the runtime library. On the other hand, a simple monomorphic version
+of max is compiled down to 4 very efficient register-based instructions.
+
+20 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+two cases, the OCaml native code compiler outperforms gcc. In fact, for the ks
+benchmark, the OCaml compiler does significantly better than gcc (by a factor
+of 2).
+
+The tweaks that improved the relative performance of OCaml's native
+code compiler draw attention to an important issue in designing an offshoring
+transformation and in interpreting speedups such as the ones presented here:
+Speedups are sensitive to the particular representation that we chose in the base
+language, and the real goal is to give the programmer the ability to generate
+specific programs in the target language. Speedups reported here give one set
+of data-points exhibiting the potential of offshoring.
+
+$6 Further Opportunities for Offshoring
+
+The formal translation presented here focuses on ensuring that the generating program is well-typed, and makes some simplifying assumptions about
+the semantics of OCaml and C. For example, OCaml's default integer type is 31
+bits, while in C it is 32. This mismatch can be addressed by using OCaml 32
+bits integers in the source language. This would, however, bias the performance
+numbers in favor of offshoring, as OCaml's default 31 bit integers are faster. Our
+intent is not that providers of offshoring translators verify their translators formally. As with any compiler, the semantic fidelity of the offshoring translation
+can depend on the application, and would be established in a manner that is no
+different than that for a compiler.
+
+The particular offshoring translation presented here is useful for building multi-stage implementations of several standard algorithms. But there are
+other features of C that have distinct performance characteristics, and which
+the programmer might wish to gain access to. We expect that the translation
+presented here can be expanded systematically: An offshoring translation can be
+viewed as an inverse of a total map from the target to the source language. The
+backwards map would be a kind of OCaml semantics for the constructs in the
+target language. With this insight, several features of C can be represented in
+OCaml as follows: Function pointers can be handled naturally in a higher order
+language, although the representative base language subset would have to be
+restricted to disallow occurrences of free variables in nested functions. Such free
+variables give rise to the need for closures when compiling functional languages,
+and our goal is not to compile, but rather to give the programmer access to the
+notion of function pointers in C. If the programmer wishes to implement closures
+
+Implicitly Heterogeneous Multi-Stage Programming 21
+in C, it can be done explicitly at the OCaml level. For control operators, we can
+use continuations, and more generally, a monadic style in the source language,
+but the source would have similar restrictions on free variables to ensure that
+no continuation requires closures to be (automatically) constructed in the target code. Targeting struct and union types should be relatively straightforward
+using OCaml's notion of datatypes. Dynamic memory management, bit manipulation, and pointer arithmetic can be supported by specially marked OCaml
+libraries that simulate operations on an explicit memory model in OCaml.
+
+OCaml Bigarrays can be used instead of arrays of pointers for 2- dimensional arrays. Bigarrays allow sharing of OCaml arrays with C and would be
+useful in a number of ways: they support more C types, they may be multidimensional, they don't need marshalling, and they don't require initialization.
+
+The offshoring strategy proposed here relies on the programmer to check
+the invariant that a particular program generator produces code that is in the
+offshorable syntactic subset. In principle, static analysis could be used to check
+this invariant. It is likely, however, that this would be of the same complexity
+as inferring refinement types. This remains as an interesting question for future
+work.
+
+$7 Related Work
+Runtime Code Generation At first sight, implicitly heterogeneous MSP
+seems closely related to runtime-code generation. However, implicitly heterogenous MSP has different goals from runtime low-level code generation (RTCG)
+26, 27, 28, 29). In particular, with RTCG the goal is to compile all code (even secondstage code) into machine code at the compilation time of the generator. Compiling at this time means that compilers can only work on small code fragments,
+and there are generally less opportunities for optimization than if compilation
+happens after all code is generated and combined. RTCG is relevant only if very
+fast generation times are desirable, even at the cost of reduced performance for
+the generated code. Our work assumes a setting where the primary concern is
+the runtime performance of the generated code, not the generator.
+
+Heterogeneous Quasi-quotation Kamin 8, 9) describes an approach to implementing domain specific languages by defining a well-chosen set of combinators in a functional language (Standard ML). These combinators are designed
+
+22 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+explicitly with a target language in mind. If we wanted to target a different language or, sometimes, if we wish to implement a different application, the process
+of design and implementation of combinators must be repeated from scratch.
+
+Typeful Metaprogramming with GADTs Given a meta-language with
+a sufficiently expressive type system 13, 22, 23, 24, 25), the programmer can encode
+object-language abstract syntax trees that are statically guaranteed to represent
+only well-typed object-language programs. For example, the following Haskell
+program uses a generalized algebraic data-type to represent well-typed terms of
+the simply typed *-calculus.
+
+data Exp e t =
+
+Var :: Exp (e,t) t
+Shift :: Exp e t -> Exp (e,t1) t
+Abs :: Exp (e,t1) t2 -> Exp e (t1 -> t2)
+App :: Exp e (t1 -> t2) -> Exp e t1 -> Exp t2
+
+The representation above relies on meta-language types to represent
+types in the object language. Type systems with GADTs are sufficiently expressive to statically ensure that program generators maintain typing invariants
+of object-language programs they manipulate. Their main advantage over the
+approach presented here are expressiveness and user-extensibility: the programmer need not rely on the language designer to craft offshoring translations and
+target multiple object-languages. However, in case where the target language
+is a small, well-designed subset (as the subset of C presented here), the GADT
+based approaches seem less practical then the approach we present in this paper.
+
+A practical drawback of the GADT approach is that it requires that
+object-language binding constructs are encoded using de Bruijn indices. The
+correctness of such an encoding with respect to the typing rules must be established by the programmer. Offshoring automatically ensures the hygienic and
+type-safe manipulation of object-language variables. It also allows the use quotation mechanisms. Finally, the programmer using GADTs cannot reuse the
+same program generator to target multiple object languages. Rather, for each
+new object-language encoding the program generator must be reimplemented
+from scratch.
+
+$8 Conclusion
+
+Implicitly Heterogeneous Multi-Stage Programming 23
+
+We have proposed the idea of implicitly heterogeneous MSP as a way of
+combining the benefits of the homogeneous and heterogeneous approaches. In
+particular, generators need not be coupled with the syntax of the target language,
+and the programmer need not be bound to the performance characteristics of
+the base language. To illustrate this approach, we target a subset of C suitable
+for numerical computation, and use MetaOCaml as the base language. We prove
+that the offshoring translation proposed for this subset preserves typing. This is
+done once in the language design stage, and the programmer has the same static
+typing guarantees of homogeneous MSP.
+
+We have implemented this extension in MetaOCaml. Experimental results indicate that the approach can yield significantly better performance compared to the OCaml bytecode compiler, and often better performance than the
+OCaml native code compiler. A fully automated version of our performance
+measurement suite has been implemented and made available online 3).
+
+Acknowledgment We would like to thank John Mellor-Crummey,
+Gregory Malecha, James Sasitorn, Jeremy Siek Dan Vanderkam, and Angela
+Zhu, who read drafts of this paper and gave us several helpful suggestions. A
+shorter version of this paper was submitted to the Generative Programming and
+Component Engineering (GPCE) conference. We would like to thank the GPCE
+and NGC reviewers and editors for their detailed and constructive comments.
+
+24 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+References
+
+1) Cristiano Calcagno, Eugenio Moggi, and Walid Taha. ML-like inference for
+
+classifiers. In European Symposium on Programming (ESOP'04), volume 2986
+of Lecture Notes in Computer Science, pages 79-93. Springer-Verlag, 2004.
+
+2) Thomas Cormen, Charles Leiserson, and Ronald Rivest. Introduction to Algorithms. MIT Press and McGraw-Hill Book Company, 14th edition, 1994.
+
+3) Dynamic Programming Benchmarks. Available online from
+
+http://www.metaocaml.org/examples/dp, 2005.
+
+4) Jason Eckhardt, Roumen Kaiabachev, Emir Pasalic, Kedar Swadi, and Walid
+
+Taha. Implicitly heterogeneous multi-stage programming. In Proceedings of the
+4th ACM International Conference on Generative Programming and Component
+Engineering (GPCE'05), volume 3676 of Lecture Notes in Computer Science,
+pages 275-292. Springer-Verlag, 2005.
+
+5) Conal Elliott, Sigbjo/rn Finne, and Oege de Moore. Compiling embedded languages. In 17), pages 9-27, 2000.
+6) Matteo Frigo and Steven G. Johnson. FFTW: An adaptive software architecture
+
+for the FFT. In Proc. 1998 IEEE Intl. Conf. Acoustics Speech and Signal
+Processing, volume 3, pages 1381-1384. IEEE, 1998.
+
+7) Robert Gl"uck and Jesper Jo/rgensen. Multi-level specialization (extended abstract). In John Hatcliff, Torben Mogensen, and Peter Thiemann, editors,
+Partial Evaluation: Practice and Theory, volume 1706 of LNCS, pages 326-337.
+Springer-Verlag, 1999.
+
+8) Sam Kamin. Standard ML as a meta-programming language. Technical report, Univ. of Illinois Computer Science Dept, 1996. Available at
+http://www-faculty.cs.uiuc.edu/~kamin/pubs/.
+
+9) Samuel N. Kamin, Miranda Callahan, and Lars Clausen. Lightweight and generative components I: Source-level components. In GCSE '99: Proceedings of the
+First International Symposium on Generative and Component-Based Software
+Engineering, pages 49-64, London, UK, 2000. Springer-Verlag, volume 1799 of
+LNCS.
+
+10) MetaOCaml: A compiled, type-safe multi-stage programming language. Available online from http://www.metaocaml.org/, 2004.
+
+11) Gregory Neverov and Paul Roe. Towards a Fully-reflective Meta-programming
+
+Language, volume 38 of Conferences in Research and Practice in Information
+Technology, pages 151-158. ACS, Newcastle, Australia, 2005. Twenty-Eighth
+Australasian Computer Science Conference (ACSC2005).
+
+12) Oregon Graduate Institute Technical Reports. P.O. Box
+
+91000, Portland, OR 97291-1000,USA. Available online from
+ftp://cse.ogi.edu/pub/tech-reports/README.html.
+
+13) Emir Pa^sali'c, Walid Taha, and Tim Sheard. Tagless staged interpreters for
+
+typed languages. In Proceedings of the International Conference on Functional Programming (ICFP '02), pages 218-229, Pittsburgh, USA, October 2002.
+ACM.
+
+Implicitly Heterogeneous Multi-Stage Programming 25
+
+14) Gerd Stolpmann. DL- ad-hoc dynamic loading for OCaml. Available from
+
+http://www.ocaml-programming.de/packages/documentation/dl/.
+
+15) Kedar Swadi, Walid Taha, Oleg Kiselyov, and Emir Pasalic. A monadic approach for avoiding code duplication when staging memoized functions. In Proceedings of the ACM SIGPLAN Workshop on Partial Evaluation and Program
+Manipulation (PEPM '06), ACM Press, January 2006.
+
+16) Walid Taha. Multi-Stage Programming: Its Theory and Applications. PhD
+
+thesis, Oregon Graduate Institute of Science and Technology, 1999. Available
+
+from 12).
+17) Walid Taha, editor. Semantics, Applications, and Implementation of Program
+
+Generation, volume 1924 of Lecture Notes in Computer Science, Montr'eal, 2000.
+Springer-Verlag.
+
+18) Walid Taha. A sound reduction semantics for untyped CBN multi-stage computation. Or, the theory of MetaML is non-trivial. In Proceedings of the Workshop
+on Partial Evaluation and Semantics-Based Program Manipulation (PEPM'00),
+pages 34-43. Boston, 2000. ACM Press.
+
+19) Walid Taha and Michael Florentin Nielsen. Environment classifiers. In Proceedings of the Symposium on Principles of Programming Languages (POPL '03),
+2003 ACM SIGPLAN vol. 38 (num. 1), pages 26-37. New Orleans, Louisisana,
+2003.
+
+20) Walid Taha and Tim Sheard. Multi-stage programming with explicit annotations. In Proceedings of Symposium on Partial Evaluation and Semantics Based
+Program manipulation, pages 203-217. ACM SIGPLAN, 1997.
+
+21) David Tarditi, Peter Lee, and Anurag Acharya. No assembly required: Compiling standard ML to C. ACM Letters on Programming Languages and Systems,
+1(2):161-177, June 1992.
+
+22) Hongwei Xi and Chiyan Chen and Gang Chen. Guarded recursive datatype
+
+constructors. In POPL '03: Proceedings of the 30th ACM SIGPLAN-SIGACT
+symposium on Principles of programming languages, pages 224-235, 2003, ACM
+Press, New Orleans, Louisiana, USA
+
+23) James Cheney and Ralf Hinze. First-Class Phantom Types. Technical Report
+
+1901, Cornell University, Mar. 2006.
+
+24) Tim Sheard and Emir Pasalic. Meta-programming with built-in type equality.
+
+Presented at the Fourth International Workshop on Logical Frameworks and
+Meta-Languages (LFM'04) Cork, Ireland, July, 2004.
+
+25) Simon Peyton Jones and Dimitrios Vytiniotis and Stephanie Weirich and Geoffrey Washburn. Simple unification-based type inference for GADTs In ACM
+SIGPLAN Notices, vol. 41, num. 9, pages 50-61, Sep, 2006.
+
+26) Dawson R. Engler. VCODE : A Retargetable, Extensible, Very Fast Dynamic
+
+Code Generation System In Proceedings of the ACM SIGPLAN Conference on
+Programming Language Design and Implemantation pages 160-170, May, 1996,
+ACM Press, New York.
+
+27) Charles Consel and Fran,cois No"el A General Approach for Run-Time Specialization and its Application to C. Conference Record of POPL '96: The
+
+26 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+
+23rd ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages. pages 145-156, 21-24 Jan, 1996, St. Petersburg Beach, Florida.
+
+28) Brian Grant and Markus Mock and Matthai Philipose and Craig Chambers
+
+and Susan J. Eggers. Annotation-Directed Run-Time Specialization in C.
+In Proceedings of the ACM SIGPLAN Symposium on Partial Evaluation and
+Semantics-Based Program Manipulation. pages 163-178, Jun 1997, Amsterdam, The Netherlands.
+
+29) Michael Sperber and Peter Thiemann. Two for the Price of One: Composing Partial Evaluation and Compilation In Proceedings of the ACM SIGPLAN'97 Conference on Programming Language Design and Implementation
+(PLDI). pages 215-225, Jun, 1997, Las Vegas, Nevada.
+
+$1 Type System for the C Fragment
+The type system for the target language is defined for a fixed type assignment \Sigma 
+that assigns types to constants and operators. We assume the type assignment
+\Gamma  must be well-formed in the sense that it assigns at most one type for each
+variable.
+
+Expressions (\Gamma  ` e : t)
+
+c : b 2 \Sigma 
+
+\Gamma  ` c : b Const
+
+\Gamma (x) = t
+
+\Gamma  ` x : t Var
+
+f(1) : b f(b1) 2 \Sigma 
+\Gamma  ` e : b1
+
+\Gamma  ` f(1) (e) : b Op1
+
+f[2] : b f[2](b1, b2) 2 \Sigma 
+\Gamma  ` e1 : b1
+\Gamma  ` e2 : b2
+
+\Gamma  ` e1 f[2] e2 : b Op2
+
+\Gamma (x) = b (ti)i2{...n}{
+
+\Gamma  ` ei : ti}i2{...n}
+
+\Gamma  ` x (ei)i2{...n} : b FCall
+
+\Gamma (x) = int
+\Gamma  ` x++ : intInc
+
+\Gamma (x) = int
+\Gamma  ` x-- : intDec
+
+\Gamma (x) = b [ ]
+\Gamma  ` e : int
+
+\Gamma  ` x[e] : b Arr1
+
+\Gamma (x) = * b[ ]
+\Gamma  ` e1 : int
+\Gamma  ` e2 : int
+
+\Gamma  ` x[e1][e2] : bArr2
+
+\Gamma  ` e1 : int
+\Gamma  ` e2 : t
+\Gamma  ` e3 : t
+
+\Gamma  ` e1 ? e2 : e3 : tIf
+
+To indicate which terms must or can include a return statement, we
+define a more general judgment \Gamma  ` s : r, where r is defined as follows:
+
+r ::= t | ?
+The r types indicate return contexts: if a statement is well-formed with
+respect to the return context ?, no return statements are permitted in it. If the
+return context is t, the judgment ensures that the rightmost leaf of the statement
+is a return statement of type t. For example, the definition body of a function
+with return type t, must be typed with t as its return context.
+
+Implicitly Heterogeneous Multi-Stage Programming 27
+
+Statements (\Gamma  ` s : t)
+
+\Gamma  ` e : t1
+
+\Gamma  ` e : ? EStat
+
+\Gamma (x) = b
+\Gamma  ` e : b
+
+\Gamma  ` x = e : ? Assign
+
+\Gamma (x) = b[ ]
+\Gamma  ` e1 : int
+\Gamma  ` e2 : b
+
+\Gamma  ` x[e1] = e2 : ?SetArr1
+
+\Gamma (x) = *b[ ]
+\Gamma  ` e1 : int
+
+\Gamma  ` e2 : int
+\Gamma  ` e3 : b
+
+\Gamma  ` x[e1][e2] = e3 : ? SetArr2
+
+\Gamma  ` e : int \Gamma  ` s1 : r\Gamma  ` s2 : r
+
+\Gamma  ` if (e) s1 else s2 : r IfS
+
+\Gamma  ` e1 : int
+\Gamma  ` s : ?
+
+\Gamma  ` while (e1) s : ?While
+
+\Gamma (x) = int
+\Gamma  ` e1 : int
+
+\Gamma  ` e2 : int
+\Gamma  ` s : ?
+
+\Gamma  ` for (x = e1; e2; x++) s : ? For
+
+\Gamma  ` e : t
+\Gamma  ` return (e) : tRet
+
+{ci : int 2 \Sigma }i2{...n}
+\Gamma  ` e : int {
+
+\Gamma  ` si : ?}i2{...n}
+\Gamma  ` s : ?
+
+\Gamma  ` 8<:
+
+switch (e){
+
+(case ci : si break; )i2{...n}
+
+default : s} 9=;
+
+: ?
+
+Sw n
+
+\Gamma  [ (dj)j2{...m} ` sio
+
+i2{...n-1} : ?
+
+\Gamma  [ (dj)j2{...m} ` sn : r
+
+\Gamma  ` {(dj)j2{...m} ; (sn)i2{...n}} : r Blk
+
+Function definition (\Gamma  ` f)
+
+\Gamma  [ (ai)i2{...n} ` {(dj)j2{...m} ; (sk)k2{...z}} : b
+\Gamma  ` (b f (ai)i2{...n} {(dj)j2{...m} ; (sk)k2{...z}}) TFun
+
+Program (\Gamma  ` g)
+
+\Gamma  ` * Empty
+
+\Gamma  ` b f (ai)i2{...n} s
+\Gamma , b f (ai)i2{...n} ` g
+
+\Gamma  ` (b f (ai)i2{...n} s); g ExtTop
+
+Lemma 1.1 (Weakening)
+
+1. 8e, \Gamma , \Gamma 0, t. if \Gamma  ` e : t and dom \Gamma 0 " F V (e) = ;, then \Gamma  [ \Gamma 0 ` e : t.
+2. 8s, \Gamma , \Gamma 0, r. if \Gamma  ` s : r and dom \Gamma 0 " F V (s) = ;, then \Gamma  [ \Gamma 0 ` s : r.
+
+Proof Proofs are by induction on the height of the typing derivations.
+
+$2 Type System for the OCaml Fragment
+
+28 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+
+Expressions (\Gamma  ` ^e : ^t)
+
+^c : ^b 2 \Sigma 
+
+\Gamma  ` ^c : ^b Const
+
+\Gamma (^x) = ^t
+
+\Gamma  ` ^x : ^t Var
+
+\Gamma  ` ^x : (^p1, . . . , ^pn) ! ^b{
+
+\Gamma  ` ^ei : ^pi}i2{1...n}
+
+\Gamma  ` ^x (ei)i2{1...n} : ^b FCall
+
+^f(1) : ^b1 ! ^b 2 \Sigma 
+\Gamma  ` ^e : ^b1
+
+\Gamma  ` ^f(1) ^e : ^b Fun[1]
+
+^f(2) : ^b1 ! ^b2 ! ^b 2 \Sigma 
+\Gamma  ` ^e1 : ^b1
+\Gamma  ` ^e2 : ^b2
+
+\Gamma  ` ^f(2) ^e1 ^e2 : ^b Fun(2)
+
+^f[2] : ^b1 ! ^b2 ! ^b 2 \Sigma  \Gamma  ` ^e1 : ^b1\Gamma  ` ^e
+
+2 : ^b2
+
+\Gamma  ` ^e1 ^f[2] ^e2 : ^b Fun[2]
+
+\Gamma  ` ^e1 : bool
+\Gamma  ` ^e2 : ^t \Gamma  ` ^e3 : ^t
+
+\Gamma  ` if ^e1 then ^e2 else ^e3 : ^t If
+
+\Gamma (^x) = ^t ref
+
+\Gamma  ` !^x : ^t Ref
+
+\Gamma  ` ^e : int
+\Gamma (^x) = ^b array
+
+\Gamma  ` ^x.(^e) : ^b Arr1
+
+\Gamma  ` ^e1 : int
+\Gamma  ` ^e2 : int \Gamma (^x) = ^b array array
+
+\Gamma  ` ^x.(^e1).(^e2) : ^b Arr2
+
+Statements (\Gamma  ` ^d : ^t)
+
+\Gamma  ` ^e : ^t
+\Gamma  ` ^e : ^t DExp
+
+\Gamma  ` ^d1 : unit
+\Gamma  ` ^d2 : ^t
+
+\Gamma  ` ^d1; ^d2 : ^t SeqD
+
+\Gamma  ` ^e : ^b
+\Gamma , ^x : ^b ` ^d : ^t
+
+\Gamma  ` j let ^x : ^b = ^ein ^d ff : ^t
+
+Let
+
+\Gamma  ` ^c : ^b
+\Gamma , ^x : ^b ref ` ^d : ^t
+
+\Gamma  ` j let ^x : ^b ref = ref ^cin ^d ff : ^t
+
+LetRef
+
+\Gamma  ` ^c2 : ^b
+\Gamma , ^x : ^b array ` ^d : ^t \Gamma  ` ^c1 : int
+
+\Gamma  ` j let ^x : ^b array =Array.make ^c1 ^c2 in ^d ff : ^t
+
+LetArr1
+
+\Gamma  ` ^c1 : int
+\Gamma  ` ^c2 : int
+
+\Gamma  ` ^c3 : ^b
+
+\Gamma , ^x : ^b array array ` ^d : ^t
+
+\Gamma  ` j let ^x : ^b array array =Array.make matrix ^c1 ^c2 ^c3 in ^d ff : ^t
+
+LetArr2
+
+\Gamma  ` ^e : ^b
+\Gamma (^x) = ^b ref
+
+\Gamma  ` (^x := ^e) : unit Ref
+
+\Gamma (^x) = ^b array \Gamma  ` ^e1 : int\Gamma  ` ^e2 : ^b
+
+\Gamma  ` ^x.(^e1)  (^e2) : unit SetArr1
+
+\Gamma (^x) = ^b array array
+\Gamma  ` ^e1 : int
+
+\Gamma  ` ^e2 : int
+\Gamma  ` ^e3 : ^b
+
+\Gamma  ` ^x.(^e1).(^e2)  (^e3) : unit SetArr2
+
+\Gamma  ` ^e : bool \Gamma  ` ^d1 : ^t
+
+\Gamma  ` ^d2 : ^t
+
+\Gamma  ` if ^e then ^d1 else ^d2 : ^t IfD
+
+\Gamma  ` ^e : bool
+\Gamma  ` ^d : unit
+
+\Gamma  ` j while ^edo ^d done ff : unit
+
+While
+
+z 2 {to, downto}
+\Gamma  ` ^e1 : int
+
+\Gamma  ` ^e2 : int
+\Gamma , ^x : int ` ^d : unit
+
+\Gamma  ` j for ^x : int = ^e1 z ^e2do ^d done ff : unit
+
+For
+
+\Gamma  ` ^e : ^b ^b 6= floatn
+
+\Gamma  ` ^ci : ^bo
+
+i2{1...n} \Gamma  ` ^d : unitn
+
+\Gamma  ` ^di : ^to
+
+i2{1...n}
+
+\Gamma  ` 8><>:
+
+match ^e with
+("^ci ! ^di"
+
+i2{...n}
+
+| ! ^d)
+
+9>=>;
+
+: unit
+
+Match
+
+Implicitly Heterogeneous Multi-Stage Programming 29
+
+Programs (\Gamma  ` ^s : ^t)
+
+\Gamma , (^xi : ^pi)i2{...n} ` ^d : ^b
+\Gamma  ` * (^xi : ^pi)i2{...n} . ( ^d : ^b) : (pi)i2{...n} ! ^bToplevel
+
+\Gamma  ` ^c : ^b
+\Gamma , ^x : ^b ` ^s : ^t
+
+\Gamma  ` j let ^x : ^b = ^cin ^s ff : ^t
+
+LetS
+
+\Gamma  ` ^c : ^b
+\Gamma , ^x : ^b ref ` ^s : ^t
+
+\Gamma  ` j let ^x : ^b ref = ref ^cin ^s ff : ^t
+
+LetRefS
+
+\Gamma  [ ( ^xi : ^pi)i2{m...n} ` ^d : ^b
+\Gamma  [ ( ^xi : ^pi)i2{m...n} , ^x : (pn ! ^b) ` ^s : ^t
+
+\Gamma  ` j let ^x (xi : ^pi)
+
+i2{...n} : ^b = ^d
+
+in ^s ff : ^t
+
+LetFun
+
+\Gamma  ` ^c1 : int
+\Gamma  ` ^c2 : int
+
+\Gamma  ` ^c3 : ^b
+
+\Gamma , ^x : ^b array array ` ^s : ^t
+
+\Gamma  ` j let ^x : ^b array array =Array.make matrix ^c1 ^c2 ^c3 in ^s ff : ^t
+
+LetArr2S
+
+\Gamma  ` ^c1 : int
+\Gamma  ` ^c2 : ^b
+\Gamma , ^x : ^b array ` ^s : ^t
+
+\Gamma  ` 8<:
+
+let ^x : ^b array =
+
+Array.make ^c1 ^c2
+
+in ^s 9=;
+
+: ^t
+
+LetArr1S
+
+$3 Properties of Offshoring Translation
+Lemma 3.1 (Basic properties of translation.)
+
+1. Translation relations {|*|} = (*, *), and h|*|i = (*, *) are functions.
+
+2. If {| ^d|} = (l, s), then dom l ` BV (d). If h|^s|i = (g, l), then dom l `
+
+BV (s), dom g ` BV (s) and dom l " dom g = ;.
+
+Proof Both proofs are by induction on the type derivations and translation
+relation derivations, respectively.
+
+$4 Type Preservation
+
+First, we define an operation |*| which translates variable declarations
+and function definitions to C type assignments.
+
+|*| = ;|
+
+t x = ; l| = {x : t} [ |l||
+t f (ti)i2{...n} s ; g| = {t f (ti)i2{...n}} [ |g|
+
+We also define an operation J^\Gamma K which translates the OCaml variable
+and function environment, ^\Gamma , into the corresponding C environment.J
+
+*K = ;J
+
+^\Gamma ; ^x : ^bK = J^\Gamma K [ {x : J^bK}J
+
+^\Gamma ; ( ^xi : ^pi)i2{m...n} , ^x : (pn ! ^b)K = J^\Gamma K [ {J^bK x(JpnK)}
+
+30 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+
+Throughout the proofs the following assumption about free and bound
+variables in OCaml and C programs will be considered to hold:
+
+Assumption 1
+For any finite set of terms, no two bound variables in these terms have the same
+name.
+
+Assumption 1 allows us to treat the nested scoping of OCaml let statements,
+where a variable can be rebound (e.g., let x = 1 in let x = 2 in x to let
+x = 1 in let y = 2 in y ), as morally equivalent to the flat scoping of C
+declarations and statements into which they are translated.
+
+Theorem 4.1 (Type preservation). If ^\Gamma  ` ^s : ^an ! ^b and h|^s|i =
+(g, l), then J^\Gamma K [ |l| [ |g| ` g.
+Proof Proof is by induction on the height of typing derivation of programs.
+Case \Gamma  ` * (^xi : ^pi)i2{...n} . ( ^d : ^b) : (pi)i2{...n} ! ^b. By inversion of typing for programs, \Gamma , (^xi : ^pi)i2{...n} ` ^d : ^b. By translation for programs, h|* (^xi : ^pi)i2{...n} . ( ^d : ^b) : (pi)i2{...n} ! ^b|i =
+(J^bK procedure (J ^piK xi)i2{...n} {l; s}), *) where {| ^d|}? = (l, s) We must show thatJ
+
+^\Gamma K ` J^bK procedure (J ^piK xi)i2{...n} {l; s}. This is true if J^\Gamma K [ (J ^piK xi)i2{...n} `
+
+{l; s} : J^bK following the C TFun typing rule. We know this immediately by
+Lemma 4.1.3 and by definition of J^\Gamma K.
+Case ^\Gamma  ` let ^x : ^b = ^c in ^s : ^t. We are also given h|let ^x = ^c in ^s|i = (g, l).
+By inversion of typing for programs, we know that ^\Gamma  ` ^c : ^b and ^\Gamma , ^x : ^b `
+
+^s : ^t. Let h|^s|i = (g0, l0). Then we know by the translation function h|let x :
+^b = ^c in ^s|i = (g0, (J^bK x = c; l0)). We must show that J^\Gamma K [ |l| [ |g| ` g. By
+
+the induction hypothesis, J^\Gamma , b xK [ |l0| [ |g0| ` g0. But now by definition ofJ
+
+^\Gamma K, J^\Gamma K [ {b x} [ |l0| [ |g0| ` g0. However, what is given and what we know
+
+by the translation function imply |g0| = |g| and {b x} [ |l0| = |l|. Therefore,J
+
+^\Gamma K [ |l| [ |g| ` g.
+
+Case let ^x (xi : ^pi)i2{...n} : ^b = ^d in ^s : ^t. We are also givenh|
+
+let ^x (xi : ^pi)i2{...n} = ^d in ^s|i = (g, l). By inversion of OCaml function
+typing, we know \Gamma  [ ( ^xi : ^pi)i2{m...n} ` ^d : ^b and \Gamma  [ ( ^xi : ^pi)i2{m...n} , ^x :
+(pn ! ^b) ` ^s : ^t By translation we know that h|let ^x ( ^xi : ^pi)i2{...n} :
+^b = ^d in ^s|i = (J^bKx (JpKi xi)i2{...n} {ld; sd; }; g0, l0) where h|^s|i = (g0, l0) and
+
+{| ^d|}? = (ld, sd). We are trying to show J^\Gamma K [ |l0| [ J^bK x(JpnK) [ |g0| `
+(J^bKx (JpKi xi)i2{...n} {ld; sd; }; g0. By induction we have J^\Gamma K [ J^bK x(JpnK) [
+
+Implicitly Heterogeneous Multi-Stage Programming 31
+|l0| [ |g0| ` g0. Also by Lemma 4.1.3 and weakening, the function definition
+is well-typed, i.e.: J^\Gamma K [ |ld| [ |sd| ` (J^bKx (JpKi xi)i2{...n} {ld; sd; } : J^bK. By
+C TFun, J^\Gamma K ` (J^bKx (JpKi xi)i2{...n} {ld; sd; }. Now by the C program typingJ
+
+^\Gamma K [ J^bK x(JpnK) [ |l0| [ |g0| ` (J^bKx (JpKi xi)i2{...n} {ld; sd; }; g0.
+
+Case ^\Gamma  ` let x : ^b ref = ref ^c in ^s : ^t. Similar to the previous let case.
+Case ^\Gamma  ` let x : ^b array = Array.make ^c1 ^c2 in ^s : ^t. Similar to previous case.
+Case ^\Gamma  ` let x : ^b array array = Array.make matrix ^c1 ^c2 ^c3 in ^s : ^t. Similar
+to the previous case.
+
+Lemma 4.1 (Type preservation for expressions and statements)
+
+1. 8^\Gamma , ^e, ^t. if ^\Gamma  ` ^e : ^o/ , then J^\Gamma K ` J^eK : J^tK
+
+2. 8^\Gamma , ^d. if ^\Gamma  ` ^d : ^t, and {| ^d|}? = (l, s), then J^\Gamma K ` {l, s} : ?
+3. 8^\Gamma , ^d. if ^\Gamma  ` ^d : ^t, and {| ^d|}? = (l, s), then J^\Gamma K ` {l, s} : J^tK
+
+Proof [Lemma 4.1.1] Proof is by induction on the height of the typing derivation of expressions.
+Case ^\Gamma  ` ^c : ^t. Base case. Constants are translated to constants, the rules are
+virtually identical.
+
+Case ^\Gamma  ` ^x : ^t. Base case. By inversion, of the typing judgment, we have
+^\Gamma (^x) = ^t. Then, by definition of J*K, J^\Gamma K(x) = J^tK, and therefore by the C Var
+
+rule J^\Gamma K ` x : J^tK.
+Case ^\Gamma  ` ^x (^e1, . . . , ^en) : ^b. By inversion we have ^\Gamma  ` ^x : ( ^p1, . . . , ^pn) ! ^b thus
+
+^\Gamma (^x) = ( ^pi)i2{...n} ! ^b, and we have 8i.0 <= i <= n, ^\Gamma  ` ^ei : ^pi. We apply
+
+the induction hypothesis to 8i.0 <= i <= n, ^\Gamma  ` ^ei : ^pi to obtain 8i. 0 <= i <= n,J
+
+^\Gamma K ` J^eiK : J^piK. Then, by the C Fcall rule, we have J^\Gamma K ` x(J^e1K, . . . , J^enK) : J^bK.
+
+Case ^\Gamma  ` f (1) ^e : ^b. By inversion we have f (1) : ^b1 ! ^b 2 \Sigma  and ^\Gamma  ` ^e : ^b1. We
+apply the induction hypothesis to ^\Gamma  ` ^e : ^b1 to obtain J^\Gamma K ` J^eK : J^b1K. Then, by
+the C Op1 rule, we have J^\Gamma K ` f(1)(J^eK) : J^bK.
+Case ^\Gamma  ` f(2) ^e1 ^e2 : ^b. Similar to previous case.
+Case ^\Gamma  ` ^e1 f [2] ^e2 : ^b. Similar to previous case.
+Case ^\Gamma  ` if ^e1 then ^e2 else ^e3 : ^t. By inversion, followed by the induction
+hypothesis, we obtain J^\Gamma K ` J^e1K : int, J^\Gamma K ` J^e2K : J^tK, J^\Gamma K ` J^e3K : J^tK. Then, by
+definition of `, we have J^\Gamma K ` J^e1K ? J^e2K : ^e3 : J^tK.
+Case ^\Gamma  ` !^x : ^t. Base case. By inversion we have ^\Gamma (^x) = ^t ref. By definition
+of J^\Gamma K, J^\Gamma K(x) = J^tK. Then, by the C if rule, we have J^\Gamma K ` x : J^t refK.
+
+Case ^\Gamma  ` ^x.(^e) : ^b. By inversion of `, we obtain ^\Gamma  ` ^e : int and ^\Gamma (^x) =
+^b array. We apply the induction hypothesis to ^\Gamma  ` ^e : int to obtain J^\Gamma K ` J^eK :
+
+32 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+int. Also, by definition of J^\Gamma K, we have J^\Gamma K(x) = b[]. Applying the Arr1 rule of`
+
+, we obtain J^\Gamma K ` J^x.(^e)K : J^bK.
+Case ^\Gamma  ` ^x.(^e1).(^e2) : ^b. Similar to one-dimensional array indexing case.
+
+Proof [Lemma 4.1.2] Proof is by induction on the height of the typing derivation of statements.
+Case ^\Gamma  ` ^e : ^t. It is given that {|^e|}? = (l, s). Consider the case when by
+translation {|^e|}? = (*, J^eK). We know l = * and s = J^eK. By Lemma 4.1.1,J
+
+^\Gamma K ` J^eK : J^tK, thus by the C EStat rule J^\Gamma K ` (*, J^eK) : ?.
+
+Case ^\Gamma  ` ^d1; ^d2 : ^t. It is given that {| ^d1; ^d2|}? = (l, s). Having ^\Gamma  ` ^d1; ^d2 : ^t, by
+inversion we know that ^\Gamma  ` ^d1 : unit and ^\Gamma  ` ^d2 : ^t. Let {| ^d1|}? = (l1, s1) and{|
+
+^d2|}? = (l2, s2). By translation, {| ^d1; ^d2|}? = (l1; l2, s1; s2). We know l = l1; l2
+
+and s = s1; s2. We are trying to show J^\Gamma K ` {l1; l2, s1; s2} : ?. We apply the
+induction hypothesis to ^\Gamma  ` ^d1 : unit and ^\Gamma  ` ^d2 : ^t to obtain J^\Gamma K ` {l1, s1} : ?
+and J^\Gamma K ` {l2, s2} : ?. By inversion of the C Blk rule for J^\Gamma K ` {l1, s1} : ? andJ
+
+^\Gamma K ` {l2, s2} : ?, we have J^\Gamma K [ |l1| ` s1 : ? and J^\Gamma K [ |l2| ` s2 : ?. By Lemma
+
+3.1.2 we know dom l1 ` BV (d1) and dom l2 ` BV (d2). Now by Assumption 1,
+dom l1 " dom l2 = ;. We can conclude, by weakening that J^\Gamma K [ |l1| [ |l2| ` s1 : ?
+and J^\Gamma K [ |l1| [ |l2| ` s2 : ?. The final result, J^\Gamma K ` {l1; l2, s1; s2} : ?, follows by
+the C rule Blk.
+Case ^\Gamma  ` ^x := ^e : unit. It is given that {|^x := ^e|}? = (l, s). By inversion, we
+know that ^\Gamma  ` ^e : ^b and ^\Gamma (^x) = b ref. Let {|^x := ^e|}? = (*, x = J^eK). By Lemma
+4.1.1, we know that J^\Gamma K ` e : J^bK. By definition of J^\Gamma K, we know J^\Gamma K(x) = J^bK.
+Therefore, by the C Assign rule, J^\Gamma K ` x = J^eK : ?.
+Case ^\Gamma  ` let x : ^b = ^e in ^d : ^t. It is given that {|let x = ^e in ^d|}? = (l, s).
+By inversion of OCaml typing, we know that ^\Gamma  ` ^e : ^b and ^\Gamma , ^x : ^b ` ^d : ^t.
+Let {| ^d|}? = (l0, s0). Then by translation we know {|let x : ^b = ^e in ^d|}? =
+((J^bK x; l0), (x = J^eK; s0)). By Lemma 4.1.1, we know that J^\Gamma K ` e : J^bK. By
+the C Assign rule, we know J^\Gamma K ` x = e : ?. We must show that J^\Gamma K `
+((J^bK x; l0), (x = J^eK; s0)) : ?. By the induction hypothesis, J^\Gamma , ^x : ^bK ` (l0, s0) : ?.
+The final result follows by the C Blk rule.
+Case ^\Gamma  ` let x : ^b ref = ref ^c in ^d : ^t. Similar to previous case.
+Case ^\Gamma  ` let x : ^b array = Array.make ^c1 ^c2 in ^d : ^t. Similar to previous case.
+Case ^\Gamma  ` let x : ^b array array = Array.make matrix ^c1 ^c2 ^c3 in ^d : ^t.
+Similar to previous case.
+Case ^\Gamma  ` ^x.(^e1)  ^e2 : unit. It is given that {|^x.(^e1)  ^e2|}? = (l, s). By
+inversion we know ^\Gamma (x) = ^b array, ^\Gamma  ` ^e1 : int and ^\Gamma  ` ^e2 : ^b. Let {|^x.(^e1) 
+
+Implicitly Heterogeneous Multi-Stage Programming 33
+
+^e2|}? = (., x[J ^e1K] = J ^e2K). We apply the definition of {|^\Gamma |} to ^\Gamma  ` ^e1 : int
+and Lemma 4.1.1 to ^\Gamma  ` ^e1 : int and ^\Gamma  ` ^e2 : ^b to obtain J^\Gamma K(x) = b[],J
+
+^\Gamma K ` J^e1K : int and J^\Gamma K ` J^e2K : b respectively. By the C rule for array
+
+assignment SetArr1, we now have: J\Gamma K ` x[J ^e1K] = J(^e2)K : ?.
+Case ^\Gamma  ` ^x.(^e1).(^e2)  ^e3 : unit. Similar to previous case.
+Case ^\Gamma  ` if ^e1 then ^d1 else ^d2 : ^t. By inversion, we know that ^\Gamma  ` ^e : bool,
+
+^\Gamma  ` ^d1 : ^t and ^\Gamma  ` ^d2 : ^t. By translation, {|if ^e1 then ^d1 else ^d2|}? =
+
+(., if (J^eK){l1; s1} else {l2; s2}) where {| ^d1|}? = (l1; s1) and {| ^d2|}? = (l2; s2)
+From Lemma 4.1.1, J^\Gamma K ` J^eK : int. By induction, J^\Gamma K ` (l1, s1) : ? and J^\Gamma K `
+(l2, s2) : ?. Then by the C Ifs rule, J^\Gamma K ` (., if (J^eK){l1; s1} else {l2; s2}) : ? .
+Case ^\Gamma  ` while ^e do ^d done : unit. By inversion we know that ^\Gamma  ` ^e : bool
+and ^\Gamma  ` ^d : ^t. By translation, {|while ^e do ^d done|}? = (., while (J^eK){l0; s0})
+where {| ^d|}? = (0l; s0) . From Lemma 4.1.1, J^\Gamma K ` J^eK : int. By induction,J
+
+^\Gamma K ` (l0; s0) : ? Then by the C While rule, J^\Gamma K ` (., while (J^eK){l0; s0}) : ?.
+
+Case ^\Gamma  ` for ^x = ^e1 {to,downto} ^e2 do ^d done : unit. By inversion, we know
+that ^\Gamma  ` ^e1 : int, ^\Gamma  ` ^e2 : int and ^\Gamma , ^x : int ` ^d : ^t. By translation,{|
+
+for ^x = ^e1 to ^e2 do ^d done|}? = (int x, for (x = J ^e1K; x<=J ^e2K; x++){l0; s0}) where{|
+
+^d|} = (l0; s0). From Lemma 4.1.1, J^\Gamma K ` J ^e1K : int and J^\Gamma K ` J ^e2K : int. Also,
+
+by definition of J^\Gamma K, we have J^\Gamma K(x) = int. By induction, J^\Gamma K ` (l, s) : ?. Then
+by the C For rule, J^\Gamma K ` (int x, for (x = J ^e1K; x<=J ^e2K; x++){l0; s0}) : ?.
+
+Case match ^e with(i^ci ! ^dij
+
+i2{...n} |  ^d) : unit. By inversion, we know
+
+that ^\Gamma  ` ^e : ^b where ^b is not a float. Also, ^\Gamma  ` ^cn : ^b and ^\Gamma  ` ^dn : ^t and
+
+^\Gamma  ` ^d : unit. By translation, {|match ^e with(i^ci ! ^diji2{...n} |  ^d)|}? =
+
+switch (JeK){case cn : {l0n; s0n; break}; default : {l0; s0}} where {| ^dn|}? = (l0n, s0n)
+and {| ^d|}? = (l0, s0). From Lemma 4.1.1, J^\Gamma K ` e : J^bK and J\Gamma K ` cn : int. By
+induction, J^\Gamma K ` (l0n, s0n) : ? and J^\Gamma K ` (l0, s0) : ?. Then by the C Switch ruleJ
+
+^\Gamma K ` switch (JeK){case cn : {l0n; s0n; break}; default : {l0; s0}} : ? .
+
+Proof [Lemma 4.1.3] Proof is by induction on the height of the typing derivation of statements. The proof is similar to the one for Lemma 4.1.2. Cases where{| * |}
+
+is undefined follow trivially. We concentrate on the remaining cases.
+Case ^\Gamma  ` ^e : ^t. It is given that {|^e|}? = (l, s). Consider the case when by
+translation {|^e|}? = (*, return J^eK). We know l = * and s = return J^eK. By Lemma
+4.1.1, J^\Gamma K ` J^eK : J^tK, thus by the C Ret rule J^\Gamma K ` {return J^eK; } : J^tK.
+
+34 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+Case ^\Gamma  ` ^d1; ^d2 : ^t. It is given that {| ^d1; ^d2|}? = (l, s). Having ^\Gamma  ` ^d1; ^d2 : ^t, by
+inversion we know that ^\Gamma  ` ^d1 : unit and ^\Gamma  ` ^d2 : ^t. Let {| ^d1|}? = (l1, s1) and{|
+
+^d2|}? = (l2, s2). By translation, {| ^d1; ^d2|}? = (l1; l2, s1; s2). We know l = l1; l2
+
+and s = s1; s2. We are trying to show J^\Gamma K ` {l1; l2, s1; s2} : J^tK. We apply
+Lemma 4.1.2 to ^\Gamma  ` ^d1 : unit and the induction hypothesis to ^\Gamma  ` ^d2 : ^t to
+obtain J^\Gamma K ` {l1, s1} : ? and J^\Gamma K ` {l2, s2} : J^tK. By inversion of the C Blk
+rule for J^\Gamma K ` {l1, s1} : ? a nd J^\Gamma K ` {l2, s2} : J^tK, we have J^\Gamma K [ |l1| ` s1 : ?
+and J^\Gamma K [ |l2| ` s2 : JtK. By Lemma 3.1.2 we know dom l1 ` BV (d1) and
+dom l2 ` BV (d2). Now by Assumption 1, dom l1 " dom l2 = ;. We can
+conclude, by weakening that J^\Gamma K [ |l1| [ |l2| ` s1 : ? and J^\Gamma K [ |l1| [ |l2| ` s2 : JtK.
+The final result, J^\Gamma K ` {l1; l2, s1; s2} : J^tK, follows by the C rule Blk. Case
+
+^\Gamma  ` let x : ^b = ^e in ^d : ^t. It is given that {|let x = ^e in ^d|}? = (l, s). By inversion
+
+of OCaml typing, we know that ^\Gamma  ` ^e : ^b and ^\Gamma , ^x : ^b ` ^d : ^t. Let {| ^d|}? = (l0, s0).
+Then by translation we know {|let x : ^b = ^e in ^d|}? = ((J^bK x; l0), (x = J^eK; s0)).
+By Lemma 4.1.1, we know that J^\Gamma K ` e : J^bK. By the C Assign rule, we knowJ
+
+^\Gamma K ` x = e : ?. We must show that J^\Gamma K ` ((J^bK x; l0), (x = J^eK; s0)) : J^tK. By the
+
+induction hypothesis, J^\Gamma , ^x : ^bK ` (l0, s0) : J^tK. The final result follows by the C
+Blk rule.
+Case ^\Gamma  ` let x : ^b ref = ref ^c in ^d : ^t. Similar to previous case.
+Case ^\Gamma  ` let x : ^b array = Array.make ^c1 ^c2 in ^d : ^t. Similar to previous case.
+Case ^\Gamma  ` let x : ^b array array = Array.make matrix ^c1 ^c2 ^c3 in ^d : ^t.
+Similar to previous case.
+
+$5 Benchmark Data
+Timing. The execution times from which our data is derived are collected
+using MetaOCaml's standard library function Trxtime.timenew. This function
+repeatedly executes a program until the cumulative execution time exceeds 1
+second and reports the number of iterations and the average execution time per
+iteration.
+
+Offshoring vs. Byte Code Compiler. Table 1 displays measurements for
+offshoring with both gcc and Intel's icc. The columns are computed as follows:
+Unstaged is the execution time of the unstaged version of a program. Generate reports code generation times. Generation is considered the first stage
+in a two-stage computation. The second stage is called Staged Run and will
+
+Implicitly Heterogeneous Multi-Stage Programming 35
+
+Table 1 Speedups and Break-Even Points from Offshoring to C
+Name Unstaged Generate Compile Staged Run Speedup Speedup' BEP
+
+(ms) (ms) (ms) (us)
+forward 0.20 1.1 34. 0.37 530x 20.x 180
+gib 0.13 0.26 19. 0.12 990x 5.3x 170
+ks 5.2 36. 8300. 1.4 3700x 69.x 1600
+lcs 5.5 46. 6400. 5.1 1100x 24.x 1100
+obst 4.2 26. 5300. 4.6 910x 22.x 1300
+opt 3.6 66. 8700. 3.4 1100x 44.x 2500
+
+Using GNU's gcc
+
+Name Unstaged Generate Compile Staged Run Speedup Speedup' BEP
+
+(ms) (ms) (ms) (us)
+forward 0.20 1.1 33.0 0.35 580x 21.x 170
+gib 0.13 0.26 20.0 0.098 1200x 6.4x 180
+ks 5.2 36. 8100. 1.5 3500x 66.x 1600
+lcs 5.5 46. 6500. 5.3 1000x 25.x 1200
+obst 4.2 26. 5400. 4.5 940x 23.x 1300
+opt 3.6 66. 9300. 3.3 1100x 46.x 2600
+
+Using Intel's icc
+
+be described shortly. Compile is the time needed to translate the generated
+program and compile it with gcc (or icc in the second table), and dynamically
+load the resulting binary. Staged Run reports the C program execution time,
+including marshalling. The binary is generated by calling the C compiler with
+the flags -g -O2. Speedup is computed as Unstaged divided by Staged Run.
+Speedup' is the ratio between Speedup with staging (without offshoring) and
+staging with offshoring. BEP is the break-even point.
+
+Offshoring vs. OCaml Native Compiler. Table 2 displays the data for
+Figure 5. The columns are computed as follows: OCamlOpt is the time for executing programs compiled with the ocamlopt compiler with the options -unsafe
+-inline 50. Tweaked are execution times for programs hand-optimized postgeneration. The same compiler options as in OCamlOpt were used. Best
+GCC (Best ICC) is the execution time for generated and offshored code with
+the best performing optimization level (-O[0-4]). Speedup is the ratio of the
+OCamlOpt times to the Best GCC (Best ICC) times, and Speedup" is the
+ratio of the Tweaked execution times Best GCC (Best ICC).
+
+36 J. ECKHARDT, R. KAIABACHEV, E. PASALIC, K. SWADI, and W. TAHA
+
+Table 2 Speed of offshored vs. OCaml native compiled code
+Name OCamlOpt (us) Tweaked (us) Best GCC (us) Speedup Speedup"
+forward 0.29 0.25 0.13 2.2x 2.1x
+gib 0.017 0.0095 0.0096 1.7x 0.95x
+ks 23. 0.61 1.0 23.x 0.59x
+lcs 24. 3.1 1.2 20.x 3.0x
+obst 33. 10. 2.7 12.x 3.9x
+opt 24. 4.9 2.8 8.3x 1.7x
+
+Using GNU's gcc
+
+Name OCamlOpt (us) Tweaked (us) Best ICC (us) Speedup Speedup"
+forward 0.29 0.25 0.13 2.2x 1.8x
+gib 0.017 0.0095 0.0091 1.8x 1.1x
+ks 23. 0.61 0.061 380.x 10.x
+lcs 24. 3.1 1.1 22.x 2.2x
+obst 33. 10. 2.9 11.x 3.6x
+opt 24. 4.9 3.1 7.8x 1.6x
+
+Using Intel's icc

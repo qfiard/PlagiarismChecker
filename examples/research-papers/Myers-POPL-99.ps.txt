@@ -1,0 +1,1689 @@
+
+
+Proceedings of the 26th ACM Symposium on Principles of Programming Languages (POPL '99), San Antonio, Texas, USA, January 1999
+
+JFlow: Practical Mostly-Static Information Flow Control
+
+Andrew C. Myers
+Laboratory for Computer Science
+Massachusetts Institute of Technology
+
+http://www.pmg.lcs.mit.edu/~andru
+
+Abstract
+A promising technique for protecting privacy and integrity ofsensitive data is to statically check information flow within
+programs that manipulate the data. While previous workhas proposed programming language extensions to allow this
+static checking, the resulting languages are too restrictive forpractical use and have not been implemented. In this paper, we describe the new language JFlow, an extension tothe Java language that adds statically-checked information
+flow annotations. JFlow provides several new features thatmake information flow checking more flexible and convenient than in previous models: a decentralized label model,label polymorphism, run-time label checking, and automatic
+label inference. JFlow also supports many language featuresthat have never been integrated successfully with static information flow control, including objects, subclassing, dynamictype tests, access control, and exceptions. This paper defines
+the JFlow language and presents formal rules that are used tocheck JFlow programs for correctness. Because most checking is static, there is little code space, data space, or run-timeoverhead in the JFlow implementation.
+
+1 Introduction
+Protection for the privacy of data is becoming increasinglyimportant as data and programs become increasingly mobile.
+Conventional security techniques such as discretionary ac-cess control and information flow control (including mandatory access control) have significant shortcomings as privacy-protection mechanisms.
+
+The hard problem in protecting privacy is preventing pri-vate information from leaking through computation. Access
+control mechanisms do not help with this kind of leak, since
+
+Thisresearch wassupported in part by DARPA Contract F30602-96-C-0303, monitoredby USAF Rome Laboratory, and in part by DARPA Contract F30602-98-1-0237, also
+monitored by USAF Rome Laboratory.Copyright c
+
+fl1999 by the Association for Computing Machinery, Inc. Permissionto make digital or hard copies of part or all of this work for personal or classroom
+
+use is granted without fee provided that copies are not made or distributed for profitor commercial advantage and that copies bear this notice and the full citation on the
+first page. Copyrights for components of this work owned by others than ACM mustbe honored. Abstracting with credit is permitted. To copy otherwise, to republish, to
+post on servers, or to redistribute to lists, requires prior specific permission and/or afee. Request permissions from Publications Dept, ACM Inc., fax +1 (212) 869-0481,
+or permissions@acm.org.
+
+they only control information release, not its propagationonce released. Mandatory access control (MAC) mechanisms prevent leaks through propagation by associating arun-time security class with every piece of computed data.
+Every computation requires that the security class of the re-sult value also be computed, so multi-level systems using
+this approach are slow. Also, these systems usually apply asecurity class to an entire process, tainting all data handled
+by the process. This coarse granularity results in data whosesecurity class is overly restrictive, and makes it difficult to
+write many useful applications.A promising technique for protecting privacy and integrity
+of sensitive data is to statically check information flowswithin programs that might manipulate the data. Static
+checking allows the fine-grained tracking of security classesthrough program computations, without the run-time overhead of dynamic security classes. Several simple program-ming languages have been proposed to allow this static checking [DD77, VSI96, ML97, SV98, HR98]. However, thefocus of these languages was correctly checking information
+flow statically, not providing a realistic programming model.This paper describes the new language JFlow, an extension
+to the Java language [GJS96] that permits static checking offlow annotations. JFlow seems to be the first practical programming language that allows this checking. Like other re-cent approaches [VSI96, ML97, SV98, HR98, ML98], JFlow
+treats static checking of flow annotations as an extended formof type checking. Programs written in JFlow can be statically
+checked by the JFlow compiler, which prevents informationleaks through storage channels [Lam73]. JFlow is intended
+to support the writing of secure servers and applets that ma-nipulate sensitive data.
+
+An important philosophical difference between JFlow andother work on static checking of information flow is the focus
+on a usable programming model. Despite a long history, staticinformation flow analysis has not been widely accepted as a
+security technique. One major reason is that previous modelsof static flow analysis were too limited or too restrictive to
+be used in practice. The goal of the work presented in thispaper has been to add enough power to the static checking
+framework to allow reasonable programs to be written in anatural manner.
+
+This work has involved several new contributions: JFlowextends a complex programming language and supports many
+
+language features that have not been previously integratedwith static flow checking, including mutable objects (which
+subsume function values), subclassing, dynamic type tests,and exceptions. JFlow also provides powerful new features
+that make information flow checking less restrictive and moreconvenient than in previous programming languages:
+
+ffl It supports the decentralized label model [ML97,ML98], which allows multiple principals to protect their
+
+privacy even in the presence of mutual distrust. Italso supports safe, statically-checked declassification,
+or downgrading, allowing a principal to relax its ownprivacy policies without weakening policies of other
+principals.
+ffl It provides a simple but powerful model of access con-trol that allows code privileges to be checked statically,
+
+and also allows authority to be granted and checkeddynamically.
+
+ffl It provides label polymorphism, allowing code that isgeneric with respect to the security class of the data it
+
+manipulates.
+ffl Run-time label checking and first-class label values pro-vide a dynamic escape when static checking is too restrictive. Run-time checks are statically checked to en-sure that information is not leaked by the success or
+failure of the run-time check itself.
+ffl Automatic label inference makes it unnecessary to writemany of the annotations that would otherwise be required.
+The JFlow compiler is structured as a source-to-sourcetranslator, so its output is a standard Java program that can
+
+be compiled by any Java compiler. For the most part, trans-lation involves removal of the static annotations in the JFlow
+program (after checking them, of course). There is littlecode space, data space, or run time overhead, because most
+checking is performed statically.The remainder of this paper is structured as follows: Section 2 contains an overview of the JFlow language and arationale for the decisions taken. Section 3 discusses static
+checking, sketches the framework used to check programconstructs in a manner similar to type checking, and both formally and informally presents some of the rules used. Thissection also describes the translations that are performed by
+the compiler. Section 4 compares this work to other work inrelated areas, and Section 5 provides some conclusions. The
+grammar of JFlow is provided for reference in Appendix A.
+
+2 Language overview
+This section presents an overview of the JFlow language anda rationale for its design. JFlow is an extension to the Java
+language that incorporates the decentralized label model. InSection 2.1, the previous work on the decentralized label
+model [ML97, ML98] is reviewed. The language descrip-tion in the succeeding sections focuses on the differences
+between JFlow and Java, since Java is widely known andwell-documented [GJS96].
+
+2.1 Labels
+In the decentralized label model, data values are labeledwith security policies. A label is a generalization of the
+usual notion of a security class; it is a set of policies thatrestrict the movement of any data value to which the label
+is attached. Each policy in a label has an owner O, whichis a principal whose data was observed in order to create the
+value. Principals are users and other authority entities suchas groups or roles. Each policy also has a set of readers,
+which are principals that O allows to observe the data. Asingle principal may be the owner of multiple policies and
+may appear in multiple reader sets.For example, the label
+
+L = f o1: r1, r2; o2: r2, r3g has twopolicies in it (separated by semicolons), owned by
+
+o1 and o2respectively. The policy of principal
+o1 allows r1 and r2 toread; the policy of principal
+o2 allows r2 and r3 to read. Theeffective reader set contains only the common reader
+
+r2. Theleast restrictive label possible is the label
+fg, which containsno policies. Because no principal expresses a privacy interest
+
+in this label, data labeled by fg is completely public as far asthe labeling scheme is concerned.
+
+There are two important intuitions behind this model: first,data may only be read by a user of the system if all of the
+policies on the data list that user as a reader. The effectivepolicy is an intersection of all the policies on the data. Second,
+a principal may choose to relax a policy that it owns. Thisis a safe form of declassification -- safe, because all of the
+other policies on the data are still enforced.A process has the authority to act on behalf of some (possibly empty) set of principals. The authority possessed bya process determines the declassifications that it is able to
+perform. Some principals are also authorized to act for otherprincipals, creating a principal hierarchy. The principal hierarchy may change over time, but revocation is assumed tooccur infrequently. The meaning of a label is affected by the
+current principal hierarchy. For example, if the principal r0can act for the principal
+
+r, then if r is listed as a reader bya policy,
+r0 is effectively listed by that policy as well. Themeaning of a label under different principal hierarchies is
+
+discussed extensively in an earlier paper [ML98].Every variable is statically bound to a static label. (The
+alternative, dynamic binding, largely prevents static analysisand can be simulated in JFlow if needed.) If a value
+
+v has label
+L1 and a variable x has label L2, we can assign the value tothe variable (
+
+x := v) only if L1 can be relabeled to L2, whichis written as
+
+L1 v L2. The definition of this binary relationon labels is intuitive:
+
+L1 v L2 if for every policy in L1, thereis some policy in
+L2 that is at least as restrictive [ML98].Thus, the assignment does not leak information.
+
+In this system, the label on x is assigned by the programmerwho writes the code that uses
+
+x. The power to select a labelfor
+x does not give the programmer the ability to leak v,because the static checker permits the assignment to
+
+x only ifthe label on
+x is sufficiently restrictive. After the assignment,the static binding of the label of
+
+x prevents leakage. (Changesin who can read the value in
+x are effected by modifying theprincipal hierarchy, but changes to the principal hierarchy
+
+require appropriate privilege.)
+
+2
+
+Computations (such as multiplying two numbers) causejoining (
+
+t ) of labels; the label of the result is the least restric-tive label that is at least as restrictive as the labels of the values
+
+used in the computation; that is, the least upper bound of thelabels. The join of two sets of policies is simply the union
+of the sets of policies. The relation v generates a lattice ofequivalence classes of labels with
+
+t as the LUB operator.Lattice properties are important for supporting automatic label inference and label polymorphism [ML97, ML98]. Thenotation
+
+A ss B is also used as a shorthand for A v B^B v A(which does not mean that the labels are equal [ML98]).
+
+Declassification provides an escape hatch from strict infor-mation flow tracking. If the authority of a process includes a
+principal p, a value may be declassified by dropping policiesowned by principals that
+
+p acts for. The ability to declassifyprovides the opportunity for
+
+p to choose to release informa-tion based on a more sophisticated analysis.
+
+All practical information flow control systems provide theability to declassify data because strict information flow control is too restrictive to write real applications. More com-plex mechanisms such as inference controls [Den82] often
+are used to decide when declassification is appropriate. Inprevious systems, declassification is performed by a trusted
+subject: code having the authority of a highly trusted princi-pal. One key advantage of the new label structure is that it
+is decentralized: it does not require that all other principalsin the system trust a principal
+
+p's declassification decision,since
+p cannot weaken the policies of principals that it doesnot act for.
+
+2.2 Labeled types
+This section begins the description of the new work in this pa-per (the JFlow programming language), which incorporates
+
+the label model just summarized. In a JFlow program, a labelis denoted by a label expression, which is a set of component
+expressions. As in Section 2.1, a component expression ofthe form owner: reader
+
+1, reader2, : : : denotes a policy. Alabel expression is a series of component expressions, separated by semicolons, such as fo1: r1, r2; o2: r2, r3g. In aprogram, a component expression may take additional forms;
+for example, it may be simply a variable name. In that case,it denotes the set of policies in the label of that variable. The
+label fag contains a single component; the meaning of thelabel is that the value it labels should be as restricted as the
+variable a is. The label fa; o: rg contains two components,indicating that the labeled value should be as restricted as
+
+ais, and also that the principal
+o restricts the value to be readby at most
+r.In JFlow, every value has a labeled type that consists of
+
+two parts: an ordinary Java type such as int, and a label thatdescribes the ways that the value can propagate. The type and
+label parts of a labeled type act largely independently. Anytype expression t may be labeled with any label expression
+flg. This labeled type expression is written as tflg; forexample, the labeled type
+
+intfp:g represents an integer thatprincipal
+p owns and only p can read (the owner of a policyis always implicitly a reader).
+
+The goal of type checking is to ensure that the apparent,
+
+intfpublicg x;booleanfsecretg b;
+: : :int x = 0;
+if (b) fx = 1;
+g
+
+Figure 1: Implicit flow example
+static type of each expression is a supertype of the actual,run-time type of every value it might produce; similarly, the
+goal of label checking is to ensure that the apparent label ofevery expression is at least as restrictive as the actual label
+of every value it might produce. In addition, label checkingguarantees that, except when declassification is used, the
+apparent label of a value is at least as restrictive as the actuallabel of every value that might affect it. In principle, the
+actual label could be computed precisely at run time. Staticchecking ensures that the apparent, static label is always
+a conservative approximation of the actual label. For thisreason, it is typically unnecessary to represent the actual
+label at run time.A labeled type may occur in a JFlow program in most
+places where a type may occur in a Java program. For exam-ple, variables may be declared with labeled type:
+
+intfp:g x;
+intfxg y;
+int z;
+
+The label may always be omitted from a labeled type, as inthe declaration of
+
+z. If omitted, the label of a local variableis inferred automatically based on its uses. In other contexts
+
+where a label is omitted, a context-dependent default labelis generated. For example, the default label of an instance
+variable is the public label fg. Several other cases of defaultlabel assignment are discussed later.
+
+2.3 Implicit flows
+In JFlow, the label of an expression's value varies dependingon the evaluation context. This somewhat unusual property
+
+is needed to prevent leaks through implicit flows: channelscreated by the control flow structure itself.
+
+Consider the code segment of Figure 1. By examining thevalue of the variable
+
+x after this segment has executed, wecan determine the value of the secret boolean
+
+b, even though
+x has only been assigned constant values. The problem is theassignment
+
+x = 1, which should not be allowed.To prevent information leaks through implicit flows, the
+
+compiler associates a program-counter label (pc) with everystatement and expression, representing the information that
+might be learned from the knowledge that the statement orexpression was evaluated. In this program, the value of
+
+pcduring the consequent of the
+if statement is fbg. After the
+if statement, pc = fg, since no information about b can bededuced from the fact that the statement after the
+
+if statementis executed. The label of a literal expression (e.g.,
+
+1) is thesame as its
+pc, or fbg in this case. The unsafe assignment
+
+3
+
+labelfLg lb;intf\Lambda lbg x;
+intfp:g y;
+switch label(x) f
+
+case (intfyg z) y = z;
+else throw new UnsafeTransfer();g
+
+Figure 2: Switch label
+(x = 1) in the example is prevented because the label of x(
+
+fpublicg) is not at least as restrictive as the label of 1 in thisexpression, which is
+
+fbg, or fsecretg.
+
+2.4 Run-time labels
+In JFlow, labels are not purely static entities; they may also beused as values. First-class values of the new primitive type
+
+label represent labels. This functionality is needed whenthe label of a value cannot be determined statically. For
+example, if a bank stores a number of customer accounts aselements of a large array, each account might have a different
+label that expresses the privacy requirements of the individualcustomer. To implement this example in JFlow, each account
+can be labeled by an attached dynamic label value.A variable of type
+
+label may be used both as a first-classvalue and as a label for other values. For example, methods
+
+can accept arguments with run-time labels, as in the followingmethod declaration:
+
+static floatf*lbg compute(int xf*lbg, label lb)
+In this example, the component expression *lb denotes thelabel contained in the variable
+
+lb, rather than the label ofthe variable
+lb. To preserve safety, variables of type label(such as
+lb) may be used to construct labels only if they areimmutable after initialization; in Java terminology, if they are
+
+final. (Unlike in Java, arguments in JFlow are always final.)The important power that run-time labels add is the ability
+to be examined at run-time, using the switch label statement.An example of this statement is shown in Figure 2. The code
+in this figure attempts to transfer an integer from the variable
+x to the variable y. This transfer is not necessarily safe,because
+
+x's label, lb, is not known statically. The statementexamines the run-time label of the expression
+
+x, and executesone of several
+case statements. The statement executed isthe first whose associated label is at least as restrictive as
+
+the expression label; that is, the first statement for which theassignment of the expression value to the declared variable
+(in this case, z) is legal. If it is the case that f\Lambda lbg v fp :g, thefirst arm of the switch will be executed, and the transfer will
+occur safely via z. Otherwise, the code throws an exception.Since
+
+lb is a run-time value, information may be transferredthrough it. This can occur in the example by observing which
+
+of the two arms of the switch are executed. To prevent thisinformation channel from becoming an information leak, the
+pc in the first arm is augmented to include lb's label, which is
+fLg. The code passes static checking only if the assignmentfrom
+
+y to z is legal; that is, if fLg v fyg.
+
+class Account f
+
+final principal customer;Stringfcustomer:g name;
+
+floatfcustomer:g balance;g
+
+Figure 3: Bank account using run-time principals
+Run-time labels can be manipulated statically, though con-servatively; they are treated as an unknown but fixed label.
+The presence of such opaque labels is not a problem for staticanalysis, because of the lattice properties of these labels. For
+example, given any two labels L1 and L2 where L1 v L2,it is the case for any third label
+
+L3 that L1 t L3 v L2 t L3.This implication makes it possible for an opaque label
+
+L3 toappear in a label without preventing static analysis. Using it,
+
+unknown labels, including run-time labels, can be propagatedstatically.
+
+2.5 Authority and declassification
+JFlow has capability-like access control that is both dynam-ically and statically checked. A method executes with some
+
+authority that has been granted to it. The authority is es-sentially the capability to act for some set of principals, and
+controls the ability to declassify data. Authority also can beused to build more complex access control mechanisms.
+
+At any given point within a program, the compiler under-stands the code to be running with the ability to act for some
+set of principals, called the static authority of the code at thatpoint. The actual authority may be greater, because those
+principals may be able to act for other principals.The principal hierarchy may be tested at any point using the
+actsFor statement. The statement actsFor(p1, p2) S executesthe statement S if the principal
+
+p1 can act for the principal
+p2. Otherwise, the statement S is skipped. The statementS is checked under the assumption that this acts-for relation
+
+exists: for example, if the static authority includes p1, thenduring static checking of S, it is augmented to include
+
+p2.A program can use its authority to declassify a value. The
+
+expression declassify(e, L) relabels the result of an expres-sion
+
+e with the label L. Declassification is checked statically,using the static authority at the point of declassification. The
+
+declassify expression may relax policies owned by principalsin the static authority.
+
+2.6 Run-time principals
+Like labels, principals may also be used as first-class valuesat run time. The type
+
+principal represents a principal that is avalue. A
+final variable of type principal may be used as if itwere a real principal. For example, a policy may use a
+
+finalvariable of type
+principal to name an owner or reader. Thesevariables may also be used in
+
+actsFor statements, allowingstatic reasoning about parts of the principal hierarchy that
+
+may vary at run time. When labels are constructed usingrun-time principals, declassification may also be performed
+on these labels.
+
+4
+
+public class Vector[label L] extends AbstractList[L] f
+
+private intfLg length;
+private ObjectfLg[ ]fLg elements;
+
+public Vector() : : :
+public Object elementAt(int i):fL; ig
+
+throws (ArrayIndexOutOfBoundsException) f
+
+return elements[i];g
+
+public void setElementAtfLg(Objectfg o, intfg i) : : :
+public intfLg size() f return length; g
+public void clearfLg() : : :g
+
+Figure 4: Parameterization over labels
+Run-time principals are needed in order to model systemsthat are heterogeneous with respect to the principals in the
+system, without resorting to declassification. For example,a bank might store bank accounts with the structure shown
+in Figure 3, using run-time principals rather than run-timelabels. With this structure, each account may be owned by
+a different principal (the customer whose account it is). Thesecurity policy for each account has similar structure but is
+owned by the principal in the instance variable customer.Code can manipulate the account in a manner that is generic
+with respect to the contained principal, but can also determineat run-time which principal is being used. The principal
+
+customer may be manipulated by an actsFor statement, and thelabel
+
+fcustomer:g may be used by a switch label statement.
+
+2.7 Classes
+Even in the type domain, parameterizing classes is importantfor building reusable data structures. It is even more important to have polymorphism in the information flow domain;the usual way to handle the absence of statically-checked type
+polymorphism is to perform dynamic type casts, but this ap-proach works poorly when applied to information flow since
+new information channels are created by dynamic tests.To allow usable data structures in JFlow, classes may be
+parameterized to make them generic with respect to somenumber of labels or principals. Class and interface declarations are extended to include an optional set of explicitlydeclared parameters.
+
+For example, the Java Vector class is translated to JFlowas shown in Figure 4.
+
+Vector is parameterized on the label
+L, which represents the label of the contained elements. As-suming that
+
+secret and public are appropriately defined, thetypes
+Vector[fsecretg] and Vector[fpublicg] would representvectors of elements of differing sensitivity. Without the ability to parameterize classes on labels, it would be necessaryto reimplement
+
+Vector for every distinct element label.The addition of label and principal parameters to
+
+JFlow makes parameterized classes into simple dependenttypes [Car91], since types contain values. To ensure that
+these dependent types have a well-defined meaning, onlyimmutable variables may be used as parameters.
+
+Note that even if fsecretg v fpublicg, it is not the case
+
+that Vector[fsecretg] ^ Vector[fpublicg], since subtyping isinvariant in the parameter
+
+L (the subtype relation is denotedhere by
+^). When such a relation is sound, the parametermay be declared as a
+
+covariant label rather than as a label,which places additional restrictions on its use. For example,
+
+no method argument or mutable instance variable may belabeled using the parameter.
+
+A class always has one implicit label parameter: the label
+fthisg, which represents the label on an object of the class.Because
+
+L1 v L2 implies that CfL1g acts like a subtype of
+CfL2g, the label of this is necessarily a covariant parameter,and its use is restricted in the same manner as with other
+
+covariant parameters.A class may have some authority granted to its objects by
+adding an authority clause to the class header. The author-ity clause may name principals external to the program, or
+principal parameters. If the authority clause names externalprincipals, the process that installs the class into the system
+must have the authority of the named principals. If the au-thority clause names principals that are parameters of the
+class, the code that creates an object of the class must havethe authority of the actual principal parameters used in the
+call to the constructor. If a class C has a superclass Cs, any
+authority in Cs must be covered by the authority clause of
+C. It is not possible to obtain authority by inheriting from asuperclass.
+
+2.8 Methods
+Like class declarations, JFlow method declarations also con-tain some extensions. There are a few optional annotations
+
+to manage information flow and authority delegation. Amethod header has the following syntax (in the form of the
+Java Language Specification [GJS96]):
+MethodHeader:Modifiers
+
+opt LabeledType IdentifierBeginLabel
+
+opt ( FormalParameterListopt ) EndLabeloptThrows
+opt WhereConstraintsopt
+
+FormalParameter:LabeledType Identifier OptDims
+
+The return value, the arguments, and the exceptions mayeach be individually labeled. One subtle change from Java
+is that arguments are always implicitly final, allowing themto be used as type parameters. This change is made for the
+convenience of the programmer and does not significantlychange the power of the language.
+
+There are also two optional labels called the begin-labeland the end-label. The begin-label is used to specify any
+restriction on pc at the point of invocation of the method.The end-label -- the final
+
+pc -- specifies what informationcan be learned by observing whether the method terminates
+
+normally. Individual exceptions and the return value itselfalso may have their own distinct labels, which provides finegrained tracking of information flow.In Figure 5 are some examples of JFlow method declarations. When labels are omitted in a JFlow program, a defaultlabel is assigned. The effect of these defaults is that often
+methods require no label annotations whatever. Labels may
+
+5
+
+static intfx;yg add(int x, int y) f return x + y; g
+boolean compare str(String name, String pwd):fname; pwdg
+
+throws(NullPointerException) f : : : g
+boolean storefLg(intfg x)
+
+throws(NotFound) f : : : g
+
+Figure 5: JFlow method declarations
+be omitted from a method declaration, signifying the use ofimplicit label polymorphism. For example, the arguments of
+add and compare str are unlabeled. When an argument labelis omitted, the method is generic with respect to the label of
+the argument. The argument label becomes an implicit pa-rameter of the procedure. For example, the method
+
+add canbe called with any two integers
+x and y, regardless of theirlabels. This label polymorphism is important for building
+
+libraries of reusable code. Without it, a math routine like addwould have to be reimplemented for every argument label
+ever used.The default label for a return value is the end-label, joined
+with the labels of all the arguments. For add, the defaultreturn value label is exactly the label written (
+
+fx;yg), so thereturn value could be written just as
+int. The default labelon an exception is the end-label, as in the
+
+compare str ex-ample. If the begin-label is omitted, as in
+
+add, it becomesan implicit parameter to the method. Such a method can be
+
+called regardless of the caller's pc. Because the pc within themethod contains an implicit parameter, this method is prevented from causing real side effects; it may of course modifylocal variables and mutate objects passed as arguments if they
+are appropriately declared, but true side effects would createstatic checking errors.
+
+Unlike in Java, the method may contain a list of constraintsprefixed by the keyword
+
+where:
+
+WhereConstraints:
+
+where Constraints
+
+Constraint:
+
+authority ( Principals )
+caller ( Principals )
+actsFor ( Principal , Principal )
+
+There are three different kinds of constraints:
+
+ffl authority(p1; : : : ; pn) This clause lists principals thatthe method is authorized to act for. The static authority at
+
+the beginning of the method includes the set of principalslisted in this clause. The principals listed may be either
+names of global principals, or names of class parametersof type
+
+principal. Every listed principal must be alsolisted in the
+
+authority clause of the method's class. Thismechanism obeys the principle of least privilege, since
+
+not all the methods of a class need to possess the fullauthority of the class.
+
+ffl caller(p1; : : : ; pn) Calling code may also dynamicallygrant authority to a method that has a
+
+caller constraint.Unlike with the
+authority clause, where the authoritydevolves from the object itself, authority in this case
+
+class passwordFile authority(root) f
+
+public booleancheck (String user, String password)
+
+where authority(root) f// Return whether password is correct
+
+boolean match = false;
+try f
+
+for (int i = 0; i ! names.length; i++) f
+
+if (names[i] == user &&passwords[i] == password) f
+
+match = true;
+break;g
+
+gg
+catch (NullPointerException e) fg
+catch (IndexOutOfBoundsException e) fg
+return declassify(match, fuser; passwordg);g
+
+private String [ ] names;
+private String f root: g [ ] passwords;g
+
+Figure 6: A JFlow password file
+devolves from the caller. A method with a caller clausemay be called only if the calling code possesses the
+requisite static authority.
+The principals named in the caller clause need not beconstants; they may also be the names of method arguments whose type is principal. By passing a principal asthe corresponding argument, the caller grants that principal's authority to the code. These dynamic principalsmay be used as first-class principals; for example, they
+may be used in labels.
+ffl actsFor (p1,p2) An actsFor constraint may be used toprevent the method from being called unless the specified acts-for relationship (p1 acts for p2) holds at thecall site. When the method body is checked, the static
+principal hierarchy is assumed to contain any acts-forrelationships declared in the method header. This constraint allows information about the principal hierarchyto be transmitted to the called method without any dynamic checking.
+
+2.9 Example: passwordFile
+Now that the essentials of the JFlow language are covered, weare ready to consider some interesting JFlow code. Figure 6
+
+contains a JFlow implementation of a simple password file,in which the passwords are protected by information flow
+controls. Only the method for checking passwords is shown.This method,
+
+check, accepts a password and a user name,and returns a boolean indicating whether the string is the
+
+right password for that user.The
+
+if statement is conditional on the elements of passwords and on the variables user and password, whose labelsare implicit parameters. Therefore, the body of the
+
+if state-ment has
+pc = fuser; password; root:g, and the variable
+
+6
+
+class Protected f
+
+final labelfthisg lb;Objectf\Lambda lbg content;
+
+public ProtectedfLLg(Objectf\Lambda LLg x, label LL) flb = LL; // must occur before call to super()
+
+super(); //content = x; // checked assuming lb == LL
+g
+public Objectf\Lambda Lg get(label L):fLg
+
+throws (IllegalAccess) f
+
+switch label(content) f
+
+case (Objectf\Lambda Lg unwrapped) return unwrapped;
+else throw new IllegalAccess();g
+
+g
+public label get label() f
+
+return lb;g
+
+g
+
+Figure 7: The Protected class
+match also must have this label in order to allow the assign-ment
+
+match = true. This label prevents match from beingreturned directly as a result, since the label of the return value
+
+is the default label, fuser; passwordg. Finally, the methoddeclassifies
+
+match to this desired label, using its compiled-inauthority to act for
+
+root. Note that the exceptions NullPointerException and IndexOutOfBoundsException must be ex-plicitly caught, since the method does not explicitly declare
+
+them. More precise reasoning about the possibility of excep-tions would make JFlow code more convenient to write.
+
+Otherwise there is very little difference between this codeand the equivalent Java code. Only three annotations have
+been added: an authority clause stating that the principal
+root trusts the code, a declassify expression, and a label onthe elements of
+
+passwords. The labels for all local variablesand return values are either inferred automatically or assigned
+
+sensible defaults. The task of writing programs is made easierin JFlow because label annotations tend to be required only
+where interesting security issues are present.In this method, the implementor of the class has decided
+that declassification of match results in an acceptably smallleak of information. Like all login procedures, this method
+does leak information, because exhaustively trying pass-words will eventually extract the passwords from the password file. However, assuming that the space of passwordsis large and passwords are difficult to guess, the amount of
+information gained in each trial is far less than one bit. Rea-soning processes about acceptable leaks of information lie
+outside the domain of information flow control, but in thissystem, such reasoning processes can be accommodated in a
+natural and decentralized manner.
+
+2.10 Example: Protected
+The class Protected provides a convenient way of managingrun-time labels, as in the bank account example mentioned
+
+earlier. Its implementation is shown in Figure 7. As the
+
+implementation shows, a Protected is an immutable paircontaining a value
+
+content of type Object and a label lbthat protects the value. Its value can be extracted with the
+
+get method, but the caller must provide a label to use forextraction. If the label is insufficient to protect the data,
+an exception is thrown. A value of type Protected behavesvery much like a value in dynamic-checked information flow
+systems, since it carries a run-time label. A Protected has anobvious analogue in the type domain: a value dynamically
+associated with a type tag (e.g., the Dynamic type [ACPP91]).One key to making
+
+Protected convenient is to label theinstance variable
+lb with fthisg. Without this labeling, Protected would need an additional explicit covariant label pa-rameter to label
+
+lb with.
+
+2.11 Limitations
+JFlow is not completely a superset of Java. Certain featureshave been omitted to make information flow control tractable.
+
+Also, JFlow does not eliminate all possible information leaks.Certain covert channels (particularly, various kinds of timing
+channels) are difficult to eliminate. Prior work has addressedstatic control of timing channels, though the resulting rules
+are restrictive [AR80, SV98]. Other covert channels arisefrom Java language features:
+
+Threads. JFlow does not prevent threads from communi-cating covertly via the timing of asynchronous modifications
+to shared objects. This covert channel can be prevented byrequiring only single-threaded programs.
+
+Timing channels. JFlow cannot prevent threads fromimproperly gaining information by timing code with the system clock, except by removing access to the clock.
+
+HashCode. In Java, the built-in implementation of the
+hashCode method, provided by the class Object, can be usedto communicate information covertly. Therefore, in JFlow
+
+every class must implement its own hashCode.
+
+Static variables. The order of static variable initializa-tion can be used to communicate information covertly. In
+
+JFlow, this channel is blocked by ruling out static variables.However, static methods are legal. This restriction does not
+significantly hurt expressive power, since a program that usesstatic variables usually can be rewritten as a program in which
+the static variables are instance variables of an object. Theorder of initialization of these objects then becomes explicit
+and susceptible to analysis.
+
+Finalizers. Finalizers are run in a separate thread fromthe main program, and therefore can be used to communicate
+
+covertly. Finalizers are not part of JFlow.
+
+Resource exhaustion. An OutOfMemoryError can beused to communicate information covertly, by conditionally allocating objects until the heap is exhausted. JFlowtreats this error as fatal, preventing it from communicating
+more than a single bit of information per program execu-tion. Other exhaustion errors such as
+
+StackOverflowErrorare treated similarly.
+
+Wall-clock timing channels. A JFlow program canchange its run time based on private information it has ob7
+
+served. As an extreme example, it can enter an infinite loop.JFlow does not attempt to control these channels.
+
+Unchecked exceptions. Java allows users to defineexceptions that need not be declared in method headers
+(unchecked exceptions), although this practice is describedas atypical [GJS96]. In JFlow, there are no unchecked exceptions, since they could serve as covert channels.
+
+Type discrimination on parameters. JFlow supportsthe run-time cast and
+
+instanceof operators of standard Java,but they may only be invoked using classes that lack parameters. The reason for this restriction is that information aboutthe parameters is not available at run time. These operators
+could be permitted if the parameters were statically knownto be matched, but this is not currently supported.
+
+Backward compatibility. JFlow is not backward com-patible with Java, since existing Java libraries are not flowchecked and do not provide flow annotations. However, inmany cases, a Java library can be wrapped in a JFlow library
+that provides reasonable annotations.
+
+3 Static checking and translation
+This section covers the static checking that the JFlow com-piler performs as it translates code, and the translation process
+itself.
+
+3.1 Exceptions
+An important limitation of earlier attempts to create lan-guages for static flow checking has been the absence of usable
+
+exceptions. For example, in Denning's original work on staticflow checking, exceptions terminated the program [DD77]
+because any other treatment of exceptions seemingly leakedinformation. Subsequent work has avoided exceptions entirely.It might seem unnecessary to treat exceptions directly,
+since in many languages, a function that generates excep-tions can be desugared into a function that returns a discriminated union or oneof. However, there are problems withthis approach. The obvious way to handle oneofs causes all
+exceptions to carry the same label -- an unacceptable loss ofprecision. Also, Java exceptions are actually objects, and the
+try: : : catch statement functions like a typecase. This modelcannot be translated directly into a oneof.
+
+Nevertheless, it is useful to consider how oneof types mightbe handled in JFlow. The obvious way to treat oneof types
+is by analogy with record types. Each arm of the oneof hasa distinct label associated with it. In addition, there is an
+added integer field tag that indicates which of the arms ofthe oneof is active. The problem with this model is that
+every assignment to the oneof will require that ftagg v pc,and every attempt to use the oneof will implicitly read
+
+ftagg.As a result, every arm of the oneof will effectively carry the
+
+same label. For modeling exceptions, this is unacceptable.For each expression or statement, the static checker determines its path labels, which are the labels for the informa-tion transmitted by various possible termination paths: normal termination, termination through exceptions, termination
+
+through a return statement, and so on. This fine-grained anal-ysis avoids the unnecessary restrictiveness that would be produced by desugaring exceptions. Each exception that can beraised by evaluating a statement or expression has a possibly
+distinct label that is transferred to the pc of catch statementsthat might intercept it. Even finer resolution is provided for
+normal termination and for return termination; for example,the label of the value of an expression may differ from the
+label associated with normal termination. Finally, termina-tion of a statement by a
+
+break or continue statement is alsotracked without confusing distinct
+
+break or continue targets.The path labels for a statement or expression are represented as a map from symbols to labels. Each mappingrepresents a termination path that the statement or expression might take, and the label of the mapping indicates whatinformation may be transmitted if this path is known to be
+the actual termination path. The domain of the map includesseveral different kinds of entities:
+
+ffl The symbol n, which represents normal termination.
+ffl The symbol r, which represents termination through a
+
+return statement.
+
+ffl Classes that inherit from Throwable. A mapping froma class represents termination by an exception.
+
+ffl The symbols nv and rv represent the labels of the nor-mal value of an expression and the return value of a
+
+statement, respectively. They do not represent pathsthemselves, but it is convenient to include them as part
+of the map. Their labels are always at least as restrictiveas the labels of the corresponding paths.
+
+ffl A tuple of the form hgoto Li represents terminationby executing a named
+
+break or continue statement thatjumps to the target
+L. A break or continue statementthat does not name a target is represented by the tuple
+
+hgoto ffli. These tuples are always mapped to the label
+? since the static checking rules do not use the actuallabel.
+
+Path labels are denoted by the letter X in this paper, andmembers of the domain of
+
+X (paths) are denoted by s. Theexpression
+X[s] denotes the label that X maps s to, and theexpression
+
+X[s := L] denotes a new map that is exactlylike
+X except that s is bound to L. Path labels may alsomap a symbol
+
+s to the pseudo-label ;, indicating that thestatement cannot terminate through the path
+
+s. The label ;acts as the bottom of the label lattice;
+; t L = L for all labels
+L, including the label fg. The special path labels X; mapall paths to
+
+;, corresponding to an expression that does notterminate.
+
+3.2 Type checking vs. label checking
+The JFlow compiler performs two kinds of static checkingas it compiles a program: type checking and label checking.
+
+These two aspects of checking cannot be entirely disentan-gled, since labels are type constructors and appear in the rules
+for subtyping. However, the checks needed to show that a
+
+8
+
+Ag[C] = hclass C\Theta [::Pi::]\Lambda  : : : f: : :gi
+(A ` Qi ss Q0i) . (Pi = hcovariant label idi ^ A ` Qi v Q0i)
+
+A `T C[::Qi::] ^ C[::Q0i::]
+
+Ag[C] = hclass C\Theta [::Pi::]\Lambda  extends ts : : : f: : :gi
+
+Ts = interp-T(ts; class-env(C[::Qi::]))
+
+A `T Ts ^ C0[::Q0i::]
+A `T C[::Qi::] ^ C0[::Q0i::]
+
+Figure 8: Subtype rules
+statement or expression is safe largely can be classified aseither type or label checks. This paper focuses on the rules
+for checking labels, since the type checks are almost exactlythe same as in Java.
+
+There are several kinds of judgements made during staticchecking. The judgment
+
+A `T E : T means that E hastype
+T in environment A. The judgment A ` E : X isthe information-flow counterpart: it means that
+
+E has pathlabels
+X in environment A. The symbol `T is used to de-note inferences in the type domain. The environment
+
+Amaps identifiers (e.g., class names, parameter names, variable names) to various kinds of entities. As with path labels,the notation
+
+A[s] is the binding of symbol s in A. The nota-tion
+A[s := B] is a new environment with s rebound to B.In the rules given here, it is assumed that the declarations of
+
+all classes are found in the global environment, Ag.A few more comments on notation will be helpful at this
+point. The use of large brackets indicates an optional syntac-tic element. The letter
+
+T represents a type, and t representsa type expression. The letter
+
+C represents the name of aclass. The letter
+L represents a label, and l represents alabel expression.
+
+o/ represents an labeled type expression;that is, a pair containing a type expression and an optional
+
+label expression. The function interp-T(t; A) converts typeexpressions to types, and the function interp-L
+
+(l; A) convertslabel expressions to labels. The letter
+v represents a variablename. The letter
+P represents a formal parameter of a class,and the letter
+Q represents an actual parameter used in aninstantiation of a parameterized class.
+
+3.3 Subtype rules
+
+There are some interesting interactions between type andlabel checking. Consider the judgment
+
+A `T S ^ T , mean-ing "
+S is a subtype of T ". This judgement must be made inJFlow, as in all languages with subtyping. Here,
+
+S and T areordinary unlabeled types. The subtype rule, shown in Figure 8, is as in Java, except that it must take account of classparameters. If
+
+S or T is an instantiation of a parameterizedclass, subtyping is invariant in the parameters except when a
+
+label parameter is declared to be covariant. This subtypingrule is the first one shown in Figure 8. The function class-env,
+used in the figure, generates an extension of the global envi-ronment in which the formal parameters of a class (if any) are
+
+true
+A ` literal : X;[n := A[pc]; nv := A[pc]]
+
+true
+A ` ; : X;[n := A[pc]]
+
+A[v] = hvar \Theta final\Lambda  T fLg uidi
+X = X;[n := A[pc]; nv := L t A[pc]]
+
+A ` v : X
+
+A ` E : X
+A[v] = hvar T fLg uidi
+
+A ` X[nv] v L
+
+A ` v = E : X
+
+A ` S1 : X1
+extend(A; S1)[pc := X1[n]] ` S2 : X2
+
+X = X1[n := ;] \Phi  X2
+
+A ` S1; S2 : X
+
+(X = X1 \Phi  X2) j 8s (X[s] = X1[s] t X2[s])
+
+Figure 9: Some simple label-checking rules
+bound to the actual parameters: Ag[::param-id(Pi) := Qi::]Using this rule,
+
+Vector[L] (from Figure 4) would be asubtype of
+AbstractList[L'] only if L ss L0. Java arrays(written as
+T fLg[ ]) are treated internally as a special typewith two parameters,
+
+T and L. As in Java, they are covariantin
+T , but like most JFlow classes, invariant in L. User-definedtypes may not be parameterized on other types.
+
+If S and T are not instantiations of the same class, it is nec-essary to walk up the type hierarchy from
+
+S to T , rewritingparameters, as shown in the second rule in Figure 8. Together,
+
+the two rules inductively prove the appropriate subtype rela-tionships.
+
+3.4 Label-checking rules
+
+Let us consider a few examples of static checking rules.Space restrictions prevent presentation of all the rules, but a
+
+complete description of the static checking rules of JFlow isavailable [Mye99].
+
+Consider Figure 9, which contains some of the most basicrules for static checking. The first rule shows that a literal
+expression always terminates normally and that its value islabeled with the current
+
+pc, as described earlier. The sec-ond rule shows that an empty statement always terminates
+
+normally, with the same pc as at its start.The third rule shows that the value of a variable is labeled
+with both the label of the variable and the current pc. Notethat the environment maps a variable identifier to an entry
+
+9
+
+A ` Ea : Xa
+A[pc := Xa[n]] ` Ei : Xi
+A[pc := Xi[n]] ` Ev : Xv
+X1 = exc(Xa \Phi  Xi \Phi  Xv; Xa[nv]; NullPointerException)
+
+X2 = exc(X1; Xa[nv] t Xi[nv]; OutOfBoundsException)
+
+X = exc(X2; Xa[nv] t Xv[nv]; ArrayStoreException)
+
+A `T Ea : T fLag[ ]
+A ` Xv[nv] t X[n] v La
+
+A ` Ea[Ei] = Ev : X
+
+A ` E : XE
+A[pc := XE[nv]] ` S1 : X1
+A[pc := XE[nv]] ` S2 : X2
+X = XE[n := ;] \Phi  X1 \Phi  X2
+
+A ` if (E) S1 else S2 : X
+
+L = fresh-variable()
+A0 = A[pc := L; hgoto ffli := L]
+
+A0 ` E : XE
+A0[pc := XE[nv]] ` S : XS
+
+A ` XS[n] v L
+X = (XE \Phi  XS)[hgoto ffli := ;]
+
+A ` while (E) S : X
+A ` do S while (E) : X
+
+A ` A[pc] v A[hgoto Li]
+A ` continue L : X;[hgoto Li := ?]
+
+A ` break L : X;[hgoto Li := ?]
+
+A ` S : X0
+
+s 2 fn; rg
+8(s0 j s0 2 paths ^ s0 6= s) X[s0] = ;
+
+X = X0[s := A[pc]]
+
+A ` S : X
+
+paths = all symbols except nv, rv
+exc(X; L; C) = X \Phi  X;[n := L; nv := L; C := L]
+
+Figure 10: More label-checking rules
+
+of either the form hvar T fLg uidi or hvar final T fLg uidi,where
+
+T is the variable's type, L is its label, and uid is aunique identifier distinguishing it from other variables of the
+
+same name.The fourth rule covers assignment to a variable. Assignment is allowed if the variable's label is more restrictive thanthat of the value being assigned (which will include the current pc). Whether one label is more restrictive than other isinferred using the current environment, which contains information about the static principal hierarchy. The completerule for checking this statement would have an additional
+antecedent A `T E : T , but such type-checking rules havebeen omitted in the interest of space.
+
+The final rule in Figure 9 covers two statements S1 and
+S2 performed in sequence. The second statement is executedonly if the first statement terminated normally, so the correct
+
+pc for checking the second statement is the normal path labelof the first statement (
+
+X1[n]). The function extend extendsthe environment
+A to add any local variable declarations inthe statement
+S1. The path labels of the sequence must beat least as restrictive as path labels of both statements; this
+
+condition is captured by the operator \Phi  , which merges twosets of path labels, joining all corresponding paths from both.
+
+Figure 10 contains some more complex rules. The rule forarray element assignment mirrors the order of evaluation of
+the expression. First, the array expression Ea is evaluated,yielding path labels
+
+Xa. If it completes normally, the indexexpression
+Ei is evaluated, yielding Xi. Then, the assignedvalue is evaluated. Java checks for three possible exceptions
+
+before performing the assignment. The function exc, definedat the bottom, is used to simplify these conditions. This
+function creates a set of path labels that are just like X exceptthat they include an additional path, the exception
+
+C, withthe path label
+L. Since observation of normal termination(
+n) or the value on normal termination (nv) is conditional onthe exception not being thrown, exc joins the label
+
+L to thesetwo mappings as well. Finally, avoiding leaks requires that
+
+the label on the array elements (La) is at least as restrictiveas the label on the information being stored (
+
+Xv[nv]).The next rule shows how to check an
+if statement. First,the path labels
+XE of the expression are determined. Sinceexecution of
+S1 or S2 is conditional on E, the pc for thesestatements must include the value label of
+
+E, XE[nv]. Fi-nally, the statement as a whole can terminate through any of
+
+the paths that terminate E, S1, or S2-- except normal ter-mination of
+
+E, since this would cause one of S1 or S2 to beexecuted. If the statement has no
+
+else clause, the statement
+S2 is considered to be an empty statement, and the secondrule in Figure 9 is applied.
+
+The next rule, for the while statement, is more subtle be-cause of the presence of a loop. This rule introduces a label
+variable L to represent the information carried by the con-tinuation of the loop through various paths.
+
+L represents anunknown label that will be solved for later. It is essentially a
+
+loop invariant for information flow. L may carry informationfrom exceptional termination of
+
+E or S, or from break or
+continue statements that occur inside the loop. An entry isadded to the environment for the tuple
+
+hgoto ffli to captureinformation flows from any
+break or continue statementswithin the loop. The rules for checking
+
+break and continue,shown below the rule for
+while, use these environment entriesto apply the proper restriction on information flow.
+
+Assuming that L is the entering pc label, XS[n] is thefinal
+
+pc label. The final condition requires that L0 may be at
+
+10
+
+A `T E : class C f: : :g
+
+A ` E : XE
+X = exc(XE; XE[nv]; C)[n := ;]
+
+A ` throw E : X
+
+A ` S : XS
+pci = exc-label(XS; Ci)
+A[pc := pci; vi := hvar final Cfpcig fresh-uid()i] ` Si : Xi
+
+X = (Li Xi) \Phi  uncaught(XS; (::; Ci; ::))
+
+A ` try fSg ::catch(Ci vi) fSig:: : X
+
+A ` S1 : X1 A ` S2 : X2
+
+X = X1[n := ;] \Phi  X2
+A ` try fS1g finally fS2g : X
+
+exc-label(X; C) = FC0:(C0^C.C^C0) X[C0]
+(X0 = uncaught(X; (::; Ci; ::))) j
+
+X0[s] = (if (9i (s ^ Ci)) then ; else X[s])
+
+Figure 11: Exception-handling rules
+most as restrictive as L, which is what establishes the loopinvariant.
+
+The last rule in Figure 10 applies to any statement, and isimportant for relaxing restrictive path labels. It is intuitive: if
+a statement (or a sequence of statements) can only terminatenormally, the
+
+pc at the end is the same as the pc at the be-ginning. The same is true if the statement can only terminate
+
+with a return statement. This rule is called the single-pathrule. It would not be safe for this rule to apply to exception
+paths. To see why, suppose that a set of path labels formallycontains only a single exception path
+
+C. However, that pathmight include multiple paths consisting of exceptions that are
+
+subclasses of C. These multiple paths can be discriminatedusing a
+
+try: : : catch statement. The unusual Java exceptionmodel prevents the single-path rule from being applied to
+
+exception paths.However, Java is a good language to extend for static flow
+analysis in other ways because it fully specifies evaluationorder. This property makes static checking of information
+flow simpler, because the rules tend to encode all possibleevaluation orders. If there were non-determinism in evaluation order, it could be encoded by adding label variables in amanner similar to the rule for the
+
+while statement.
+
+3.5 Throwing and catching exceptions
+
+Exceptions can be thrown and caught safely in JFlow usingthe usual Java constructs. Figure 11 shows the rule for the
+
+throw statement, a try: : : catch statement that lacks a finallyclause, and a
+
+try: : : finally statement. (A try statement withboth
+catch clauses and a finally clause can be desugared into
+
+y = true;
+try f
+
+if (x) throw new E();y = false;
+
+g
+catch (E e) f g
+
+Figure 12: Implicit flow using throw
+a try: : : catch inside a try: : : finally.) The rule for throw isstraightforward.
+
+The idea behind the try: : : catch rule is that each catchclause is executed with a
+
+pc that includes all the paths thatmight cause the clause to be executed: all the paths that are
+
+exceptions where the exception class is either a subclass ora superclass of the class named in the
+
+catch clause. Thefunction exc-label joins the labels of these paths. The path
+
+labels of the whole statement merge all the path labels of thevarious catch clauses, plus the paths from
+
+XS that might notbe caught by some
+catch clause, which include the normaltermination path of
+XS if any.The
+try: : : finally rule is very similar to the rule for sequenc-ing two statements. One difference is that the statement
+
+S2is checked with exactly the same initial
+pc that S1 is, since
+S2 is executed no matter how S1 terminates.To see how these exception rules work, consider the code
+
+in Figure 12. In this example, x and y are boolean vari-ables. This code transfers the information in
+
+x to y by us-ing an implicit flow resulting from an exception. In fact,
+
+the code is equivalent to the assignment y = x. Using therule of Figure 11, the path labels of the
+
+throw statementare
+fE ! fxgg, so the path labels of the if statement are
+X = fE ! fxg; n ! fxgg. The assignment y = false ischecked with
+
+pc = X[n] = fxg, so the code is allowed onlyif
+fxg v fyg. This restriction is correct since it is exactlywhat the equivalent assignment statement would have required. Finally, applying both the try-catch rule here and thesingle-path rule from Figure 10, the value of
+
+pc after the codefragment is seen to be the same as at its start. Throwing and
+
+catching an exception does not necessarily taint subsequentcomputation.
+
+3.6 Run-time label checking
+
+An interesting aspect of checking JFlow is checking the
+switch label statement, which inspects a dynamic label at runtime. The inference rule for checking this statement is given
+
+in Figure 13. Intuitively, the switch label statement teststhe equation
+
+XE[nv] v Li for every arm until it finds one forwhich the equation holds, and executes it. However, this test
+
+cannot be evaluated either statically or at run time. Therefore,the test is split into two stronger conditions: one that can be
+tested statically, and one that can be tested dynamically. Thisrule naturally contains the static part of the test.
+
+Let LRT be the join of all possible run-time-representable components (i.e., components that do not
+mention formal label or principal parameters). Thestatic test is that
+
+XE[nv] t LRT v Li t LRT (equiva11
+
+A ` E : XE
+Li = interp-L(li; A)
+A ` XE[nv] v Li t LRT
+
+A `T E : T
+A `T T ^ interp-T(ti; A)
+
+pc0 = XE[n]
+pci = pci\Gamma 1 t label(XE[nv] t Li)
+A[pc := pci; vi := hvar final TifLig fresh-uid()i] ` Si : Xi
+
+X = XE \Phi  (Li Xi)
+A ` switch label(E)f::case (tiflig vi) Si::g : X
+
+Figure 13: Inference rule for switch label
+lently, XE[nv] v Li t LRT ); the dynamic test is that
+XE[nv] u LRT v Li u LRT . Together, these two tests im-ply the full condition
+
+XE[nv] v Li.The test itself may be used as an information channel, so
+
+after the check, the pc must include the labels of XE[nv] andevery
+
+Li up to this point. This rule uses the label functionto achieve this. When applied to a label
+
+L, it generatesa new label that joins together the labels of all variables
+
+that are mentioned in L. However, the presence of label inconstraint equations does not change the process of solving
+label constraints in any fundamental way.
+
+3.7 Checking method calls
+
+Let us now look at some of the static checking associatedwith objects. Static checking in object-oriented languages is
+
+often complex, and the various features of JFlow only add tothe complexity. This section shows how, despite this complexity, method calls and constructor calls (via the operator
+new) are checked statically.The rules for checking method and constructor calls are
+
+shown in Figures 14 and 15. Figure 14 defines some genericchecking that is performed for all varieties of calls, and Figure 15 defines the rules for checking ordinary method calls,static method calls, and constructor calls.
+
+To avoid repetition, the checking of both static and non-static method calls, and also constructor calls, is expressed
+in terms of the predicate call, which is defined in Figure 14.This predicate is in turn expressed in terms of two predicates:
+call-begin and call-end.The predicate call-begin checks the argument expressions
+and establishes that the constraints for calling the method aresatisfied. In this rule, the functions type-part and label-part
+interpret the type and label parts of a labeled type o/ . Therule determines the begin label
+
+LI , the default return label
+
+LdefRV , and the argument environment Aa, which binds all themethod arguments to appropriately labeled types. Invoking a
+
+method requires evaluation of the arguments Ej , producingcorresponding path labels
+
+Xj. The argument labels are boundin
+Aa to labels Lj, so the line (Xj[nv] v Lj) ensures that theactual arguments can be assigned to the formals. The beginlabel LI is also required to be more restrictive than the pc
+
+A ` call-begin(C[Qi]; (::; Ej; ::); S; Aa; LI ; LdefRV )
+
+A ` call-end(C[Qi]; S; Aa; LI ; LdefRV ) : X
+
+A ` call(C[Qi]; (::; Ej; ::); S) : X
+
+S = h\Theta static\Lambda  o/r m\Theta fIg\Lambda (::o/j aj::)\Theta :fRg\Lambda  throws(::o/k::) where Kli
+
+X0 = X;[n := A[pc]]
+A[pc := Xj\Gamma 1[n]] ` Ej : Xj
+
+Lj = fresh-variable()
+
+uidj = fresh-uid()
+Ac = class-env(C[Qi])
+Aa = Ac[::aj := hvar final type-part(o/j; Ac)fLjg uidji::]
+
+LI = (if \Theta fIg\Lambda  then interp-L(I; Aa) else Xmax(j)[n])
+A ` Lj ss (if labeled(o/j) then label-part(o/j; Aa) t LI else Lj)
+
+A ` Xj[nv] v Lj
+A ` Xmax(j)[n] v LI
+LdefRV = (if (o/r = void) then fg else FjXj[nv])
+satisfies-constraints(A; Aa; A[::aj := Ej::]; (::Kl::))
+
+A ` call-begin(C[Qi]; (::Ej::); S; Aa; LI; LdefRV )
+
+let interp(p) = interp-P-call(p; A; Aa; Am) in
+
+case Ki of
+
+authority(: : :) : true
+caller(::pj::) : 8(pj)9(p0 2 A[auth]) A ` p0 * interp(pj)
+actsFor(p1; p2) : A ` interp(p1) * interp(p2)
+end
+end
+
+satisfies-constraints(A; Aa; Am; (::Ki::))
+
+S = h\Theta static\Lambda  o/r m\Theta fIg\Lambda (::o/j aj::)\Theta :fRg\Lambda  throws(::o/k::) where Kli
+
+LR = LI t (if \Theta  : fRg\Lambda  then interp-L(R; Aa) else fg)
+LRV = LR t (if labeled(o/r) then label-part(o/r; Aa) else LdefRV )
+
+Ck = type-part(o/k; class-env(C[Qi]))
+X0 = (Lj Xj)[n := LR; nv := LRV ]
+X = X0 \Phi  X;[::Ck := label-part(o/k; Aa) t LR::]
+
+A ` call-end(C[Qi]; S; Aa; LI ; LdefRV ) : X
+
+Figure 14: Checking calls
+after evaluating all of the arguments, which is Xmax(j)[n].The call site must satisfy all the constraints imposed by the method, which is checked by the predicatesatisfies-constraints. The rule for this predicate, also in Figure 14, uses the function interp-P-call, which maps iden-tifiers used in the method constraints to the corresponding
+principals. To perform this mapping, the function needs en-vironments corresponding to the calling code (
+
+A), the calledcode (
+Aa), and a special environment that binds the actualarguments (
+
+Am). The environment entry A[auth] containsthe set of principals that the code is known statically to act
+
+for. The judgement A ` p1 * p2 means that p1 is knownstatically to act for
+
+p2. (The static principal hierarchy is also
+
+12
+
+A `T Es : C[::Qi::]
+
+A `T Ej : Tj
+signature(C[::Qi::]; m(::Tj::); S)
+
+A ` Es : Xs
+A[pc := Xs[nv]] ` call(C[::Qi::]; (::Ej::); S) : X
+
+A ` Es : m(::Ej::) : X
+
+T = interp-T(t; A)
+
+A `T Ej : Tj
+signature(T; m(::Tj::); S)
+A ` call(T; (::Ej::); S) : X
+
+A ` t : m(::Ej::) : X
+
+T = C[::Qi::] = interp-T(t; A)
+Ag[C] = hclass C \Theta [::Pi::]\Lambda  : : : \Theta authority(::pl::)\Lambda  : : :i
+
+A `T Ej : Tj
+signature(T; C(::Tj::); S)
+S = hC\Theta fIg\Lambda (::o/j aj::)\Theta :fRg\Lambda  throws(::o/k::) where Kli
+S0 = hstatic T fg m\Theta fIg\Lambda (::o/j aj::)\Theta :fRg\Lambda  throws(::o/k::) where Kli
+
+A ` call(T; (::Ej::); S0) : X
+8(parameters pl) 9(p 2 A[auth]) A ` p * interp-P(pl; class-env(T ))
+
+A ` new t(::Ej::) : X
+
+Figure 15: Rules for specific calls
+placed in the environment.)Finally, the predicate call-end produces the path labels
+
+Xof the method call by assuming that the method returns the
+
+path labels that its signature claims. The label LdefRV is usedas the label of the return value in the case where the return
+type, o/r, is not labeled. It joins together the labels of all ofthe arguments, since typically the return value of a function
+depends on all of its arguments.The rules for the various kinds of method calls are built on
+top of this framework, as shown in Figure 15. In these rules,the function signature obtains the signature of the named
+method from the class. The rule for constructors containstwo subtle steps: first, constructors are checked as though
+they were static methods with a similar signature. Second,a call to a constructor requires that the caller possess the
+authority of all principals in the authority of the class that areparameters. The caller does not need to have the authority of
+external principals named in the authority clause.
+
+3.8 Constraint solving
+As the rules for static checking are applied, they generate aconstraint system of label variables for each method [ML97].
+
+For example, the assignment rule of Figure 9 generates aconstraint
+
+X[nv] v L. All of the constraints are of the form
+A1 t : : : t Am v B1 t : : : t Bn. These constraints can besplit into individual constraints
+
+Ai v B1 t : : : t Bn becauseof the lattice properties of labels. The individual terms in the
+
+T [[actsFor(p1; p2) S ]] =
+
+if ( dynamic PH:actsFor(T[[ p1 ]]; T[[p2 ]])) T[[S ]]
+
+T[[switch label(E) f ::case( tiflig) Si:: else Se g]] =
+
+T v = T[[E ]];
+if (T[[XE[nv] u LRT ]]:relabelsTo(T[[ L1 u LRT ]])) f
+
+T[[S1 ]]
+g else : : :
+if (T[[XE[nv] u LRT ]]:relabelsTo(T[[ Li u LRT ]]) f
+
+T[[Si ]]
+g : : : else f T[[Se ]]g
+
+Figure 16: Interesting JFlow translations
+constraints may be policies, label variables, label parameters,dynamic labels, or expressions label
+
+(L) for some label L.The constraints can be efficiently solved, using a modification to a lattice constraint-solving algorithm [RM96] thatapplies an ordering optimization [HDT87] shown to produce
+the best of several commonly-used iterative dataflow algo-rithms [KW94]. The approach is to initialize all variables
+in the constraints with the most restrictive label (?) and it-eratively relax their labels until a satisfying assignment or a
+contradiction is found. The label does not create problemsbecause it is monotonic. The relaxation steps are ordered by
+topologically sorting the constraints and looping on strongly-connected components. The number of iterations required is
+O(nh) where h is the maximum height of the lattice struc-ture [RM96], and also
+
+O(nd) where d is the maximum backedges in depth-first traversal of the constraint dependency
+
+graph [HDT87]. Both h and d seem likely to be bounded forreasonable programs. The observed behavior of the JFlow
+compiler is that constraint solving is a negligible part of runtime.
+
+3.9 Translation
+The JFlow compiler is a static checker and source-to-sourcetranslator. Its output is a standard Java program. Most of the
+
+annotations in JFlow have no run-time representation; trans-lation erases them, leaving a Java program. For example,
+all type labels are erased to produce the corresponding unla-beled Java type. Class parameters are erased. The
+
+declassifyexpression and statement are replaced by their contained expression or statement.Uses of the built-in types
+
+label and principal are translatedto the Java types
+jflow.lang.Label and jflow.lang.Principal,respectively. Variables declared to have these types remain
+
+in the translated program. Only two constructs translate tointeresting code: the
+
+actsFor and switch label statement,which dynamically test principals and labels, respectively.
+
+The translated code for each is simple and efficient, as shownin Figure 16. Note that the translation rule for
+
+switch labeluses definitions from Figure 13. As discussed earlier, the runtime check is XE[nv] u LRT v L1 u LRT , which in effect isa test on labels that are completely representable at run time.
+
+13
+
+The translated code uses the methods relabelsTo and actsFor of the classes jflow.lang.Label and jflow.lang.Principal,respectively. These methods are accelerated by a hash-table
+
+lookup into a cache of results, so the translated code is fast.
+
+4 Related work
+There has been much work on information flow control andon the static analysis of security guarantees. The lattice
+model of information flow comes from the early work of Belland LaPadula[BL75] and Denning [Den76]. Most subsequent information control models use dynamic labels ratherthan static labels and therefore cannot be checked statically.
+The decentralized label model has similarities to the ORACmodel [MMN90]: both models provide some approximation of the "originator-controlled release" labeling used bythe U.S. DoD/Intelligence community, although the ORAC
+model is dynamically checked.Static analysis of security guarantees also has a long history. It has been applied to information flow [DD77, AR80],to access control [JL78, RSC92], and to integrated models
+[Sto81]. There has recently been more interest in provably-secure programming languages, treating information flow
+checks in the domain of type checking. Some of this workhas focused on formally characterizing existing information
+flow and integrity models [PO95, VSI96, Vol97]. Smith andVolpano have recently examined the difficulty of statically
+checking information flow in a multithreaded functional lan-guage [SV98], which JFlow does not address. However, the
+rules they define prevent the run time of a program from de-pending in any way on non-public data. Abadi [Aba97] has
+examined the problem of achieving secrecy in security proto-cols, also using typing rules, and has shown that encryption
+can be treated as a form of safe declassification through aprimitive encryption operator.
+
+Heintze and Riecke [HR98] have shown that information-flow-like labels can be applied to a simple language with
+reference types (the SLam calculus). They show how tostatically check an integrated model of access control, information flow control, and integrity. Their labels include twocomponents: one which enforces conventional access control, and one that enforces information flow control. Theirmodel has the limitation that it is entirely static: it has no
+run-time access control, no declassification, and no run-timeflow checking. It also does not provide label polymorphism
+or objects. Heintze and Riecke prove some useful soundnesstheorems for their model. This step would be desirable for
+JFlow, but important features like objects, inheritance anddependent types make formal proofs of correctness difficult
+at this point.An earlier paper [ML97] introduced the decentralized
+label model and suggested a simple language for writinginformation-flow safe programs. JFlow extends the ideas of
+that simple language in several important ways and showshow to apply them to a real programming language, Java.
+JFlow adds support for objects, fine-grained exceptions,explicit parameterization, and the full decentralized label
+model [ML98]. Static checking is described by formal in-ference rules that specify much of the JFlow compiler. The
+
+performance of the label inference algorithm (the constraintsolver) also has been improved.
+5 Conclusions
+Privacy is becoming an increasingly important security con-cern, and static program checking appears to be the only
+technique that can provide this security with reasonable effi-ciency. This paper has described the new language JFlow, an
+extension of the Java language that permits static checking offlow annotations. To our knowledge, it is the first practical
+programming language that allows this checking. The goalof this work has been to add enough power to the static checking framework to allow reasonable programs to be written ina natural manner.
+
+JFlow addresses many of the limitations of previous workin this area. It supports many language features that have
+not been previously integrated with static flow checking, in-cluding mutable objects (which subsume function values),
+subclassing, dynamic type tests, dynamic access control, andexceptions.
+
+Avoiding unnecessary restrictiveness while supporting acomplex language has required the addition of sophisticated
+language mechanisms: implicit and explicit polymorphism,so code can be written in a generic fashion; dependent types,
+to allow dynamic label checking when static label checkingwould be too restrictive; static reasoning about access control;
+statically-checked declassification.This list of mechanisms suggests that one reason why static
+flow checking has not been widely accepted as a security tech-nique, despite having been invented over two decades ago, is
+that programming language techniques and type theory werenot then sophisticated enough to support a sound, practical
+programming model. By adapting these techniques, JFlowmakes a useful step towards usable static flow checking.
+
+Acknowledgments
+I would like to thank several people who read this paper andgave useful suggestions, including Sameer Ajmani, Ulana
+Legedza, and the reviewers. Kavita Bala, Miguel Castro,and Stephen Garland were particularly helpful in reviewing
+the static checking rules. I would also like to thank NickMathewson for his work on the PolyJ compiler, from which
+I was able to steal much code, and Barbara Liskov for hersupport on this project.
+
+A Grammar extensions
+JFlow contains several extensions to the standard Java gram-mar, in order to allow information flow annotations to be
+added. The following productions must be added to or modi-fied from the standard Java Language Specification [GJS96].
+As with the Java grammar, some modifications to this gram-mar are required if the grammar is to be input to a parser
+generator. These grammar modifications (and, in fact, thecode of the JFlow compiler itself) were to a considerable
+
+14
+
+extent derived from those of PolyJ, an extension to Java thatsupports parametric polymorphism [MBL97, LMM98].
+A.1 Label expressions
+LabelExpr:
+
+f Componentsopt g
+
+Components:Component
+
+Components ; Component
+Component:Principal
+
+: Principalsopt
+thisIdentifier
+
+* Identifier
+Principals:Principal
+
+Principals , Principal
+Principal: Name
+
+A.2 Labeled types
+Types are extended to permit labels. The new primitive types
+label and principal are also added.
+
+LabeledType:PrimitiveType LabelExpr
+
+optArrayType LabelExpr
+optName LabelExpr
+optTypeOrIndex LabelExpr
+
+opt
+
+PrimitiveType:NumericType
+
+boolean
+label
+principal
+
+The TypeOrIndex production represents either an instantia-tion or an array index expression. Since both use brackets,
+
+the ambiguity is resolved after parsing.
+TypeOrIndex:Name
+
+[ ParamOrExprList ]
+
+ArrayIndex:TypeOrIndex
+
+PrimaryNoNewArray [ Expression ]
+ClassOrInterfaceType:Name
+
+TypeOrIndex
+ParamOrExprList:ParamOrExpr
+
+ParamOrExprList , ParamOrExpr
+ParamOrExpr:Expression
+
+LabelExpr
+
+ArrayType:LabeledType
+
+[ ]
+
+ArrayCreationExpression:
+
+new LabeledType DimExprs OptDims
+
+A.3 Class declarations
+ClassDeclaration:Modifiers
+
+opt class Identifier ParamsoptSuper
+opt Interfacesopt Authorityopt ClassBody
+
+InterfaceDeclaration:Modifiers
+
+opt interface Identifier ParamsoptExtendsInterfaces
+
+optInterfaces
+opt InterfaceBody
+
+Params:
+
+[ ParameterList ]
+
+ParameterList:Parameter
+
+ParameterList , Parameter
+Parameter:
+
+label Identifier
+covariant label Identifier
+principal Identifier
+
+Authority:
+
+authority ( Principals )
+
+A.4 Method declarations
+MethodHeader:Modifiers
+
+opt LabeledType IdentifierBeginLabel
+
+opt ( FormalParameterListopt ) EndLabeloptThrows
+opt WhereConstraintsoptModifiers
+opt void IdentifierBeginLabel
+
+opt ( FormalParameterListopt ) EndLabeloptThrows
+opt WhereConstraintsopt
+
+ConstructorDeclaration:Modifiers
+
+opt IdentifierBeginLabel
+
+opt ( FormalParameterList ) EndLabeloptThrows
+opt WhereConstraintsopt
+
+FormalParameter:LabeledType Identifier OptDims
+
+BeginLabel:LabelExpr
+EndLabel:
+
+: LabelExpr
+
+WhereConstraints:
+
+where Constraints
+
+Constraints:Constraint
+
+Constraints , Constraint
+Constraint:
+
+15
+
+Authority
+caller ( Principals )
+actsFor ( Principal , Principal )
+
+To avoid ambiguity, the classes in a throws list must beplaced in parentheses. Otherwise a label might be confused
+
+with the method body.
+Throws:
+
+throws ( ThrowList )
+
+A.5 New statements
+Statement:StatementWithoutTrailingSubstatement
+
+: : : existing productions : : :ForStatement
+SwitchLabelStatementActsForStatement
+DeclassifyStatement
+
+SwitchLabelStatement:
+
+switch label ( Expression ) f LabelCases g
+
+LabelCases:LabelCase
+
+LabelCases LabelCase
+LabelCase:
+
+case ( Type LabelExpr Identifier ) OptBlockStatements
+case LabelExpr OptBlockStatements
+else OptBlockStatements
+
+ActsForStatement:
+
+actsFor ( Principal , Principal ) Statement
+
+The declassify statement executes a statement, but withsome restrictions removed from
+
+pc.
+
+DeclassifyStatement:
+
+declassify ( LabelExpr ) Statement
+
+A.6 New expressions
+Literal:
+
+: : : existing productions : : :
+new label LabelExpr
+
+DeclassifyExpression:
+
+declassify ( Expression , LabelExpr )
+
+References
+[Aba97] Mart'in Abadi. Secrecy by typing in security pro-tocols. In Proc. Theoretical Aspects of Computer Software: Third International Conference,September 1997.
+
+[ACPP91] Mart'in Abadi, Luca Cardelli, Benjamin C. Pierce,and Gordon D. Plotkin. Dynamic typing in a statically typed language. ACM Transactions on Pro-gramming Languages and Systems (TOPLAS),
+13(2):237-268, April 1991. Also appeared asSRC Research Report 47.
+
+[AR80] Gregory R. Andrews and Richard P. Reitman. Anaxiomatic approach to information flow in programs. ACM Transactions on Programming Lan-guages and Systems, 2(1):56-76, 1980.
+
+[BL75] D. E. Bell and L. J. LaPadula. Secure com-puter system: Unified exposition and Multics interpretation. Technical Report ESD-TR-75-306,MITRE Corp. MTR-2997, Bedford, MA, 1975.
+Available as NTIS AD-A023 588.
+[Car91] Luca Cardelli. Typeful programming. In E. J.Neuhold and M. Paul, editors, Formal Description of Programming Concepts. Springer-Verlag,1991. An earlier version appeared as DEC
+Systems Research Center Research Report #45,February 1989.
+
+[DD77] Dorothy E. Denning and Peter J. Denning. Certi-fication of programs for secure information flow.
+
+Comm. of the ACM, 20(7):504-513, 1977.
+[Den76] Dorothy E. Denning. A lattice model of secureinformation flow. Comm. of the ACM, 19(5):236-
+
+243, 1976.
+[Den82] Dorothy E. Denning. Cryptography and DataSecurity. Addison-Wesley, Reading, Massachusetts, 1982.
+[GJS96] James Gosling, Bill Joy, and Guy Steele. TheJava Language Specification. Addison-Wesley,
+
+August 1996. ISBN 0-201-63451-1.
+[HDT87] Susan Horwitz, Alan Demers, and Tim Teitel-baum. An efficient general iterative algorithm for
+
+dataflow analysis. Acta Informatica, 24:679-694,1987.
+
+[HR98] Nevin Heintze and Jon G. Riecke. The SLam cal-culus: Programming with secrecy and integrity.
+
+In Proc. 25th ACM Symp. on Principles of Pro-gramming Languages (POPL), San Diego, California, January 1998.
+[JL78] Anita K. Jones and Barbara Liskov. A languageextension for expressing constraints on data access. Comm. of the ACM, 21(5):358-367, May1978.
+
+[KW94] Atsushi Kanamori and Daniel Weise. Work-list management strategies for dataflow analysis. Technical Report MSR-TR-94-12, Mi-crosoft Research, May 1994.
+
+16
+
+[Lam73] Butler W. Lampson. A note on the confinementproblem. Comm. of the ACM, 16(10):613-615,
+
+October 1973.
+[LMM98] Barbara Liskov, Nicholas Mathewson, andAndrew C. Myers. PolyJ: Parameterized
+
+types for Java. Software release. Located athttp://www.pmg.lcs.mit.edu/polyj, July 1998.
+
+[MBL97] Andrew C. Myers, Joseph A. Bank, and Bar-bara Liskov. Parameterized types for Java. In
+
+Proc. 24th ACM Symp. on Principles of Program-ming Languages (POPL), pages 132-145, Paris,
+France, January 1997.
+[ML97] Andrew C. Myers and Barbara Liskov. A de-centralized model for information flow control.
+
+In Proc. 17th ACM Symp. on Operating SystemPrinciples (SOSP), pages 129-142, Saint-Malo,
+France, 1997.
+[ML98] Andrew C. Myers and Barbara Liskov. Complete,safe information flow with decentralized labels.
+
+In Proc. IEEE Symposium on Security and Pri-vacy, Oakland, CA, USA, May 1998.
+
+[MMN90] Catherine J. McCollum, Judith R. Messing, andLouAnna Notargiacomo. Beyond the pale of
+
+MAC and DAC -- defining new forms of accesscontrol. In Proc. IEEE Symposium on Security
+and Privacy, pages 190-200, 1990.
+[Mye99] Andrew C. Myers. Mostly-Static DecentralizedInformation Flow Control. PhD thesis, Massachusetts Institute of Technology, Cambridge,MA, 1999. In progress.
+
+[PO95] Jens Palsberg and Peter O/rbaek. Trust in the *-calculus. In Proc. 2nd International Symposium
+
+on Static Analysis, number 983 in Lecture Notesin Computer Science, pages 314-329. Springer,
+September 1995.
+[RM96] Jakob Rehof and Torben AE. Mogensen. Trac-table constraints in finite semilattices. In Proc.
+
+3rd International Symposium on Static Analysis,number 1145 in Lecture Notes in Computer Science, pages 285-300. Springer-Verlag, Septem-ber 1996.
+
+[RSC92] Joel Richardson, Peter Schwarz, and Luis-FelipeCabrera. CACL: Efficient fine-grained protection
+
+for objects. In Proceedings of the 1992 ACM Con-ference on Object-Oriented Programming Systems, Languages, and Applications, pages 154-165, Vancouver, BC, Canada, October 1992.
+
+[Sto81] Allen Stoughton. Access flow: A protectionmodel which integrates access control and information flow. In IEEE Symposium on Securityand Privacy, pages 9-18. IEEE Computer Society Press, 1981.
+
+[SV98] Geoffrey Smith and Dennis Volpano. Secure in-formation flow in a multi-threaded imperative language. In Proc. 25th ACM Symp. on Principlesof Programming Languages (POPL), San Diego,
+California, January 1998.
+[Vol97] Dennis Volpano. Provably-secure programminglanguages for remote evaluation. ACM SIGPLAN
+
+Notices, 32(1):117-119, January 1997.
+[VSI96] Dennis Volpano, Geoffrey Smith, and CynthiaIrvine. A sound type system for secure flow analysis. Journal of Computer Security, 4(3):167-187,1996.
+
+17

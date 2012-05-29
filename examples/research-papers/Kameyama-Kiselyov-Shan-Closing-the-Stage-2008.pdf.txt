@@ -1,0 +1,1267 @@
+
+
+Closing the Stage
+From Staged Code to Typed Closures
+
+Yukiyoshi Kameyama
+
+University of Tsukuba
+
+kameyama@acm.org
+
+Oleg Kiselyov
+
+FNMOC
+oleg@pobox.com
+
+Chung-chieh Shan
+
+Rutgers University
+ccshan@cs.rutgers.edu
+
+Abstract
+Code generation lets us write well-abstracted programs withoutperformance penalty. Writing a correct code generator is easier than
+
+building a full-scale compiler but still hard. Typed multistage lan-guages such as MetaOCaml help in two ways: they provide simple annotations to express code generation, and they assure thatthe generated code is well-typed and well-scoped. Unfortunately,
+the assurance only holds without side effects such as state andcontrol. Without effects, generators often have to be written in
+a continuation-passing or monadic style that has proved inconve-nient. It is thus a pressing open problem to combine effects with
+staging in a sound type system.This paper takes a first step towards solving the problem, by
+translating the staging away. Our source language models Meta-OCaml restricted to one future stage. It is a call-by-value language,
+with a sound type system and a small-step operational semantics,that supports building open code, running closed code, cross-stage
+persistence, and non-termination effects. We translate each typingderivation from this source language to the unstaged System F with
+constants. Our translation represents future-stage code using clo-sures, yet preserves the typing, a-equivalence (hygiene), and (we
+conjecture) termination and evaluation order of the staged program.To decouple evaluation from scope (a defining characteristic of
+staging), our translation weakens the typing environment of opencode using a term coercion reminiscent of G"odel's translation from
+intuitionistic to modal logic. By converting open code to closureswith typed environments, our translation establishes a framework
+in which to study staging with effects and to prototype stagedlanguages. It already makes scope extrusion a type error.
+
+Categories and Subject Descriptors D.3.1 [Programming Lan-guages]: Formal Definitions and Theory; D.3.3 [Programming
+Languages]: Language Constructs and Features--Control struc-tures; polymorphism; F.3.3 [Logics and Meanings of Programs]:
+Studies of Program Constructs--Type structure
+General Terms Design, Languages
+Keywords Multistage programming, type abstraction, parametricpolymorphism, mutable state and control effects, closures
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+PEPM'08, January 7-8, 2008, San Francisco, California, USA.Copyright cfl 2008 ACM 978-1-59593-977-7/08/0001.. . $5.00
+
+1. Introduction
+Code generation is the most promising approach in high-perfor-mance computing (P"uschel et al. 2005) and high-assurance embedded programming (Hammond and Michaelson 2003). Because ageneric program in an earlier stage can generate a specialized program in a later stage and assure it safe, the programmer need nottrade off abstraction and assurance for efficiency in time and space.
+
+An attractive way to express such code generation is to use amultistage programming language such as MetaOCaml (Lengauer
+and Taha 2006), in which the programmer need only annotate theprogram to separate the stages (Taha 2004). Staging provides a
+principled interface through which a code generator can take advan-tage of the implementation of the language it is written in, whether
+or not that implementation is a self-interpreter that can be spe-cialized (Jones 1988). The applications of staging thus include the
+usual uses of code generation, such as partial evaluation (Daviesand Pfenning 2001; Ghani et al. 1998), embedding domain-specific
+languages (Czarnecki et al. 2004; Pa^sali'c et al. 2002), and control-ling special processors (Elliott 2004; Taha 2005).
+
+Staging lets us symbolically manipulate pieces of open code,which may contain free variables that will be bound to actual values
+only at a future stage. Yet a staged language should ensure that a-conversion preserves the meaning of a program, and that the code
+finally generated is closed, that is, does not contain free variables(Taha and Nielsen 2003). Staged type systems exist in the literature
+that achieve these goals (Calcagno et al. 2004; Taha and Nielsen2003), but they do not consider side effects with open code.
+
+Side effects let us apply code-generation techniques such aslet insertion without cumbersome programming in continuationpassing or monadic style. In particular, delimited control is usefulfor partially evaluating programs using sum types (Balat et al. 2004;
+Lawall and Danvy 1994) and delimited control (Asai 2002), andmutable state and delimited control make it easy to express let
+insertion (Sumii and Kobayashi 2001; Swadi et al. 2006) and tocount generated operations. Unfortunately, these effects with open
+code make it possible to generate ill-scoped code--that is, to causescope extrusion--in all multistage type systems today.
+
+Our motivation is to write effectful code generators in a lan-guage like MetaOCaml without risking scope extrusion. In other
+words, we want a multistage type system that is sound with effects.
+Contributions To design a multistage type system that is soundwith effects, we must understand how effects interact with staging.
+To this end, we translate in this paper a language l a1v, which modelsthe mature and practical multistage language MetaOCaml ($3), into
+System F, which lacks staging ($4). Our translation incurs the over-head of functional and type abstraction, but keeps the speedup of
+specialization and expresses the static and (we conjecture) dynamicsemantics of l a
+
+1v, including the order of effects among stages ($5).Our translation reduces both closed and open code to closures.
+
+Because we aim to combine staging with effects (especially de-limited control), we formalize our source language using a smallstep operational semantics with evaluation contexts (Wright andFelleisen 1994). With staging, our redexes may be open and evaluation contexts may be binding ($3.2). Such a small-step seman-tics has only been used to study call-by-need (Ariola and Felleisen
+1997; Maraist et al. 1998) to our knowledge. We prove subject re-duction, determinism, and progress for this source language ($3.3).
+
+After describing the translation, we present three payoffs: strongnormalization for the source language without
+
+fix ($5.3), detectingscope extrusion ($6), and counting arithmetic operations in a sound
+
+staged language ($6).MetaOCaml supports an unlimited number of future stages
+(Gl"uck and Jo/rgensen 1997), so generated code may in turn gen-erate code. In this paper, we restrict ourselves to one future stage,
+which suffices in many real-life applications (Carette and Kiselyov2005; Lengauer and Taha 2006) and where issues such as scope
+extrusion and cross-stage persistence already arise (see $2). Theseissues force us to type environments more precisely yet polymorphically, which complicates and distinguishes our translation ascompared to typed closure conversion (Minamide et al. 1996).
+
+2. The basics of staging and our translation
+We begin by informally sketching our translation on some exam-ples, starting with the classic power function. We use the language
+
+formalized in $3, which is like OCaml with staging annotations(explained below) and
+
+fix (in place of let rec). Our examples inMetaOCaml and translations in OCaml are all available online at
+
+http://okmij.org/ftp/Computation/staging/.
+
+let square = l x :int.x * x
+let power = (* (a)(int ! hintia ! hintia ) *)(a)
+
+fix f (n : int) : hintia ! hintia . l x :hintia.if n = 0 then h1ia
+
+else if n mod 2 = 0 then h%square s( f (n/2) x)iaelse hsx * s( f (n - 1) x)ia
+let power7 = (* (a)(int ! int) *)
+
+run(a)hl xa :int.s(printf "power"; power[a] 7 hxa ia )ia
+let res = (a)(power7 [a]2, power7 [a]3)
+
+This code uses staging annotations: bracket heia , escape se, cross-stage persistence
+
+%e, and rune. The superscript a is a classifier,explained in $3. To ease the notation, we will often drop the classifier where it can be easily inferred according to the syntax of $3;for now, classifier annotations along with the classifier introduction
+(a)e and the classifier application e[a] may be disregarded. If weignore these annotations--that is, regard heia , se,
+
+%e, rune, (a)e,and e[a] as just e, and xa as just x--then the code expresses a standard way to compute xn. The expression
+
+l x:int.(printf "power"; power 7 x)
+builds a closure that includes the printf operation and the powercomputation. The body of the closure is of course not evaluated
+
+until the argument x is supplied, so nothing is printed when power7is computed. Computing res invokes power7 twice and so prints
+"power" twice with the unstaged code.With staging annotations, the picture is different. The code still
+expresses the same algorithm, but the computations are performedat different stages. The bracket heia , like
+
+quasiquote in Lisp,says to execute e at a future stage. If e has the type
+
+int, then heiahas the type h
+intia . The escape se, like unquote in Lisp, saysto evaluate e while building a future-stage computation. The result
+
+of e at the present stage must be a future-stage computation and isspliced into the future-stage computation being built. The construct
+rune, like eval in Lisp, evaluates the computation e.
+
+With staging annotations in the code above, "power" is printedonly once--when power7 is evaluated. Consequently, when we
+compute res, nothing is printed, and the function power is notexecuted because the loop over n has been already performed. The
+body of power7 is l x.x * square (x * square (x * 1)).
+2.1 Na"ive non-solution
+Our goal is to represent staged computations in a regular language,namely System F ($4). The essence of staging is to quote computations, delaying their execution to some future time. In call-by-valuelanguages, the standard way to delay a computation is to put it into
+a function or simply a thunk. We may be tempted then to repre-sent the type hti as () ! t, the bracket expression hei as l ()
+
+.e, theescape se and
+rune as e (), and cross-stage persistence %e as e.If we interpret our staged power code that way, it works just
+
+like the unstaged code: "power" is printed twice, when we com-pute res. Thus, we got rid of staging along with its benefit. This
+failure to represent staging can be understood by considering anexpression hsei. The staged language evaluates e while building
+the bracketed expression, so any side effect in e will occur then.Our na"ive interpretation turns the expression into l ()
+
+.e(). Here ebecomes encapsulated into a thunk, so it will be evaluated when the
+
+bracketed computation is run, not while it is built.For the thunk to encapsulate only the result of an escape and not
+the escape itself, we need to `lift' the escape out of the thunk, thatis, interpret hsei as
+
+let v = e in l ().v(). But then, the expressionh
+
+l xa :int.s(printf "power"; power[a] 7 hxi)i
+in power7 above would become
+
+let v = printf "power"; power[a] 7 l ().x in l ().l x :int.v()
+Now printf occurs outside the thunk, but so does the unboundvariable x. After all, we are supposed to compute v before a value
+
+is supplied for x. Staging lets us use a variable symbolically beforeit is bound to a value. Our translation must thus deal with symbolic
+references to variables without values (Taha 1999; $7.2.1).
+2.2 Environment passing
+To translate symbolic variable references, we can model the envi-ronment as a record whose keys are such first-class references. To
+
+explore this idea, let us introduce an abstract data type of extensi-ble records:
+
+R0 is some initial environment; R(0x = v) extends theenvironment
+
+R by associating the key 0x to the value v; and R(0x)looks up the value associated with the key 0x in the environment
+
+R.We can represent a code expression hei as l
+R...., where theargument
+R associates the free variables in e to their values. Forexample, we represent hxi as l
+
+R.R(0x), a projection from theenvironment. This function is first-class and can be passed around
+
+before we have a concrete environment to apply it to. We represent
+rune by applying the representation of e to R0. Likewise, weinterpret the escape hsh1ii as
+
+let v = l R.1 in l R.vR. A bindingoperation under bracket should extend the effective environment,
+
+so we can translate let f y = hsy + 1i in hl x.s( f hxi)i as
+
+let f y = l R.yR + 1 in
+
+let v = f (l R.R(0x)) in l R.l x.v(R(0x = x)).
+For this translation to work, we must ensure that look-up al-ways succeeds. We prove it does below by assigning types to environments that reflect their contents. We should also specify howto a-rename a translated expression: it is easy to rename x to y in
+hl x.s( f hxi)i without affecting the meaning of the expression, butit is more involved to perform the same renaming on our translation,
+because we need to replace x with y as well as 0x with 0y. Beforeaddressing these issues, we use this approach to translate power.
+
+let square = l x.x * x
+let power = fix f (n). l x.if n = 0 then l
+
+R.1else if n mod 2 = 0
+
+then let v = f (n/2) x in l R.square(vR)else
+
+let v1 = x in let v2 = f (n - 1) x inl
+
+R.v1R * v2R
+let power7 = let v = printf "power"; power 7 l R.R(0x) in(l
+
+R.l x.v(R(0x = x)))R0
+let res = (power7 2, power7 3)
+
+As in the staged code, the string "power" is printed only once, whenwe compute power7.
+
+2.3 Environment polymorphism
+A common practice in staged programming is to splice a pieceof open code into a scope with additional bindings. Translating
+
+this practice requires polymorphism, as we explain with a simpleexample. The example is a function ef from the code type h
+
+intia tothe code type h
+int ! intia . It splices the argument into code withan extra binding. Below we define ef and use it in two examples.
+
+let ef = (a)l z:hintia .hl xa :int.sz + xaia
+let ef 1 = (a)ef [a]h1ia
+let ef 2 = (a)hl xa .l ya .s(ef [a]hxa * ya ia)ia
+
+The term ef 1 evaluates to (a)hl x.1 + xi whereas ef 2 evaluates to(a)hl x
+
+.l y.l x0.x * y + x0i. In the latter result, we need to distin-guish two later-stage variables named x. To maintain hygiene and
+
+a-equivalence, we must lexically link each use of a variable to itsbinding occurrence and rename variables if their names clash.
+
+Applying the informal translation of the previous section to thisexample shows several problems.
+
+let ef = l z.l R.l x.z(R(0x = x)) + x
+let ef 1 = ef (l R.1)
+let ef 2 = let v = ef (l R.R(0x) * R(0y)) inl
+
+R.l x.l y.v(R(0x = x)(0y = y))
+
+The first problem is that ef needs a polymorphic type. To type-check the multiplication
+
+R(0x) * R(0y), the type of R should as-sociate the keys 0x and 0y with the type
+
+int, but R in ef 1 may notcontain a mapping for 0y. In general, we may invoke ef in the scope
+
+of any number of later-stage variables, so we seem to need so-calledr-polymorphism for our environment records. The use of ef should
+be typed in ef 1 as
+
+8r.({r} ! int) ! ({r} ! int ! int)
+but in ef 2 as
+8r.({0x:int,0 y:int,r} ! int) ! ({0x:int,0 y:int,r} ! int ! int).
+
+The a-renaming problem noted above also rears its head. Tomaintain hygiene, the translation needs to detect potential name
+
+clashes among variables and avert them by renaming variablesalong with fields in
+
+R. The translated example above does not workbecause the extensions
+
+R(0x = x) on the first and last lines clash.To prevent such a clash, our type for
+
+R seems to require not only r-polymorphism but also negative side conditions that state the names
+
+that must not occur in any instantiation of the polymorphic type.Such conditions complicate type checking, especially with multiple
+staging levels, yet still leave the problem of preserving the meaningof programs in the face of a-conversion (Taha and Nielsen 2003;
+
+$1.4). Taha and Nielsen avoid these difficulties by ingeniouslyintroducing classifiers, which track just enough information about
+the structure of environments to ensure type safety in a stagedlanguage without effects. Alas, we need more precision to maintain
+hygiene in a language with effects or without staging support.
+
+2.4 Maintaining hygiene
+We maintain a-equivalence and avoid name clashes by represent-ing
+
+R not as a record keyed by names but as a tuple keyed byindices. The typing environment of the staged code is an ordered
+
+sequence of bindings, so we can use that ordering to index into Rat run time. This idea is reminiscent of de Bruijn indices, but we
+index only later-stage variables and pass the indices around duringthe earlier stage as first-class code values.
+
+The translation of a code expression thus depends on the later-stage variables in scope. For example, the code expression h1i
+translates to l ().1 in the empty typing environment. The expres-sion hxi translates to l x
+
+.x if x is the only later-stage variable inthe typing environment, but to l (x
+
+,y).x if the typing environmentcontains the later-stage variables x and y, in that order. To splice
+
+in a code value is to apply it to the current later-stage environmentreified as a tuple, so the translation of hl x
+
+.l y.shx * xi + y * yi isessentially l ()
+.l x.l y.(l (x,y).x * x)(x,y) + y * y.A code value may be created in one typing environment then
+
+used in many others, as in
+
+let z = h1i in hl xa :int.sz + xai. (1)
+The code value z is created in an environment with no later-stagevariable, then used in an environment with one later-stage variable x. In general, the environment of use must extend the environ-ment of creation; it is no accident that this crucial invariant holds in
+the absence of effects. Having translated h1i to l ().1 in the emptyenvironment, we would commit a type error were we to translate
+sz in (1) by applying l ().1 to (x). Instead, we need to coerce thecode value to accommodate the extended environment. Given the
+environment of use and of creation, it is easy to see that we shouldapply the coercion l f
+
+.l (x). f () to l ().1. We thus translate (1) to
+
+let z = l ().1 in l ().l x.(l f .l (x). f ()) z (x) + x. (2)
+(Actually, our formal translation produces some additional b -valueredexes. The gory details are shown in $5.2.)
+
+A second sort of polymorphism arises when a function takes acode value as argument, as ef above does. The translation of the
+code argument is a function from environments, but we do notknow those environments' type when translating the function because the code argument may use any number of later-stage vari-ables. Therefore the function must translate to a polymorphic function whose type is of the form 8p.(p ! ***) ! ***. For example,we translate ef to a function of type 8p
+
+.(p ! int) ! (p ! int !
+int). As the examples using ef in $2.3 show, each application of efmay instantiate the type variable p to a different environment type.
+
+In particular, we translate ef 1 and ef 2 there as follows.
+
+let ef 1 = ef [()](l ().1)
+let ef 2 = let v = ef [(int,int)](l (x,y).x * y) in l ().l x.l y.v(x,y)
+
+It remains to translate ef itself, or equivalently, to translate itsbody hl xa :
+
+int.sz + xa ia in the environment z : hintia . Again be-cause the code value z may use any number of later-stage variables,
+
+the translated type of z is p ! int where p is a \Lambda -bound type vari-able. The code value returned by the translation of ef should have
+the type p ! int ! int. Guided by these types and using the tech-niques described above, we obtain the translation
+
+let ef = \Lambda p. l z:p !int.l r:p.l x:int.(l f .l (r,x). f r)z(r,x) + x.
+2.5 A higher-order example
+A more complex example to translate is staged h-expansion, ahigher-order function on code values that is useful in staged programming and difficult for staged type systems (Taha and Nielsen2003; $1.4). Below we define eta and give an example of its use.
+
+Classifiers a,b Types t ::= int | t ! t | (a)t | huia
+Named levels A,B ::= 0 | a Flat types u ::= int | u ! u
+Variables xA,yA,zA, f A Environments \Gamma  ::= [] | \Gamma ,a | \Gamma ,x :t | \Gamma ,xa : u
+Expressions e0 ::= i0 | x0 | l x0 :t.e0 | fix f 0(x0 :t) :t. e0 | e0 + e0 | e0e0 | (a)e0 | e0[a] | rune0 | hea ia
+
+ea ::= ia | xa | l xa :u.ea | fix f a (xa : u) : u. ea | ea + ea | ea ea | se0 | %e0
+Values v0 ::= i0 | x0 | l x0 :t.e0 | fix f 0(x0 :t) :t. e0 | (a)v0 | hvaia
+
+va ::= ia | xa | l xa :u.va | fix f a (xa : u) : u. va | va + va | va va | %e0
+Contexts C0[ ] ::= [ ] | C0[[ ] + e0] | C0[v0 + [ ]] | C0[[ ]e0] | C0[v0[ ]] | C0[(a)[ ]] | C0[[ ][a]] | C0[run[ ]] | Ca [s[ ]]
+
+Ca [ ] ::= Ca [[ ] + ea ] | Ca [va + [ ]] | Ca [[ ]ea ] | Ca [va [ ]] | Ca [l xa :u.[ ]] | Ca [fix f a (xa : u) : u. [ ]] | C0[h[ ]ia ]]
+
+Figure 1. Syntax of l a1v
+
+let eta = (a)l f :hintia !hboolia.hl xa :int.s( f hxa ia)ia
+let eta1 = (a)hl ya .l ua.s(eta[a](l z.hsz < ya * uaia ))ia
+
+The term eta1 evaluates to (a)hl ya.l ua .l xa .xa < ya * ua ia.The function f passed to eta maps the open code hxai to code
+
+that may contain free variables other than xa. In eta1, for example,f splices hxa i into the open code hxa
+
+< ya * ua i, which uses theadditional free variables ya and ua . Because f and eta introduce
+
+their free variables separately, they are each polymorphic in thepart of the later-stage environment extended by the other (O'Hearn
+and Tennent 1995). That is, the translation of eta uses a type vari-able p to represent whatever free variables f introduces (namely
+ya and ua in eta1), and the translation of f uses a type variable p0to represent whatever free variable eta introduces (namely xa ). The
+translation of eta thus has the polymorphic function type
+
+8p.(8p0.((p,p0) ! int) ! ((p,p0) ! bool))!
+
+(p ! int ! bool), (3)
+
+in which p is to be instantiated by the caller and p0 by the callee.In particular, the caller eta
+
+1 instantiates p to the tuple type(int,int) corresponding to ya and ua . Our formal translation performs this instantiation as part of coercing eta from its environmentof creation, which is empty, to its environment of use in eta
+
+1, whichbinds ya and ua . As formalized in $5.1, this coercion
+
+l g.l f .g[(int,int)](\Lambda p0
+
+. l z.let z0 = f [p0](l (y,u,r).z((y,u),r)) inl ((
+
+y,u),r).z0(y,u,r))
+
+is a function from the type (3) to the type
+
+(8p0.((int,int,p0) ! int) ! ((int,int,p0) ! bool))!
+
+((int,int) ! int ! bool). (4)
+
+Our translation of eta1 is then essentially
+
+let v = eta[(int,int)](\Lambda p0. l z.l ((y,u),r).z((y,u),r) < y * u) inl ()
+
+.l y.l u.v(y,u).
+
+Meanwhile, it is easier to translate eta to the type (3), as follows.
+
+let eta = \Lambda p. l f .let v = f [int](l (r,x).x) in l r.l x.v(r,x)
+
+3. The source language l a1v
+Figure 1 presents the syntax of our source language l a1v, a simply-typed call-by-value l -calculus with
+
+fix and staging annotations.This calculus is closely based on Taha and Nielsen's l a (2003) but
+
+limited to only one future stage. Modulo this limitation, the twocalculi are equally expressive, as detailed in $3.4.
+
+As our metavariable notation indicates, we superscript each ex-pression eA, value vA, variable xA, and context CA[ ] with a named
+
+level A, to be explained shortly. Literal constants, variables, ab-stractions, applications, and additions are standard. We define just
+one base type, int, but our examples use bool analogously. Be-cause our language is call-by-value, we write an h-expanded fixpoint fix f A(xA :t1) :t2. e for a recursive function with the argumenttype t
+
+1 and return type t2, whose body e may refer to the function fas well as the argument x. The bound variables are annotated with
+
+their types, although we will often omit the types when they can beinferred. The form
+
+let x = e1 in e2 abbreviates (l x.e2)e1 as usual.The language also contains brackets heia , escapes se, and
+
+rune. There is also an explicit form %x for cross-stage persistence(CSP), left implicit in MetaOCaml. Bracket expressions heia and
+code types htia are labeled by an environment classifier a (Tahaand Nielsen 2003). Classifiers are distinct identifiers that associate
+code expressions with the environments in which they are typed. Aclassifier a is bound by a so-called a-closed type expression (a)t,
+which is akin to 8a.t universally quantifying over a phantom type(Launchbury and Peyton Jones 1995) or a nonce name (Miller and
+Tiu 2003). An a-closed type is introduced by a classifier general-ization expression (a)e and eliminated by a classifier instantiation
+expression e[a]. A classifier generalization expression (a)e assertsthat the classifier a is used exclusively in e; that is, it introduces a
+fresh new classifier a to label code in e, akin to \Lambda a.e generalizingover a type variable a. Dually, a classifier instantiation expression
+e[a] is akin to type application; it instantiates an a-closed expres-sion with a particular classifier. The type system uses classifiers to
+prevent running open code.Named levels A (or levels for short) generalize numbered levels
+in staged calculi (Gl"uck and Jo/rgensen 1997; Nielson and Nielson1996). A level is a sequence of classifiers that qualifies a term, a
+variable, or an evaluation context. The sequence corresponds tothe nesting of code expressions and the ordering of stages. Our
+language l a1v restricts levels to at most one classifier:
+
+* The empty level, written 0, corresponds to the present stage, in
+
+which the top-level program expression is run.*
+
+A level consisting of one classifier a, written a by a slightabuse of notation, corresponds to a future stage, in which code
+
+values of the form h...ia are run (Taha and Nielsen 2003).
+We have no nested future stages (see Definition 3.2 below), so wecan express code generators but no generators of code generators.
+
+Even with this restriction, it may still be useful to keep track ofseveral classifiers at once, to write code such as
+
+(a)hl x.s( f (run(b )h1ib )[a])ia (5)
+but not
+
+(a)hl x.s( f (run(b )hxib )[a])ia . (6)
+Named levels can allow (5) yet prevent the attempt to run open codein (6), whereas merely numbered levels cannot.
+
+\Gamma  ` i0 : int
+
+a 2 \Gamma 
+\Gamma  ` ia : int
+
+(x0 :t) 2 \Gamma 
+
+\Gamma  ` x0 :t
+
+(xa : u) 2 \Gamma  a 2 \Gamma 
+
+\Gamma  ` xa : u
+\Gamma , xA :t1 ` eA :t2
+\Gamma  ` (l xA :t1.eA) : t1 ! t2
+
+\Gamma , f A :t1 ! t2, xA : t1 ` eA :t2
+\Gamma  ` (fix f A(xA :t1) :t2. eA) : t1 ! t2
+
+\Gamma  ` eA1 : int \Gamma  ` eA2 : int
+
+\Gamma  ` eA1 + eA2 : int
+
+\Gamma  ` eA1 :t1 ! t2 \Gamma  ` eA2 :t1
+
+\Gamma  ` eA1 eA2 :t2
+
+\Gamma ,a ` e0 : t
+\Gamma  ` (a)e0 : (a)t
+
+\Gamma  ` e0 : (a)t b 2 \Gamma 
+
+\Gamma  ` e0[b ] :t [a := b ]
+
+\Gamma  ` e0 : (a)huia
+\Gamma  ` rune0 : (a)u
+
+\Gamma  ` ea : u
+\Gamma  ` hea ia : huia
+
+\Gamma  ` e0 : huia a 2 \Gamma 
+
+\Gamma  ` (se0)a : u
+
+\Gamma  ` e0 : u
+\Gamma , a, \Gamma 0 ` (%e0)a : u
+Figure 2. Type system of l a1v. We assume that the names of allvariables and classifiers are unique.
+
+To unclutter the notation, we often drop classifiers where theyare easy to infer. For example, we will write (a)hsh1ia ia as
+merely (a)hsh1ii. The syntax of l a1v disallows escape and CSPexpressions at level 0, and the only way for a level-0 expression to
+contain a non-level-0 expression is to contain a bracket expression,so escape and CSP can only occur inside brackets in a program.
+
+The classification of expressions into values depends on thelevel of the expression. At level 0, the only values are literals,
+functions, classifier generalization over values, and brackets that donot escape back to level 0. For example, hsh1ia ia is not a value
+but h1ia and h(l x.x)1ia both are. Notably, h%e0ia is a value foran arbitrary expression e0; see $3.4.
+
+3.1 Type system
+Figure 2 shows the type system of l a1v. A type environment \Gamma  is anordered sequence of variable and classifier bindings. We sometimes
+
+omit the empty environment [], from which all environments arebuilt. We adopt the convention that all classifier names, like variable
+names, are unique. Thus, any environment of the form \Gamma ,a,\Gamma 0requires a
+
+/2 \Gamma , but a can be used to label bindings in \Gamma 0.Just to simplify our presentation, we assume that every type uses
+
+at most one level, in the following sense.
+Definition 3.1 (Used levels) The set Used(t) of classifiers used ina l a
+
+1v-type t is defined as follows.
+
+Used(int) = {} Used(t1 ! t2) = Used(t1) [ Used(t2) (7)
+
+Used(huia ) = {a} Used((a)t) = Used(t) \ {a} (8)
+
+For example, Used(hintia ! hintia ) is {a}.
+Definition 3.2 (Restriction to one level) Wherever a l a1v-type tappears (in a term, type, binding, or judgment), we restrict Used(t)
+
+to be either empty or a singleton {a}.
+To rule out nested future stages, it is not enough to syntacticallyexclude terms with nested brackets, because of CSP. For example,
+
+the term let f = l x.hsx + 1i in hl x.% f xi has no nested brackets,but it is equivalent to hl x
+
+.hsx + 1ii, which has nested brackets.Therefore, our restriction to one level must be stated using types.
+
+The most important typing rules for us are those for bracket hei,escape se, and CSP
+
+%e, because they are the main way to movebetween levels and to interact with variable and classifier bindings.
+
+The typing derivation in Fig. 3 illustrates these rules. The leftmostbranch of the proof derives the eta example in $2.5, except changing the type int to bool so as to apply eta to the identity function.
+
+The typing rule for CSP %e rejects terms such as hl x.%hxii,which cannot be run even though it type-checks in MetaOCaml.
+In exchange for not generating such un-runnable code, we gain amuch simpler operational semantics, which we now turn to.
+
+3.2 Operational semantics
+Figure 4 gives the small-step operational semantics of l a1v, using
+the definition of contexts in Fig. 1. A context CA[ ] can be pluggedwith an expression eA to give a level-0 expression. All redexes
+
+are level-0 expressions except in the second-to-last transition. Ofcourse, evaluation can get stuck, as on the programs 1[b ] and 1(2).
+
+The last transition, of the redex run(a)hva ia , demotes va asdefined in the second half of the figure. Demotion homomorphically maps values va to level-0 expressions e0, by replacing thelevel a by 0 in expression annotations and converting
+
+%e0 into e0.(We could have simplified the
+run transition, inherited from l a , tojust C0[
+run(a)hva ia ]  C0[va #].)Staging complicates our operational semantics by making our
+
+redexes possibly open and our evaluation contexts possibly bind-ing. For example, the program (a)hl xa :
+
+int.s((l y.y)hxa ia )iadecomposes into the open redex (l y
+.y)hxaia and the context(a)hl xa :
+int.s[ ]ia . The context binds the classifier a and thenthe later-stage variable xa , whose level depends on a.
+
+3.3 Properties
+Proposition 3.3 (Subject reduction) If \Gamma  ` e : t and e  e0 then\Gamma  ` e0 :t.
+
+Proof In particular, demotion preserves types: if \Gamma , a ` va : uthen \Gamma  ` va# : u. The latter is obvious from the rules of Fig. 2. Our
+typing rule for CSP makes type-preservation of demotion trivial, instark contrast to Taha and Nielsen's (2003). \Lambda 
+
+Proposition 3.4 (Determinism) If e  e1 and e  e2 then e1 = e2.
+Proposition 3.5 (Progress) If ` e:t then either e is a value or thereexists e0 such that e  e0.
+
+3.4 Comparison with l a
+Our l a1v is essentially Taha and Nielsen's l a (2003) with therestriction to one level, except:
+
+* Our language is call-by-value, to better match languages inactual use such as MetaOCaml.
+
+* We add fix, to model an effect, namely nontermination. Wemake this addition to show that our translation preserves the
+
+stage at which effects happen, by showing that it preserveswhether a program terminates. As the first example in $2
+demonstrates, it is important to evaluate an escape expressionand incur its effects when the enclosing bracket is built, not run.
+
+* We give our dynamic semantics by small-step transition rules
+
+using evaluation contexts, rather than big-step reduction rulesthat apply anywhere in the program. This choice is because we
+
+want to add state and control effects eventually, which is easierwhen transitions represent evaluation contexts explicitly and do
+not impose the nesting of subexpressions on their evaluation.*
+Our typing rule for CSP greatly simplifies the operational se-mantics, at the cost of excluding some un-runnable terms ($3.1).
+
+* Since our language is call-by-value, we do not evaluate a persisted level-0 expression. That is, %e is always a value; for ex-ample,
+
+%(1 + 1) is a value and does not reduce to %2. Thus, if \Omega is an infinite loop such as (
+
+fix f (x :int). f x)0, then h%\Omega ia halts,as does
+run(a)hl xa :int.%\Omega ia , but not run(a)h%\Omega ia .
+
+The last difference makes the calculus more orthogonal (a redex in-side brackets is always in an escape) but no less expressive: to evala, f : hintia ! hintia , xa : int ` f : hintia ! hintia
+
+..., xa : int ` xa : int
+..., xa : int ` hxa ia : hintia
+a, f : hintia ! hintia, xa : int ` f hxa ia : hintia
+a, f : hintia ! hintia , xa : int ` s( f hxa ia ) : int
+a, f : hintia ! hintia ` l xa :int.s( f hxa ia ) : int ! int
+a, f : hintia ! hintia ` hl xa :int.s( f hxa ia )ia : hint ! intia
+a ` l f :hintia !hintia .hl xa :int.s( f hxa ia )ia : (hintia ! hintia ) ! hint ! intia
+`(a)l f :hintia !hintia .hl xa :int.s( f hxa ia)ia :(a)((hintia !hintia)!hint!intia)
+
+eta : ..., b , y : hintib ` y : hintib
+eta : ..., b ` l y:hintib .y : (hintib ! hintib )
+eta:...`(b )l y:hintib .y:(b )(hintib !hintib ) ...
+` let eta = (a)l f :hintia !hintia.hl xa :int.s( f hxa ia )ia in let id = (b )l y:hintib .y in (a)(eta[a](id[a])) : (a)hint ! intia
+
+Figure 3. An example typing derivation in l a1v
+
+C0[i1 + i2]  C0[i1 .+i2]
+C0[(l x :t.e)v]  C0[e[x := v]]
+C0[(fix f (x :t1) :t2. e)v]  C0[e[ f := fix f (x : t1) :t2. e][x := v]]
+
+C0[((a)e)[b ]]  C0[e[a := b ]]
+
+Ca[shvaia ]  Ca[va ]
+C0[run(a)hvaia ]  C0[(a)(va #)]
+
+ia # = i0 (ea1 + ea2 )# = ea1 # + ea2 #
+xA# = xA (ea1 ea2 )# = ea1 #ea2 #
+(%e0)a # = e0 (l xa :u.ea )# = l x0 :u.(ea #\Theta xa := x0\Lambda )
+(fix f a (xa : u1) : u2. ea)#
+
+= fix f 0(x0 : u1) : u2. (ea #\Theta  f a := f 0\Lambda \Theta xa := x0\Lambda )
+
+Figure 4. Operational semantics: small-step transitions e  e0 anddemotions va #. The latter is an inductively defined map from values va to expressions e0.
+
+Variables x,y,z,r, f ,q
+Type variables p
+Types t ::= p | int | t1 ! t2 | 8p.t | (~t)
+Environments g ::= [] | g, p | g, x : t
+Named environments r ::= [] | r, p | r, xA : t
+Expressions e ::= i | x | l x:t.e | fix f [~p](x : t1) : t2. e|
+
+e + e | ee | \Lambda p. e | e[t] | (~e) | e.i
+Figure 5. Syntax of F2
+
+uate the persisted term, we can write %e as s(let x = e in h%xi).Conversely, if we had made CSP evaluate the persisted term, then
+to avoid that evaluation, we could write %e as (%(l x :int.e))0.Calcagno et al. (2004) designed a few successors to l a , with
+Hindley-Milner polymorphism, inference, principal types and typ-ings. Modulo the treatment of polymorphism, those calculi are designed to simplify l a so that terms do not mention classifiers. Nei-ther variable bindings nor brackets are labeled in those calculi; their
+levels are all inferred. A classifier is treated like a type variable,and an a-closed type is introduced and eliminated like a type polymorphic in a. Although this approach is attractive in the practical
+
+setting of a Hindley-Milner language such as MetaOCaml, we keepthe classifiers explicit here to guide our translation. We do not concern ourselves with polymorphism and inference in this paper. Weconsider our calculus l a
+
+1v as a desugared programming language,with all classifiers made explicit and with all polymorphism eliminated by monomorphization (inlining and type instantiation).
+
+4. The target language F2
+Our target language is System F, also known as F2, with products(tuples) and the fixpoint. Figure 5 reviews the syntax we use. We
+
+write ~a for a1,...an, the sequence of zero or more objects ai. Asparticular cases of tuples, a tuple with one object is that object itself
+and the tuple with 0 objects is unit. We also sometimes use patternmatching as syntactic sugar for selecting parts of a tuple; for example, l (x,y):(int,bool).(y,x) is short for l z:(int,bool).(z.2,z.1).We omit our static and dynamic semantics for F
+
+2, which arestandard and call-by-value. (It does not matter whether the dynamic
+
+semantics evaluates under a type abstraction, because we only per-form type abstraction immediately around a term abstraction and
+always apply the result of a type application to a term argument.)At the term level, this target language adds polymorphism (including polymorphic recursion) and tuples to l a1v and removes stag-ing and classifiers. A type environment g is an ordered sequence of
+type- and term-variable bindings.The output of our translation uses tuples just to represent laterstage environments, for which we introduce some syntactic sugar.
+Definition 4.1 (Environments as tuples) Let g = ~x :~t be an F2environment that binds no type variable. We write the environment
+
+abstraction term l g.e to mean l (~x):(~t).e, where g binds into e.We also write g for the tuple term
+
+~x and the tuple type ~t. Thus,g ! t0 means the type (
+~t) ! t0, and if e has the type g ! t0 theneg means the application term e(
+
+~x).
+
+For example, if g is r : p, f : p ! int, then the abstraction l g. f r isthe term l (r
+
+, f ):(p,p !int). f r, of type (p,p ! int) ! int. As aspecial case, if g is empty, then l g
+
+.e is l y:().e and eg is e().Our translation uses classifiers in an auxiliary data structure,
+
+named environments r. As defined in Fig. 5, a named environmentdecorates every term-variable binding with a level. Of course, classifiers do not appear in the output of the translation.
+Definition 4.2 (Restriction) Suppose r is a named environmentand A is a named level. The full restriction r k A of r to A is the
+F2-environment consisting of the type variables in r and the termvariables in r that are decorated with A. The incremental restriction
+
+r|A of r to A is the F2-environment consisting only of the termvariables in r that are decorated with A.
+Definition 4.3 (Extension) An environment, named environment,or named level extends another if the latter is a prefix of the former.
+
+5. The formal translation
+We define our translation from l a1vto F2 by induction: first on typesand environments, then on typing derivations.
+
+5.1 Translating types and environments
+Definition 5.1 (Extension by used classifiers) Given a l a1v-type tand a named environment r, the result of extending r by the
+
+classifiers used in t is the named environment
+
+r,~p(t) = (r, p, r
+
+a : p if Used(t) = {a}
+
+r if Used(t) = {} (9)
+where the type variable p and the term variable r are fresh in F2.We write
+
+~p for a sequence of zero or one type variables; a longersequence is ruled out by the one-level restriction (Definition 3.2).
+
+Definition 5.2 (Translating types) In a named environment r, al a
+
+1v-type t translates to an F2-type r ;t as follows.
+
+r ; int = int (10)
+
+r ; (t1 ! t2) = 8~p.(r0 ;t1) ! (r0 ;t2) where r0 = r,~p(t1) (11)
+
+r ; (huia ) = (r|a) ! u (12)
+
+r ; ((a)t) = r ;t where a is fresh (13)
+
+In particular, if t1 uses no classifier, then r ; (t1 ! t2) = (r ; t1) !(r ;t
+
+2) homomorphically. For a flat type u, we have r ; u = u.The 8~p in (11) is reminiscent of G"odel's translation from intuitionistic logic to S4 (1933). For example, in the empty namedenvironment, the l a
+
+1v-type
+(a)(hintia ! hboolia ) ! hint ! boolia (14)
+
+translates to the F2-type (cf. $2.5)8
+
+p.(8p0.((p,p0) ! int) ! ((p,p0) ! bool)) ! (p ! int ! bool)(15)
+
+because Used(hintia ! hboolia ) = Used(hintia ) = {a}.Given the type translation in (11) and (13), the environment
+translation below is not surprising, as in the deduction theorem.
+Definition 5.3 (Translating environments) A l a1v-environment \Gamma translates to a named environment b\Gamma c as follows.
+
+b[]c = [] b\Gamma , x :tc = b\Gamma c, ~p(t), x : (b\Gamma c,~p(t) ;t) (16)b
+\Gamma , ac = b\Gamma c b\Gamma , xa : uc = b\Gamma c, xa : u (17)
+
+Thus b\Gamma 2c extends b\Gamma 1c whenever \Gamma 2 extends \Gamma 1.
+
+The rest of this section defines the coercions motivated withescapes in $2.4. The coercion function r
+
+1 ,! r2 ; t is a certain in-jection in F
+2 from r1 ;t to r2 ;t. The precise definition of coercionsis less important than their availability, summarized below.
+
+Proposition 5.4 (Coercions are total and compositional) Givenany l a
+
+1v-type t, as long as the named environment r2 extends r1,the coercion r
+
+1 ,! r2 ;t is a total function from r1 ;t to r2 ;t. If r3further extends r
+
+2, then the coercion r1 ,! r3 ;t is equivalent to thecomposition (r
+2 ,! r3 ;t) ffi (r1 ,! r2 ;t).
+
+Put differently, coercions constructively show that extension amongnamed environments induces injection among translated types.
+
+First we show how isomorphism among named environmentsinduces isomorphism among translated types. If r
+
+1|a = r2|a for
+
+every classifier a used by t, then r1 ;t = r2 ;t. More generally, if wecan convert between r
+
+1|a and r2|a for every classifier a used by t,then we can convert between r
+
+1 ; t and r2 ; t. If t uses no classifier,then it is trivial to convert between r
+
+1 ; t and r2 ;t because they areequal. If t uses a classifier, then the conversion is barely nontrivial.
+
+Definition 5.5 (Conversion) Let t be a l a1v-type and a be a level.Let r
+
+1 and r2 be two named environments with the same type-variable bindings, such that r
+
+1|b = r2|b for every level b usedby t except possibly a. Suppose e and _e are two F
+
+2-terms such that
+
+r1 k a ` e : (r2|a), r2 k a ` _e : (r1|a). (18)
+
+In words, e has the tuple type (r2|a) in the environment r1 k a,and _e has the tuple type (r
+
+1|a) in the environment r2 ka. Then wedefine a pair of conversion functions in F
+
+2
+
+ut : (r1 ;t) ! (r2 ;t), _ut : (r2 ;t) ! (r1 ;t) (19)
+
+simultaneously by the following induction on the structure of t. Weomit the definition of _ut by symmetry with ut.
+
+u int = l x:int.x (20)
+u(t1 ! t2) = l f .\Lambda ~p. l x. ut2( f [~p]( _ut1(x)))where the length of
+
+~p is #Used(t1) (21)
+
+u(huia ) = l f .l (r2|a). f (_e) (22)
+
+u((a)t) = ut where a is fresh (23)
+
+We notate the conversion u as Conv(r1,r2,a,e, _e).
+For example, if
+
+r1 = p, xa : p, ya : int, r2 = p, f : int ! p, za : (int,p) (24)
+
+and we let u be Conv(r1,r2,a,(y,x),(z.2,z.1)), then
+
+u(hboolia ) = l f :(p,int)!bool.l z:(int,p). f (z.2,z.1), (25)
+
+_u(hboolia ) = l f :(int,p)!bool.l (x,y):(p,int). f (y,x). (26)
+
+Definition 5.6 (Coercion) Suppose r1 and r2 are named environ-ments and r
+
+2 extends r1. For every l a1v-type t, we define a coercionfunction in F
+
+2 from r1 ;t to r2 ;t, that is, a term of type r1 ;t ! r2 ;tin the environment r
+
+2 k A. We notate this coercion as r1 ,! r2 ;t.By induction on the difference between r
+
+1 and r2, we considertwo cases then compose the coercions. First, if r
+
+2 is r1 or r1,p orr
+1, y : t, then the coercion is the identity. Second, if r2 = r1, yb : t,then we define the coercion by the following induction on t.
+
+r1 ,! r2 ; int = l x:int.x (27)
+r1 ,! r2 ; (t1 ! t2) = see below (28)
+
+r1 ,! r2 ; (huia ) = l f .l (r2|a). f (r1|a) (29)
+
+r1 ,! r2 ; ((a)t) = r1 ,! r2 ;t where a is fresh (30)
+
+In (28), we define the coercion r1 ,! r2 ; (t1 ! t2) by consideringtwo cases. On one hand, if b is not used in t
+
+1 and so (r1,~p(t1));t1 =(r
+2,~p(t1)) ;t1, then the coercion is
+
+l f .\Lambda ~p. l x.(r1,~p(t1) ,! r1,~p(t1), yb : t ;t2)( f [~p](x)). (31)
+On the other hand, if Used(t1) = {b }, then let
+
+r01 = r1,~p(t1) = r1, p, rb : p, (32)
+r02 = r2,~p(t1) = r1, yb : t, p, rb : p, (33)
+following Definition 5.1. Then by Definition 5.2,
+
+r1 ; (t1 ! t2) = 8p.(r01 ;t1 ! r01 ;t2), (34)
+r2 ; (t1 ! t2) = 8p.(r02 ;t1 ! r02 ;t2). (35)
+
+Define the named environment r001 = r1, p, r0b : (t,p) and let u be
+the conversion Conv(r001 ,r02,b ,(r1|b ,r0.1,r0.2),(r1|b ,(y,r))). We
+
+then define the coercion from the type (34) to the type (35) to be
+
+l f .\Lambda p. l x. ut2( f [(t,p)]( _ut1(x))). (36)
+
+Examples A simple example of a coercion is bac ,! ba, xa :intc;h
+
+boolia , where bac is [] and ba, xa : intc is xa : int by Defini-tion 5.3. The coercion is an F
+
+2-function from the type [];hboolia =() ! bool to the type xa : int ; hboolia = int ! bool, namely
+
+l f .l x. f () by (29) and (the bool analogue of) (27).A more involved example of a coercion is
+
+(bac, p, ra : p) ,! ba, f : hintia ! hboolia , xa : intc;
+
+(hintia ! hboolia ). (37)
+This coercion occurs in the translation of the eta function in $2.5.Here bac is [] and ba
+
+, f : hintia ! hboolia , xa : intc is
+
+p, ra :p, f :8p0.((p,p0) ! int) ! ((p,p0) ! bool), xa :int (38)
+by Definition 5.3. The coercion (37) is a function in F2 from8p0
+
+.((p,p0) ! int) ! ((p,p0) ! bool) to 8p0.((p,int,p0) !
+int) ! ((p,int,p0) ! bool). It is equivalent to the F2-term
+
+l f .\Lambda p0. l f1.let f2 = f [(int,p0)](l (x,(y,z)). f1(x,y,z)) inl (x
+
+,y,z). f2(x,(y,z)).
+
+5.2 Translating terms and derivations
+Our translation of terms and derivations is guided by our trans-lation of types and environments, so this section should be read
+
+in conjunction with the previous one. We want to translate a l a1vjudgment \Gamma  ` e0 : t to an F2-judgment b\Gamma c k 0 ` e : (b\Gamma c ; t). How-ever, to handle code with escaping and cross-stage persistence inductively, we also translate a l a1v-judgment \Gamma  ` ea : u to a judgmentb\Gamma c k a
+
+, q1 : t1,...,qn : tn ` e : u along with an ordered sequence ofn auxiliary judgments b\Gamma c k 0 ` e
+
+i : ti. As detailed in the followingdefinition and illustrated in the following example, the translation
+
+of brackets combines--that is, flattens--these judgments into let.
+Definition 5.7 (Translating terms, judgments, and derivations)The translation of the source derivation is defined inductively over
+
+the source derivation, or, equivalently, on the source term eA. Wemark some applications e
+
+1e2 as administrative by writing them ase
+1 @e2. All elimination forms in conversions and coercions are alsoadministrative. See also the translation of bracket.
+
+Literal constant: Translate the judgment \Gamma  ` iA : int to the judg-ment b\Gamma c k A ` i :
+
+int, with no auxiliary judgment if A is not empty.Variable: Translate \Gamma  ` xa : u to b\Gamma cka ` x :u, with no auxiliary
+
+judgment. Translate the judgment \Gamma  ` x0 :t, where \Gamma  = \Gamma 1, x0 :t, \Gamma 2,to the judgment b\Gamma c k 0 ` (b\Gamma 
+
+1c, ~p(t) ,! b\Gamma c ;t) @ x : (b\Gamma c ;t).Abstraction: Let \Gamma  be \Gamma 
+1, xA : t1 and t be t1 ! t2. Suppose thejudgment \Gamma  ` eA : t
+2 translates to b\Gamma c k A, ~q :~t ` e : t, with someauxiliary judgments if A is not empty. If A is not empty, then t = t
+
+2and b\Gamma 
+1c k 0 = b\Gamma c k 0, so just translate \Gamma 1 ` (l xA:t1.eA) : t tob\Gamma 
+1c k A, ~q :~t ` (l x:t1.e) :t, with the same auxiliary judgments. IfA is empty, then t = b\Gamma 
+
+1c,~p(t1) ; t2, so translate \Gamma 1 ` (l x :t1.e) : tto b\Gamma 
+1c k 0 ` (\Lambda ~p(t1). l x :(b\Gamma 1c,~p(t1);t1).e) : (b\Gamma 1c ;t).Fixpoint: Let \Gamma  be \Gamma 
+
+1, f A : t, xA : t1 where t is t1 ! t2. Suppose\Gamma  ` eA : t
+2 translates to b\Gamma c k A, ~q :~t ` e : t, with some auxiliaryjudgments if A is not empty. If A is not empty, then t = t
+
+2 andb\Gamma 
+1c k 0 = b\Gamma c k 0, so just translate \Gamma 1 ` (fix f A(xA : t1) : t2. eA) : tto b\Gamma 
+
+1c k A, ~q :~t ` (fix f (x : t1) : t2. e) : t, with the same auxiliaryjudgments. If A is empty, then \Gamma 
+
+1, f :t, x :t1 ` e :t2 translates tob
+
+\Gamma 1c k 0, ~p, f : (b\Gamma 1c,~p(t) ;t), ~p0, x : (r ;t1) ` e : (r ;t2), (39)
+
+where r = b\Gamma 1c,~p(t),~p0(t1). The one-level restriction (Defini-tion 3.2) leaves three possibilities for Used(t
+
+1) and Used(t2).First, if Used(t) = Used(t
+1) = Used(t2) = {}, then just translate
+
+\Gamma 1 ` (fix f (x). e) : t to b\Gamma 1c k 0 ` fix f (x). e : (b\Gamma 1c ; t). Second, ifUsed(t) = Used(t
+
+1) = {a} ' Used(t2), then r = b\Gamma 1c, p, ra :p, p0,r0a : p0. Define the named environment r
+
+1 = b\Gamma 1c, p, ra : p and letu be the conversion Conv(r
+1,(r1, r0a : ()),a,(r1|a,()),(r1|a)).Then translate \Gamma 
+1 ` (fix f (x). e) :t to
+
+b\Gamma 1c k 0 ` (fix f [p](x0 : r1 ;t1) : (r1 ;t2).
+
+_ut2 @ (e [p0 := ()][x := ut1 @ x0])) : (b\Gamma 1c ;t). (40)
+
+Third, if Used(t) = Used(t2) = {a} but Used(t1) = {}, then r =b\Gamma 
+
+1c, p, ra :p. Define the named environment r0 = b\Gamma 1c, ra :() andlet u be the conversion Conv(b\Gamma 
+
+1c,r0,a,(b\Gamma 1c|a,()),(b\Gamma 1c|a)).Then translate \Gamma 
+1 ` (fix f (x). e) :t to
+
+b\Gamma 1c k 0 ` (fix f 0(x0 : b\Gamma 1c ;t1) : (b\Gamma 1c ;t2).
+
+_ut2 @ (e [p := ()][ f := ut @ f 0][x := ut1 @ x0])) : (b\Gamma 1c ;t). (41)
+
+Addition: If eA1 : int translates to e1 : int and eA2 : int translatesto e
+
+2 : int (both with some auxiliary judgments if A is not empty),then translate eA
+
+1 + eA2 : int to e1 + e2 : int (concatenating the twosequences of auxiliary judgments if A is not empty).
+
+Application: Suppose that \Gamma  ` eA1 :t1 ! t2 translates to b\Gamma c k A,
+~q1 :~t1 ` e1 : t1 and \Gamma  ` eA2 : t1 translates to b\Gamma c k A, ~q2 :~t2 ` e2 : t2,both with some auxiliary judgments if A is not empty. If A is not
+
+empty, then just translate e1e2 to e1e2, concatenating the two se-quences of auxiliary judgments. If A is empty, then Used(t
+
+1) iseither {} or {a} by the one-level restriction (Definition 3.2). If
+
+Used(t1) is empty, then just translate e1e2 to e1e2. If Used(t1)is {a}, then define the named environment r = b\Gamma c
+
+, ra : () and letu be the conversion Conv(b\Gamma c
+,r,a,(b\Gamma c|a,()),(b\Gamma c|a)). Translate e1e2 to let ( f ,x) = (e1,e2) in ( _u(t1 ! t2) @ ( f [()]))x.Classifier introduction: If e translates to e, then (a)e also translates to e, where a is fresh.Classifier instantiation: Suppose that \Gamma  ` e : (a)t translates to
+b\Gamma c k 0 ` e : (b\Gamma c ; t), where a is fresh, and b is a classifier in \Gamma .
+Let x1b : t1,...,xmb : tm be all the term-variable bindings in b\Gamma cthat are decorated with b . Define the named environment r = b\Gamma c
+
+,x
+
+1a :t1,...,xma :tm. Then r|a = b\Gamma c|b , so r ;t = b\Gamma c;(t [a := b ]).Translate e[b ] to (b\Gamma c ,! r ; t) @ e.
+
+Run: If \Gamma  ` e : (a)huia (where a is fresh) translates to b\Gamma c k 0 `e : () ! u, then translate \Gamma  `
+
+rune : (a)u to b\Gamma c k 0 ` e() : u.Bracket: If \Gamma  ` ea : u translates to b\Gamma c k a
+
+, q1 : t1,...,qn : tn `e : u with n auxiliary judgments b\Gamma c k 0 ` e
+
+i : ti, then translate thequotation \Gamma  ` heaia : huia to
+
+b\Gamma ck0 ` let q1 = e1 in ...let qn = en in l (b\Gamma c|a).e :(b\Gamma c|a) ! u.(42)
+Mark as administrative: (a) let qi = ei for auxiliary judgments fromtranslating CSP; (b) environment tuple projections (b\Gamma c|a)
+
+.i.Escape: If \Gamma  ` e: huia translates to b\Gamma ck 0 ` e : b\Gamma c|a ! u, then
+
+make the latter judgment the sole auxiliary judgment in translating\Gamma  ` se : u to b\Gamma c k a
+
+, q : (b\Gamma c|a ! u) ` q @ (b\Gamma c|a) : u.Cross-stage persistence: If \Gamma  ` e : u translates to b\Gamma c k 0 ` e : u,
+
+then make b\Gamma ,a,\Gamma 0ck0 ` l ().e :() ! u the sole auxiliary judgmentin translating \Gamma 
+
+,a,\Gamma 0 ` %e:u to b\Gamma ,a,\Gamma 0cka, q :() ! u ` q@():u.
+
+Examples We return to the ef 2 example in $2.3 and $2.4. Thesource term is the application of the function
+
+l ef 0 :(b )(hintib !hint!intib ).
+
+(a)hl xa .l ya .s(ef [a]hxa * ya ia )ia (43)
+
+to the argument
+
+(a)l z:hintia .hl xa :int.sz + xa ia. (44)
+
+Because the type of the argument (44) uses no level, this applica-tion translates to the application of the translations of (43) and (44)
+in the empty environment. We can thus translate (43) and (44) sep-arately (thanks to compositionality in the large, Proposition 5.14).
+
+Translating ef We translate the derivation
+
+1a, z0 : hintia , xa : int ` z0 : hintia
+2a, z0 : hintia , xa : int ` sz : int 3..., xa : int ` xa : int
+
+4a, z0 : hintia , xa : int ` sz + xa : int
+5a, z0 : hintia ` l xa :int.sz + xa : int ! int
+
+6a, z0 : hintia ` hl xa :int.sz + xaia : hint ! intia
+
+7a ` l z0 :hintia .hl xa :int.sz + xa ia : hintia ! hint ! intia
+
+8`(a)l z0:hintia .hl xa :int.sz+xa ia :(a)(hintia !hint!intia)
+
+from top to bottom. The top l a1v-environment a, z0 : hintia , xa : int
+translates to the named environment p, ra : p, z0 : p ! int, xa : int.
+
+1. p, z : p ! int ` (l f .l (r,x) :(p,int). f r) @ z : (p,int) ! int
+2. p, r : p, x : int, q : (p,int) ! int ` q @ (r,x) : intwith the auxiliary judgment
+
+p, z : p ! int ` (l f .l (r,x) :(p,int). f r) @ z : (p,int) ! int
+3. p, r : p, x : int ` x : int
+4. p, r : p, x : int, q : (p,int) ! int ` q @ (r,x) + x : intwith the same auxiliary judgment as in 3
+
+5. p, r : p, q : (p,int) ! int ` l x :int.q @ (r,x) + x : int ! intwith the same auxiliary judgment as in 3
+6. p, z : p ! int ` let q = (l f .l (r,x) :(p,int). f r) @ z inl r
+
+.l x :int.q @ (r,x) + x : p ! int ! int
+
+7. ` \Lambda p. l z :p !int.let q = (l f .l (r,x) :(p,int). f r) @ z inl r
+
+.l x :int.q @ (r,x) + x : 8p.(p ! int) ! (p ! int ! int)
+
+8. Same as 7
+
+The result is the same as at the end of $2.4, modulo a b -value redex.
+Translating ef 2 proper In the typing derivation of (43), we focuson the application
+
+*** 2
+\Gamma  ` ef [a] : hintia ! hint ! intia
+
+*** 1
+\Gamma  ` hxa * ya ia : hintia 3
+\Gamma  ` ef [a]hxa * yaia : hint ! intia.
+Here the l a1v-environment \Gamma  is defined by
+
+\Gamma  = ef 0 : (b )(hintib ! hint ! intib ), a, xa : int, ya : int (45)
+and translates to the named environmentb
+
+\Gamma c = ef 0 : 8p.(p ! int) ! (p ! int ! int), xa : int, ya : int.(46)
+
+The bracket 1 above translates easily to the judgment
+
+ef : 8p.(p ! int) ! (p ! int ! int)`
+
+l (x,y).x * y : (int,int) ! int. (47)
+
+To translate the classifier instantiation 2, we apply the coercion
+
+b\Gamma c ,! (b\Gamma c, xb : int, yb : int) ; hintib ! hint ! intib (48)
+to ef , to turn it from the type8
+
+p.(p ! int) ! (p ! int ! int) (49)
+
+to the type
+
+8p.((int,int,p) ! int) ! ((int,int,p) ! int ! int). (50)
+The result of the coercion is essentially \Lambda p. l r.ef [(int,int,p)]r.Finally, to translate the application 3, we instantiate this type variable p to () and apply the conversion
+Conv(b\Gamma c,(b\Gamma c,ra : ()),a,(x,y,()),(x,y))(hintia ! hint ! intia)(51)
+
+to get a function of type
+
+((int,int) ! int) ! ((int,int) ! int ! int). (52)
+We then apply this function to (47).
+
+5.3 Properties
+Proposition 5.8 (Type preservation) If \Gamma  ` e0 : t in l a1v, and ittranslates to b\Gamma c k 0 ` e : (b\Gamma c ;t), then b\Gamma c k 0 ` e : (b\Gamma c ;t) in F
+
+2.
+
+Proof Definition 5.7 amounts to a constructive proof. \Lambda 
+Because the type system of F2 is sound, type preservation ensuresthat our translation does not go wrong. In particular, the translated
+
+term never looks up free variables, thus preventing scope extrusion.We turn to the dynamic properties of our term translation.
+
+Definition 5.9 An administrative reduction is a b -value reductionin F
+
+2 (anywhere in a term, even under l ) of an elimination formmarked as administrative in Definition 5.7.
+
+Administrative reduction is terminating (since each step reducesthe number of administrative redexes) and confluent (since there is
+no critical pair), so it brings every term e to a normal form ANF(e).
+This normal form ANF(e) is observationally equivalent to e sinceall b -value reductions preserve observational equivalence in F
+
+2.Our translation preserves values in the following sense. We
+
+conjecture that it also preserves reductions and hence observations.
+Proposition 5.10 (Value preservation) If \Gamma  ` v0 : t and v trans-lates to e, then ANF(e) is a value.
+
+Conjecture 5.11 (Reduction preservation) Suppose \Gamma  ` e01 :t ande
+
+1  e2. If e1 and e2 translate to e1 and e2, then there exists e sothat ANF(e) = ANF(e
+
+2) and ANF(e1) + e in call-by-value F2.
+
+Corollary 5.12 (Observation preservation) If [] ` e0 :t translatesto [] ` e : ([] ;t), then e terminates if and only if e terminates.
+
+The two conjectures above entail that our translation preservesevaluation order. Because F
+
+2 without fix is strongly normalizing,they also entail that l a
+1v without fix is strongly normalizing.Although our translation is defined to operate on an entire l a
+
+1vprogram at once, it is in fact compositional enough for parts of an
+
+expression or a modular program to be translated separately.
+Proposition 5.13 (Compositionality in the small) Let e be a well-typed l a
+
+1v-term with n subterms e1,...,en, and e0 be the well-typedresult of replacing e
+
+1,...,en by e01,...,e0n. If the subterms e1,...,enand e0
+
+1,...,e0n, in their environments in l a1v, translate to the same(or equivalent) F
+
+2-judgments, then e and e0, in their environmentsin l a
+
+1v, also translate to the same (or equivalent) F2-judgments.
+
+Proposition 5.14 (Compositionality in the large) Let \Gamma 1 and \Gamma 2be two l a
+
+1v-environments that differ only in their variable bindingsat level 0 whose types use no classifier. If \Gamma 
+
+1 ` e0 :t and \Gamma 2 ` e0 :t,then the translation of e0 is the same in \Gamma 
+1 as in \Gamma 2.
+
+Proof Observe that b\Gamma 1c k a = b\Gamma 2c k a for all a. \Lambda 
+
+Proposition 5.13 means that the translation of a term can proceedwith translating its parts in parallel. Proposition 5.14 means that
+top-level definitions that do not share a classifier can be translatedseparately. For example, the program in Fig. 3 defines the code
+generators eta and id at the top level. These definitions and thebody that uses them can be translated separately from each other.
+
+6. Scope extrusion
+We turn in this section from our formal translation to how it helpsus combine staging with effects soundly in our ongoing work.
+
+To continue the power example from $2, suppose that we wantto count the multiplication operations as we generate them. For example, power7 should produce the count 5 along with the functionl x
+
+.x*square (x*square (x*1)). In l a1v and in MetaOCaml with-out effects, this count is hard to pass out of the scope of the laterstage variable x, because the binder l x must apply to later-stagecode, not an earlier-stage count.
+
+If we add ML-style mutable references to l a1v, then the countingbecomes easy: we change the definition of power as follows.
+
+let count = ref 0
+let power = (a)fix f (n : int) : hintia ! hintia . l x :hintia .if n = 0 then h1ia else count  !count + 1;
+
+if n mod 2 = 0 . . .
+After evaluating power7, the number of multiplications generatedcan be retrieved by !count.
+
+Unfortunately, adding state so na"ively to a staged languageresults in scope extrusion. For example, the following program
+generates a piece of open code then runs it.
+
+run(a)(let x = ref h1ia in hl y.s(x  hyia ;h()ia )ia;!x) (53)
+The let expression above evaluates to hyia with no binder for yin sight, so the program gets stuck at (a)y. In MetaOCaml, this
+
+example causes a type-checking error at run time.Adding state breaks soundness because the environment where
+a code value is created may no longer be a prefix of the environmentwhere it is used. In terms of our translation, we would need to
+coerce the type r1 ;t to the type r2 ;t when r2 does not extend r1.Such a coercion does not exist in general. If we translate (53)
+informally without such a reverse coercion, we get
+
+(let x = ref(l ().1) in let v = x  (l (y).y);l (y).() in(l ()
+
+.l y.v(y));!x)(),
+
+which does not type-check in F2, even without any value restriction.These examples suggest that, to prevent scope extrusion in
+
+staged programs with effects, we can try to translate the stagingaway and see if we can come up with the coercions needed to keep
+the translation well-typed (that is, to maintain Proposition 5.8). Forexample, the effectful use of count in the power example above
+is sound, because mutation at the flat type int uses no classifiersand so needs no coercion (as discussed above Definition 5.5). Of
+course, other uses of effects in staging, such as for let insertion,may require more coercions or different tests for scope extrusion.
+
+In MetaOCaml without effects, we have implemented anothersolution to the counting problem in a sound staged language: Take
+the changed definition of power above. Apply our translation, thena state-passing transformation to eliminate the use of references.
+Finally, add staging annotations to the program so that it producesnot a function of type
+
+int ! int but a cogen of type hinti ! hinti.
+
+7. Related work
+Our work is inspired by the expressive staged calculus l a and itssound type system (Taha and Nielsen 2003). We aim to make the
+
+calculus model MetaOCaml more closely, by moving towards call-by-value and accounting for effects. We compare our language l a
+
+1vwith l a and its later development (Calcagno et al. 2004) in $3.4.
+
+Taha (1999) poses the challenge of encoding staging using l -abstraction in $7.2.1, `Why lambda-abstraction is not enough for
+
+multi-stage programming'. Besides the pragmatic need to printgenerated code, his main reason is that escapes are hard to encode because they permit `evaluation under lambda'. He suggestsone encoding scheme, using reference cells and exceptions, which
+make it hard to check that the target calculus is sound. This paperanswers this challenge by showing how System F with constants
+suffices for two-stage programming. We discuss the challenges ofthe encoding and our solution in $2.2-$2.4.
+
+The safety problem of staged languages with effects has a longhistory. Calcagno et al. (2000) show that reference cells may safely
+store values of closed types (in our terminology, types that useno levels). Our discussion in $6 not only confirms this result, in
+a calculus with a small-step rather than big-step semantics, butfurther suggests ways to safely store open code as well. Calcagno
+et al. relate safe staging with effects to binding-time analyses forimperative languages. Indeed, our use of coercions is a sort of
+binding-time analysis that relies on the type environment in a term'sderivation to describe the binding environment of the term.
+
+Nanevski et al.'s contextual modality (2007) includes the namesof free variables in the types of open code. Discussing such inclusion, Taha and Nielsen (2003; $1.4) warn of the difficulty in main-taining a-equivalence and of the need for r-polymorphism and
+negative side conditions. We avoid these nominal problems usingtuple indices based on the ordering of bindings in the type environment. In contrast, Kim et al.'s staging extension to ML (2006) in-cludes variable-capturing substitution but sacrifices a-equivalence.
+
+Taha (2000) recounts how hard it is to develop a reduction se-mantics and equational theory for even an untyped staged language.
+He presents a confluent big-step call-by-name semantics that pre-serves observational equivalence for a staged language l -U. Although that semantics has become popular (for instance used byTaha and Nielsen (2003)), we give a small-step call-by-value semantics. This choice makes formalization challenging, as our re-dexes may be open and our evaluation contexts may be binding, but
+it resolves the thorny problems described by Taha. For example, theterm (l x
+
+.h%xi)(l y.(l z.z)5) threatens confluence under call-by-name (Taha 2000; $3.4), but our reductions are deterministic and
+
+hence trivially confluent. This term satisfies our one-level restric-tion and translates to (l x
+
+.let q = l ().x in l ().q())(l y.(l z.z)5),with no substitution conflicts or level adjustments. We encode CSP
+
+simply by enclosing an earlier-stage computation in a thunk.Yuse and Igarashi (2006) design a staged calculus that can
+manipulate open code, run closed code, and persist values acrossstages. Their paper is rare in that it gives a call-by-value smallstep semantics of a typed staged language. However, despite theclear correspondence between their calculus and linear-time temporal logic, the commuting conversions via which their `open' and`closed' modalities interact seem to distance their calculus from
+the practice of languages like MetaOCaml and thus our work withclassifiers. Towards implementing their language, the authors suggest that `designing a suitable abstract machine with environmentswould be a first step.' Our translation may be viewed as such a step.
+
+8. Conclusions
+Our derivation-directed translation from a staged language to an un-staged language represents future-stage code using l -abstractions,
+
+yet preserves the evaluation order, typing, and a-equivalence (hy-giene) of the staged program. This translation exposes the problem
+of scope extrusion as a lack of type coercion. This work prepares us
+
+to develop safe staged languages that permit combining open codefragments using state and control effects, and executing the result.
+
+Overcoming the challenge of decoupling evaluation from scope,we have shown that call-by-value System F can encode staging,
+under a restriction to one future level that includes much publishedstaged code. Lifting this restriction is the subject of the current
+work and may require a target language with kind polymorphism.We have shown small-step call-by-value semantics to be a viable model of expressive staged languages such as MetaOCaml.In exchange for dealing with open redexes and binding evaluation
+contexts, we gain deterministic reductions and a better frameworkin which to account for effects, especially control.
+
+Our translation produces much administrative overhead as itbuilds and uses coercion functions and environment tuples. We can
+either postprocess the overhead away or avoid it in the first place us-ing a genuine staging language (like a one-pass CPS transformer).
+
+We rely on the order of bindings in type environments to indexfree variables and construct coercions. For example, weakening is
+explicit in our translation. This reliance is reminiscent of substruc-tural logics. Following Yuse and Igarashi (2006), it would be interesting to explicate the Curry-Howard correspondence in this regard.
+
+Acknowledgments
+We thank Olivier Danvy for the counting example in $6, WalidTaha for helpful conversations and explanations of his work, and
+
+the anonymous reviewers for helpful suggestions.
+
+References
+Ariola, Zena M., and Matthias Felleisen. 1997. The call-by-needlambda calculus. Journal of Functional Programming 7(3):265-
+
+301.Asai, Kenichi. 2002. Online partial evaluation for shift and reset.
+In PEPM, 19-30.Balat, Vincent, Roberto Di Cosmo, and Marcelo P. Fiore. 2004.
+Extensional normalisation and type-directed partial evaluationfor typed lambda calculus with sums. In POPL, 64-76.
+Calcagno, Cristiano, Eugenio Moggi, and Walid Taha. 2000.Closed types as a simple approach to safe imperative multi-stage
+
+programming. In ICALP, 25-36. LNCS 1853.------. 2004. ML-like inference for classifiers. In ESOP, 79-93.
+LNCS 2986.Carette, Jacques, and Oleg Kiselyov. 2005. Multi-stage programming with functors and monads: Eliminating abstraction over-head from generic code. In GPCE, 256-274. LNCS 3676.
+Czarnecki, Krzysztof, John T. O'Donnell, J"org Striegnitz, andWalid Taha. 2004. DSL implementation in MetaOCaml, Template Haskell, and C++. In DSPG 2003, 51-72. LNCS 3016.Davies, Rowan, and Frank Pfenning. 2001. A modal analysis of
+staged computation. Journal of the ACM 48(3):555-604.Elliott, Conal. 2004. Programming graphics processors functionally. In Haskell workshop, 45-56.Ghani, Neil, Valeria de Paiva, and Eike Ritter. 1998. Explicit
+substitutions for constructive necessity. In ICALP, 743-754.LNCS 1443.
+Gl"uck, Robert, and Jesper Jo/rgensen. 1997. An automatic programgenerator for multi-level specialization. Lisp and Symbolic Computation 10(2):113-158.G"odel, Kurt. 1933. Eine Interpretation des intuitionistischen Aussagenkalk"uls. Ergebnisse eines Mathematischen Kolloquiums 4:39-40.
+Hammond, Kevin, and Greg Michaelson. 2003. Hume: A domain-specific language for real-time embedded systems. In GPCE,
+
+37-56. LNCS 2830.
+
+Jones, Neil D. 1988. Challenging problems in partial evaluationand mixed computation. New Generation Computing 6(2-3):
+
+291-302.Kim, Ik-Soon, Kwangkeun Yi, and Cristiano Calcagno. 2006. A
+polymorphic modal type system for Lisp-like multi-staged lan-guages. In POPL, 257-268.
+Launchbury, John, and Simon L. Peyton Jones. 1995. State inHaskell. Lisp and Symbolic Computation 8(4):293-341.
+Lawall, Julia L., and Olivier Danvy. 1994. Continuation-basedpartial evaluation. In Lisp & functional programming, 227-238.
+Lengauer, Christian, and Walid Taha, eds. 2006. Special issue onthe 1st MetaOCaml workshop (2004), vol. 62(1) of Science of
+
+Computer Programming. Elsevier.Maraist, John, Martin Odersky, and Philip Wadler. 1998. The callby-need lambda calculus. Journal of Functional Programming8(3):275-317.
+Miller, Dale A., and Alwen Tiu. 2003. A proof theory for genericjudgments: An extended abstract. In LICS, 118-127.
+Minamide, Yasuhiko, J. Gregory Morrisett, and Robert Harper.1996. Typed closure conversion. In POPL, 271-283.
+Nanevski, Aleksandar, Frank Pfenning, and Brigitte Pientka. 2007.Contextual modal type theory. Transactions on Computational
+
+Logic. In press.Nielson, Flemming, and Hanne Riis Nielson. 1996. Multi-level
+lambda-calculi. In Partial evaluation, 338-354. LNCS 1110.O'Hearn, Peter W., and Robert D. Tennent. 1995. Parametricity
+and local variables. Journal of the ACM 42(3):658-709.Pa^sali'c, Emir, Walid Taha, and Tim Sheard. 2002. Tagless staged
+interpreters for typed languages. In ICFP, 157-166.P"uschel, Markus, Jos'e M. F. Moura, Jeremy Johnson, David
+Padua, Manuela Veloso, Bryan W. Singer, Jianxin Xiong,Franz Franchetti, Aca Ga^ci'c, Yevgen Voronenko, Kang Chen,
+Robert W. Johnson, and Nick Rizzolo. 2005. SPIRAL: Codegeneration for DSP transforms. Proceedings of the IEEE special issue on program generation, optimization, and adaptation93(2):232-275.
+Sumii, Eijiro, and Naoki Kobayashi. 2001. A hybrid approach toonline and offline partial evaluation. Higher-Order and Symbolic
+
+Computation 14(2-3):101-142.Swadi, Kedar, Walid Taha, Oleg Kiselyov, and Emir Pasalic. 2006.
+A monadic approach for avoiding code duplication when stagingmemoized functions. In PEPM, 160-169.
+Taha, Walid. 1999. Multi-stage programming: Its theory and appli-cations. Ph.D. thesis, Oregon Graduate Institute of Science and
+
+Technology.------. 2000. A sound reduction semantics for untyped CBN
+multi-stage computation. In PEPM.------. 2004. A gentle introduction to multi-stage programming.
+In DSPG 2003, 30-50. LNCS 3016.------. 2005. Resource-aware programming. In ICESS, 38-43.
+LNCS 3605.Taha, Walid, and Michael Florentin Nielsen. 2003. Environment
+classifiers. In POPL, 26-37.Wright, Andrew K., and Matthias Felleisen. 1994. A syntactic
+approach to type soundness. Information and Computation115(1):38-94.
+Yuse, Yosihiro, and Atsushi Igarashi. 2006. A modal type systemfor multi-level generating extensions with persistent code. In
+
+PPDP, 201-212.

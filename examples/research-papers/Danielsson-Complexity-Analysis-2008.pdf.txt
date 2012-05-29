@@ -1,0 +1,1405 @@
+
+
+Lightweight Semiformal Time Complexity Analysis forPurely Functional Data Structures
+
+Nils Anders Danielsson
+Chalmers University of Technology
+
+Abstract
+Okasaki and others have demonstrated how purely functional datastructures that are efficient even in the presence of persistence can
+
+be constructed. To achieve good time bounds essential use is oftenmade of laziness. The associated complexity analysis is frequently
+subtle, requiring careful attention to detail, and hence formalisingit is valuable.
+
+This paper describes a simple library which can be used tomake the analysis of a class of purely functional data structures
+and algorithms almost fully formal. The basic idea is to use thetype system to annotate every function with the time required to
+compute its result. An annotated monad is used to combine timecomplexity annotations.
+
+The library has been used to analyse some existing data struc-tures, for instance the deque operations of Hinze and Paterson's
+finger trees.
+
+1. Introduction
+Data structures implemented in a purely functional language auto-matically become persistent; even if a data structure is updated, the
+
+previous version can still be used. This property means that, froma correctness perspective, users of the data structure have less to
+worry about, since there are no problems with aliasing. From an ef-ficiency perspective the picture is less nice, though: different usage
+patterns can lead to different time complexities. For instance, asexplained by Okasaki (1998), a common implementation of FIFO
+queues has the property that if it is used single-threadedly, then ev-ery operation takes constant amortised time, but for some usage
+patterns this degenerates to linear time (for the tail function).Despite this a number of purely functional data structures exhibiting good performance no matter how they are used have beendeveloped (see for instance Okasaki 1998; Kaplan and Tarjan 1999;
+Kaplan et al. 2000; Hinze and Paterson 2006). Many of these datastructures make essential use of laziness, i.e. non-strictness with
+memoisation, in order to ensure good performance (see Section 8.1for a detailed example). However, the resulting complexity analysis
+is often subtle, with many details to keep track of.To address this problem the paper describes a simple library,
+
+THUNK, for semiformal verification of the time complexity ofpurely functional data structures. The basic idea is to annotate the
+
+[Copyright notice will appear here once 'preprint' option is removed.]
+
+code (the actual code later to be executed, not a copy used forverification) with ticks, representing computation steps:
+
+X : Thunk n a ! Thunk (1 + n) a
+Time complexity is then tracked using the type system. Basically, ifa value has type Thunk n a, then a weak head normal form (WHNF)
+of type a can be obtained in n steps amortised time, no matter howthe value is used. Thunk is a monad, and the monadic combinators
+are used to combine time complexities of subexpressions.Note that the Thunk type constructor takes a value (n) as argument; it is a dependent type. The THUNK library is implemented inthe dependently typed functional language Agda (Norell 2007c,a),
+which is described in Section 2.In order to analyse essential uses of laziness T
+
+HUNK makesuse of a simplified version of Okasaki's banker's method (1998).
+
+This version is arguably easier to explain (see Section 8), but itis less general, so fewer programs can be properly analysed. The
+limitations are discussed in Sections 11-12, along with ways to getaround some of them.
+
+The simplified model is still useful in practice. The followingalgorithms and data structures have been analysed:
+
+* Linear-time minimum using insertion sort, the standard example for time complexity analysis of call-by-name programs (seeSection 7).
+
+* Implicit queues (Okasaki 1998), see Section 8.*
+
+Banker's queues (Okasaki 1998), by using an experimental,extended version of the library; see Section 11.1
+
+* The deque operations of Hinze and Paterson's finger trees
+
+(2006).1
+
+The time bounds obtained using the library are verified withrespect to an operational semantics for a small, lazy language (see
+
+Section 9). To increase trust in the verification it has been checkedmechanically (also using Agda, which doubles as a proof assistant).
+
+The source code for the library, the examples mentioned above,and the mechanisation of the correctness proof are available from
+the author's web page (Danielsson 2007).To summarise, the contributions of this work are as follows:
+
+* A simple, lightweight library for semiformal verification of the
+
+time complexity of a useful class of purely functional datastructures.
+
+* The library has been applied to real-world examples.*
+
+The library has a well-defined semantics, and the stated timebounds have been verified with respect to this semantics.
+
+1Using an earlier version of the library developed using AgdaLight
+(Norell 2007b); the code has not been ported yet.
+
+1 2007/9/28
+
+* The correctness proofs have been checked using a proof assistant.
+
+The rest of the paper is structured as follows: Section 2 de-scribes Agda and Section 3 describes the basics of T
+
+HUNK. Theimplementation of the library is discussed in Section 4, some rules
+
+for how the library must be used are laid down in Section 5, andSections 6-8 contain further examples on the use of T
+
+HUNK. Thecorrectness proof is outlined in Sections 9-10, and some limitations
+
+of the library are discussed in Sections 11-12. Finally related workis discussed in Section 13 and Section 14 concludes.
+
+2. Host language
+Before we continue some words on Agda (Norell 2007c,a), thelanguage used for the examples in the paper, are in place. Agda
+
+can, for the purposes of this paper, be thought of as a total variant ofHaskell (Peyton Jones 2003) with dependent types and generalised
+algebraic data types, but no infinite values or coinduction.The library is not tied to Agda, but can be implemented in any
+language which supports the type system and evaluation ordersused, see Section 9.
+
+The rest of this section discusses some aspects of Agda in a littlemore detail, to make it easier to follow the rest of the paper.
+
+Hidden arguments Agda lacks polymorphism, but has hidden ar-guments, which in combination with dependent types compensate
+for this loss. For instance, the ordinary list function map could begiven the following type signature:
+
+map : {a, b : ?} ! (a ! b) ! List a ! List b
+Here ? is the type of (small) types. Arguments within {. . .} arehidden, and need not be given explicitly, if the type checker can
+
+infer their values from the context in some way. If the hiddenarguments cannot be inferred, then they can be given explicitly by
+enclosing them within {. . .}:
+
+map {Integer} {Bool}:
+
+(Integer ! Bool) ! List Integer ! List Bool
+
+The same syntax can be used to pattern match on hidden arguments:
+
+map {a} {b} f (x :: xs) = . . .
+
+Inductive families Agda also has inductive families (Dybjer1994), also known as generalised algebraic data types or GADTs.
+Data types are introduced by listing the constructors and givingtheir types. Natural numbers can for instance be defined as follows:
+
+data N : ? where
+
+zero : N
+suc : N ! N
+
+As an example of a family of types consider the type Seq a nof sequences (sometimes called vectors) of length n containing
+
+elements of type a:
+
+data Seq (a : ?) : N ! ? where
+
+nil : Seq a zero
+(::) : {n : N} ! a ! Seq a n ! Seq a (suc n)
+
+Note how the index (the natural number introduced after the last :in the first line) is allowed to vary between the constructors. Seq a
+
+is a family of types, with one type for every index n.To illustrate the kind of pattern matching Agda allows for an
+inductive family, let us define the tail function:
+
+tail : {a : ?} ! {n : N} ! Seq a (suc n) ! Seq a ntail
+
+(x :: xs) = xs
+
+We can and need only pattern match on (::), since the type of nildoes not match the type Seq a
+
+(suc n) given in the type signaturefor tail. As another example, consider the definition of the append
+
+function:
+
+(++) : Seq a n1 ! Seq a n2 ! Seq a (n1 + n2)
+nil ++ ys = ys
+(x :: xs) ++ ys = x :: (xs ++ ys)
+
+In the nil case the variable n1 in the type signature is unified with
+zero, transforming the result type into Seq a n2, allowing us to giveys as the right-hand side. (This assumes that
+
+zero + n2 evaluates ton
+
+2.) The (::) case can be explained in a similar way.Note that the hidden arguments of (++) were not declared in
+
+its type signature. This is not allowed by Agda, but often done inthe paper to reduce notational noise. Some other minor syntactic
+changes have also been made in order to aid readability.
+Run-time and compile-time code Agda evaluates code duringtype checking; two types match if they reduce to the same normal
+
+form. Hence it is useful to distinguish between compile-time code(code which is only evaluated at type-checking time) and run-time
+code (code which is executed at run-time). The principal purpose ofthe T
+
+HUNK library is to annotate run-time code; the compile-timecode will not be executed at run-time anyway, so there is not much
+
+point in annotating it.Unfortunately Agda has no facilities for identifying compiletime or run-time code. As a crude first approximation types are notrun-time, though.
+
+3. Library basics
+An example will introduce the core concepts of THUNK. By usingthe library combinators the append function can be proved to be
+
+linear in the length of the first sequence:
+
+(++) : Seq a m ! Seq a n! Thunk
+
+(1 + 2 * m) (Seq a (m + n))
+nil ++ ys = Xreturn ys
+(x :: xs) ++ ys = X
+
+xs ++ ys >>= *xsys ! Xreturn
+
+(x :: xsys)
+
+The following paragraphs explain this example and the library inmore detail.
+
+Ticks As mentioned above the user has to insert ticks (Sands1995) manually:
+
+X : Thunk n a ! Thunk (1 + n) a
+The basic unit of cost is the rewriting of the left-hand side of adefinition to the right-hand side. Hence, for every function clause,
+
+lambda abstraction etc. the user has to insert a tick. (The X func-tion is a prefix operator of low precedence, reducing the need for
+parentheses.)By design the library is lightweight: no special language support
+for reasoning about time complexity is needed. It would be easy toturn the library from being semiformal into being formal by modifying the type-checker of an existing language to ensure that tickswere always inserted where necessary (and a few other requirements listed in Section 5). However, the primary intended use ofT
+
+HUNK is the analysis of complicated data structures; it should notinterfere with "ordinary" code. Furthermore the freedom to choose
+
+where to insert ticks gives the user the ability to experiment withdifferent cost models.
+
+Thunk monad The type Thunk is an "annotated" monad:
+
+return : a ! Thunk 0 a
+(>>=) : Thunk m a ! (a ! Thunk n b) ! Thunk (m + n) b
+
+2 2007/9/28
+
+The monad combinators are used to combine the type complexitiesof subexpressions. It makes sense to call this a monad since the
+monoid laws for 0 and + make sure that the monad laws are still"type correct".
+
+Time bounds Let us now discuss the time complexity guaranteesestablished by the library. Assume that t has type
+
+a j Thunk n1 (Thunk n2 . . . (Thunk nk b) . . .),
+where b is not itself equal to Thunk something. The library thenguarantees that, if t evaluates to WHNF, then it does so in at most
+
+n j n1 + n2 + . . . + nk steps. Denote the number n by time a.The precondition that t must evaluate to WHNF is not a problem
+in Agda, since Agda is a total language. In partial languages one hasto be more careful, though. Consider the following code, written in
+some partial language:
+
+! : N
+! = 1 + !
+
+ticks : Thunk ! a
+ticks = Xticks
+
+The value ticks does not have a WHNF. Since Agda is total theprecondition above will implicitly be assumed to be satisfied when
+
+the examples in the rest of the paper are discussed.One can often extract more information than is at first obvious
+from the given time bounds. For instance, take two sequencesxs : Seq a 7 and ys : Seq a 3 (for some a). When evaluating xs ++ ys
+we will get a WHNF in time (Thunk 15 (Seq a 10)) = 15 steps.This WHNF has to be z :: zs for some z : a, zs : Seq a 9. Since
+time (Seq a 9) = 0 this means that zs evaluates to WHNF inzero steps. Continuing like this we see that xs ++ ys really evaluates
+to spine-normal form in 15 steps; even normal form if a does notcontain embedded Thunks. This example shows that types without
+embedded Thunks are treated as if they were strict. Section 7 showshow non-strict types can be handled.
+
+Run function There is a need to extract code from the Thunkmonad, to make analysed code usable by "ordinary" code, which
+does not run in the Thunk monad. This extraction is done by thefunction force:
+
+force : Thunk n a ! a
+This function must of course not be used in code which is analysed.
+
+Equality proofs The alert reader may have noticed a problemwith the definition of
+
+(++): it does not type check. Note that the tickcount of the right-hand side of the last equation is 1+
+
+((1+2*m)+
+(1+0)) (for some variable m:N), whereas it should be 1+2*(1+m).The Agda type checker cannot automatically see that these two
+
+natural numbers are equal, so a proof demonstrating this equalityhas to be inserted into the code. Simple arithmetical equalities such
+as the one above could easily be proved automatically, though, andto aid readability no such proofs are written out in the paper, with
+the exception of a discussion of equality proofs in Section 10.
+Summary The library consists of just the Thunk monad, step,force, and the function pay, which is introduced in Section 8; pay is
+
+the key to taking advantage of lazy evaluation. The type signaturesof the primitives introduced so far are summarised in Figure 1.
+
+4. Implementation
+In the implementation of THUNK the type Thunk n a is just asynonym for the type a; n is a "phantom type variable" (Leijen
+
+and Meijer 1999). However, this equality must not be exposed tothe library user. Hence the type is made abstract:
+
+Thunk : N ! ? ! ?
+return : a ! Thunk 0 a
+(>>=) : Thunk m a ! (a ! Thunk n b) ! Thunk (m + n) bX
+
+: Thunk n a ! Thunk (1 + n) a
+force : Thunk n a ! a
+
+Figure 1. Type signatures for simple library primitives (one com-binator is introduced later).
+
+abstractThunk : N !
+
+? ! ?Thunk n a = a
+
+Making a type or function abstract means that its defining equationsare only visible in the defining module, not outside. Hence, when
+type checking, if x : Thunk n a, then this only reduces to x : a insidethe module defining Thunk. Everywhere else the two types a and
+Thunk n a are different.The primitive operations of the library are basically identity
+functions; return and (>>=) form an annotated identity monad:
+
+abstractX :
+
+Thunk n a ! Thunk (1 + n) aX
+x = x
+
+return : a ! Thunk 0 areturn x = x
+
+(>>=) : Thunk m a ! (a ! Thunk n b)! Thunk
+
+(m + n) bx
+>>= f = f x
+
+force : Thunk n a ! aforce x = x
+
+This ensures minimal run-time overhead, and also that the imple-mentation of T
+
+HUNK corresponds directly to the erasure functionused to prove the library correct (see Section 9.1).
+
+It should be possible to implement a variant of the library in astrict language with explicit support for laziness (with memoisation). The correctness proof would probably need to be modified abit, and some type signatures may need to be changed to make it
+possible to ensure that code is not evaluated prematurely.
+
+5. Conventions
+There are some conventions about how the library must be usedwhich are not captured by the type system:
+
+* Every run-time function clause (including those of anonymous
+
+lambdas) has to start with X.*
+
+The function force may not be used in run-time terms.*
+Library functions may not be used partially applied.
+The correctness of the library has only been properly verified fora simple language which enforces all these rules through syntactic restrictions (see Section 9.1); Agda does not, hence these con-ventions are necessary. Further differences between Agda and the
+simple language are discussed in Section 10.The rest of this section discusses and motivates the conventions
+above.
+Run-time vs. compile-time It would be very awkward to haveto deal with thunks in the types of functions, so the rules for X
+
+only apply to terms that will actually be executed at run-time. Thefunction force may obviously not be used in run-time terms, since
+it can be used to discard annotations.
+
+3 2007/9/28
+
+Ticks everywhere One might think that it is possible to omit Xin non-recursive definitions, and still obtain asymptotically correct
+results. This is not true in general, though. Consider the followingfunction, noting that the last anonymous lambda is not ticked:
+
+build : (n : N) ! Thunk (1 + 2 * n) (N ! Thunk 1 N)
+build zero = Xreturn (*n ! Xreturn n)
+build (suc n) = X
+
+build n >>= *f ! Xreturn
+
+(*n ! f (suc n))
+
+The function build n, when forced, returns a function f : N !Thunk 1 N which adds n to its input. However, f is not a constanttime function, so this is clearly wrong. The problem here is thelambda which we have not paid for.
+
+Partial applications The guarantees given by THUNK are verifiedby defining a function p*q which erases all the library primitives,
+and then showing that, for every term t whose time is n, the erasedterm ptq takes at most n steps amortised time to evaluate to WHNF
+(see Section 9).Now, preturn tq = ptq, so if partial applications of library functions were allowed we would have preturnq = *x ! x. However,an application of the identity function takes one step to evaluate,
+whereas return has zero overhead. Hence partial applications of li-brary functions are not allowed. (It may be useful to see them as
+annotations, as opposed to first-class entities.)
+
+6. Some utility functions
+Before moving on to some larger examples a couple of utilityfunctions will be introduced.
+
+When defining functions which have several cases the types ofthe different branches have to match. For this purpose the following
+functions, which increase the tick counts of their arguments, areoften useful:
+
+wait : (n : N) ! Thunk m a ! Thunk (1 + n + m) a
+wait zero x = Xx
+wait (suc n) x = Xwait n x
+
+returnw : (n : N) ! a ! Thunk (1 + n) a
+returnw zero x = Xreturn x
+returnw (suc n) x = Xreturnw n x
+
+Note that returnw cannot be defined in terms of wait; the extra tickwould give rise to a different type:
+
+returnw : (n : N) ! a ! Thunk (2 + n) a
+returnw n x = Xwait n (return x)
+
+Note also that, to improve performance (as opposed to timebounds), it is a good idea to add these functions to the trusted
+
+code base:
+
+abstractwait :
+
+(n : N) ! Thunk m a ! Thunk (1 + n + m) await x = x
+
+returnw : (n : N) ! a ! Thunk (1 + n) areturn
+
+w x = x
+
+This does not increase the complexity of the correctness proof,since we know that the functions could be implemented in the less
+
+efficient way above.The function
+
+(=<<), bind with the arguments flipped, is alsoincluded in the trusted core:
+
+(=<<) : (a ! Thunk m b) ! Thunk n a ! Thunk (n + m) bf =
+
+<< c = c >>= f
+
+This function does not add any overhead to the correctness proofsince it is identical to bind (except for a different argument order).
+Furthermore it is useful; it is used several times in the next section.The following thunkified variant of if-then-else will also be
+used:
+
+if then else : Bool ! a ! a ! Thunk 1 aif
+
+true then x else y = Xreturn xif
+false then x else y = Xreturn y
+
+7. Non-strict data types
+Data types defined in an ordinary way are treated as strict. In orderto get non-strict behaviour Thunk has to be used in the definition
+
+of the data type. To illustrate this a linear-time function whichcalculates the minimum element in a non-empty list will be defined
+by using insertion sort.First lazy sequences are defined:
+
+data SeqL (a : ?) (c : N) : N ! ? where
+
+nilL : SeqL a c 0
+(::L ) : a ! Thunk c (SeqL a c n) ! SeqL a c (1 + n)
+
+SeqL a c n stands for a lazy sequence of length n, containingelements of type a, where every tail takes c steps to force; note the
+
+use of Thunk in the definition of (::L ). A variant where differenttails take different numbers of steps to force is also possible (see
+Section 11), but not needed here.The function insert inserts an element into a lazy sequence in
+such a way that if the input is sorted the output will also be sorted.To compare elements insert uses the function
+
+(<=) : a ! a !Thunk 1 Bool; for simplicity it is assumed that comparisons take
+
+exactly one step.2
+
+insert : {c : N} ! a ! SeqL a c n! Thunk 4
+
+(SeqL a (4 + c) (1 + n))
+insert {c} x nilL = Xreturn
+
+w 2 (x ::L returnw (3 + c) nilL )insert {c} x
+
+(y ::L ys) = X
+
+x <= y >>= *b ! Xif b then x ::
+
+L wait (2 + c) (waitL 2 (y ::L ys))else y ::
+L (insert x =<< ys)
+
+When x <= y the function waitL is used to ensure that the resultingsequence has the right type:
+
+waitL : (c : N) ! SeqL a c0 n!
+
+Thunk 1 (SeqL a (2 + c + c0) n)
+waitL c nilL = Xreturn nilL
+waitL c (x ::L xs) = Xreturn (x ::L wait c (waitL c =<< xs))
+
+By using waitL all elements in the tail get assigned higher tickcounts than necessary. It would be possible to give insert a more
+
+precise type which did not overestimate any tick counts, but thistype would be rather complicated. The type used here is a compromise which is simple to use and still precise enough.Note that the library does not give any help with solving recurrence equations; it just checks the solution encoded by the userthrough type signatures and library primitives. (The arguments to
+functions like wait can often be inferred automatically in Agda,obviating the need for the user to write them. For clarity they are
+included here, though.)Insertion sort, which takes an ordinary sequence as input but
+gives a lazy sequence as output, can now be defined as follows:
+
+2Agda has parameterised modules, so (<=) does not need to be an
+explicit argument to insert.
+
+4 2007/9/28
+
+sort : Seq a n ! Thunk (1 + 5 * n) (SeqL a (4 * n) n)
+sort nil = Xreturn nilL
+sort (x :: xs) = Xinsert x =<< sort xs
+
+Note that the time needed to access the first element of the result islinear in the length of the input, whereas the time needed to force
+
+the entire result is quadratic. Using sort and head the minimumfunction can easily be defined for non-empty sequences:
+
+head : SeqL a c (1 + n) ! Thunk 1 a
+head (x ::L xs) = Xreturn x
+
+minimum : Seq a (1 + n) ! Thunk (8 + 5 * n) a
+minimum xs = Xhead =<< sort xs
+
+As a comparison it can be instructive to see that implementingmaximum using insertion sort and last can lead to quadratic behaviour:
+
+last : SeqL a c (1 + n) ! Thunk (1 + (1 + n) * (1 + c)) a
+last (x ::L xs) = Xlast0 x =<< xswhere
+
+last0 : a ! SeqL a c n ! Thunk (1 + n * (1 + c)) a
+last0 x nilL = Xreturn x
+last0 x (y ::L ys) = Xlast0 y =<< ys
+
+maximum : Seq a (1 + n) ! Thunk (13 + 14 * n + 4 * n^2) a
+maximum xs = Xlast =<< sort xs
+
+Fortunately there are better ways to implement this function.
+
+8. Essential laziness
+The time bound of the minimum function does not rely on laziness,only non-strictness. To make use of laziness to obtain better time
+
+bounds pay can be used:
+
+abstractpay :
+
+(m : N) ! Thunk n a ! Thunk m (Thunk (n - m) a)pay x = x
+
+Here n - m = 0 whenever n < m.The correctness of pay is obvious, since
+
+time (Thunk n a) <= time (Thunk m (Thunk (n - m) a)).
+However, more intuition may be provided by the following inter-pretations of pay:
+
+1. When pay m t is executed (as part of a sequence of binds) thethunk t is executed for m steps and then suspended again.
+2. When pay m t is executed the thunk t is returned immediately,but with a new type. If t is never forced, then we have paid m
+
+steps too much. If t is forced exactly once, then we have paidthe right amount. And finally, if t is forced several times, then it
+is memoised the first time and later the memoised value is used,so the amount paid is still a correct upper bound.
+
+The first way of thinking about pay may be more intuitive. Fur-thermore, if it could be implemented, it would lead to worst-case,
+instead of amortised, time bounds (assuming a suitably strict se-mantics). However, the extra bookkeeping needed by the first approach seems to make it hard to implement without non-constantoverheads; consider nested occurrences of pay.
+
+8.1 Implicit queues
+The interpretations above do not explain why pay is useful. To dothis I will implement implicit queues (Okasaki 1998), FIFO queues
+
+with constant-time head, snoc and tail.3 In this example using pay
+
+3The presentation used here is due to Ross Paterson (personal communication), with minor changes.
+
+corresponds to paying off so-called debits in Okasaki's banker'smethod (1998), hence the name.
+
+When using the THUNK library debits are represented explicitlyusing thunked arguments in data type definitions. Implicit queues
+are represented by the following nested data type:
+
+data Q (a : ?) : ? where
+
+empty : Q a
+single : a ! Q a
+twoZero : a ! a ! Thunk 5 (Q (a * a)) ! Q a
+twoOne : a ! a ! Thunk 3 (Q (a * a)) ! a ! Q a
+oneZero : a ! Thunk 2 (Q (a * a)) ! Q a
+oneOne : a ! Q (a * a) ! a ! Q a
+
+The recursive constructors take queues of pairs of elements, placedafter the first one or two elements, and before the last zero or one
+
+elements. Okasaki's analysis puts a certain number of debits onthe various subqueues. These invariants are reflected in the thunks
+above (modulo some details in the analysis).The snoc function adds one element to the end of a queue.
+Okasaki's analysis tells us that this function performs O(1) un-shared work and discharges a certain number of debits. We do not
+need to keep these two concepts separate (even though we could),hence the following type for snoc:
+
+snoc : Q a ! a ! Thunk 5 (Q a)
+snoc empty x1 = Xreturnw 3 (single x1)
+snoc (single x1) x2 = Xreturn
+
+w 3 (twoZero x1 x2 (returnw 4 empty))snoc
+(twoZero x1 x2 xs3) x4 = X
+
+pay 2 xs3 >>= *xs03 ! X
+returnw 0 (twoOne x1 x2 xs03 x4)
+snoc (twoOne x1 x2 xs3 x4) x5 = X
+
+xs3 >>= *xs03 ! X
+return (twoZero x1 x2 (snoc xs03 (x4, x5)))
+snoc (oneZero x1 xs2) x3 = X
+
+xs2 >>= *xs02 ! X
+returnw 0 (oneOne x1 xs02 x3)
+snoc (oneOne x1 xs2 x3) x4 = X
+
+pay 3 (snoc xs2 (x3, x4)) >>= *xs234 ! Xreturn
+
+(oneZero x1 xs234)
+
+Note how the invariants encoded in the data structure, together withthe use of pay, ensure that we can show that the function takes
+
+constant amortised time even though it is recursive.Note also that using call-by-value or call-by-name to evaluate
+snoc leads to worse time bounds. Consider a "saturated" queue q,built up by repeated application of snoc to
+
+empty:
+
+q = twoOne x x (twoOne (x, x) (x, x) (. . . empty . . .) (x, x)) x
+In a strict setting it takes O(d) steps to evaluate snoq q x, where d isthe depth of the queue. If snoq q x is evaluated k times, this will take
+
+O(kd) steps, and by choosing k high enough it can be ensured thatthe average number of steps needed by snoc is not constant. If callby-name is used instead, then the lack of memoisation means thatq = snoc
+
+(snoc (. . . empty . . .) x) x will be evaluated to WHNFeach time snoq q x is forced, leading to a similar situation.
+
+It remains to define the view\Sigma  function (view left), which givesthe first element and the rest of the queue. Forcing the tail takes
+longer than just viewing the head, so the following data type isdefined to wrap up the result of view\Sigma :
+
+data View\Sigma  (a : ?) : ? where
+
+nil\Sigma  : View\Sigma  a
+cons\Sigma  : a ! Thunk 4 (Q a) ! View\Sigma  a
+
+The function itself is defined as follows:
+
+5 2007/9/28
+
+view\Sigma  : {a : ?} ! Q a ! Thunk 1 (View\Sigma  a)
+view\Sigma  empty = Xreturn nil\Sigma 
+view\Sigma  (single x1) = Xreturn
+
+(cons\Sigma  x1 (returnw 3 empty))
+view\Sigma  (twoZero x1 x2 xs3) = Xreturn (cons\Sigma  x1
+
+(pay 3 xs3 >>= *xs03 ! X
+return (oneZero x2 xs03)))
+view\Sigma  (twoOne x1 x2 xs3 x4) = Xreturn (cons\Sigma  x1
+
+(xs3 >>= *xs03 ! X
+return (oneOne x2 xs03 x4)))
+view\Sigma  {a} (oneZero x1 xs2) = Xreturn
+
+(cons\Sigma  x1 (expand =<< view\Sigma  =<< xs2))where
+
+expand : View\Sigma  (a * a) ! Thunk 1 (Q a)
+expand nil\Sigma  = Xreturn empty
+expand (cons\Sigma  (y1, y2) ys3) = Xreturn
+
+(twoZero y1 y2 (wait 0 ys3))
+view\Sigma  {a} (oneOne x1 xs2 x3) = Xreturn
+
+(cons\Sigma  x1 (expand =<< view\Sigma  xs2))where
+
+expand : View\Sigma  (a * a) ! Thunk 3 (Q a)
+expand nil\Sigma  = Xreturnw 1 (single x3)
+expand (cons\Sigma  (y1, y2) ys3) = X
+
+pay 1 ys3 >>= *ys03 ! X
+return (twoOne y1 y2 ys03 x3)
+
+8.2 Calculating invariants
+It should be noted that the library does not help much with thedesign of efficient data structures, except perhaps by providing a
+
+clear model of certain aspects of lazy evaluation. It may still beinstructive to see how the invariants used above can be obtained.
+Assuming that the general structure of the code has been decided,that the code is expected to be constant-time, and that the number
+of debits on all the subqueues is also expected to be constant, thisis how it can be done:
+
+1. Make all the subqueues thunked, also the one in the oneOneconstructor.
+2. Denote the time bounds and the number of debits on the varioussubqueues by variables. For instance:
+
+oneZero : a ! Thunk d10 (Q (a * a)) ! Q a
+oneOne : a ! Thunk d11 (Q (a * a)) ! a ! Q a
+
+3. Assume a worst case scenario for how many pay annotationsetc. are necessary. Calculate the amounts to pay using the variables introduced in the previous step. For instance, the oneOnecase of snoc takes the following form, if s is the time bound for
+snoc:
+
+snoc (oneOne x1 xs2 x3) x4 = X
+
+xs2 >>= *xs02 ! X
+pay (s - d10) (snoc xs02 (x3, x4)) >>= *xs234 ! X
+return? (oneZero x1 xs234)
+
+(The function return? could be either return or returnw n, forsome n, depending on the outcome of the analysis.)
+
+4. The basic structure of the code now gives rise to a number ofinequalities which have to be satisfied in order for the code to be
+
+well-typed. For instance, the oneOne case of snoc gives rise tothe inequality 3 + d
+
+11 + (s - d10) <= s. Solve these inequalities.If no solution can be found, then one of the assumptions above
+
+was incorrect.
+
+5. Optionally: If, for instance, a pay annotation was unnecessary,then it may be possible to tighten the time bounds a little, since
+
+a tick can be removed.
+
+9. Correctness
+The correctness of the library is established as follows:
+
+1. Two small languages are defined: the simple one without theThunk type, and the thunked one with the library functions as
+
+primitives. An erasure function p*q converts thunked terms tosimple ones.
+
+2. A lazy operational semantics is defined for the simple language,and another operational semantics is defined for the thunked
+
+language. It is shown that, under erasure, the thunked semanticsis equivalent to the simple one.
+
+3. The THUNK library guarantees (see Section 3) are establishedfor the thunked semantics. Since the two semantics are equivalent this implies that the guarantees hold for erased terms eval-uated using the simple semantics.
+
+As shown in Section 4 the library is implemented by ignoringall annotations. Hence what is actually run corresponds directly to
+the erased terms mentioned above, so the correctness guaranteesextend also to the actual library (assuming that Agda has an operational semantics corresponding to the one defined for the simplelanguage). There are two caveats to this statement. One is the time
+needed to evaluate the library functions. However, they all evalu-ate in constant time, and I find it reasonable to ignore these times.
+The other is the difference between the small languages definedhere and a full-scale language like Agda. These differences are discussed further in Section 10.All nontrivial results discussed in this section have been proved
+formally using Agda.4 There are some differences between the for-malisation presented here and the mechanised one, most notably
+that de Bruijn indices are used to represent variables in the mech-anisation. The verification of some of the extensions discussed in
+Section 10 has also been mechanised.
+9.1 Languages
+Both of the two small languages are simply typed lambda calculiwith natural numbers and products. Using dependently typed languages for the correctness proof would be possible, but this aspectof the type systems appears to be orthogonal to the correctness result. Furthermore it would have been considerably harder to mech-anise the proofs. Hence I chose to use simply typed languages.
+
+The syntax of contexts, types and terms for the simple languageis defined as follows (with x, y variables):
+
+0 ::= ffl | 0, x : o/
+o/ ::= Nat | o/1 * o/2 | o/1 ! o/2t ::= x |
+
+*x.t | t1 * t2|
+(t1, t2) | uncurry (*xy.t)|
+z | s t | natrec t1 (*xy.t2)
+
+Here natrec is the primitive recursion combinator for natural num-bers, and
+
+uncurry is the corresponding combinator for products.The thunked language extends the syntax with the library primitives as follows:
+
+o/ ::= . . . | Thunk n o/
+t ::= . . . | Xt | return t | t1 >>= t2 | force t | pay n t
+
+Here n stands for an ordinary natural number, not a term of type
+Nat.
+
+4Agda currently does not check that all definitions by pattern matching
+are exhaustive. Hence care has been taken to check this manually.
+
+6 2007/9/28
+
+Common typing rules
+0(x) = o/
+0 ` x : o/
+
+0 ` t1 : o/1 ! o/2 0 ` t2 : o/1
+
+0 ` t1 * t2 : o/2
+
+0, x : o/1 ` t : o/2
+0 ` *x.t : o/1 ! o/2
+
+0 ` t1 : o/1 0 ` t2 : o/2
+
+0 ` (t1, t2) : o/1 * o/2
+
+0, x : o/1, y : o/2 ` t : o/
+0 ` uncurry (*xy.t) : o/1 * o/2 ! o/ 0 ` z : Nat
+
+0 ` t : Nat
+0 ` s t : Nat
+
+0 ` t1 : o/ 0, x : Nat, y : o/ ` t2 : o/
+
+0 ` natrec t1 (*xy.t2) : Nat ! o/
+
+Extra typing rules for thunked language
+
+0 ` t : Thunk n o/
+0 ` Xt : Thunk (1 + n) o/
+
+0 ` t : o/
+0 ` return t : Thunk 0 o/
+
+0 ` t1 : Thunk n1 o/1 0 ` t2 : o/1 ! Thunk n2 o/2
+
+0 ` t1 >>= t2 : Thunk (n1 + n2) o/2
+
+0 ` t : Thunk n o/
+
+0 ` force t : o/
+
+0 ` t : Thunk n o/
+0 ` pay m t : Thunk m (Thunk (n - m) o/ )
+
+Figure 2. The type systems. All freshness side conditions havebeen omitted.
+
+The type systems for the two languages are given in Figure 2. Inthe remaining text only well-typed terms are considered. No type
+annotations are present in the syntax above, but this is just to sim-plify the presentation. The mechanised versions of the languages
+are fully annotated.As noted above an erasure operation taking types and terms
+from the thunked language to the simple one is defined:
+
+pNatq = Natp
+
+o/1 * o/2q = po/1q * po/2qp
+o/1 ! o/2q = po/1q ! po/2qp
+Thunk n o/ q = po/q
+
+pxq = xp
+
+*x.tq = *x.ptqpt
+
+1 * t2q = pt1q * pt2qp(t
+
+1, t2)q = (pt1q, pt2q)puncurry (*xy.t)q = uncurry (*xy.ptq)
+
+pzq = zp
+
+s tq = s ptqp
+natrec t1 (*xy.t2)q = natrec pt1q (*xy.pt2q)pX
+
+tq = ptqp
+return tq = ptqpt
+
+1 >>= t2q = pt2q * pt1qpforce tq = ptq
+
+ppay n tq = ptq
+Erasure extends in a natural way to contexts, and term erasure caneasily be verified to preserve types,
+
+0 ` t : o/ ) p0q ` ptq : po/ q.
+
+Free use of force or failure to insert ticks would invalidate alltime complexity guarantees, so a subset of the thunked language is
+defined, the run-time terms:
+
+e ::= x | *x.Xe | e1 * e2|
+
+(e1, e2) | uncurry (*xy.Xe)|
+z | s e | natrec (Xe1) (*xy.Xe2)| X
+
+e | return e | e1 >>= e2 | pay n e
+
+Note that all the conventions set up in Section 5 are satisfied by therun-time terms: every "right-hand side" starts with X,
+
+force is notused, and library functions cannot be used partially applied.
+
+9.2 Operational semantics
+Let us now define the operational semantics for the two languages.The semantics, which are inspired by Launchbury (1993), define
+
+how to evaluate a term to WHNF.
+Simple semantics We begin with the semantics for the simplelanguage. Terms are evaluated in heaps (or environments), lists of
+
+bindings of variables to terms:
+
+6 ::= ; | 6, x 7! t
+Heaps have to be well-typed with respect to a context:
+
+ffl ` ; 0 ` 6 0 ` t : o/0, x : o/ ` 6, x 7! t (x fresh)
+Note that these rules ensure that there are no cycles in the heap.This is OK since there is no recursive let allowing the definition of
+cyclic structures, and even if there were a recursive let the THUNKlibrary would not be able to make use of the extra sharing anyway.
+
+A subset of the terms are identified as being values:
+
+v ::= *x.t|
+
+(x1, x2) | uncurry (*xy.t)|
+z | s x | natrec x1 (*xy.t2)
+
+Note that these values are all in WHNF. Several of the constructorstake variables as arguments; this is to increase sharing. Once again,
+
+the THUNK library cannot take advantage of this sharing, but I havetried to keep the semantics close to what a real-world lazy language
+would use.The big-step operational semantics for the simple language is
+inductively defined in Figure 3. The notation 61 | t +n 62 | vmeans that t, when evaluated in the heap
+
+61, reaches the WHNF vin n steps; the resulting heap is
+62. In order to reduce duplicationof antecedents an auxiliary relation is used to handle application:
+
+61 | v1 * x2 +n 62 | v means that the application of the value v1to the variable x
+
+2 evaluates to v in n steps, with initial heap 61 andfinal heap 6
+2.In the description of the semantics all variables are assumed to
+
+be globally unique (by renaming, if necessary). The mechanisedversion of the semantics uses de Bruijn indices, so name clashes
+are not an issue there.The semantics is syntax-directed, and hence deterministic. Furthermore types are preserved,
+
+01 ` 61 ^ 01 ` t : o/ ^ 61 | t +n 62 | v )
+
+9 02. 02 ` 62 ^ 02 ` v : o/.
+In the mechanisation this is true by construction. It is easy tomake small mistakes when formalising languages, and working
+
+with well-typed syntax is nice since many mistakes are caughtearly.
+
+The cost model used by the semantics is that of the THUNKlibrary: only reductions cost something. Nothing is charged for
+looking up variables (i.e. following pointers into the heap), forinstance.
+
+7 2007/9/28
+
+Values
+6 | *x.t +0 6 | *x.t
+
+6 | (t1, t2) +0 6, x1 7! t1, x2 7! t2 | (x1, x2)
+
+6 | uncurry (*xy.t) +0 6 | uncurry (*xy.t)
+6 | z +0 6 | z 6 | s t +0 6, x 7! t | s x
+6 | natrec t1 (*xy.t2) +0 6, x1 7! t1 | natrec x1 (*xy.t2)
+
+Variables
+61 | t +n 62 | v
+61, x 7! t, 60 | x +n 62, x 7! v, 60 | v
+
+Application
+
+61 | t1 +n1 62 | v1 62, x2 7! t2 | v1 * x2 +n2 63 | v
+
+61 | t1 * t2 +n1+n2 63 | v
+
+61 | t1[x := x2] +n 62 | v
+61 | (*x.t1) * x2 +1+n 62 | v
+
+61 | x2 +n1 62 | (x3, y3)
+62 | t1[x := x3, y := y3] +n2 63 | v
+
+61 | uncurry (*xy.t1) * x2 +1+n1+n2 63 | v
+
+61 | x3 +n1 62 | z 62 | x1 +n2 63 | v
+61 | natrec x1 (*xy.t2) * x3 +1+n1+n2 63 | v
+
+61 | x3 +n1 62 | s x0
+62, y 7! natrec x1 (*xy.t2) * x0 | t2[x := x0] +n2 63 | v
+
+61 | natrec x1 (*xy.t2) * x3 +1+n1+n2 63 | v
+
+Figure 3. Operational semantics for the simple language.
+
+Thunked semantics Now on to the thunked semantics, whichonly applies to run-time terms. In order to be able to prove correctness the thunked semantics has slightly more structure in theheap:
+
+6 ::= ; | 6, x 7! e | 6, x 7!n e
+As before, only well-typed heaps are considered:
+
+ffl ` ; 0 ` 6 0 ` e : o/0, x : o/ ` 6, x 7! e (x fresh)
+
+0 ` 6 0 ` e : Thunk n o/
+
+0, x : o/ ` 6, x 7!n e (x fresh)
+
+The x 7!n e bindings are used to keep track of terms which havealready been paid off, but not yet evaluated. The credit associated
+
+with a heap is the total tick count of such bindings:
+
+credit ; = 0credit
+
+(6, x 7! e) = credit 6credit
+(6, x 7!n e) = credit 6 + n
+
+The credit will be used to state the correctness result later.
+
+The thunked semantics uses the following values, which are allrun-time:
+
+v ::= *x.Xe|
+
+(x1, x2) | uncurry (*xy.Xe)|
+z | s x | natrec (Xx1) (*xy.Xe2)|
+returnn v
+
+Here returnn v stands for n applications of X to return v.The thunked semantics, denoted by
+
+61 | e *n 62 | v, isgiven in Figure 4. The same comments about being well-typed etc.
+
+apply to this semantics as to the simple one. Note that only bindsintroduce bindings of the form x 7!n e, and that when a variable
+x bound like this is evaluated, it is updated with an unannotatedbinding; this memoisation is the one tracked by the library.
+
+Equivalence The thunked semantics is both sound,
+
+61 | e *n 62 | v ) p61q | peq +n p62q | pvq,
+and complete,
+
+p61q | peq +n 62 | v )
+
+9 602, v0. p602q = 62 ^ pv0q = v ^ 61 | e *n 602 | v0,
+with respect to the simple one. (Here erasure has been extendedin the obvious way to heaps.) These properties are almost trivial,
+
+since the rules for the two semantics are identical up to erasure,and can be proved by induction over the structure of derivations.
+Some auxiliary lemmas, such as pe[x := y]q = peq[x := y], needto be proved as well.
+
+9.3 Time complexity guarantees
+Now that we know that the two semantics are equivalent the onlything remaining is to verify the time complexity guarantees for the
+
+thunked semantics. It is straightforward to prove by induction overthe structure of derivations that the following invariant holds:
+
+0 ` e : o/ 61 | e *n 62 | v
+credit 62 + n <= credit 61 + time o/
+
+Note that when a computation is started in an empty heap thisinvariant implies that n <= time
+
+o/ , i.e. the time bound given bythe type is an upper bound on the actual number of computation
+
+steps. In the general case the inequality says that time o/ is an upperbound on the actual number of steps plus the increase in heap credit
+(which may sometimes be negative), i.e. time o/ is an upper boundon the amortised time complexity with respect to the heap credit.
+
+10. Extensions
+This section discusses some possible extensions of the simple lan-guages used to prove the library correct. These extensions are
+
+meant to indicate that the correctness proof also applies to a full-scale language such as Agda.
+
+Partial applications Partial applications of library primitiveswere disallowed in Section 5. Other partial applications are allowed, though. As an example, two-argument lambdas can be in-troduced (with the obvious typing rules):
+
+t ::= . . . | *xy.t v ::= . . . | *xy.t
+e ::= . . . | *xy.Xe v ::= . . . | *xy.Xe
+
+8 2007/9/28
+
+Values
+6 | *x.Xe *0 6 | *x.Xe 6 | (e1, e2) *0 6, x1 7! e1, x2 7! e2 | (x1, x2) 6 | uncurry (*xy.Xe) *0 6 | uncurry (*xy.Xe)
+
+6 | z *0 6 | z 6 | s e *0 6, x 7! e | s x 6 | natrec (Xe1) (*xy.Xe2) *0 6, x1 7! e1 | natrec (Xx1) (*xy.Xe2)
+
+Variables
+61 | e *n 62 | v
+61, x 7! e, 60 | x *n 62, x 7! v, 60 | v
+
+61 | e *n 62 | returnm v
+61, x 7!m e, 60 | x *n 62, x 7! v, 60 | v
+
+Library primitives
+
+61 | e *n 62 | returnm v
+61 | Xe *n 62 | return1+m v
+
+61 | e *n 62 | v
+61 | return e *n 62 | return0 v
+
+61 | e *n 62 | returnm1 v
+61 | pay m2 e *n 62 | returnm2 (returnm1-m2 v)
+
+61 | e2 *n1 62 | v2 62, x1 7!m1 e1 | v2 * x1 *n2 63 | returnm2 v
+
+61 | e1 >>= e2 *n1+n2 63 | returnm1+m2 v (01 ` e1 : Thunk m1 o/1)
+
+Application
+
+61 | e1 *n1 62 | v1 62, x2 7! e2 | v1 * x2 *n2 63 | v
+
+61 | e1 * e2 *n1+n2 63 | v
+
+61 | e1[x := x2] *n 62 | returnm v
+61 | (*x.Xe1) * x2 *1+n 62 | return1+m v
+
+61 | x2 *n1 62 | (x3, y3) 62 | e1[x := x3, y := y3] *n2 63 | returnm v
+
+61 | uncurry (*xy.Xe1) * x2 *1+n1+n2 63 | return1+m v
+
+61 | x3 *n1 62 | z 62 | x1 *n2 63 | returnm v
+61 | natrec (Xx1) (*xy.Xe2) * x3 *1+n1+n2 63 | return1+m v
+
+61 | x3 *n1 62 | s x0 62, y 7! natrec (Xx1) (*xy.Xe2) * x0 | e2[x := x0] *n2 63 | returnm v
+
+61 | natrec (Xx1) (*xy.Xe2) * x3 *1+n1+n2 63 | return1+m v
+
+Figure 4. Operational semantics for the thunked language.
+
+The operational semantics are extended as follows:
+
+6 | *xy.t +0 6 | *xy.t
+
+6 | (*xy.t1) * x2 +0 6 | *y.t1[x := x2]
+
+6 | *xy.Xe *0 6 | *xy.Xe
+6 | (*xy.Xe1) * x2 *0 6 | *y.Xe1[x := x2]
+The proofs of equivalence and correctness go through easily withthese rules.
+
+Note that nothing is charged for the applications above; onlywhen all arguments have been supplied (and hence evaluation of
+the right hand side can commence) is something charged. If thiscost measure is too coarse for a certain application, then partial
+applications should not be used (*x.X*y.Xe still works), or paid forexplicitly by using more ticks:
+
+*xy.XXe.Partial applications of constructors can be treated similarly; in
+
+the mechanised correctness proof the successor constructor s is afunction of type
+
+Nat ! Nat.
+
+Inductive types The examples describing the use of THUNK madeuse of various data types. Extending the languages with strictly
+positive inductive data types or families (Dybjer 1994) should bestraightforward, following the examples of natural numbers and
+products.
+
+Equality One inductive family, that of the equality (or identity)type, deserves further scrutiny. In practice it is likely that users
+of the THUNK library need to prove that various equalities hold.As an example, in the append example given in Section 3 the
+equality 1 + ((1 + 2 * m) + (1 + 0)) = 1 + 2 * (1 + m) mustbe established in order for the program to type check. If the host
+language type checker is smart enough certain such equalities maywell be handled automatically using various decision procedures,
+but in the general case the user cannot expect all equalities to besolved automatically.
+
+One way to supply equality proofs to the type checker is touse the equality type
+
+(j) together with the subst function, whichexpresses substitutivity of
+
+(j):
+
+data (j) (x : a) : a ! ? where
+
+refl : x j x
+
+subst : (P : a ! ?) ! x j y ! P x ! P ysubst P
+
+refl p = p
+
+Assuming a proof
+
+lemma : (m : N) ! 1 + ((1 + 2 * m) + (1 + 0)) j1 + 2 *
+
+(1 + m)
+
+the definition of append can be corrected:
+
+append : {a : ?} ! {m, n : N}! Seq a m ! Seq a n
+
+! Thunk (1 + 2 * m) (Seq a (m + n))
+
+9 2007/9/28
+
+append [ ] ys = Xreturn ysappend {a} {
+
+suc m} {n} (x :: xs) ys =subst
+(*x ! Thunk x (Seq a (suc m + n))) (lemma m)
+(Xappend xs ys >>= *xsys ! Xreturn
+
+(x :: xsys))
+
+However, now subst and lemma interfere with the evaluation ofappend, so the stated time complexity is no longer correct.
+
+One way to address this problem would be to let subst cost onetick, and also pay for the equality proofs, just as if
+
+(j) was anyother inductive family. However, this is not what we want to do.
+
+We just want to use the proofs to show that the program is typecorrect, we do not want to evaluate them.
+
+A better solution is to erase all equality proofs and inline theidentity function resulting from subst (and do the same for similar
+functions derived from the eliminator of (j)). This is type safe aslong as the underlying logical theory is consistent and only closed
+terms are evaluated, since then the only term of type x j y is refl(and only if x = y). Then subst (fully applied) can be used freely
+by the user of the library, without having to worry about overheadsnot tracked by the thunk monad.
+
+Implementing proof erasure just for this library goes againstthe spirit of the project, though, since modifying a compiler is
+not lightweight. Fortunately proof erasure is an important, generalproblem in the compilation of dependently typed languages (see
+for instance Brady et al. 2004; Paulin-Mohring 1989), so it isnot unreasonable to expect a good compiler to guarantee that the
+erasure outlined above will always take place.Functions like subst have been used in the case studies accompanying this paper.
+Fixpoints The simple languages introduced above are most likelyterminating, since they are very similar to G"odel's System T. However, nothing stops us from adding a fixpoint combinator:
+
+t ::= . . . | fix (*x.t) e ::= . . . | fix (*x.Xe)
+
+0, x : o/ ` t : o/
+0 ` fix t : o/ ! o/
+
+61, x 7! fix (*x.t) | t +n 62 | v
+
+61 | fix (*x.t) +1+n 62 | v
+
+61, x 7! fix (*x.Xe) | e *n 62 | v
+
+61 | fix (*x.Xe) *1+n 62 | v
+The formalised correctness proof also includes fixpoint operators,and they do not complicate the development at all.
+
+There is one problem with unrestricted fixpoint operators,though: they make logical systems inconsistent. This invalidates
+the equality proof erasure optimisation discussed above, and henceincluding
+
+fix does not seem like a good idea.
+
+11. Paying for deeply embedded thunks
+
+THUNK, as described above, has an important limitation: it is im-possible to pay for thunks embedded deep in a data structure, without a large overhead. This section describes the problem and out-lines a possible solution.
+
+The problem Let us generalise the lazy sequences from Section 7by letting the cost needed to force tails vary throughout the sequence:
+
+CostSeq : N ! ?CostSeq n = Seq N n
+
+data SeqL (a : ?) : (n : N) ! CostSeq n ! ? where
+
+nilL : SeqL a 0 [ ]
+(::L ) : a ! Thunk c (SeqL a n cs)! Seq
+
+L a (1 + n) (c :: cs)
+Here SeqL a n cs stands for a lazy sequence of length n, containingelements of type a, where the cost needed to force every tail is given
+
+by the sequence cs.Now, assume that xs : Seq
+
+L a n cs, where
+cs = 0 :: 0 :: . . . :: 0 :: 2 :: 4 :: . . . :: nil.
+
+Assume further that the analysis of an algorithm requires that thefirst debit in xs is paid off, resulting in xs0 : Seq
+
+L a n cs0 where
+cs0 = 0 :: 0 :: . . . :: 0 :: 1 :: 4 :: . . . :: nil.
+
+In order to accomplish this the type of a tail embedded deep downin xs needs to be changed. This requires a recursive function, which
+
+does not take constant time to execute, ruining the analysis of thealgorithm.
+
+The solution A way around this problem may be to generalise thetype of pay:
+
+payg : (C : Ctxt) ! (m : N)!
+
+C [Thunk n a] ! Thunk m (C [Thunk (n - m) a])
+
+Here C is a context enabling payments deep down in the datastructure. These contexts have to be quite restrictive, to ensure
+
+correctness of the analysis. For instance, they should have at mostone hole, to ensure that only one thunk is paid off. Similarly one
+should not be allowed to pay off the codomain of a function, or theelement type of a list; the following types are clearly erroneous:
+
+payFun : (m : N) ! (a ! Thunk n b)! Thunk m
+
+(a ! Thunk (n - m) b)payList :
+(m : N) ! List (Thunk n a)! Thunk m
+
+(List (Thunk (n - m) a))
+
+To avoid such problems the following type of contexts is defined:
+
+data Ctxt : ?1 where* : Ctxt
+
+const* : ? ! CtxtThunk* : N ! Ctxt ! Ctxt
+(**) : Ctxt ! ? ! Ctxt
+(**) : ? ! Ctxt ! Ctxt
+
+(The type ?1 is a type of large types.) These contexts can be turnedinto types by instantiating the holes:
+
+* [ * ] : Ctxt ! ? ! ?* [ b ] = b
+(const* a) [ b ] = a
+(Thunk* n C) [ b ] = Thunk n (C [ b ])
+(C ** a) [ b ] = C [ b ] * a
+(a ** C) [ b ] = a * C [ b ]
+
+This definition of contexts may at first seem rather restrictive,since no recursive type constructors are included. However, when
+
+using dependent types one can define new types by explicit recur-sion. A variant of Seq
+
+L can for instance be defined as follows:
+SeqL : ? ! CostSeq n ! ?Seq
+
+L a [ ] = UnitSeq
+L a (c :: cs) = a * Thunk c (SeqL a cs)
+
+(Here Unit is the unit type.) By using this type and payg it isnow possible to pay off any of the tails in the sequence with only
+
+constant overhead:
+
+payL : {a : ?} ! (cs1 : CostSeq n1) ! (c0 : N)! Seq
+
+L a (cs1 ++ c :: cs2)
+
+10 2007/9/28
+
+! Thunk (1 + c0) (SeqL a (cs1 ++ (c - c0) :: cs2))
+payL {a} cs1 c0 xs = X
+
+cast lemma2 (payg (C a cs1) c0 (cast lemma1 xs))where
+
+C : ? ! CostSeq n ! CtxtC a [ ] = a ** *
+C a (c :: cs) = a ** Thunk* c (C a cs)
+lemma1 : SeqL a (cs1 ++ c :: cs2) ?j
+
+(C a cs1) [ Thunk c (SeqL a cs2) ]
+
+lemma2 :
+
+Thunk c0 ((C a cs1) [ Thunk (c - c0) (SeqL a cs2) ]) ?jThunk c0
+
+(SeqL a (cs1 ++ (c - c0) :: cs2))
+
+The equality ( ?j) used above is a variant of the one introduced inSection 10, but this one relates types:
+
+( ?j) : ? ! ? ! ? cast : a ?j b ! a ! b
+The correctness of payg has not been formally verified, but isbelieved to hold since pay
+
+g is based on the same intuition as pay.A formal proof is left for future work.
+
+The generalised pay can be used to analyse banker's queues(Okasaki 1998), where the problem with deep payments was first
+discovered. Space considerations preclude further discussion of thisanalysis, though. Interested readers are referred to the source code
+of the analysis (Danielsson 2007).
+
+12. Other limitations
+Let us now discuss some other limitations of THUNK.
+
+Dependent bind One thing which may have bothered users famil-iar with dependently typed languages is that the second (function)
+
+argument to bind is non-dependent. This could be fixed by replac-ing
+
+(>>=) with a more general function:
+
+bind : (b : a ! ?)!
+
+(f : a ! N)!
+(x : Thunk m a)!
+((y : a) ! Thunk (f y) (b y))! Thunk
+
+(m + f (force x)) (b (force x))
+
+However, this would not in itself be very useful: force is abstract(see Section 4), so force x would not evaluate in the type of bind.
+
+One way to work around this is by providing the library user witha number of axioms specifying how the library primitives evaluate.
+This can be useful anyway, since it makes it possible to proveordinary functional properties of annotated code inside Agda. This
+solution is rather complicated, though.A better approach is perhaps to avoid the dependently typed
+bind, and this can often be achieved by using indexed types. Con-sider the following two variants of the append function:
+
+(++) : (xs : List a) ! List a! Thunk
+
+(1 + 2 * length xs) (List a)
+(++) : Seq a m ! Seq a n! Thunk
+
+(1 + 2 * m) (Seq a (m + n))
+
+The result type of the first function depends on the value of thefirst list. This is not the case for the second function, where the
+
+result type only depends on the indices m and n. Putting enoughinformation in type indices is often a good way to avoid the need
+for a dependent bind.
+Aliasing Another limitation is that the library cannot track thunkaliases, except in the limited way captured by pay and the 7!n
+
+bindings of the thunked operational semantics. If x, y : Thunk n a
+
+are aliases for each other, and x is forced, then the library has noway of knowing that y is also forced; the type of y does not change
+just because x is forced. Okasaki (1998) uses aliases in this way toeliminate amortisation, through a technique called scheduling.
+
+Interface stability If thunked types are exposed to external usersof a data structure library then another problem shows up: the
+types of functions analysed using THUNK are not robust againstsmall changes in the implementation. A function such as maximum,
+introduced in Section 7, has a rather precise type:
+
+maximum : Seq a (1 + n) ! Thunk (13 + 14 * n + 4 * n^2) a
+A type based on big O notation would be more stable:
+
+maximum : Seq a (1 + n) ! Thunk O(n^2) a
+However, expressing big O notation in a sound way without adedicated type system seems to be hard. It is probably a good idea
+
+to use force to avoid exporting thunked types.
+13. Related work
+Time complexity for lazy evaluation Several approaches toanalysing lazy time complexity have been developed (Wadler 1988;
+
+Bjerner 1989; Bjerner and Holmstr"om 1989; Sands 1995; Okasaki1998). Many of them are general, but have been described as complicated to use in practice (Okasaki 1998).The main technique in use is probably Okasaki's banker's
+method (1998), which this work is based on. As described inSections 11-12 the banker's method is more general than the one
+described here, but it is also conceptually more complicated, dis-tinguishing between several kinds of cost (shared and unshared)
+which are collapsed in this work.Ross Paterson (personal communication) has independently
+sketched an analysis similar to the one developed here, but withoutdependent types or the annotated monad.
+
+Benzinger (2004) describes a system for automated complex-ity analysis of higher-order functional programs. The system is
+parametrised on an annotated operational semantics, so it may beable to handle a call-by-need evaluation strategy. No such experiments seem to have been performed, though, so it is unclear howpractical it would be.
+
+Tracking resource usage using types Several frameworks fortracking resource usage using types have been developed. Usually
+these frameworks do not address lazy evaluation (for instance Craryand Weirich 2000; Constable and Crary 2002; Hofmann and Jost
+2006; Reb'on Portillo et al. 2003; Brady and Hammond 2006).Hughes, Pareto, and Sabry (1996) have constructed a type system which keeps track of bounds on the sizes of values in a lazylanguage with data and codata. This information is used to guarantee termination or productivity of well-typed terms; more precisetime bounds are not handled.
+
+The use of an annotated monad to combine time complexitiesof subexpressions appears to be novel. However, there is a close
+connection to Capretta's partiality monad (2005), which is a coin-ductive type constructor ** defined roughly as follows:
+
+codata ** (a : ?) : ? where
+
+return : a ! a*
+step : a* ! a*
+
+The following definition of bind turns it into a monad:
+
+(>>=) : a* ! (a ! b*) ! b*
+return x >>= f = f x
+step x >>= f = step (x >>= f )
+
+Compare the definitions above to the following shallow embeddingof the thunk monad:
+
+11 2007/9/28
+
+data Thunk (a : ?) : N ! ? wherereturn : a ! Thunk a 0
+
+X : Thunk a n ! Thunk a (1 + n)
+(>>=) : Thunk a m ! (a ! Thunk b n) ! Thunk b (m + n)return x
+
+>>= f = f x
+(Xx) >>= f = Xx >>= f
+
+The only difference is that the thunk monad is inductive, andannotated with the number of ticks. This indicates that it may be
+
+interesting to explore the consequences of making the thunk monadcoinductive, annotated with the coinductive natural numbers (N
+extended with !).
+14. Conclusions
+A simple, lightweight library for semiformal verification of the timecomplexity of purely functional data structures has been described.
+
+The usefulness of the library has been demonstrated and its limita-tions discussed. Furthermore the semantics of the library has been
+precisely defined, the time complexity guarantees have been ver-ified with respect to the semantics, and the correctness proof has
+been checked using a proof assistant.
+Acknowledgments
+I would like to thank Ulf Norell, who has taught me a lot aboutdependently typed programming, discussed many aspects of this
+
+work, and fixed many of the bugs in Agda and AgdaLight that Ihave reported. I am also grateful to Ross Paterson, who showed
+me his analysis of implicit queues which turned out to yield a niceand compact example. Other people who deserve thanks are Jeremy
+Gibbons, Patrik Jansson, Geraint Jones and some anonymous re-viewers.
+
+References
+Ralph Benzinger. Automated higher-order complexity analysis.Theoretical Computer Science, 318:79-103, 2004.
+
+Bror Bjerner and S"oren Holmstr"om. A compositional approachto time analysis of first order lazy functional programs. In
+
+FPCA '89: Proceedings of the fourth international conferenceon Functional programming languages and computer architecture, pages 157-165, 1989.
+Bror Bjerner. Time Complexity of Programs in Type Theory.PhD thesis, Department of Computer Science, University of
+
+G"oteborg, 1989.
+Edwin Brady and Kevin Hammond. A dependently typed frame-work for static analysis of program execution costs. In IFL 2005:
+
+Implementation and Application of Functional Languages, num-ber 4015 in LNCS, pages 74-90, 2006.
+
+Edwin Brady, Conor McBride, and James McKinna. Inductivefamilies need not store their indices. In TYPES 2003: Types for
+
+Proofs and Programs, volume 3085 of LNCS, pages 115-129,2004.
+
+Venanzio Capretta. General recursion via coinductive types. Logi-cal Methods in Computer Science, 1(2):1-28, 2005.
+Robert L. Constable and Karl Crary. Reflections on the Foundationsof Mathematics: Essays in Honor of Solomon Feferman, chapter Computational Complexity and Induction for Partial Com-putable Functions in Type Theory. A K Peters Ltd, 2002.
+
+Karl Crary and Stephanie Weirich. Resource bound certifica-tion. In POPL '00: Proceedings of the 27th ACM SIGPLANSIGACT symposium on Principles of programming languages,pages 184-198, 2000.
+
+Nils Anders Danielsson. Personal web page. Available at http:
+
+//www.cs.chalmers.se/~nad/, 2007.
+
+Peter Dybjer. Inductive families. Formal Aspects of Computing, 6(4):440-465, 1994.
+
+Ralf Hinze and Ross Paterson. Finger trees: A simple general-purpose data structure. Journal of Functional Programming, 16
+
+(2):197-217, 2006.
+Martin Hofmann and Steffen Jost. Type-based amortised heap-space analysis. In Programming Languages and Systems, 15th
+
+European Symposium on Programming, ESOP 2006, number3924 in LNCS, pages 22-37, 2006.
+
+John Hughes, Lars Pareto, and Amr Sabry. Proving the correctnessof reactive systems using sized types. In POPL '96: Proceedings
+
+of the 23rd ACM SIGPLAN-SIGACT symposium on Principles ofprogramming languages, pages 410-423, 1996.
+
+Haim Kaplan, Chris Okasaki, and Robert E. Tarjan. Simple conflu-ently persistent catenable lists. SIAM Journal on Computing, 30
+
+(3):965-977, 2000.
+Haim Kaplan and Robert E. Tarjan. Purely functional, real-timedeques with catenation. Journal of the ACM, 46(5):577-603,
+
+1999.
+John Launchbury. A natural semantics for lazy evaluation. In POPL'93: Proceedings of the 20th ACM SIGPLAN-SIGACT symposium on Principles of programming languages, pages 144-154,1993.
+
+Daan Leijen and Erik Meijer. Domain specific embedded compil-ers. In 2nd USENIX Conference on Domain-Specific Languages
+
+(DSL '99), pages 109-122, 1999.
+Ulf Norell. The Agda Wiki. Available at http://www.cs.
+
+chalmers.se/~ulfn/Agda/, 2007a.
+
+Ulf Norell. AgdaLight home page. Available at http://www.cs.
+
+chalmers.se/~ulfn/agdaLight/, 2007b.
+
+Ulf Norell. Towards a practical programming language basedon dependent type theory. PhD thesis, Chalmers University of
+
+Technology and G"oteborg University, 2007c.
+Chris Okasaki. Purely Functional Data Structures. CambridgeUniversity Press, 1998.
+
+Christine Paulin-Mohring. Extracting F!'s programs from proofsin the calculus of constructions. In POPL '89: Proceedings of
+
+the 16th ACM SIGPLAN-SIGACT symposium on Principles ofprogramming languages, pages 89-104, 1989.
+
+Simon Peyton Jones, editor. Haskell 98 Language and Libraries:The Revised Report. Cambridge University Press, 2003.
+
+'Alvaro J. Reb'on Portillo, Kevin Hammond, Hans-Wolfgang Loidl,
+
+and Pedro Vasconcelos. Cost analysis using automatic size andtime inference. In IFL 2002: Implementation of Functional
+
+Languages, volume 2670 of LNCS, pages 232-247, 2003.
+David Sands. A na"ive time analysis and its theory of cost equiva-lence. Journal of Logic and Computation, 5(4):495-541, 1995.
+
+Philip Wadler. Strictness analysis aids time analysis. In POPL '88:Proceedings of the 15th ACM SIGPLAN-SIGACT symposium on
+
+Principles of programming languages, pages 119-132, 1988.
+
+12 2007/9/28

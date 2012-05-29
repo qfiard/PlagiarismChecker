@@ -1,0 +1,1122 @@
+
+
+Better Static Memory Management: Improving Region-Based Analysis
+
+of Higher-Order Languages
+
+(Extended Abstract)
+
+Alexander Aiken\Lambda  Manuel F"ahndrich Raph Levieny
+
+Computer Science DivisionUniversity of California, Berkeley
+
+z
+
+Abstract
+Static memory management replaces runtime garbage collec-tion with compile-time annotations that make all memory allocation and deallocation explicit in a program. We improveupon the Tofte/Talpin region-based scheme for compile-time
+memory management [TT94]. In the Tofte/Talpin approach,all values, including closures, are stored in regions. Region
+lifetimes coincide with lexical scope, thus forming a runtimestack of regions and eliminating the need for garbage collection. We relax the requirement that region lifetimes belexical. Rather, regions are allocated late and deallocated as
+early as possible by explicit memory operations. The place-ment of allocation and deallocation annotations is determined
+by solving a system of constraints that expresses all possibleannotations. Experiments show that our approach reduces
+memory requirements significantly, in some cases asymptot-ically.
+
+1 Introduction
+In a recent paper, Tofte and Talpin propose a novel methodfor memory management in typed, higher-order languages
+[TT94]. In their scheme, runtime memory is partitioned intoregions. Every computed value is stored in some region. Regions themselves are allocated and deallocated according toa stack discipline akin to the standard implementation of activation records in procedural languages and similar to that of[RM88]. The assignment of values to regions is decided statically by the compiler and the program is annotated to include
+
+\Lambda Supported in part by an NSF NYI award.
+
+ySupported by an NSF graduate research fellowship.
+zAuthors' address: Computer Science Division, Soda Hall, University of
+
+California, Berkeley, CA 94720-1776.Email:
+
+faiken,manuel,raphg@cs.berkeley.eduURL:
+http://kiwi.cs.berkeley.edu/~nogc
+
+operations for managing regions. Thus, there is no need fora garbage collector--all memory allocation and deallocation
+is statically specified in the program.
+
+The system in [TT94] makes surprisingly economical useof memory. However, it is usually possible to do significantly better and in some cases dramatically better than theTofte/Talpin algorithm. In this paper, we present an extension
+to the Tofte/Talpin system that removes the restriction that re-gions be stack allocated, so that regions may have arbitrarily overlapping extent. Preliminary experimental results sup-port our approach. Programs transformed using our analysis
+typically use significantly less (by a constant factor) mem-ory than the same program annotated with the Tofte/Talpin
+system alone. We have also found that for some commonprogramming idioms the improvement in memory usage is
+asymptotic. The memory behavior is never worse than thememory behavior of the same program annotated using the
+Tofte/Talpin algorithm.
+
+It is an open question to what degree static decisions aboutmemory management are an effective substitute for runtime
+
+garbage collection. Our results do not resolve this question,but we do show that static memory management can be significantly better than previously demonstrated. Much previ-ous work has focussed on reducing, rather than eliminating,
+garbage collection [HJ90, Deu90]. The primary motivationfor static memory management put forth in [TT94] is to reduce the amount of memory required to run general func-tional programs efficiently. Two other applications interest
+us. First, the pauses in execution caused by garbage collec-tion pose a difficulty for programs with real-time constraints.
+While there has been substantial work on real-time garbagecollection [DLM
+
++78, NO93], we find the simpler model of
+
+having no garbage collector at all appealing and worth inves-tigation. Second, most programs written today are not written
+
+in garbage-collected applicative languages, but rather in pro-cedural languages with programmer-specified memory management. A serious barrier to using applicative languagesis that they do not always interoperate easily with procedural languages. The interoperability problem is due in part tothe gap between the two memory management models. We
+expect that implementations of applicative languages withstatic memory management would make writing components
+
+of large systems in applicative languages more attractive.Our approach to static memory management is best illustrated with an example. We present the example informally;the formal presentation begins in Section 2. Consider the following simple program, taken from [TT94]:
+
+(let x = (2,3) in *y:(fst x; y) end) 5
+The source language is a conventional typed, call-by-valuelambda calculus; it is essentially the applicative subset of
+
+ML [MTH90]. The annotated program produced by theTofte/Talpin system is:
+
+Example 1.1
+
+letregion ae4; ae5 in
+
+letregion ae6 in
+
+let x = (2@ae2,3@ae6)@ae4 in
+
+(*y:(fst x; y)@ae1)@ae5
+end
+end 5@ae3
+end
+
+There are two kinds of annotations: letregion ae in ebinds a new region to the region variable
+
+ae. The scope of aeis the expression
+e. Upon completion of the evaluation of e,the region bound to
+
+ae and any values it contains are deallo-cated. The expression
+
+e@ae evaluates e and writes the resultin
+ae. All values--including integers, pairs, and closures--are stored in some region.
+
+1 Note that certain region variables
+
+appear free in the expression; they refer to regions neededto hold the result of evaluation. The regions introduced by
+
+a letregion are local to the computation and are deallo-cated when evaluation of the
+
+letregion completes.The solid lines in Figure 1c depict the lifetimes of regions
+
+with respect to the sequence of memory accesses performedby the annotated program above. Operationally, evaluating the function application first allocates the regions boundto
+
+ae4, ae5, and ae6. Next the integer 2 is stored (in the re-gion bound to
+
+ae2), then the integer 3 (in ae6), the pair x (in
+ae4), and the closure *y: : : : (in ae5). At this point, the inner
+letregion is complete and ae6 is deallocated. Evaluatingthe argument of the function application stores the integer
+
+5(in
+ae3). Finally, evaluating the application itself requires re-trieving the closure (from
+
+ae5), retrieving the first componentof
+x (from ae4), and constructing another pair (in ae1).In the Tofte/Talpin system, the
+
+letregion constructcombines the introduction of a region, region allocation, and
+
+region deallocation. In our system, we separate these threeoperations. For us,
+
+letregion just introduces a new, lex-ically scoped, region variable bound to an unallocated region. The operation alloc before ae e allocates space forthe region bound to
+
+ae before evaluating e, and the operation
+free after ae e deallocates space assigned to the regionbound to
+
+ae after evaluating e. The operations free beforeand
+alloc after are defined analogously.The problem we address is: given a program annotated by
+
+the Tofte/Talpin system, produce a completion that adds allo-cation/deallocation operations on region variables. Figure 1a
+
+1We assume small integers are boxed to make the presentation simple and
+uniform. In practice, small integers can be unboxed.
+
+shows the most conservative legal completion of the exam-ple program. Each region is allocated immediately upon entering and deallocated just before exiting the region's scope;this program has the same region lifetimes as the Tofte/Talpin
+annotated program above. The alloc before ae and
+free after ae annotations may be attached to any programpoint in the scope of
+
+ae, so long as the region bound to ae actu-ally is allocated where it is used. In addition, for correctness
+
+it is important that a region be allocated only once and deallo-cated only once during its lifetime. Within these parameters
+there are many legal completions. Figure 1b shows the com-pletion computed by our algorithm. There is one new operation free app. In an application e1 e2, the region contain-ing the closure can be freed after both
+
+e1 and e2 are evaluatedbut before the function body itself is evaluated. This point is
+
+not immediately before or after the evaluation of any expres-sion, so we introduce
+
+free app to denote freeing a regionat this point.
+
+The dotted lines in Figure 1c depict the lifetimes of re-gions under our completion. This particular completion is
+optimal--space for a value is allocated at the last possiblemoment (immediately prior to the first use of the region) and
+deallocated at the earliest possible moment (immediately af-ter the last use of the region). For example, the value
+
+3@ae6is deallocated immediately after it is created, which is correct because there are no uses of the value. While an optimalcompletion does not always exist, this example does illustrate
+some characteristic features of our algorithm. For example,space for a pair ideally is allocated only after both components of the pair have been evaluated--the last point beforethe pair itself is constructed. Similarly, at the last use of a
+function its closure is deallocated after the closure has beenfetched from memory but before the function body is evaluated. These properties are not special cases--they followfrom the general approach we adopt.
+
+For any given program, our method produces a system ofconstraints characterizing all completions. Each solution of
+the constraints corresponds to a valid completion. The con-straints rely on knowledge of the sequence of reads and writes
+to regions. Thus, the constraints are defined over the pro-gram's control flow. However, because of higher order functions, inferring control flow from the syntactic form of theprogram is difficult. A well-known solution to this problem
+is closure analysis [Ses92], which gives a useful approxima-tion to the set of possible closures at every application.
+
+Our algorithm consists of two phases. We begin with theTofte/Talpin annotation of a program. In the first phase, an
+extended closure analysis computes the set of closures thatmay result from evaluating each expression in every possible region environment (Section 3). In the second phase, lo-cal constraints are generated from the (expression, region environment) pairs (Section 4). These constraints express factsabout regions that must hold at a given program point in a
+given context. For example, if an expression e accesses aregion
+
+z, there are constraints such as "z must be allocatedsometime before the evaluation of
+
+e" and "z must be deallo-cated sometime after the evaluation of
+
+e."
+
+letregion ae4; ae5 in
+
+alloc before ae4 free after ae4 alloc before ae5 free after ae5
+letregion ae6 in
+
+alloc before ae6 free after ae6
+let x = (2@ae2,3@ae6)@ae4 in
+
+(*y:(fst x; y)@ae1)@ae5
+end
+end 5@ae3
+end
+
+(a) The example with explicit region allocation/deallocation operations.
+letregion ae4; ae5 in
+
+free app ae5
+
+letregion ae6 in
+
+let x = (2@ae2,alloc after ae4 alloc before ae6 free after ae6 3@ae6)@ae4 in
+
+alloc before ae5 (*y:(free after ae4 fst x; y)@ae1)@ae5
+end
+end 5@ae3
+end
+
+(b) The example with the optimal explicit region allocation/deallocation operations.
+
+: : : :ae6
+
+: : : : : : : : : : : : : : : : : :ae5
+: : : : : : : : : : : : : : : : : : : : : : : : : : : : : : : : : : : :ae4
+operation write write write write write read read writevalue
+
+2 3 x (a pair) *y 5 *y x pairregion
+ae2 ae6 ae4 ae5 ae3 ae5 ae4 ae1
+
+region lifetimes in program (a)
+: : : : : : : : : : : : : : : : : : : : : : : : : : : : : : : : : : : : region lifetimes in program (b)
+
+(c) Graph of region lifetimes with respect to the sequence of memory operations.
+
+Figure 1: An example comparing stack vs. non-stack region allocation.
+
+A novel aspect of our algorithm arises in the resolution ofthe constraints. As one might expect, solving the constraints
+yields an annotation of the program, but finding a solution isnot straightforward. Some program points will be, in fact, under constrained. For example, in the program in Figure 1, theinitial constraints specify that the region bound to
+
+ae5 must beallocated when
+*y : : : is evaluated, but there is no constrainton the status of the region bound to
+
+ae5 prior to the evaluationof
+*y. That is, we must choose whether ae5 is allocated priorto the evaluation of
+
+*y or not--there are legal completions inboth scenarios. Given the choice, we prefer that
+
+ae5 not be al-located earlier to minimize memory usage; this choice forces
+
+the completion alloc before ae5 *y : : :. Adding the con-straint that
+
+ae5 is unallocated prior to evaluation of *y affectsthe legal completion in other parts of the program. Thus,
+
+our algorithm alternates between finding "choice points" andconstraint resolution until a completion has been constructed.
+
+This structure is unusual among program analysis algorithmsand may be of independent interest.
+
+An outline of the soundness proof is presented in Section 5.Detailed discussion and measurements of the behavior of our
+algorithm are presented in Section 6. Section 7 concludeswith a discussion of practical issues.
+
+2 Definitions
+The input to our analysis is a program annotated by theTofte/Talpin algorithm. The syntax of such programs is
+
+e ::= x j *x:e@ae j e1 e2 j f [~ae ]@ae
+
+j let x = e1in e2 end
+j letrec f [~ae ](x)@ae = e1 in e2 end
+j letregion ae in e end
+
+Other operations, such as pairing and selection, are omit-ted for brevity. The language includes region polymorphic
+functions--functions that take regions as arguments. Regionpolymorphism allows each invocation of a recursive function
+to operate on different regions, which is important for achiev-ing good separation of region lifetimes [TT94].
+
+The Tofte/Talpin annotations are derived using a non-standard type system. A type is a pair
+
+(o/; ae), where o/ indi-cates the kind of value (integer, function, etc.) and
+
+ae refers tothe region where values of the type are stored. The determination of region scope is made by tracking the effect of an ex-pression, which is the set of regions the expression may read
+or write when evaluated. Types are defined by the followinggrammar:
+
+o/ ::= int j _ ffl:'! _
+_ ::= (o/; ae)
+
+An object of the form ffl:' is called an arrow effect: it is the
+effect of applying a function of type _ ffl:'! _0. The "ffl:" is aneffect variable which names the effect and is useful for type
+
+inference purposes.To the base language we add operations to allocate and free
+regions:
+
+e ::= \Delta  \Delta  \Delta 
+
+j alloc before ae e j alloc after ae e
+j free before ae e j free after ae e
+j free app ae e1 e2
+
+The operational semantics of this language derives facts ofthe form
+
+s; n; r ` e ! a; s0
+which is read "in store s, environment n, and region environ-ment
+
+r the expression e evaluates to store address a and newstore
+s0." The structures of the operational semantics are:
+
+RegionState = unallocated + deallocated +
+
+(Offset fin! Clos + RegClos)
+Store = Region fin! RegionState
+
+Clos = Lam \Theta  Env \Theta  RegEnv
+RegClos = RegionVar\Lambda  \Theta  Lam \Theta  Env \Theta  RegEnv
+
+Env = Var fin! Region \Theta  Offset
+RegEnv = RegionVar fin! Region
+
+A store contains a set of regions z1; z2; : : :. A region hasone of three states: it is unallocated, deallocated, or it is allocated, in which case it is a function from integer offsets
+o1; o2; : : : within the region to storable values. A region canhold values only if it is allocated. Note that regions are not
+
+of fixed size--a region potentially holds any number of val-ues. A region environment maps region variables
+
+ae1; ae2; : : :to regions. A vector of region variables is written
+~ae.In this small language, the only storable values are ordinary closures and region polymorphic closures. Ordinaryclosures have the form
+
+h*x:e@ae; n; ri, where *x:e@ae is the
+
+function, n is the closure's environment, and r is the closure'sregion environment. A region polymorphic closure has additional region parameters. The set of *x:e@ae terms is Lam;the
+
+@ae annotation is elided when it is clear from context orunneeded.
+
+Figure 2 gives the operational semantics. An address is a(region, offset) pair. Given an address
+
+a = (z; o), we gener-ally abbreviate
+s(z)(o) by s(a). All maps (e.g., environment,store, etc.) in the semantics are finite. The set
+
+Dom(f ) is thedomain of map
+f . The map f [x  v] is map f modified atargument
+x to give v. Finally, f jX is map f with the domainrestricted to
+
+X.The semantics in Figure 2 enforces two important restrictions on regions. First, the semantics forbids operationson a region that is not allocated; reads or writes to unallocated/deallocated regions are errors. Second, every region in-troduced by a
+
+letregion progresses through three stages:it is initially unallocated, then allocated, and finally deallocated. For example, the [ALLOCBEFORE] rule allocates apreviously unallocated region before the evaluation of an expression. Only one representative of each of the allocationand deallocation operations is presented in the semantics; the
+others are defined analogously.An example illustrates the [LETREC] and [REGAPP]
+rules. Consider the following program:
+Example 2.1
+
+letregion ae1; ae2; ae3 in
+
+let i = 1@ae1, j = 2@ae2 in
+
+letrec f [ae5; ae6](k : (int; ae5)) @ae3 =
+
+letregion ae7 in
+
+(k + (1@ae7)) @ae6
+end
+in
+
+(f [ae1; ae4]@ae0 i + f [ae2; ae4]@ae0 j)@ae4
+end
+end
+end
+
+In this program, nested let and letregion constructs areabbreviated. To make the example interesting, we use constructs outside the minimal language presented above. Theexpression
+
+i@ae stores integer i in the region bound to ae; theexpression
+
+(e1 + e2) @ae stores the sum of e1 and e2 in theregion bound to
+
+ae. Region allocation/deallocation operationsare omitted for clarity.
+
+In Example 2.1, letrec f [ae5; ae6](k) @ae3 = : : : storesa new region polymorphic closure at a fresh address
+
+a in theregion bound to
+ae3. Next, the expression (f [ae1; ae4] @ae0 i +
+f [ae2; ae4] @ae0 j) @ae4 is evaluated in an environment n where
+n(f ) = a. A region application f [ae1; ae4] @ae0 creates an or-dinary closure (stored at the region bound to
+
+ae0) with formalregion parameters
+ae5 and ae6 bound to the region values of ae1and
+ae4 respectively. When applied to the argument i (in ae1),the result is stored in
+
+ae4. The closure resulting from f [ae2; ae4]expects its argument in
+
+ae2 instead. Region polymorphism al-lows the function
+f to take arguments and return results indifferent regions in different contexts.
+
+n(x) = a
+s; n; r ` x ! a; s [VAR]
+
+n(f ) = a s(a) = h~ae; *x:e; n0; r0i
+o 62 Dom(s(r(ae0)))
+a0 = (r(ae0); o)
+c = h*x:e; n0; r0[~ae  r(~ae 0)]i
+
+s; n; r ` f [~ae 0] @ ae0 ! a0; s[a0  c]
+
+[REGAPP]
+
+o 62 Dom(s(r(ae))) a = (r(ae); o)
+s; n; r ` *x:e @ ae ! a; s[a  h*x:e; n; ri] [ABS]
+
+s; n; r ` e1 ! a1; s1
+s1; n; r ` e2 ! a2; s2
+s2(a1) = h*x:e; n0; r0i
+s2; n0[x  a2]; r0 ` e ! a3; s3
+
+s; n; r ` e1 e2 ! a3; s3
+
+[APP]
+
+s; n; r ` e1 ! a1; s1
+s1; n[x  a1]; r ` e2 ! a2; s2
+
+s; n; r ` let x = e1 in e2 end ! a2; s2
+
+[LET]
+
+o 62 Dom(s(r(ae)))
+n0 = n[f  (r(ae); o)]
+s[(r(ae); o)  h~ae; *x:e1; n0; ri]; n0; r ` e2 ! a; s0
+
+s; n; r ` letrec f [~ae ](x) @ ae = e1 in e2 ! a; s0
+
+[LETREC]
+
+z 62 Dom(s)
+s0 = s[z  unallocated]
+s0; n; r[ae  z] ` e ! a1; s1
+s1(z) = deallocated
+
+s; n; r ` letregion ae in e ! a1; s1jDom(s)
+
+[LETREGION]
+
+r(ae) = z
+s(z) = unallocated
+s0 = s[z  fg]
+s0; n; r ` e ! a1; s1
+
+s; n; r ` alloc before ae e ! a1; s1
+
+[ALLOCBEFORE]
+
+s; n; r ` e ! a1; s1
+r(ae) = z
+s1(z) is allocated
+s2 = s1[z  deallocated]
+
+s; n; r ` free after ae e ! a1; s2
+
+[FREEAFTER]
+
+Figure 2: Operational semantics.
+
+[[x]] R = [[x]] RjVis(x)
+[[*x:e @ ae]] R = fh*x:e @ ae; Rig
+
+[[e1 e2]] R for each h*x:e @ ae; R0i 2 [[e1]] R
+
+[[e]] R0 ` [[e1 e2]] R
+[[e2]] R ` [[x]] R0
+
+[[let x = e1 in e2]] R = [[e2]] R
+
+[[e1]] R ` [[x]] R
+
+[[letrec f [ae1; : : : ; aen](x) @ ae = e1 in e2]] R = [[e2]] R
+
+[[f [ae01 : : : ae0n] @ ae0]] R = fh*x:e @ ae0; (RjVis(f))[aei  R(ae0i)]igwhere
+
+letrec f [ae1; : : : ; aen](x) @ ae = e : : :
+
+[[letregion ae in e]] R = [[e]] R[ae  c] where c is a color not in R
+
+Figure 3: Region-based closure analysis.
+3 Extended Closure Analysis
+In reasoning about the memory behavior of a program, itis necessary to know the order of program reads and writes
+of memory. Closure analysis approximates execution orderin higher-order programs [Shi88, Ses92]. However, closure
+analysis alone is not sufficient for our purposes, because ofproblems with state polymorphism and region aliasing (see
+below). Imprecision in state polymorphism gives poor com-pletions, but failure to detect aliasing may result in unsound
+completions.Consider again the program in Example 2.1. Note that,
+within the body of the function f , the + operation is alwaysthe last use of the value
+
+k in ae5. Thus, it is safe to deallocatethe region bound to
+ae5 inside the body of f after the sum:
+
+letrec f [ae5; ae6](k) @ ae3 = letregion ae7 in
+
+free after ae5 ((k + (1 @ ae7)) @ ae6) end : : :
+
+Now consider the two uses of f in the body of the letrec inExample 2.1. With this completion, the region bound to
+
+ae1 isallocated (not shown) when
+f [ae1; ae4] a is evaluated, and deal-located when
+f [ae2; ae4] b is evaluated. Thus, to permit thiscompletion the analysis of
+
+f must be polymorphic in the state(unallocated, allocated, or deallocated) of the region bound to
+
+ae1. If the analysis requires that the region bound to ae1 be inthe same state at all uses of
+
+f , then in the body of f , the sameregion (now bound to
+ae5) cannot be deallocated.Region aliasing occurs when two region variables in the
+
+same scope are bound to the same region value. There is noaliasing in Example 2.1 as written. However, if the expression f [ae2; ae4] is replaced by f [ae2; ae2], then region parame-ters
+
+ae5 and ae6 of f are bound to the same region. In this sce-nario, it is incorrect to deallocate the region bound to
+
+ae5 asshown above, since the result of the call to
+f (stored in thesame region, but bound to
+ae6) is deallocated even though itis used later. This example illustrates three points. First, region aliasing must be considered in determining legal completions. Second, the completion of a function body dependsstrongly on the context in which the function is used; i.e., determining legal completions requires a global program analy-sis. Third, to obtain accurate completions, we require precise
+aliasing information. Approximate or may-alias informationdoes not permit the allocation or deallocation of a region.
+
+Our solution to these problems is to distinguish for eachexpression
+
+e the region environments in which e can be eval-uated. We define
+
+[[e]] R to be the set of values to which e mayevaluate in region environment
+
+R. Including region environ-ments makes region aliasing explicit in the analysis. Since
+
+the only values are closures, [[e]] R is represented by sets ofabstract closures
+
+fh*x:e @ ae; R0ig, which intuitively denotesclosures with function
+
+*x:e and region environment R0.
+Since each letregion introduces a region, the set of re-gion environments is infinite. We use a finite abstraction of
+
+region environments, mapping region variables to colors. Acolor stands for a set of runtime regions. An abstract region
+environment R has a very special property: R maps two re-gion variables to the same color iff they are bound to the same
+region at runtime. Thus, an abstract region environment pre-serves the region aliasing structure of the underlying region
+environment.
+
+The extended closure analysis is given in Figure 3. Fol-lowing [PS92], the analysis is presented as a system of constraints; any solution of the constraints is sound. We assumethat program variables are renamed as necessary so that each
+variable is identified with a unique binding. We write Vis(x)for the set of region variables in scope at
+
+letrec x[~ae ](y) =,
+let x =, or *x.
+
+The rule for letregion introduces a new color c notalready occurring in
+
+R. A distinct color is chosen because
+letregion allocates a fresh region, distinct from all exist-ing regions. To make the analysis deterministic, colors are
+
+ordered and the minimal color is selected. There can be nomore colors than the maximum number of region variables
+in scope at any point in the program. Thus, the set of abstract
+
+region environments is finite, which ensures that the closureconstraints have a finite solution.
+
+From the extended closure analysis, it is possible to derivean ordering on program points. For example, in an application e1 e2 within region environment R, first e1 is evaluated,then
+
+e2, and finally one of the closures in [[e]] R. This orderingplays a central role in computing completions.
+
+4 Completions
+Legal completions with explicit allocation/deallocation oper-ations are expressed as a system of constraints. This section
+describes the constraint language, constraint generation, andconstraint resolution. Constraint generation is a function of
+the input expression, the Tofte/Talpin types, and the result ofthe extended closure analysis.
+
+4.1 Definitions
+At each program point, every region in scope is in one of threestates: unallocated (
+
+U ), allocated (A), or deallocated (D).With each program point, abstract region environment, and
+
+color is associated a state variable ranging over fU; A; Dg.State variables record the state of each region in the range of
+an abstract region environment at a program point. State vari-ables are associated with regions (colors) rather than region
+variables because region variables may be aliased. Sincethe evaluation of an expression
+
+e may allocate/deallocate re-gions, a region state may be different before and after the
+
+evaluation of e. Thus, there are program points in and outfor each expression
+
+e. We group state variables together intostate vectors
+Sine;R and Soute;R associated with every expression
+e and region environment R. We refer to state variables byindexing state vectors with a color
+
+c, as in Sine;R[c].Constraints are placed on individual state variables in a
+
+state vector. There are three kinds of constraints: (1) alloca-tion constraints, (2) choice constraints, and (3) equality constraints:
+
+s = A (1)
+hs1; cp; s2ia
+hs1; cp; s2id (2)
+s1 = s2 (3)
+
+Allocation constraints are placed at program points wherevalues are read from or written to a region; they express that
+
+a region must be allocated at this point.Choice constraints are either
+
+allocation triples or deallo-cation triples. An allocation triple expresses a relationship
+
+between two state variables s1; s2 and a boolean variable cp:
+
+(cp , (s1 = U ^ s2 = A)) ^ (:cp , s1 = s2)
+The boolean cp encodes whether or not the associated regionis to be allocated at program point
+
+p. If cp = true the regionstate prior to the allocation point is
+
+U and afterwards A, i.e.allocation. If
+cp = false, then the state prior is equal to thestate after, i.e. no allocation. This approach is similar in spirit
+
+to the coercions of [Hen92]. The definition of deallocationtriples is analogous:
+
+(cp , (s1 = A ^ s2 = D)) ^ (:cp , s1 = s2)
+Finally, equality constraints express that the state of a re-gion is the same at two program points.
+
+4.2 Constraint Generation
+
+Constraint generation produces all constraints necessary toguarantee that regions are allocated when they are accessed.
+
+This task involves placing allocation constraints wherever re-gions are read or written, as well as linking the in and out
+states of each subexpression with the corresponding programpoints in the enclosing expression. Choice constraints are introduced at possible allocation or deallocation points and linkthe region states before and after the choice point.
+
+What are the possible allocation and deallocation points?Every program point is a potential allocation or deallocation
+point for region variables that appear in the overall effect atthat program point. Recall that the effect of
+
+e is the set ofregion variables possibly read or written during evaluation
+
+of e. The overall effect of an expression e is defined to bethe arrow-effect (see Section 2) of the enclosing abstraction
+plus any letregion-bound variables inside the abstractionand in scope at
+
+e. We restrict the set of regions allowed tochange state (be allocated or deallocated) on entry or exit of
+
+e to be regions in the overall effect of e. This restriction iscrucial to the correctness of our system. A potential allocation (resp. deallocation) point is indicated by the syntax
+alloc before cp e (resp. free before cp e), where cpis the boolean variable associated with the allocation (resp.
+
+deallocation) point. Prior to constraint generation, all poten-tial
+
+alloc before; free after expressions are addedto the input program.
+
+We briefly explain the constraint generation rules in Fig-ure 4. Constraints are generated as a function of the in and out
+state vectors of each expression e, the current abstract regionenvironment
+
+R, and the overall effect 'o at e. The notation
+R(') is the pointwise union of R(ae) for ae 2 ', giving theset of colors in an effect. The rule for variables says that the
+
+state of regions in the overall effect is unchanged by a vari-able reference. No allocation constraint is needed, because
+no regions are read or written.In the abstraction rule, we place an allocation constraint on
+the region where the closure is written. Furthermore, as in thevariable rule, the states of all regions in the overall effect are
+the same on input and output of the abstraction expression.The color
+
+ce;R in the letregion rule is the color chosenfor
+ae by the extended closure analysis in the same context.Regions may change state only at potential allocation and
+
+deallocation points. The alloc before rule connects thestates of regions bound to
+
+ae between the input states of eand
+e1 with an allocation triple. The state of all other re-gions cannot change. A key point is that allocation triples
+
+generated from the same potential allocation point, but in dif-ferent region environment contexts, share the same boolean
+
+e = x ! 8c 2 R('o): Sine;R[c] = Soute;R[c]
+e = *x:e1@ae ! Sine;R[R(ae)] = A and 8c 2 R('o): Sine;R[c] = Soute;R[c]
+e = f [~ae 0]@ae0 ! Sine;R[R(ae0)] = A
+
+Sine;R[R(ae)] = A; where (o/; ae) is the type of f
+8c 2 R('o): Sine;R[c] = Soute;R[c]
+
+e = e1 e2 ! 8c 2 R('o): Sine;R[c] = Sine
+
+1;R[c]8c 2 R('
+
+o): Soute1;R[c] = Sine2;R[c]
+
+let (_1 ffl:'! _2; ae) be the type of e1
+Soute
+
+2;R[R(ae)] = A
+
+for all h*x:e0; R0i 2 [[e1]] R; with type (_01 ffl
+
+0:'0! _
+
+02; ae)
+
+B = R(') = R0('0)
+C = R('o) \Gamma  B
+8c 2 B: Soute
+
+2;R[c] = S
+
+ine
+
+0;R
+
+0[c] ^ Soute0;R0[c] = Soute;R[c]
+
+8c 2 C: Soute
+
+2;R[c] = S
+
+oute;R[c]
+
+e = let x = e1 in e2 ! 8c 2 R('o): Sine;R[c] = Sine
+
+1;R[c]8c 2 R('
+
+o): Soute1;R[c] = Sine2;R[c]
+
+8c 2 R('o): Soute
+
+2;R[c] = S
+
+oute;R[c]
+
+e = letrec f [~ae](x)@ae = e1 in e2 ! Sine;R[R(ae)] = A
+
+8c 2 R('o): Sine;R[c] = Sine
+
+2;R[c]8c 2 R('
+
+o): Soute2;R[c] = Soute;R[c]
+
+e = letregion ae in e1 ! R0 = R[ae  ce;R]
+
+Sine
+
+1;R
+
+0 [ce;R] = U
+
+Soute
+
+1;R
+
+0 [ce;R] = D
+
+8c 2 R('o): Sine;R[c] = Sine
+
+1;R
+
+0[c]
+
+8c 2 R('o): Soute
+
+1;R
+
+0[c] = Soute;R[c]
+
+e = alloc before ae ce e1 ! 8c 2 (R('o) \Gamma  fR(ae)g): Sine;R[c] = Sine
+
+1;R[c]8c 2 R('
+
+o): Soute1;R[c] = Soute;R[c]
+
+hSine;R[R(ae)]; ce; Sine
+
+1;R[R(ae)]ia
+
+e = free after ae ce e1 ! 8c 2 R('o): Sine;R[c] = Sine
+
+1;R[c]8c 2 (R('
+
+o) \Gamma  R(ae)): Soute1;R[c] = Soute;R[c]
+hSoute
+
+1;R[R(ae)]; ce; S
+
+out
+e;R[R(ae)]id
+
+Figure 4: Constraint generation rules.
+
+ae6 s6;1 s6;2 = A s6;3 s6;4
+ae5 s5;1 s5;2 s5;3 s5;4 = A s5;5 s5;6 = A s5;7 s5;8
+ae4 s4;1 s4;2 s4;3 = A s4;4 s4;5 s4;6 s4;7 = A s4;8
+operation write write write write write read read writevalue 2 3
+
+x (a pair) *y 5 *y x pairregion
+ae2 ae6 ae4 ae5 ae3 ae5 ae4 ae1
+
+Table 1: Example constraint resolution.
+
+variable, which guarantees that the completion is valid inall contexts. Allocation/deallocation choice points for different region variables are sequentialized to ensure that iftwo region variables are aliased (i.e. they map to the same
+color in the abstract region environment), at most one alloca-tion/deallocation point is chosen.
+
+The application rule is the most difficult. The key idea isthat at runtime, the regions in the arrow-effect of the function
+expression e1 (call this set E), are the same as the regions inthe effect of the closure. Therefore, the states of regions in E
+in the caller's context prior to evaluation of the function bodymatch the states of regions in E on entry to the function (and
+similarly on return). In the abstract region environments ofthe caller and callee, the colors of the effect of the call (set
+
+B)are equal, justifying equality constraints between state variables at the call site and in the input vector of the functionbody (similarly on output). These equality constraints model
+the flow of regions from the caller into the function body andback. All regions a function touches appear in the function's
+effect. It is thus sufficient to place the equality constraintsonly on state variables corresponding to colors from
+
+B. Otherregions in the caller's context (set
+C) are not touched in thethe function body; the function is state-polymorphic in these
+
+regions. The set of possible closures in an application of agiven region environment is computed by the extended closure analysis. For brevity, we do not describe the handling ofquantified effect variables (for details see [AFL95]).
+
+4.3 Constraint Resolution
+In general, the constraint system has multiple solutions. Forexample, the state of a region after the last use is unspecified.
+
+We may place the point of deallocation of such a region any-where after its last use, but obviously we prefer the first possible program point. The choice of where to allocate (or deal-locate) a region affects the states of regions in other parts of
+the program. Therefore, it is necessary to iterate solving con-straints and choosing allocation/deallocation points based on
+the partial solutions.Recall Example 1.1. Consider
+
+ae5 and the control flow pathfrom the point
+p1, where the lambda abstraction is stored inthe region bound to
+
+ae5, to the point p2, where it is retrievedto perform the application. Clearly the region bound to
+
+ae5must be allocated both at
+p1 and p2. Because the languagesemantics forbid the region to change from the deallocated
+
+state to the allocated state, we can conclude that on all controlpaths from
+
+p1 to p2, it must be allocated.The constraints are simple first-order formulas for which
+
+resolution algorithms are well-known. There is, however,the issue of deciding which solution to choose; clearly some
+completions are better than others. We illustrate our resolu-tion algorithm with an example.
+
+Refer again to the example in Figure 1. Table 1 showsthe state variables associated with
+
+ae4; ae5; ae6. Assume thatwe have added allocation triples between all consecutive program points for colors bound by ae4--ae6, with associatedboolean variables
+
+ci;j, meaning a possible allocation of aeijust after state
+si;j.
+
+Table 1 contains explicit allocation constraints on stateswhere regions are accessed. We must have
+
+s5;5 = A becauseit lies on an execution path between two states where the region bound to ae5 is allocated. The same holds for s4;4-6. Wealso set all allocation choice points
+
+c6;2-4, c5;4-8, and c4;3-8to false, because the regions must be allocated before these
+
+program points are reached. At this point we have proven allfacts derivable from the initial constraints--nothing forces
+other states to be unallocated, allocated, or deallocated. Wecan now choose to set any boolean variable
+
+cp of an allocationtriple
+hs1; cp; s2ia to true, if the variable cp is not constrained.Among the possible choices, we are particularly interested
+
+in allocation points lying on the border of an unconstrainedstate and an allocated state, i.e., allocation triples
+
+hs1; cp; s2iawhere:
+
+s1 is unconstrained ^ s2 = A
+By the definition of an allocation triple, choosing cp = trueforces
+
+s1 = U . The state U is propagated to earlier programpoints, since the region can be in no other state there. In the
+
+example, we choose c5;3 = true, set s5;3 = U , and propa-gate
+
+U backwards through s5;2-1 to the letregion for ae5.Similarly, we choose
+
+c6;1 = true and c4;2 = true.In general, given a constraint system
+
+C, we first prove allfacts
+C ` s = X and C ` s 6= X implied by C. If C 6` s = Xand
+C 6` s 6= X, then we are free to choose either s = Xor
+s 6= X. This procedure repeats, proving facts and makingchoices, until a complete solution is constructed.
+
+Any solution of the constraints specifies a completion ofthe program, where allocate/deallocate operations are added
+for the boolean variables cp that are true in the solution. Theconstraints have a trivial solution, obtained by choosing for
+each region the first allocation choice point and the last deal-location choice point inside the corresponding
+
+letregion.This most conservative completion has exactly the same
+
+memory behavior as the original Tofte/Talpin program (e.g.Figure 1a).
+
+5 Soundness
+This section states a soundness theorem for our system andsketches the proof. The soundness theorem is formulated as
+follows. Assume that s; r; n ` e ! a; s0, and assume that
+[[e]] R = V is the result of the extended closure analysis for e,where
+
+R is an abstraction of the region environment r. As-sume further that the regions of the overall effect
+
+'o mappedby
+r in store s are initially in the states given by Sine;R. Thetheorem shows that the evaluation of
+
+e leaves these regionsin the states specified by
+Soute;R. To prove this theorem we firststate the relationship between the concrete semantics and our
+
+abstraction. For the proof concrete regions in the operationalsemantics are colored the same way as in the extended closure analysis. We use capital letters for abstract entities andlowercase letters for concrete entities,
+
+zc denotes a concreteregion with color
+c, s is a concrete store, and S : StateVar !
+fU; A; Dg is the solution of the constraints.We say a concrete region environment
+
+r satisfies an ab-stract region environment
+R if they have the same domain
+
+and aliasing structure.
+
+r sat R defjDom
+
+(R) = Dom(r) ^
+R(ae) = R(ae0) () r(ae) = r(ae0) ^
+R(ae) = c () r(ae) = zc
+
+A store s and address a satisfy a set of abstract values V ,if
+V contains an abstraction of the concrete value stored ataddress
+
+a in s, and the environment of the concrete closuresatisfies the extended closure analysis
+
+[[ \Delta  ]].
+
+s; a sat V defjaddress
+
+a is allocated in s =)
+s(a) = h*x:e; r0; n0i ^
+9h*x:e; R0i 2 V s.t.
+
+s; r0; n0 sat R0; [[ \Delta  ]]
+
+A store s, concrete region environment r, and concretevalue environment
+
+n satisfy an abstract region environ-ment
+R and the extended closure analysis [[ \Delta  ]], if the regionenvironments match and for every variable
+
+x in the concreteenvironment,
+[[x]] R contains an abstraction satisfying theconcrete value.
+
+s; r; n sat R; [[ \Delta  ]] defj
+
+r sat R ^
+8(x 2 Dom(n))9R0 s.t.
+
+(RjDom(R0) = R0 ^ s; n(x) sat [[x]] R0)
+
+A store s and a concrete region zc with color c satisfy astate variable
+
+Se;R[c] if the state of the region zc in the store scorresponds to the solution for
+
+Se;R[c].
+
+s; zc sat Se;R; c defj
+
+zc 2 Dom(s) =) state(s; zc) = S(Se;R[c])
+
+Finally, a state s and concrete region environment r satisfyan abstract region environment
+
+R, state vector Se;R, and ef-fect set
+' if r and R match and the states of all regions in 'match the solution of the constraints for
+
+Se;R.
+
+s; r sat R; Se;R; ' defj
+
+' ` Dom(R) ^
+r sat R ^
+8(ae 2 ') s; r(ae) sat Se;R; R(ae)
+
+The soundness of our analysis is summarized by Theo-rem 5.1.
+
+Theorem 5.1 Given that
+
+s; r; n ` e ! a; s0
+[[e]] R = V
+s; r; n sat R; [[ \Delta  ]]
+s; r sat R; Sine;R; 'o
+
+we conclude s
+
+0; a sat V
+
+s0; r sat R; Soute;R; 'o
+
+The proof is by induction on the structure of e and is includedin the full version of the paper [AFL95].
+
+6 Implementation and Experiments
+We have implemented our algorithm in Standard ML[MTH90]. Our system is built on top of an implementation
+of the system described in [TT93, TT94], generously pro-vided to us by Mads Tofte. The implementation is extended
+with numbers, pairs, lists, and conditionals, so that non-trivial programs can be tested. For each source program,
+we first use the Tofte/Talpin system to region annotate theprogram. We then compute the extended closure analysis
+(Section 3). The next step adds allocation and deallocationchoice points and generates the allocation constraints (Section 4). The constraints are solved and the solution is used tocomplete the source program, transforming selected choice
+points into allocation/deallocation operations, and removingthe rest.
+
+Our annotations are orthogonal to the storage mode anal-ysis mentioned in [TT94] and described in more detail in
+[Tof94]. Thus, the target programs contain both storagemode annotations and the allocation annotations described in
+this paper. On the other hand, our analysis subsumes the op-timization described in Appendix B of [TT94], so that optimization is disabled in our system. Summary performancemeasures are in Table 2. We have not measured carefully the
+time required to compute our analysis, but our method ap-pears to scale as well as the Tofte/Talpin system. All of the
+examples we have tried are analyzed in a matter of secondsby our system on a standard workstation.
+
+The target programs were run on an instrumented inter-preter, also written in Standard ML/NJ. In addition to the data
+above, we also gather complete memory traces, which wepresent as graphs depicting memory usage over time.
+
+While we have tested our system on many programs, nei-ther the size of our benchmarks nor the size of our benchmark
+suite is large enough to draw meaningful statistical conclu-sions. Instead, we present representative examples of three
+typical patterns of behavior we have identified.A number of programs show asymptotic improvement
+over the Tofte/Talpin system. One example given in theirpaper (due to Appel [App92]), has
+
+O(n2) space complexity.Our completion of this program exhibits
+
+O(n) space com-plexity (Figure 5). In this program, our analysis is able to
+
+deallocate a recursive function's parameter before functionevaluation completes. Because the Tofte/Talpin system enforces a stack discipline, it cannot reclaim function parame-ters that become "dead" part way through the activation of a
+function.Another typical pattern is that our system has the same
+asymptotic space complexity as Tofte/Talpin, but with a con-stant factor improvement. Representative examples include
+Quicksort, Fibonacci, and Randlist. The memory usagegraphs are shown in Figures 6, 7, and 8, respectively. The
+measurements for the graphs were made using smaller inputsthan the experiments in Table 2; smaller problem sizes yield
+more readable graphs.The Quicksort graph (Figure 6) has a curious feature: at
+times the memory usage drops below the amount needed tostore the list! Our measurements count only heap memory
+
+Appel(100) Quicksort(500) Fibonacci(6) Randlist(25) Fac(10)A-F-L T-T A-F-L T-T A-F-L T-T A-F-L T-T A-F-L T-T
+(1) 208 1111 112 1520 15 20 12 90 25 25(2) 81915 81915 45694 45694 190 190 289 289 66 66
+(3) 101814 101814 65266 65266 190 190 363 363 66 66(4) 306 20709 2509 8078 10 14 85 161 14 14
+(5) 1 1 1502 1502 1 1 77 77 1 1
+
+(1) Maximum number of regions allocated (unit: 1 region)(2) Total number of region allocations
+(3) Total number of value allocations(4) Maximum number of storable values held (unit: 1 sv)
+(5) Number of values stored in the final memory (unit: 1 sv)
+
+Table 2: Summary of results.
+
+0
+50
+100
+150
+200
+250
+300
+
+0 200 400 600 800 1000 1200
+Memory size, in values
+
+Time
+
+Appel
+Tofte/Talpin, max = 279A-F-L, max = 36
+
+Figure 5: Memory usage in Appel example [App92](
+
+n = 10).
+
+0
+100
+200
+300
+400
+500
+600
+700
+
+0 500 1000 1500 2000 2500 3000 3500 4000
+Memory size, in values
+
+Time
+
+quick
+Tofte/Talpin, max = 603A-F-L, max = 259
+
+Figure 6: Memory usage in Quicksort example(sort 50 element list of random integers).
+
+0
+2
+4
+6
+8
+10
+12
+14
+16
+
+0 20 40 60 80 100 120 140 160 180 200
+Memory size, in values
+
+Time
+
+fibonacci
+
+Tofte/Talpin, max = 14A-F-L, max = 10
+
+Figure 7: Memory usage in Fibonacci example(recursive fibonacci of 6).
+
+0
+20
+40
+60
+80
+100
+120
+140
+160
+180
+
+0 50 100 150 200 250 300 350 400
+Memory size, in values
+
+Time
+
+randlist
+Tofte/Talpin, max = 161A-F-L, max = 85
+
+Figure 8: Memory usage in Randlist example(generate 25 element list of random integers).
+
+usage. The evaluation stack is not counted, a measurementmethodology consistent with [TT94]. Quicksort is not unusual in this behavior. The program recursively traverses itsinput list, stores the contents on the evaluation stack, frees the
+list cells when it reaches the end, and builds up the output listupon return.
+
+In the third class of programs our system has nearly thesame memory behavior as Tofte/Talpin (e.g., the factorial
+function). This case arises most often when the Tofte/Talpinannotation is either already the best possible or very conservative. Conservative annotations distinguish few regions.Because values in regions must be deallocated together, having fewer regions results in coarser annotations. Of course,the memory behavior of a program annotated using our algorithm is never worse than that of the same program annotatedusing the Tofte/Talpin algorithm.
+
+Our system is accessible for remote experimentationthrough the World Wide Web at:
+
+http://kiwi.cs.berkeley.edu/~nogc
+7 Discussion and Conclusions
+It remains an open question whether our system is a practi-cal approach to memory management. The complexity of the
+extended closure analysis is worst-case exponential time. Inpractice, we have found it to be of comparable complexity to
+the Tofte/Talpin system, but we do not as yet have enoughexperience to judge whether this holds in general. The constraint generation and constraint solving portions of our anal-ysis both run in low-order polynomial time. A separate issue is that the global nature of our analysis presents seriousproblems for separate compilation, which we leave as future work. Finally, we have found that static memory allo-cation is very sensitive to the form of the program. Often,
+a small change to the program, such as copying one value,makes a dramatic difference in the quality of the completion.
+Thus, for this approach to memory management to be prac-tical, feedback to programmers about the nature of the completion will be important.Our system does do a good job of finding very fine-grain,
+and often surprising, memory management strategies. Re-moving the stack allocation restriction in the Tofte/Talpin
+system allows regions to be freed early and allocated late.The result is that programs often require significantly less
+memory (in some cases asymptotically less) than when an-notated using the Tofte/Talpin system alone.
+
+References
+[AFL95] Alexander Aiken, Manuel F"ahndrich, and RaphLevien. Better static memory management: Improving
+
+region-based analysis of higher-order languages. Tech-nical Report CSD-95-866, UC Berkeley, April 1995.
+
+[App92] Andrew W. Appel. Compiling with Continuations.Cambridge University Press, 1992.
+
+[Deu90] Alain Deutsch. On determining lifetime and alias-ing of dynamically allocated data in higher-order functional specifications. In Proc. of the 17th Annual ACMSymposium on Principles of Programming Languages,
+pages 157-168, January 1990.
+[DLM+78] Edsger W. Dijkstra, Leslie Lamport, A.J. Mar-tin, C.S. Scholten, and E.F.M. Steffens. On-the-fly
+
+garbage collection: An exercise in cooperation. Com-munications of the ACM, 21(11):966-975, November
+1978.
+[Hen92] Fritz Henglein. Global tagging optimization bytype inference. In Proc. of the 1992 ACM Conference
+
+on Lisp and Functional Programming, pages 205-215,July 1992.
+
+[HJ90] Geoff W. Hamilton and Simon B. Jones. Compile-time garbage collection by necessity analysis. In Proc.
+
+of the 1990 Glasgow Workshop on Functional Program-ming, pages 66-70, August 1990.
+
+[MTH90] Robin Milner, Mads Tofte, and Robert Harper.The Definition of Standard ML. MIT Press, 1990.
+[NO93] Scott Nettles and James O'Toole. Real-time repli-cation garbage collection. In Proc. SIGPLAN '93 Conference on Programming Language Design and Imple-mentation, pages 217-226, June 1993.
+
+[PS92] Jens Palsberg and Michael I. Schwartzbach. Safetyanalysis versus type inference. Information Processing
+
+Letters, 43(4):175-180, September 1992.
+[RM88] Cristina Ruggieri and Thomas P. Murtagh. Lifetimeanalysis of dynamically allocated objects. In Proc. of
+
+the 15th Annual ACM Symposium on Principles of Pro-gramming Languages, pages 285-293, January 1988.
+
+[Ses92] Peter Sestoft. Analysis and Efficient Implementa-tion of Functional Programs. PhD dissertation, University of Copenhagen, Department of Computer Science,1992.
+
+[Shi88] Olin Shivers. Control flow analysis in Scheme.In Proc. SIGPLAN '88 Conference on Programming
+
+Language Design and Implementation, pages 164-174,June 1988.
+
+[Tof94] Mads Tofte. Storage mode analysis. Personal com-munication, October 1994.
+[TT93] Mads Tofte and Jean-Pierre Talpin. A theory of stackallocation in polymorphically typed languages. Technical Report 93/15, Department of Computer Science,University of Copenhagen, July 1993.
+
+[TT94] Mads Tofte and Jean-Pierre Talpin. Implementationof the typed call-by-value
+
+*-calculus using a stack of re-gions. In Proc. of the 21st Annual ACM Symposium on
+
+Principles of Programming Languages, pages 188-201,January 1994.

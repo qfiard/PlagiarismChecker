@@ -1,0 +1,1974 @@
+
+
+Simplifying and Improving Qualified Types
+
+Mark P. Jones
+Yale University, Department of Computer Science
+
+P.O. Box 208285, New Haven, CT 06520-8285.
+
+jones-mark@cs.yale.edu
+
+Research Report YALEU/DCS/RR-1040, June 1994
+
+Abstract
+Qualified types provide a general framework for constrained type systems, with applications including type class overloading, subtyping and
+record calculi. This paper presents an extended version of the type inference
+algorithm used in previous work, that can take account of the satisfiability
+of constraints to obtain more accurate principal types. The new algorithm
+is obtained by adding two new rules, one for simplification and one for improvement of constraint sets. In particular, it permits a better treatment for
+the previously troublesome multiple parameter extensions of Haskell type
+classes. For example, a form of parametric type classes, proposed by Chen,
+Hudak and Odersky, can be viewed as a special case of this work.
+
+Introduction
+Qualified types provide a general framework for constrained type systems; typical applications include type class overloading, subtyping and record calculi. In
+previous work, we have shown how the standard treatment of ML style polymorphism can be adapted to allow the use of qualified types. In particular, we have
+shown that any well-typed program has a principal type that can be calculated
+by an extended version of Milner's type inference algorithm. This is useful both
+for describing the set of types that can be assigned to a term and for detecting
+possible semantic ambiguities.
+
+Unfortunately, while technically correct, the principal types produced by our algorithm do not take account of the satisfiability of constraints. As a result, they
+are sometimes more complicated and less accurate than we might hope. Even if
+
+1
+
+the additional complexity were not an issue, this can sometimes cause perfectly
+reasonable programs to be rejected when the principal type suggests, wrongly, that
+the term does not have a well-defined semantics. In other cases, the inferred types
+are too liberal, including unsatisfiable constraints and delaying the detection of
+type errors.
+
+This paper shows how these problems can be avoided by using a notion of principal
+satisfiable types and extending the type inference algorithm with two new rules,
+one dealing with simplification, the other with improvement . Our approach is also
+flexible enough to allow some variations between different applications of qualified
+types, offering better principal types without compromising the decidability of
+type inference.
+
+In addition to other applications, the new algorithm permits a better treatment for
+the previously troublesome multiple parameter extensions of Haskell type classes.
+In particular, we show how improvement can be used to support a form of parametric type classes [1].
+
+Outline of this report
+We start, in Section 1, with an overview of the system of qualified types used in
+earlier work, including examples of predicate systems, a description of the type
+system and an outline of the type inference algorithm. Section 2 describes the use
+of simplification, allowing the constraint set included in the type of an expression
+to be replaced by an equivalent, but simpler, set of constraints. In Section 3,
+we introduce the concept of improvement which is the major contribution of this
+report, using information about satisfiability of constraints to refine the inferred
+types. This requires a modification to our treatment of type inference, shifting
+attention to satisfiable typings and a satisfiability ordering between type schemes in
+Section 4. The proofs of soundness and completeness properties for a type inference
+algorithm that uses simplification and improvement are discussed in Section 5,
+with detailed proofs of new results provided in the appendix. We conclude with a
+discussion on the use of our new framework in Section 6.
+
+1 A brief overview of qualified types
+To describe the contributions of this report we need to begin with a brief description of the framework of qualified types on which it builds. We make no attempt
+to repeat the detailed presentations of [10, 13, 12] and assume some familiarity
+with this previous work.
+
+2
+
+1.1 Predicates
+The key idea motivating the use of qualified types is the ability to include predicates in the type of a term, capturing restrictions on the ways that it can be
+used. The properties of predicates themselves are described using an entailment
+relation, denoted by the symbol ``. If P and Q are finite sets of predicates, then
+the assertion that P `` Q means that the predicates in Q hold, whenever the predicates in P are satisfied. The only assumptions that we make about the predicate
+entailment relation are that it is transitive, closed under substitutions, and such
+that P `` Q whenever Q is a subset of P .
+
+Simple examples of single predicates that are useful in practical applications are
+illustrated in Figure 1. In some cases, we have taken the liberty of using a slightly
+
+Predicate Interpretation
+t 2 Eq Values of type t can be tested for equality using the ==
+
+operator. This usually includes all types, except those
+with functional components [22, 8].
+t 2 Num t is a numeric type, for example, the type of integers, or
+
+floating point numbers, and elements of type t can be
+manipulated using standard arithmetic operators, for
+example, + for addition and \Lambda  for multiplication [22, 8].
+t 2 Collect (s) Values of type t can be used to represent collections of
+
+values of type s [1].
+t Dual s Values of types t and s represent the elements of dual
+
+lattices [11].
+s ` t s is a subtype of t ; in practice, this usually means that
+
+values of type s can be treated as values of type t by
+applying a suitable coercion [17, 18, 5, 4, 20].
+r has l : t r is a record type containing an field labelled l of type
+
+t [7].
+r lacks l r is a record type, not including a field labelled l [7].
+r1#r2 The record types r1 and r2 do not have any fields in
+
+common [6].
+
+Figure 1: Examples of individual predicates and their informal intepretation
+different syntax from earlier presentations, in the hope that this will make the
+interpretation of predicate expressions a little more obvious.
+
+3
+
+1.2 OML--Core-ML with overloading
+Working towards an extension of core-ML that supports qualified types, we adopt
+a structured language of types specified by the grammar:
+
+o/ ::= t type variables
+
+j o/ ! o/ function types
+j : : : other constructed types
+ae ::= P ) o/ qualified types
+oe ::= 8T :ae type schemes
+
+Here, t ranges over a given set of type variables and P and T range over finite
+sets of predicates and finite sets of type variables respectively. The set of type
+variables appearing (free) in an expression X is denoted TV (X ) and is defined in
+the obvious way.
+
+For programs, we use the term language of core-ML:
+
+E ::= x variable
+
+j EF application
+j *x :E abstraction
+j let x = E in F local definition
+
+For the purposes of this work, we are only interested in terms that can be assigned
+a type using the rules in Figure 2. These rules use judgements of the form P j A `
+E : oe where P is a set of predicates and A is a type assignment, i.e. a mapping
+from term variables to types. Much of the notation used here is standard, as indeed
+are most of the rules. Only ()I ) and ()E ), moving global constraints in to, or
+out of, the type of an object, and the (8I ) rule for polymorphic generalization,
+actually involve the predicate set P .
+
+We refer, collectively, to the type, term and typing rules given above as OML, a
+mnemonic for `Overloaded ML'.
+
+1.3 Type inference for OML
+An important property of OML is the existence of an algorithm for calculating
+principal typings for a given term. More precisely, there is an effective algorithm,
+taking a term E and a type assignment A as its input, for calculating the most
+general type that can be assigned to E , given the assumptions in A.
+
+To describe what it means for one type to be more general than another, we define
+an ordering between constrained type schemes, i.e. pairs of the form (P j oe) where
+oe is a type scheme and P is a set of predicates corresponding to global constraints
+
+4
+
+Standard rules: (var ) (x : oe) 2 AP j A ` x : oe
+
+(!E ) P j A ` E : o/
+
+0 ! o/ P j A ` F : o/ 0
+
+P j A ` EF : o/
+
+(!I ) P j A
+
+x ; x : o/
+
+0 ` E : o/
+
+P j A ` *x :E : o/ 0 ! o/
+
+Qualified types: ()E ) P j A ` E : Q ) ae P `` QP j A ` E : ae
+
+()I ) P ; Q j A ` E : aeP j A ` E : Q ) ae
+
+Polymorphism: (8E ) P j A ` E : 8ff:oeP j A ` E : [o/ =ff]oe
+
+(8I ) P j A ` E : oe ff 62 TV (A) [ TV (P )P j A ` E : 8ff:oe
+
+Local Definition: (let ) P j A ` E : oe Q j A
+
+x ; x : oe ` F : o/
+
+P ; Q j A ` (let x = E in F ) : o/
+
+Figure 2: Typing rules for OML.
+
+5
+
+on the environment in which the type scheme can be used. We start by defining
+the set of generic instances of a constrained type scheme, given by:
+
+[[P 0 j 8ffi:P ) o/ ]] = f Q ) [*i =ffi ]o/ j *i 2 Type; Q `` P 0; [*i=ffi ]P g:
+Using this definition, the required ordering between constrained type schemes is
+specified by law:
+
+(P j oe) ^ (P
+
+0 j oe0) , [[P j oe]] ` [[P j oe0]]:
+
+In other words, oe ^ oe0 if and only if every generic instance of oe is a generic instance
+of oe0. It follows immediately from the form of the definition that the ordering
+is reflexive and transitive. Furthermore, it is reasonably easy to show that the
+ordering is preserved by substitution, i.e. that S (P j oe) ^ S (P 0 j oe0), whenever
+(P j oe) ^ (P 0 j oe0). This is important because it indicates that the ordering on
+type schemes is compatible with our notion of polymorphism, allowing free type
+variables to be freely instantiated with arbitrary types.
+
+The type inference algorithm itself is described by the rules in Figure 3. This pre(var )
+
+W (x : 8ffi:P ) o/ ) 2 A fii new
+
+[fii =ffi ]P j A `
+
+W x : [fi
+
+i=ffi ]o/
+
+(!E )
+
+W P j TA `
+
+W E : o/ Q j T 0TA `W F : o/ 0 T 0o/ U, o/ 0 ! ff ff new
+
+U (T 0P ; Q ) j UT 0TA `
+
+W EF : U ff
+
+(!I )
+
+W P j T (Ax ; x : ff) `
+
+W E : o/ ff new
+
+P j TA `
+
+W *x :E : T ff ! o/
+
+(let )
+
+W P j TA `
+
+W E : o/ P 0 j T 0(TA
+
+x ; x : oe) `
+
+W F : o/ 0 oe = Gen(TA; P ) o/ )
+
+P 0 j T 0TA `
+
+W (let x = E in F ) : o/ 0
+
+Figure 3: Type inference algorithm W.
+sentation, as in previous descriptions of qualified types, follows [19], using judgements of the form Q j TA `
+
+W E : * where A and E are the type assignment and
+
+expression provided as inputs to the algorithm, and Q , T and * are a predicate
+set, substitution and type, respectively, produced as its results. The notation
+Gen(A; ae) used in the rule (let )
+
+W indicates the generalization of ae with respect
+
+to A, defined as 8ai:ae where fai g is the set of type variables TV (ae) n TV (A).
+As demonstrated in previous work, the results of the algorithm can be used to
+construct a principal type scheme, j, such that:
+
+P j A ` E : oe () (P j oe) ^ j:
+
+6
+
+Assuming, as is often the case for top-level definitions, that A does not include
+any free type variables, then the principal type is just:
+
+j = Gen(A; Q ) *) = (8ai:Q ) *);
+where fai g is the set of type variables appearing free in (Q ) *).
+Note that it is also possible for the type inference algorithm to fail, either because
+E contains a free variable that is not bound in A, or because the calculation of
+
+a most general unifier, described by the notation o/ U, o/ 0, fails as a result of a
+mismatch between the expected and actual type of a function argument. In this
+case, the completeness property of the type inference algorithm guarantees that
+there are, in fact, no derivable typings of the form P j A ` E : oe.
+
+2 Simplification
+In this section, we will show how the principal types calculated by the type inference algorithm described above can often be simplified by using a different, but
+equivalent, set of predicates in the infered type. This is not a new idea; similar
+techniques are already used in other theoretical work, and in the implementations
+of systems like Haskell [8] and Gofer [16]. One of the advantages of the framework
+used in this report is that it allows us to view simplification independently of other
+aspects of the type system, revealing opportunities for specific design decisions
+that are sometimes hidden in other presentations of constrained type inference.
+Simplification of qualified types, as described in this section, has previously been
+suggested in [13, 12].
+
+For convenience, we will write P , Q to indicate the equivalence of predicate sets
+P and Q , i.e. that P `` Q and Q `` P . It is a straightforward exercise to show
+that, if P `` Q , then:
+
+[[8ti:P ) o/ ]] ` [[8ti:Q ) o/ ]];
+
+and hence that, if P , Q , then the type schemes (8ti:P ) o/ ) and (8ti:Q ) o/ )
+are equivalent with respect to the ^ ordering on type schemes. To see how this
+works in practice, suppose that the addition operator + is treated as a function of
+type 8t :(t 2 Num) ) t ! t ! t , and consider the following examples:
+
+ffl Repeated predicates: Given the term (*x :*y:*z :x + y + z ), the type
+
+checking algorithm described above introduces two predicates of the form
+(t 2 Num), one for each use of +, where t is the type of the parameters x ,
+y, and z , and of the result of the *-term. In the current setting, repeated
+predicates are automatically eliminated by our use of predicate sets. More
+
+7
+
+generally, for example, in [14], where predicate sets are replaced by ordered
+sequences of predicates, simplification can be used to remove any duplicates.
+
+ffl Constant predicates: Treating 1 as an integer constant of type Int , the
+
+principal type of the expression (1 + 1) produced by the algorithm above
+is (Int 2 Num) ) Int . Simplification corresponds to discharging the assumption that Int is included in the Num class, and allows us to treat the
+expression as having type Int . This is an example of the concept of constant
+overloading described in [13].
+
+ffl Detecting type errors: Consider the function *x :(0a0 + x ) which attempts
+
+to add its argument value x to a character constant 0a0. Since characters
+are not usually regarded as numeric values, we might expect this term to
+produce a type error. Instead, the standard type inference algorithm assigns
+a principal type of (Char 2 Num) ) Char ! Char to this term. Examples like this were presented by Volpano and Smith [21] as criticisms of the
+original Wadler and Blott proposals for type class overloading [22], and used
+to motivate the use of slightly different set of typing rules that would reject
+such terms. In fact, the Haskell type system already has this behaviour. A
+similar effect can be obtained by arranging for the simplification process to
+fail when an unsatisfiable predicate set is encountered.
+
+However, it is important to realize that this is a specific design decision, not
+an essential part of the system. For example, in a language emphasizing
+extensibility, we might argue that the predicate Char 2 Num should not be
+treated as an error. Instead, we simply prohibit any use of a function whose
+context includes this predicate until some time later, when the programmer
+has supplied definitions to add Char to the Num class.
+
+Another reason for avoiding a check for satisfiability in the simplification
+process is that it can make the type inference process undecidable. This is
+exactly the problem that Volpano and Smith described for an unrestricted
+version of the Wadler and Blott proposal. On the other hand, Haskell avoids
+this difficulty by imposing static constraints on the form of class and instance
+declarations that can be used in a program.
+
+We will see in fact that these issues are best dealt with using the concept of
+improvement described in Section 3.
+
+ffl Superclass constraints: The type class definitions in the Haskell standard
+
+prelude specify that Eq is a superclass of Num, i.e. that Num ` Eq. This
+property is guaranteed by the compiler using static checks to ensure that
+t 2 Eq whenever t 2 Num. Now consider the function:
+
+f = (*x :*y:*z :(x + y) == z ):
+
+8
+
+Assuming types 8t :(t 2 Eq) ) t ! t ! Bool and 8t :(t 2 Num) ) t ! t !
+t for the equality and addition operators, respectively, the principal type of
+the function f is:
+
+8t :(t 2 Eq; t 2 Num) ) t ! t ! t ! Bool :
+The two predicates here correspond to the use of == and + in the definition
+of f . However, using the superclass relation described above, this can be
+simplified to just:
+
+8t :(t 2 Num) ) t ! t ! t ! Bool :
+
+ffl Context reduction: In Haskell, the types in a type class are described
+
+by a collection of instance declarations. For example, the standard prelude
+includes a declaration that includes the type [t ] of lists of values of type t in
+the Eq class, whenever t 2 Eq. In our formal system, this is described by an
+entailment (t 2 Eq) `` ([t ] 2 Eq). Now suppose that we define a function:
+
+null = (*xs:xs == [ ])
+where [ ] is the empty list. The principal type for null is:
+
+8t :([t ] 2 Eq) ) [t ] ! Bool :
+As it stands, this type is already in the simplest form possible; the entailment given above is not sufficient to derive any other predicate set that is
+equivalent to ([t ] 2 Eq). However, according to the definition of Haskell, the
+instance declaration described above is the only way to define an equality on
+lists of type [t ]. We could therefore argue that this predicate set is `observationaly equivalent' to (t 2 Eq), capturing this property by extending the
+entailment relation with ([t ] 2 Eq) `` (t 2 Eq). Combined with the previous
+entailment, this shows that ([t ] 2 Eq) , (t 2 Eq) and hence we can reduce
+the inferred type for null to:
+
+8t :(t 2 Eq) ) [t ] ! Bool :
+This idea is used in Haskell to justify the use of rules for simplifying inferred
+types to use only predicates of the form t 2 C where t is a type variable.
+This process is described as context reduction in [12].
+
+In all these examples, we have delayed the use of simplification until the very last
+stage of type inference, after the calculation of the principal types. In fact, there
+are obvious benefits to allowing simplification to occur at earlier stages in the
+
+9
+
+typing process. We can extend the algorithm in Figure 3 to allow this by adding
+the rule (Simp):
+
+Q j TA `
+
+W E : * P , Q
+
+P j TA `
+
+W E : *
+
+Using (Simp) makes the type inference algorithm non-deterministic so that it is
+possible to obtain distinct principal types that are not equal up to renaming of
+bound variables. Fortunately, since these types are equivalent under the ordering
+^ introduced in Section 1.3, the addition of (Simp) still yields a sound algorithm
+that calculates principal type schemes for OML programs. By adopting a nondeterministic algorithm, we have the flexibility to allow designers of applications
+of qualified types to refine the algorithm, choosing to use simplification only under
+certain circumstances or at specific points during type checking.
+
+We should also comment that, although we have specified what it means for two
+predicates to be equivalent, we will not attempt to formalize what it means to say
+that one predicate set is simpler than another. There are some obvious measures
+of complexity that could be used, for example, the number of predicates or the size
+of the type expressions that they involve. However, we believe that these issues
+are best dealt with in the design of specific applications of qualified types. In other
+words, while we use a general and symmetric notion of simplification that allows
+any equivalent predicate set Q to be used in place of P , we would expect that, in
+a practical implementation, Q will actually be chosen as a simplified version of P
+in some appropriate manner.
+
+3 Improvement
+A second method for improving the accuracy of an inferred principal types, and the
+most important contribution of this report, is based on the concept of improvement.
+Although some special cases of this idea have been used in other systems, we are not
+aware of any previous work that has either identified the notion of improvement
+as an independent concept, or developed these ideas in the general framework
+described below.
+
+3.1 Improving records
+The central idea is to use information about the satisfiability of predicate sets to
+simplify inferred types. As a first example, consider a language with a system of
+records, using a function:
+
+( :l ) :: 8r :8t :(r has l : t ) ) r ! t
+
+10
+
+to describe the selection of a field l of type t from a record of type r . Following
+conventional notation, we treat the expression e:l as a sugared version of ( :l ) e.
+Now consider the function f = *r :(r :l ; r :l ) whose principal type, according to the
+algorithm in Section 1.3, is:
+
+8r :8a:8b:(r has l : a; r has l : b) ) r ! (a; b):
+However, for any particular record type r , the types assigned to the variables a
+and b must be identical since they both correspond to the same field in r . It
+would therefore seem quite reasonable to treat f as having a principal satisfiable
+type scheme:
+
+8r :8a:(r has l : a) ) r ! (a; a):
+
+To capture the essence of this example in a more general setting, we introduce the
+following notation for describing the satisfiable instances of a given predicate set
+P with respect to a predicate set P0:
+
+bP cP
+
+0 = f SP j S 2 Subst ; P0 `` SP g:
+
+The predicate set P0 used here is arbitrary, although we will often use P0 = ; and
+we will always assume that TV (P0) = ;. In practice, the choice of P0 plays a
+relatively small part in the following and we will often omit the subscript, writing
+just bP c to avoid unnecessary distraction.
+
+It is easy to show that bSP c ` bP c, for any substitution S , and any predicate
+set P . The reverse inclusion, bP c ` bSP c, does not always hold, but is more
+interesting because it tells us that we can apply the substitution S to P without
+changing its satisfiable instances. In particular, taking S as the substitution [a=b],
+the argument about the predicates for record types given above is captured by the
+equality:
+
+br has l : ac = br has l : a; r has l : bc :
+
+In this case, we will say that the substitution [a=b] improves the predicate set
+fr has l : a; r has l : bg. More generally, we write S improves P if bP c = bSP c
+and the only variables involved in S that do not appear in P are `new' variables,
+similar to those introduced by the type inference algorithm in Figure 3.
+
+To make use of improvement during type inference, we extend the type inference
+algorithm with the rule (Imp):
+
+Q j TA `
+
+W E : * T 0 improves Q
+
+T 0Q j T 0TA `
+
+W E : T 0*
+
+To get the most benefit from this, we would obviously prefer to use substitutions
+T
+
+0 that give, in some sense, the best possible improvement. However, while this
+
+11
+
+is desirable, we do not make it a requirement of the work described here. This is
+important because the definition of general predicate systems does not guarantee
+the existence of `optimal' improvements, or of computable algorithms for calculating them. Instead, we provide a general framework that allows us to compromise
+between decidability and improvement. In the simplest case, we can use the identity substitution id as an improving substitution, which satisfies id improves P
+for all predicate sets P . Of course, this just gives the same results as the previous
+version of the type inference algorithm, without improvement1.
+
+In practice, the typing algorithm for a language based on the ideas presented here
+might be parameterized by the choice of an improving function, impr , such that
+(impr P ) improves P for any predicate set P . The argument above shows that
+there is always at least one possible choice for an improving function, namely
+impr (P ) = id . We will see that it is also possible to arrange for an improving
+function to fail, thereby causing the type inference algorithm to fail, if it is applied
+to an unsatisfiable predicate set, i.e. a predicate set P such that bP cP
+
+0 = ;. Thiscan be used to implement a type checker that produces only satisfiable typing
+
+judgements, and fails if and only if there are no satisfiable typings. Of course,
+this behaviour would not be appropriate for a system in which tests of the form
+bP cP
+
+0 = ; are not decidable. Once again, our framework allows the languagedesigner to control these aspects of the type inference algorithm by choosing a
+
+suitable improving function.
+
+3.2 Improving subtyping
+To see why it may be necessary to introduce new variables in an improving substitution, consider a system of subtyping using predicates of the form o/ ` o/
+
+0 to
+
+indicate that o/ is a subtype of o/
+
+0 and with an entailment relation that is fully
+
+determined by the following rules:
+
+P `` o/ ` o/
+
+P ' Q
+P `` Q
+
+P `` o/ ` * P `` * ` _
+
+P `` o/ ` _
+
+P `` o/ 0 ` o/ P `` * ` *0
+P `` (o/ ! *) ` (o/ 0 ! *0)
+
+Using an implicit coercion, the function g = *f :*x :1 + f x has principal type:
+
+8a:8b:(a ` (b ! Int )) ) a ! b ! Int :
+Taking P0 = fInt ` Float g, i.e. assuming that the only primitive coercion is from
+the type Int of integers to the type Float of floating point numbers, we can use an
+improving substitution [(c ! d )=a] since:
+
+ba ` (b ! Int )c = b(c ! d ) ` (b ! Int )c :
+1Pun intended!
+
+12
+
+In fact, we can obtain a further improvement by noticing that this requires d ` Int ,
+which is only possible if d = Int . Hence the `improved' type for g becomes:
+
+8b:8c:((c ! Int ) ` (b ! Int )) ) (c ! Int ) ! b ! Int :
+Now, as is often the case, improvement exposes new opportunities for simplification, and we can further refine the type of g to:
+
+8b:8c:(b ` c) ) (c ! Int ) ! b ! Int :
+
+3.3 Improving type classes
+In this section, we will show how improvement can be used to support the use
+of type classes, concentrating in particular on the proposals by Chen, Hudak and
+Odersky [1] for parametric type classes.
+
+In the past, several researchers, including this author, have experimented with
+systems of multiple parameter type classes. Thinking of standard type classes
+as sets of types, the simplest interpretation of a multiple parameter class is as
+a set of tuples of types, corresponding to a relation on types. For example, a
+two parameter class, Dual , was used to describe duality between lattices in [11].
+Unfortunately, practical experience with multiple parameter type classes in Gofer
+[9] suggests that the standard mechanisms for defining classes and instances in
+Haskell are often too weak to define useful relations between types2.
+
+To illustrate the kind of problems that can occur, suppose that we use predicates of
+the form c 2 Collect (a) to indicate that values of type c can be used to represent
+collections of values of type a. A simple class for operations on collections can be
+defined as follows:
+
+class c 2 Collect (a) where
+
+empty :: c
+insert :: a ! c ! c
+member :: a ! c ! Bool
+
+The empty value here represents an empty collection, while the insert and member
+functions might be used to add an element to a collection, or to test whether a
+particular element is included in a collection. A more realistic class definition
+might also include operations for removing elements from collections, for applying
+a function to each element of a collection, etc.
+
+There are a number of ways to implement collections. One of the simplest ways is
+to use a list, assuming that the values it holds can be tested for equality so that
+
+2Interestingly enough, these problems do not seem to occur for many useful examples involving
+multiple parameter constructor classes [15].
+
+13
+
+we can implement the membership test:
+
+instance (a 2 Eq) ) [a] 2 Collect (a) where
+
+empty = [ ]
+insert x xs = (x : xs)
+member x [ ] = False
+member x (y : ys) = x == y jj member x ys
+
+A more efficient implementation can be obtained using binary search trees if we
+assume that there is an ordering on the elements held in a collection, captured by
+the type class Ord in the following definition:
+
+data BSTree a = Empty j Fork a (BSTree a) (BSTree a)
+instance (a 2 Ord ) ) (BSTree a 2 Collect (a)) where
+
+empty = Empty
+
+...
+
+member x Empty = False
+member x (Fork y l r ) j x == y = True
+
+j x ^ y = member x l
+j otherwise = member x r
+
+On the surface, these definitions seem quite reasonable, but we soon run into
+difficulty if we try to use them. One of the first problems is that the type of the
+empty value is 8a:8c:(c 2 Collect (a)) ) c, which is ambiguous in the sense that a
+type variable a appears on the left of the ) symbol, but is not mentioned on the
+right. As a result, there is no general way to determine the intended value of type
+a from the context in which empty is used. In general, it is not possible to use
+any term with an ambiguous principal type if we hope to provide a well-defined
+semantics for the language [12, 14].
+
+Another problem is that the types assigned to member and insert are more general than we might expect. For example, it is possible to define collections that
+containing different types of elements and to define functions like:
+
+int or bool :: 8c:(c 2 Collect (Int ); c 2 Collect (Bool )) ) c ! Bool
+int or bool c = member 1 c jj member True c
+
+It is certainly possible that such examples might be useful in some applications.
+However, in many cases, we would prefer to restrict collections to hold values of a
+single type only, and to treat function definitions like this as type errors.
+
+The problems described above can be avoided by using parametric type classes as
+presented in [1, 2]. This allows us to use the same class and instance declarations
+
+14
+
+as above, but to extend the compiler with additional static checks to ensure that,
+if P0 `` f o/ 2 Collect (*); o/ 2 Collect (*
+
+0) g, then * = *0. In effect, this means that,
+
+for any satisfiable instance of a predicate c 2 Collect (a), the choice of type a is
+uniquely determined by the choice of c. Note that this can also be captured by an
+improving function impr such that:
+
+* U, *
+
+0
+
+impr fo/ 2 Collect (*); o/ 2 Collect (*0)g = U
+If no unifier exists, then the predicate set is unsatisfiable, and the improving function may fail. Other useful rules for improvement can be derived from this general
+rule. For example, according to the instance declarations given above, a predicate
+of the form [*] 2 Collect (*
+
+0) can only be satisfied if * = *0, so we can define:
+
+* U, *
+
+0
+
+impr f[*] 2 Collect (*0)g = U
+Parametric type classes are a good way of avoiding the problems with ordinary
+multiple parameter type classes that were sketched above. Since the choice of a in
+c 2 Collect (a) is uniquely determined by the value of c, there is no need to treat
+empty as having an ambiguous type. In addition, the restrictions on instances of
+parametric type classes are exactly the conditions that we need to ensure that the
+definition of int or bool will be treated as a type error.
+
+4 Taking account of satisfiability
+Since the types obtained by improvement in the examples above are obviously
+instances of the original principal types, it is no surprise to find that our extended
+type inference algorithm is sound, i.e. that the typings it produces are derivable
+in the original typing rules given in Figure 2.
+
+Theorem 1 If Q j TA `
+
+W E : *, then Q j TA ` E : *.
+
+On the other hand, the new algorithm is certainly not complete. Indeed, it is
+not even well-defined with respect to the natural equivalence on type schemes
+induced by the ^ ordering. For example, the two type schemes for the function f
+in Section 3.1, either of which could be produced by the new algorithm, are:
+
+oe1 = 8r :8a:(r has l : a) ) r ! (a; a);
+oe2 = 8r :8a:8b:(r has l : a; r has l : b) ) r ! (a; b):
+
+It is easy to show that oe1 ^ oe2, but these types are not equivalent because oe2 6^ oe1.
+Hence the new type inference algorithm may give a result type oe1 that is not
+principal.
+
+15
+
+Even worse, there are terms that can be typed using the original rules in Figure 2,
+but for which the type inference algorithm may fail to produce a typing. For
+example, consider the expression:
+
+*r :let (x ; y) = f r in (x + 1; not y):
+Using the type scheme oe2 for f , we can instantiate the type variables a and b to
+Int and Bool , respectively, to obtain a typing for this term. However, using the
+type scheme oe1, the type inference algorithm fails because the types Int and Bool
+do not match.
+
+Fortunately, the key to solving this problem is to notice that, although we can
+obtain a typing for this term using type scheme oe2, the corresponding predicate
+set, fr has l : Int ; r has l : Bool g, is not satisfiable. We will see that the problems
+described above can be avoided by:
+
+ffl Proving completeness of the algorithm with respect to a weaker ordering that
+
+identifies type schemes with the same set of satisfiable instances: Just as the
+original ordering on type schemes was defined in terms of the set of generic
+instances of a type scheme, we will define the new ordering in terms of the
+generic satisfiable instances of a type scheme with respect to a predicate set
+P0. The set of generic satisfiable instances of a type scheme is defined by:
+
+[[P
+
+0 j 8ffi:P ) o/ ]]sat
+
+P0 = f [*i =ffi ]o/ j *i 2 Type; P0 `` P
+
+0; [*i =ffi ]P g:
+
+The satisfiability ordering, again with respect to P0, can now be defined
+using:
+
+(P j oe) ^satP0 (P
+
+0 j oe0) , [[P j oe]]sat
+
+P0 ` [[P
+
+0 j oe0]]sat
+
+P0 :
+
+Clearly, ^sat is both reflexive and transitive. It is also quite easy to show
+that it is weaker than ^, i.e. that:
+
+(P j oe) ^ (P
+
+0 j oe0) ) (P j oe) ^sat
+
+P0 (P
+
+0 j oe0):
+
+On the other hand, unlike ^, the satisfiability ordering is not preserved by
+substitution3.
+
+ffl Restricting our attention to satisfiable typings: A typing of the form P j A `
+
+E : oe is of no practical use if the predicates in P do not hold or if there is no
+
+3As a counter example, consider a predicate a 2 C for which the only satisfiable instance
+is Int 2 C . Now consider the qualified types ji = (ai 2 C ) ) ai, for i = 1; 2, and let
+S = [Int=a1]. Then [[j1]]sat = ; = [[j2]]sat, and hence j1 ^sat j2, but [[S j1]]sat = fIntg while
+[[S j2]]sat = [[j2]]sat = ;, so S j1 6^ S j2.
+
+16
+
+way to satisfy the predicates involved in oe. We can capture these conditions
+formally by defining:
+
+P0 sat (P
+
+0 j oe) , [[P 0 j oe]]sat
+
+P0 6= ;:
+
+The following properties of this relationship between predicate sets and type
+schemes are easily established and show that this notion of satisfiability is
+well-behaved with respect to polymorphism (i.e. instantiating free variables),
+entailment and ordering:
+
+- If P0 sat (P j oe), then SP0 sat S (P j oe) for any substitution S .
+- If P0 sat (P j oe) and Q0 `` P0, then Q0 sat (P j oe).
+- If P0 sat (P 0 j oe0) and (P 0 j oe0) ^satP
+
+0 (P j oe), then P0 sat (P j oe).
+
+There is one further problem that occurs when an unused let-bound variable is
+assigned an unsatisfiable type scheme. As an illustration, consider the following
+type assignment and predicate set:
+
+A = f f : 8ff:ff 2 C ) ff ! ff; z : 8ff:ff 2 D ) ff g
+P = f a 2 C ; a 2 D g
+
+where C and D are disjoint singletons, say C = f Int g and D = f Bool g, and
+hence:
+
+[Int =ff] improves f ff 2 C g and [Bool =ff] improves f ff 2 D g:
+Using the original typing rules for OML, we can construct a derivation of the form:
+
+(P
+
+0; P ) j A ` f : a ! a (P 0; P ) j A ` z : a
+
+(P 0; P ) j A ` f z : a
+
+P 0 j A ` f z : oe P 0 j A; x : oe ` F : o/
+
+P 0 j A ` let x = f z in F : o/
+
+where oe = (8a:(a 2 C ; a 2 D ) ) a). Clearly oe is not satisfiable, but, if the bound
+variable x does not appear free in F , then there is no reason for these unsatisfiable
+constraints to be reflected by the predicates in P 0. However, in the type inference
+algorithm, using improvement immediately after the introduction of the variables
+f and z would produce typings of the form:
+
+Q j A ` f : Int ! Int and Q j A ` z : Bool
+and the algorithm will fail to infer a type for the expression f z . The problem
+here is that, since x 62 FV (F ), the use of generalization in the typing rule for
+let-expressions allows us to hide, and then discard unsatisfiable constraints.
+
+17
+
+More generally, we will describe an expression of the form let x = E in F where
+x 62 FV (F ) as a redundant let-binding. Such bindings serve no practical purpose,
+except:
+
+ffl To add extra typing constraints to a term, for example, the principal type of
+
+*x :x is 8t :t ! t , but the principal type of *x :let z = x +1 in x is Int ! Int .
+
+ffl To control the sequencing of effects, for example in a call-by-value language
+
+like Standard ML.
+
+In each case, there are more elegant ways to achieve the same effect, without using
+a redundant binding. However, a more general approach is simply to replace any
+redundant bindings with corresponding expressions of the form (*x :F )E . Since
+x 62 FV (F ), this term is well-typed if, and only if, the original expression is welltyped. With these observations, it is reasonable to restrict our attention to terms
+with no redundant let-bindings. Obviously, if this property holds for a given term
+E , then it also holds for all subterms of E , a fact that will be used implicitly in
+proofs by induction.
+
+Given the definitions above, we can now state the main completeness result for a
+type inference algorithm that supports both simplification and improvement rules:
+
+Theorem 2 Suppose that P j A ` E : oe and P0 sat (P j oe) where E is a term with
+no redundant let-bindings and TV (A) = ;. Then the type inference algorithm for
+E in A will not fail, and, for any Q and * such that Q j A `
+
+W E : *, we have:
+
+(P j oe) ^satP0 Gen(A; Q ) *):
+This result indicates that, if a term E has any satisfiable typings for a set A of
+typing assumptions, then there is a principal type j = Gen(A; Q ) *) which is
+more general than every satisfiable typing for E in A. In fact, the principal type
+is itself a satisfiable typing for E in A:
+
+ffl Satisfiability follows directly from the fact that it is an upper bound of a
+
+non-empty set of satisfiable constrained type schemes.
+
+ffl To see that j is a typing for E in A, we can use the soundness result above
+
+(Theorem 1) to show that Q j A ` E : *, and then use ()I ) and (8I ) to
+obtain a derivation ; j A ` E : j.
+
+It is also possible to state a more general version of the completeness theorem
+without the requirement that TV (A) = ;. However, in practice, this special case
+is usually of most interest, corresponding to the process of calculating the type for
+a top-level definition in a Haskell or ML program.
+
+18
+
+5 Proof of soundness and completeness
+The main purpose of this section is to prove the soundness and completeness results
+stated in the previous section as Theorem 1 and Theorem 2, respectively. This is a
+complicated task that requires careful management and structuring. Fortunately,
+we can reduce the amount of work involved by building on the results of previous
+work. The diagram in Figure 4 summarizes the main results for the original
+
+-
+
+`
+
+6
+
+Completeness: Suppose that P j SA ` E : oe. Then Q j TA `
+
+W E : * and there
+
+is a substitution R such that S ss RT and (P j oe) ^ RGen(TA; Q ) *).
+
+Completenesss : If P j A ` E : oe,
+then there is a set of predicates P 0
+and a type o/ such that P 0 j A `s E :
+o/ and (P j oe) ^ Gen(A; P 0 ) o/ ).
+
+CompletenessW: If P j SA `s E : o/ ,
+then Q j TA `
+
+W E : * and there is a
+
+substitution R such that S ss RT ,
+o/ = R* and P `` RQ.
+
+-
+
+`
+
+s
+
+oeSoundness
+s : If P j A `s E : o/ , then
+
+P j A ` E : o/ .
+
+SoundnessW: If P j TA `
+
+W E : o/ ,
+
+then P j TA `s E : o/ .
+
+Soundness: If P j TA `
+
+W E : o/ , then P j A ` E : o/ .
+
+?
+`
+
+W
+
+oe
+
+oe
+Figure 4: A summary of the original soundness and completeness results.
+system of qualified types presented in [13, 12] and describing the relationship
+between typing judgements in three different systems:
+
+ffl The original typing rules for OML (Figure 2), described by judgements using
+
+the ` symbol.
+
+ffl The type inference algorithm (Figure 3), described by judgements using the
+
+`
+
+W symbol.
+
+ffl A collection of `syntax-directed' typing rules described by judgements using
+
+the `s symbol. This system provides a convenient stepping stone between the
+original typing rules and the type inference algorithm, and will be described
+in more detail below.
+
+19
+
+Following convention, the results in the top portion of Figure 4 are described
+as completeness properties, while those in the lower portion are referred to as
+soundness properties. In each case, the main result linking the ` and `
+
+W systems
+
+can be obtained from the corresponding properties involving `s .
+The original typing rules for OML are not suitable for type inference: there are
+many different ways that the rules can be applied to a given term, but it is not
+clear which, if any, will lead to a principal type. In earlier work, following [3],
+we avoided these problems by defining a syntax-directed system and proving its
+equivalence with the original type system using the theorems labelled Soundnesss
+and Completeness
+
+W in Figure 4. The most important property of the syntaxdirected system is that the the structure of every typing derivation is uniquely
+determined by the syntactic structure of the term involved.
+
+The typing rules for the syntax-directed system are given in Figure 5 using judgements of the form P j A `s E : o/ .
+
+(var )s (x : oe) 2 A (P ) o/ ) ^ oeP j A `s x : o/
+(!E )s P j A `
+
+s E : o/ 0 ! o/ P j A `s F : o/ 0
+
+P j A `s EF : o/
+(!I )s P j Ax ; x : o/
+
+0 `s E : o/
+
+P j A `s *x :E : o/ 0 ! o/
+
+(let )s P j A `
+
+s E : o/ P 0 j A
+
+x ; x : oe `
+
+s F : o/ 0 oe = Gen(A; P ) o/ )
+
+P 0 j A `s (let x = E in F ) : o/ 0
+
+Figure 5: Syntax-directed inference system.
+Several useful properties of the syntax-directed system were established in [13, 12],
+including:
+
+ffl If P j A `s E : o/ and S is a substitution, then SP j SA `s E : S o/ .
+ffl If P j A `s E : o/ and Q `` P , then Q j A `s E : o/ .
+ffl If P j A
+
+0 `s E : o/ and A0 ^ A, then P j A `s E : o/ .
+
+For the purposes of the work described in this report, the first two properties
+are important because they are exactly what we need to establish the soundness
+properties for the rules (Imp) and (Simp), respectively, in the proof of Theorem 1
+(The remaining cases are the same as in the original proof of Soundness
+
+W).
+
+20
+
+The expression A ^ A0 in the third property indicates that the two type assignments A and A
+
+0 have the same domain and that A(x ) ^ A0(x ) for each variable
+
+x bound in A. In the following, we will use the obvious counterpart to describe
+when one type assignment A0 is more general than another A with respect to the
+satisfiability ordering, written A ^satP0 A0. The third property plays an important role in the proof of Completeness
+
+W in [12]. Unfortunately, the corresponding result with ^ replaced by ^satP
+
+0 does not hold. A simple counterexample canbe obtained from the definitions on Page 17, since (P
+
+0; P ) j A `s f z : a, and
+
+A ^satP0 A0 = f f : (Int ! Int ); z : Bool g, but there is no derivable typing for the
+expression f z using the assignments in A0. We avoid this problem in the completeness theorem below by including an assumption of the form A ^satP
+
+0 SA
+
+0 as an
+
+extra hypothesis. A similar technique is used in Smith's thesis [20].
+In the remaining part of this section, we will describe a replacement for the
+Completeness
+
+W result in Figure 4 that allows the use of the rules (Simp) and
+
+(Imp) at arbitrary points during type inference. Combined with Completenesss,
+we will show how this can be used to establish Theorem 2, an analogue of the
+Completeness result at the top of Figure 4.
+
+Our first task is to justify the informal comments about terms with no redundant
+let-bindings in Section 4. Using the syntax-directed typing rules, the following
+theorem shows that, the class constraints for a variable x appearing free in an
+expression E will be reflected by the constraints P on the use of E itself:
+
+Proposition 3 Suppose that P j A `s E : o/ , x 2 FV (E ), A(x ) = (8ffi:Q ) *),
+and that E has no redundant let-bindings. Then there are types o/i such that P ``
+[o/i =ffi ]Q .
+
+In particular, if we have a satisfiable syntax-directed typing for a term E with
+respect to some set of assumptions A, and if the variable x appears free in E , then
+the type assigned to x in A must also be satisfiable:
+
+Corollary 4 Suppose that P j Ax ; x : Gen(A; Q ) *) `s E : o/ , x 2 FV (E ),
+P0 sat Gen(A; P ) o/ ), and that E has no redundant let-bindings. Then:
+
+P0 sat Gen(A; Q ) *):
+
+Working towards a completeness result for the type inference algorithm with
+respect to the syntax-directed type system, suppose that we have a derivation
+P j A `s E : o/ . Our goal is to prove that:
+
+ffl The type inference algorithm will not fail to find a type for E in A. Since
+
+the algorithm may fail if E does not have any satisfiable typings, it will
+be necessary to restrict our completeness result to satisfiable syntax-directed
+derivations, i.e. to derivations P j A `s E : o/ such that P0 sat Gen(A; P ) o/ ).
+
+21
+
+ffl If the type inference algorithm produces a typing Q j TA `
+
+W E : *, then the
+
+corresponding type scheme Gen(TA; Q ) *) is more general than the type
+assigned to E in the syntax-directed system, i.e. we want to show that:
+
+Gen(A; P ) o/ ) ^satP0 Gen(TA; Q ) *):
+In fact, to carry out the required proof, it is necessary to generalize the
+hypotheses a little, allowing the use of distinct type assignments, A in the
+original syntax-directed typing, and A0 in the type inference algorithm, related by A ^satP
+
+0 SA
+
+0 for some substitution S .
+
+Motivated in part by these comments, we use the following theorem to express the
+completeness of the type inference algorithm with respect to the syntax-directed
+rules, and the satisfiability ordering, ^satP0 :
+
+Theorem 5 Suppose that P j A `s E : o/ , P0 sat Gen(A; P ) o/ ), A ^satP0 SA
+
+0,
+
+and that E does not contain any redundant let-bindings. Then the type inference
+algorithm will not fail, and for every Q j TA
+
+0 `W E : *, there is a substitution R
+
+such that:
+
+RT ss S and Gen(A; P ) o/ ) ^satP0 RGen(TA
+
+0; Q ) *):
+
+The proof of this theorem is a little complex; full details are included in the
+appendix. However, with this result in hand, the proof of Theorem 2 is straightforward. Suppose that P j A ` E : oe and P0 sat (P j oe) where E is a term with
+no redundant let-bindings and TV (A) = ;. By Completenesss, we know that
+P 0 j A `s E : o/ 0 for some P 0 and o/ 0 such that:
+
+(P j oe) ^ Gen(A; P
+
+0 ) o/ 0):
+
+From the properties of ^satP0 , it follows that (P j oe) ^satP0 Gen(A; P 0 ) o/ 0), and
+hence, since P0 sat (P j oe), that P0 sat Gen(A; P 0 ) o/ 0). Since A ^satP0 A, we can
+use Theorem 5 to show that the type inference algorithm will not fail and that,
+for each Q j TA0 `
+
+W E : *, there is a substitution R such that Gen(A; P 0 ) o/ 0) ^sat
+
+P0
+
+RGen(TA; Q ) *). Since TV (A) = ;, we know that Gen(TA; Q ) *) has no free
+
+variables and that TA = A. Combining the two ^satP0 orderings above, we obtain:
+
+(P j oe) ^satP0 Gen(A; Q ) *)
+as required.
+
+22
+
+6 Discussion
+The ideas described in this paper provide a general and modular framework for
+the design of constrained type systems, taking advantage of information about
+satisfiability of constraints to infer more accurate and informative principal types.
+
+The design of specific applications of our framework starts with the choice of a system of predicates and an entailment relation, as described in Section 1.1. Without
+any further work, the original type inference algorithm presented in Figure 3, can
+be used to calculate principal typings for the corresponding system of qualified
+types.
+
+Extending the algorithm with rules for simplification and improvement leads to a
+non-deterministic type inference algorithm. This allows us to choose how the rules
+will be combined in particular ways to provide a deterministic algorithm for use
+in practical implementations. For a more algorithmic flavour, we would normally
+expect the implementation of simplification and improvement to be described by
+(deterministic) functions, rather than the more general `,' and `improves' relations used by the presentations in Sections 2 and 3, respectively:
+
+ffl A simplifying function, simp, mapping predicate sets P to appropriate `simplified' versions, simp P , might can be used to implement simplification. The
+only condition that a simplifying function must satisfy is that P , (simp P ),
+for all predicate sets P . In this setting, the inference rule (Simp) introduced
+in Section 2 might be replaced by:
+
+Q j TA `
+
+W E : * P = simp Q
+
+P j TA `
+
+W E : *
+
+For any predicate system, the identity function specified by simp P = P
+can be used as a simplifying function. However, more interesting, and more
+useful functions can be used in specific applications.
+
+ffl In a similar way, an improving function, impr , mapping sets of predicates
+
+to suitable improving substitutions, can be used to implement improvement,
+as described in Section 3.1. The correctness of an improving function can
+be specified by the requirement that (impr P ) improves P , for all predicate
+sets P , and the (Imp) inference rule introduced in Section 3 can be rewritten
+to use an improving function:
+
+Q j TA `
+
+W E : * T 0 = impr Q
+
+T 0Q j T 0TA `
+
+W E : T 0*
+
+The trivial improving function, impr P = id can be used with any system
+of predicates, but it is often possible to find more useful definitions.
+
+23
+
+Note that it is possible to arrange for simplifying or improving functions to fail
+if they are applied to an unsatisfiable predicate set, causing the type inference
+algorithm to fail as a result. However, while this may be useful in some applications, it is not required; in the general case, testing for satisfiability of a predicate
+set is undecidable and we would not be able to guarantee termination of the type
+inference algorithm (see [21], for example). For similar reasons, while we expect
+the results of simplifying and improving functions to satisfy certain correctness
+conditions, we do not insist that they are `optimal'; in the general case, there may
+not be any effective way to find such optimal solutions.
+
+Our approach is to leave the task of finding suitable simplifying and improving
+functions to the designer of specific applications of qualified types. In this way,
+designers retain control over the balance between making good use of simplification
+and improvement, and ensuring that type inference remains tractable. This is in
+contrast to earlier work, for example, in [20], where full tests for satisfiability of
+predicate sets are needed and strong restrictions on the definition of predicate
+entailments are needed to guarantee a decidable type inference process.
+
+One of the most obvious places to use simplification and improvement is immediately before generalizing the type of a let-bound variable. For example, we might
+calculate the type of a let-expression with a derivation of the form:
+
+P j TA `
+
+W E : * T 0 = impr P
+
+T 0P j T 0TA `
+
+W E : T 0* Q = simp (T 0P )
+
+Q j T 0TA `
+
+W E : T 0* P 0 j T 00(T 0TA
+
+x ; x : oe) `
+
+W F : o/ 0
+
+P 0 j T 00T 0TA `
+
+W (let x = E in F ) : o/ 0
+
+where oe = Gen(T 0TA; Q ) T 0*). This can be packaged up as a new inference
+rule for typing let-expressions to replace the original (let )
+
+W rule:
+
+P j TA `
+
+W E : * T 0 = impr P Q = simp (T 0P ) P 0 j T 00(T 0TA
+
+x ; x : oe) `
+
+W F : o/ 0
+
+P 0 j T 00T 0TA `
+
+W (let x = E in F ) : o/ 0
+
+Of course, we probably could have started out with this rule at the very beginning.
+However, our approach seems much more attractive and modular since it allows
+us to view the typing of let-expressions and the treatment of simplification and
+improvement as independent concerns and to combine them in ways that are not
+captured by the rule above.
+
+In there current state, the ideas presented in the report are of most use to language
+designers, not to programmers. For example, the design of a type inference algorithm for a language with parametric type classes can be based on the framework
+
+24
+
+and algorithms presented here. It would also be interesting to explore more ambitious language designs that provide the programmer with the ability to define and
+extend simplifying and improving functions. Such a system might be used to support parametric type classes as a programmable extension of the language, rather
+than a built-in part of the type system. One way that this might be achieved
+for the Collect class described in Section 3.3 is to augment the class and instance
+declarations given there with a declaration of the form:
+
+improve (a 2 Collect (b); a 2 Collect (c)) using b = c
+The biggest problems with this approach would be to ensure that the compiler is
+able to enforce the restrictions on instance definitions that this declaration implies,
+and to maintain decidability of type inference.
+
+In passing, we mention that this improve P using S construct can be used to
+provide similar behaviour to the `default' mechanism in Haskell [8, Section 4.3.4],
+for example:
+
+improve (a 2 Num; a 2 Integral ) using a = Int
+However, there are some significant theoretical problems with the current default
+mechanism causing a loss of coherence in some cases. The same is true for the
+improving rule given above which is not actually valid in Haskell since the standard
+prelude provides at least two distinct types, Int and Integer , both of which can be
+used as solutions for the predicates (a 2 Num; a 2 Integral ).
+
+We should also note that the use of information about satisfiability must be balanced against the goals of extensibility. For example, consider a module in which
+the only class and instance declarations are:
+
+class a 2 C where
+
+compare :: a ! a ! Bool
+
+instance Int 2 C where : : :
+In this situation, we might be tempted to add an implicit improving rule of the
+form:
+
+improve (a 2 C ) using a = Int :
+
+However, this would not be valid if, in another module in the same program, we
+tried to extend the class C with an instance:
+
+instance Float 2 C where : : :
+With this example in mind, it is probably better to require improving declarations
+to be written explicitly by the programmer, and to be exported from a module as
+part of the definition of a class.
+
+25
+
+The work described here provides simple correctness criteria for simplifying and
+improving functions, but it does not provide any further insights into the construction of such functions for specific applications. For example, the task of simplifying
+predicate sets containing subtyping constraints has been studied in some depth by
+several researchers, including [17, 18, 5, 4, 20]. This report does not subsume the
+results of those papers. Rather, it aims to provide a general framework, to which
+they may be applied in the design of type systems combining polymorphism and
+subtyping.
+
+Acknowledgements
+This work was supported in part by a grant from ARPA, contract number N00014-
+91-J-4043. It is a pleasure to thank Kung Chen for useful discussions about the
+ideas presented in this report, and for helpful insights into his own work on parametric type classes [2].
+
+The concept of principal satisfiable type schemes was originally introduced in [12,
+Chapter 6]. At that time, we conjectured that every term with a satisfiable typing
+could be assigned a principal satisfiable typing, a fact which we have, finally, had
+the opportunity to prove!
+
+Appendix: Proofs
+This appendix contains detailed proofs for the main new results presented in this
+report. For convenience, we repeat the statement of each result in a box at the
+beginning of the corresponding proof.
+
+Proposition 3 Suppose that P j A `s E : o/ , x 2 FV (E ), A(x ) = (8ffi:Q )
+*), and that E has no redundant let-bindings. Then there are types o/i such
+that P `` [o/i =ffi ]Q .
+
+By induction on the structure of P j A `s E : o/ :
+Case (var )s: We have a derivation of the form:
+
+(x : oe) 2 A (P ) o/ ) ^ oe
+
+P j A `s x : o/
+where oe = A(x ) = (8ffi:Q ) *). Since (P ) o/ ) ^ oe, it follows that
+P `` [o/i =ffi ]Q , giving an entailment of the required form.
+
+26
+
+Case (!E )s: We have a derivation of the form:
+
+P j A `s E : o/ 0 ! o/ P j A `s F : o/ 0
+
+P j A `s EF : o/
+
+Since x 2 FV (EF ) = FV (E ) [ FV (F ), either x 2 FV (E ) or x 2 FV (F ).
+The result follows by induction on either the first or second hypothesis,
+respectively.
+
+Case (!I )s: We have a derivation of the form:
+
+P j Ay ; y : o/ 0 `s E : o/
+P j A `s *y:E : o/ 0 ! o/
+
+Since x 2 FV (*y:E ), we know that x 6j y and that x 2 FV (E ). Thus
+(x : oe) 2 (Ay ; y : o/ 0) and the result follows by induction.
+
+Case (let )s : We have a derivation of the form:
+
+P j A `s E : o/ P
+
+0 j Ay; y : oe `s F : o/ 0
+
+P
+
+0 j A `s (let y = E in F ) : o/ 0
+
+where oe = Gen(A; P ) o/ ). By hypothesis, x 2 FV (let y = E in F ) =
+FV (E ) [ (FV (F ) n fyg) so there are two cases to consider:
+
+ffl If x 2 FV (E ), then P `` [o/i =ffi ]Q by induction on the first hypothesis.
+
+Note that y 2 FV (F ) since we consider only terms with no redundant
+let-bindings. Writing oe = (8fij :P ) o/ ), it follows by induction on the
+second hypothesis that P 0 `` [*j =fij ]P for some types *j . Combining
+these entailments, we obtain P 0 `` [*j =fij ]([o/i =ffi ]Q ).
+
+Note that the only variables appearing free in Q , other than those in
+fffi g, also appear free in A. However, by definition of oe, none of fij
+appears free in A, and hence the entailment above is equivalent to:
+
+P
+
+0 `` [[*j =fij ]o/i =ffi ]Q
+
+which has the required form.
+ffl If x 2 FV (F ) and x 6j y, then the result follows directly by induction
+
+on the second hypothesis.
+
+This completes the proof. 2
+
+27
+
+Corollary 4 Suppose that P j Ax ; x : Gen(A; Q ) *) `s E : o/ , x 2 FV (E ),
+P0 sat Gen(A; P ) o/ ), and that E has no redundant let-bindings. Then:
+
+P0 sat Gen(A; Q ) *):
+
+For convenience, we will write:
+
+oe = Gen(A; P ) o/ ) = 8ffi:P ) o/
+oe
+
+0 = Gen(A; Q ) *) = 8fij :Q ) *
+
+By hypothesis, P0 sat oe, and hence there are types o/i such that P0 `` [o/i =ffi ]P .
+By Proposition 3, P `` [*j =fij ]Q for some types, *j . Combining these entailments
+gives:
+
+P0 `` [o/i =ffi ]([*j =fij ]Q ):
+
+However, The only variables that appear free in Q , other than fij , also appear free
+in A, but none of ffi appears free in A, so the entailment above is equivalent to:
+
+P0 `` [[o/i =ffi ]*j =fij ]Q :
+It follows that P0 sat oe0, as required. 2
+
+Theorem 5 Suppose that P j A `s E : o/ , P0 sat Gen(A; P ) o/ ), A ^satP0 SA0,
+and that E does not contain any redundant let-bindings. Then the type
+inference algorithm will not fail, and for every Q j TA
+
+0 `W E : *, there is a
+
+substitution R such that:
+
+RT ss S and Gen(A; P ) o/ ) ^satP0 RGen(TA
+
+0; Q ) *):
+
+The proof of this theorem is quite complicated and will therefore be presented in
+three parts:
+
+ffl In the first part, we show that the theorem can be proved using an auxiliary
+
+result.
+
+ffl In the second part, we prove the auxiliary result by structural induction.
+ffl In the third part, we consider the use of the rules (Simp) and (Imp) for
+
+simplification and improvement, respectively.
+
+28
+
+First part: For the proof the main theorem, we will concentrate on establishing
+the following auxiliary result:
+
+If P j A `s E : o/ , A ^satP0 SA
+
+0, and P
+
+0 `` S
+
+0P for some S 0 with S 0A = A,
+
+then the type inference algorithm will not fail, and for every Q j TA
+
+0 `
+
+W E : *, there is a substitution R such that:
+
+RT ss S ; P0 `` RQ ; and S
+
+0o/ = R*:
+
+To see why this is sufficient, note that:
+
+ffl P0 sat Gen(A; P ) o/ ) guarantees the existence of at least one substitution
+
+S 0 such that P0 `` S 0P and S 0A = A. This, in turn, guarantees that Q j
+TA `
+
+W E : * for some Q , T and *, independent of S 0.
+
+ffl Given the existence of a derivation for the type inference algorithm, the auxiliary result above provides exactly the hypotheses needed to apply Lemma 6
+below, and hence to prove the existence of a substitution R such that:
+
+RT ss S and Gen(A; P ) o/ ) ^satP0 RGen(TA
+
+0; Q ) *):
+
+Second part: We prove the auxiliary result by induction on the structure of
+P j A `s E : o/ .
+
+Case (var )s: We have a derivation of the form:
+
+(x : oe) 2 A (P ) o/ ) ^ oe
+
+P j A `s x : o/
+
+where oe = A(x ) = (8ffi:Q ) *). Let oe0 = A0(x ) = (8fij :Q 0 ) *0) and note
+that, by hypothesis, oe ^satP0 S oe0.
+
+Since S 0A = A and P0 `` S 0P , it follows that:
+
+S
+
+0o/ 2 [[Gen(A; P ) o/ )]]sat
+
+P0 ` [[oe]]
+
+sat
+P0 ` [[S oe
+
+0]]sat
+
+P0 :
+
+As an aside, the first inclusion follows from the fact that, if ae = (P ) o/ ) ^ oe,
+then any variable appearing free in ae, but not in A, does not appear free in
+oe, and hence Gen(A; ae) ^ oe. The inclusion follows from the fact that ^satP0
+is weaker than ^ and from the definition of ^satP0 .
+
+Choosing new variables flj , we have S oe0 = 8flj :S [flj =fij ](Q 0 ) *0). Hence, by
+(var )
+
+W, there is a derivation:
+
+[flj =fij ]Q
+
+0 j A0 `W x : [flj =fij ]*0:
+
+29
+
+Since S 0o/ 2 [[S oe0]]satP
+
+0 , there are types *j such that:
+
+S
+
+0o/ = [*j =flj ](S [flj =fij ]*0) = S [*j =fij ]*0 = S [*j =flj ]([flj =fij ]*0)
+
+and:
+
+P0 `` [*j =flj ](S [flj =fij ]Q
+
+0) = S [*j =fij ]Q 0 = S [*j =flj ]([flj =fij ]Q 0):
+
+Let R = S [*j =flj ]. Then R ss S , S 0o/ = R([flj =fij ]*0), and P0 `` R([flj =fij ]Q 0).
+Case (!E )s: We have a derivation of the form:
+
+P j A `s E : o/ 0 ! o/ P j A `s F : o/ 0
+
+P j A `s EF : o/
+
+By induction, Q j TA0 `
+
+W E : * and there is a substitution R such that
+
+RT ss S , P0 `` RQ , and S 0(o/ 0 ! o/ ) = R*.
+In a similar way, since A ^satP0 SA0 = R(TA0), it follows by induction on the
+second hypothesis that Q 0 j T 0TA `
+
+W F : *0 and there is a substitution R0
+
+such that R0T 0 ss R, P0 `` R0Q 0, and S 0o/ 0 = R0*0.
+Pick a new variable ff and let R
+
+00 = R0[S 0o/ =ff]. Note that:
+
+R00(T 0*) = R0T 0*
+
+= R*
+= S 0(o/ 0 ! o/ )
+= S 0o/ 0 ! S 0o/
+= R0*0 ! S 0o/
+= R00(*0 ! ff)
+
+and hence R00 is a unifier of T 0* and *0 ! ff. It follows that T 0* U, (*0 ! ff)
+for some most general unifier U such that R
+
+00 = U 0U for some U 0.
+
+By (!E )
+
+W, there is a derivation:
+
+U (T
+
+0Q ; Q 0) j UT 0TA0 `W EF : U ff:
+
+Note that S ss RT ss R0T 0T ss R00T 0T ss U 0UT 0T , U 0(U ff) = R00ff = S 0o/
+and:
+
+P0 `` (RQ ; R
+
+0Q 0) = (R0T 0Q ; R0Q 0) = R00(T 0Q ; Q 0) = U 0(U (T 0Q 0; Q 0)):
+
+Case (!I )s: We have a derivation of the form:
+
+P j Ax ; x : o/
+
+0 `s E : o/
+
+P j A `s *x :E : o/ 0 ! o/
+
+30
+
+Let ff be a new variable and set S 00 = S [S 0o/ 0=ff] so that:
+
+(Ax ; x : o/
+
+0) ^sat
+
+P0 S
+
+00(A0
+
+x ; x : ff):
+
+By induction, Q j T (A0x ; x : ff) `
+
+W E : * for some Q , T and * and there is a
+
+substitution R such that S
+
+00 ss RT , P
+
+0 `` RQ and S
+
+0o/ = R*.
+
+By (!I )
+
+W, we have Q j TA0 `W *x :E : T ff ! *. We already know that
+
+P0 `` RQ , and S ss S 00 ss RT . To complete the proof for this case, note that:
+
+R(T ff ! *) = (RT ff ! R*) = (S
+
+00ff ! S 0o/ ) = S 0(o/ 0 ! o/ ):
+
+Case (let )s : We have a derivation of the form:
+
+P j A `s E : o/ P 0 j Ax ; x : oe `s F : o/ 0 oe = Gen(A; P ) o/ )
+
+P
+
+0 j A `s (let x = E in F ) : o/ 0
+
+Since we ignore terms containing redundant let-bindings, we can assume that
+x 2 FV (F ). By hypothesis, P0 sat Gen(A; P 0 ) o/ 0) using the substitution
+S 0, and hence P0 sat oe by Corollary 4.
+
+By induction, using the original statement of the theorem in the form given
+in the box at the start of the proof, there is a derivation Q j TA0 `
+
+W E : *
+
+and a substitution R such that:
+
+RT ss S and oe ^satP0 RGen(TA
+
+0; Q ) *):
+
+This use of induction can be justified by repeating the the argument in the
+first part above.
+
+Writing oe0 = RGen(TA0; Q ) *), we know that
+
+oe ^satP0 Roe
+
+0 and Ax ^sat
+
+P0 SA
+
+0
+x = R(TA
+
+0
+x );
+
+and hence (Ax ; x : oe) ^satP0 R(TA0x ; x : oe0). By induction, there is a derivation
+Q 0 j T 0(TA0x ; x : oe0) `
+
+W F : *0 and there is substitution R0 such that R0T 0 ss R,
+
+P0 `` R0Q 0, and S 0o/ 0 = R0*0.
+By (let )
+
+W there is a derivation:
+
+Q
+
+0 j T 0TA0 `W (let x = E in F ) : *0
+
+and R
+
+0T 0T ss RT ss S , P
+
+0 `` R
+
+0Q 0, and S 0o/ 0 = R0*0.
+
+31
+
+Third part: The only type inference rules used in the proof of the second part
+above are (var )
+
+W, (!E )W, (!I )W and (let )W. For the extended type inference
+
+algorithm we need to allow for the use of the rules (Simp) and (Imp) for simplification and improvement, respectively, at arbitrary points in the derivation. It
+is sufficient to show that each of the these rules preserves the conclusions of the
+auxiliary result in the second part. More precisely, suppose that Q j TA0 `
+
+W E : *
+
+and that there is a substitution R such that:
+
+RT ss S ; P0 `` RQ ; and S
+
+0o/ = R*:
+
+As an aside, note that, for any simplifying function simp and any improving function impr , neither simp Q or impr Q can fail since bQ cP
+
+0 6= ;. (See Section 6.)
+
+There are two cases to consider:
+
+Case (Simp): We have a type inference derivation of the form:
+
+Q j TA `
+
+W E : * P , Q
+
+P j TA `
+
+W E : *
+
+From P , Q , it follows that Q `` P , and hence P0 `` RP as required.
+Case (Imp): We have a type inference derivation of the form:
+
+Q j TA `
+
+W E : * T 0 improves Q
+
+T 0Q j T 0TA `
+
+W E : T 0*
+
+Since P0 `` RQ and T 0 improves Q , it follows that RQ 2 bQ cP
+
+0 = bT
+
+0Q c
+
+P0and hence RQ = R
+0T 0Q for some substitution R0. Let V be the set of new
+
+variables involved in T
+
+0; the only other variables involved in T 0 are members
+
+of TV (Q ). Now consider the substitution R
+
+00 using:
+
+R00ff = R0ff; if ff 2 TV (Q ) [ V
+
+= Rff; otherwise
+
+We claim that R00T 0 ss R. To see this, note that:
+
+ffl If ff 2 TV (Q ), then R00(T 0ff) = R0(T 0ff) = Rff.
+ffl If ff 62 TV (Q ) [ V , then R
+
+00(T 0ff) = R00ff = Rff.
+
+It follows that R00T 0T ss RT ss S , P0 `` RQ = R00(T 0Q ), and S 0o/ = R* =
+R00(T 0*) as required.
+
+This completes the proof. 2
+
+32
+
+Lemma 6 Suppose that:
+
+8S
+
+0:(P
+
+0 `` S
+
+0P ^ S 0A = A) ) 9R:(RT ss S ^ P
+
+0 `` RQ ^ S
+
+0o/ = R*):
+
+Then there is a substitution R such that RT ss S and:
+
+Gen(A; P ) o/ ) ^satP0 RGen(TA
+
+0; Q ) *):
+
+For convenience, we define:
+
+oe = Gen(A; P ) o/ ) = 8ffi:P ) o/
+oe0 = Gen(TA0; Q ) *) = 8fij :Q ) *:
+
+Our goal is to find a substitution R such that oe ^satP0 Roe0.
+Suppose that [o/i =ffi ]o/ 2 [[oe]]satP0 . Hence P0 `` [o/i=ffi ]P . Furthermore, since none of
+ffi appears free in A, we have [o/i =ffi ]A = A. By hypothesis, there is a substitution
+R such that:
+
+RT ss s; P0 `` RQ ; and [o/i =ffi ]o/ = R*:
+
+Pick new variables flj , so that Roe0 = 8flj :R[flj =fij ](Q ) *). Let *j = Rfij , and
+note that [*j =flj ] \Delta  R[flj =fij ] = R[Rfij =fij ] = R. Thus:
+
+P0 `` [*j =flj ](R[flj =fij ]Q ) and [o/i =ffi ]o/ = [*j =flj ](R[flj =fij ]*):
+It follows that [o/i =ffi ]o/ 2 [[Roe
+
+0]]sat
+
+P0 .
+
+Thus far, it appears that the choice of R may depend of the initial choice of
+types o/i for the representative element, [o/i =ffi ]o/ 2 [[oe]]satP
+
+0 . Now suppose that wepick another element, [o/
+
+0
+
+i =ffi ]o/ 2 [[R
+
+0oe0]]sat
+
+P0 , where R
+
+0T ss S ss RT . The only free
+
+variables in oe0 are also free in TA0. But R(TA0) = SA0 = R0(TA0), so R and R0
+agree on the free variables of oe0. Thus Roe0 = R0oe0, and:
+
+[[oe]]satP
+
+0 ` [[Roe
+
+0]]sat
+
+P0
+
+for some fixed substitution R such that RT ss S . 2
+
+References
+
+[1] K. Chen, P. Hudak, and M. Odersky. Parametric type classes (extended
+
+abstract). In ACM conference on LISP and Functional Programming, San
+Francisco, CA, June 1992.
+
+33
+
+[2] Kung Chen. A parametric extension of Haskell's type classes. PhD thesis,
+
+Yale University, Department of Computer Science, 1994 (forthcoming).
+
+[3] D. Cl'ement, J. Despeyroux, T. Despeyroux, and G. Kahn. A simple applicative language: Mini-ML. In ACM symposium on LISP and Functional
+Programming, Cambridge, Massachusetts, August 1986.
+
+[4] Y.-C. Fuh and P. Mishra. Polymorphic subtype inference: Closing the theorypractice gap. In Proceedings of TAPSOFT 89, New York, 1989. SpringerVerlag. Lecture Notes in Computer Science, 352.
+
+[5] Y.-C. Fuh and P. Mishra. Type inference with subtypes. Theoretical computer
+
+science, 73, 1990.
+
+[6] Robert Harper and Benjamin Pierce. A record calculus based on symmetric
+
+concatenation. In Conference record of the Eighteenth Annual ACM Symposium on Principles of Programming Languages, Orlando, FL, January 1991.
+
+[7] R.W. Harper and B.C. Pierce. Extensible records without subsumption. Technical report CMU-CS-90-102, Carnegie Mellon University, School of computer
+science, February 1990.
+
+[8] P. Hudak, S. Peyton Jones, and P. Wadler (editors). Report on the Programming Language Haskell, A Non-strict Purely Functional Language (Version
+1.2). ACM SIGPLAN Notices, 27(5), May 1992.
+
+[9] Mark P. Jones. Introduction to Gofer 2.20, September 1991. Available by anonymous ftp from nebula.cs.yale.edu in the directory
+pub/haskell/gofer as part of the standard Gofer distribution.
+
+[10] Mark P. Jones. Type inference for qualified types. Technical Report PRGTR-10-91, Programming Research Group, Oxford University Computing Laboratory, Oxford, England, May 1991. Largely superceded by [12].
+
+[11] Mark P. Jones. Computing with lattices: An application of type classes.
+
+Journal of Functional Programming, 2(4), October 1992.
+
+[12] Mark P. Jones. Qualified Types: Theory and Practice. PhD thesis, Programming Research Group, Oxford University Computing Laboratory, July 1992.
+To be published by Cambridge University Press.
+
+[13] Mark P. Jones. A theory of qualified types. In ESOP '92: European Symposium on Programming, Rennes, France, New York, February 1992. SpringerVerlag. Lecture Notes in Computer Science, 582.
+
+34
+
+[14] Mark P. Jones. Coherence for qualified types. Research Report
+
+YALEU/DCS/RR-989, Yale University, New Haven, Connecticut, USA,
+September 1993.
+
+[15] Mark P. Jones. A system of constructor classes: overloading and implicit
+
+higher-order polymorphism. In FPCA '93: Conference on Functional Programming Languages and Computer Architecture, Copenhagen, Denmark,
+New York, June 1993. ACM Press.
+
+[16] Mark P. Jones. The implementation of the Gofer functional programming system. Research Report YALEU/DCS/RR-1030, Yale University, New Haven,
+Connecticut, USA, May 1994.
+
+[17] J.C. Mitchell. Coercion and type inference (summary). In Conference record
+
+of the Eleventh Annual ACM Symposium on Principles of Programming Languages, Salt Lake City, Utah, January 1984.
+
+[18] J.C. Mitchell. Type inference with simple subtypes. Journal of functional
+
+programming, 1(3):245-286, July 1991.
+
+[19] Didier R'emy. Typechecking records and variants in a natural extension of ML.
+
+In Conference record of the Sixteenth Annual ACM Symposium on Principles
+of Programming Languages, Austin, TX, January 1989.
+
+[20] Geoffrey Seward Smith. Polymorphic type inference for languages with overloading and subtyping. PhD thesis, Department of Computer Science, Cornell
+University, Ithaca, New York, August 1991.
+
+[21] D. Volpano and G. Smith. On the complexity of ML typability with overloading. In 5th ACM conference on Functional Programming Languages and
+Computer Architecture, New York, 1991. Springer-Verlag. Lecture Notes in
+Computer Science, 523.
+
+[22] P. Wadler and S. Blott. How to make ad hoc polymorphism less ad hoc. In Proceedings of 16th ACM Symposium on Principles of Programming Languages,
+pages 60-76, Jan 1989.
+
+35

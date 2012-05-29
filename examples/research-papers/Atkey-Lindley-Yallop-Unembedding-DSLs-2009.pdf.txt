@@ -1,0 +1,1553 @@
+
+
+Unembedding Domain-Specific Languages
+
+Robert Atkey Sam Lindley Jeremy Yallop
+LFCS, School of Informatics, The University of Edinburgh{
+
+bob.atkey,sam.lindley,jeremy.yallop}@ed.ac.uk
+
+Abstract
+Higher-order abstract syntax provides a convenient way of embed-ding domain-specific languages, but is awkward to analyse and manipulate directly.We explore the boundaries of higher-order abstract syntax. Our
+key tool is the unembedding of embedded terms as de Bruijn terms,enabling intensional analysis. As part of our solution we present
+techniques for separating the definition of an embedded programfrom its interpretation, giving modular extensions of the embedded
+language, and different ways to encode the types of the embeddedlanguage.
+
+Categories and Subject Descriptors D.1.1 [Programming tech-niques]: Applicative (functional) programming
+General Terms Languages, Theory
+Keywords domain-specific languages, higher-order abstract syn-tax, type classes, unembedding
+
+1. Introduction
+Embedding a domain-specific language (DSL) within a host lan-guage involves writing a set of combinators in the host language
+
+that define the syntax and semantics of the embedded language.Haskell plays host to a wide range of embedded DSLs, including
+languages for database queries [Leijen and Meijer 1999], finan-cial contracts [Peyton Jones et al. 2000], parsing [Leijen and Meijer 2001], web programming [Thiemann 2002], production of dia-grams [Kuhlmann 2001] and spreadsheets [Augustsson et al. 2008].
+
+An embedded language has two principal advantages over astand-alone implementation. First, using the syntax and semantics
+of the host language to define those of the embedded languagereduces the burden on both the implementor (who does not need to
+write a parser and interpreter from scratch) and the user (who doesnot need to learn an entirely new language and toolchain). Second,
+integration of the embedded language -- with the host language,and with other DSLs -- becomes almost trivial. It is easy to see why
+one might wish to use, say, languages for web programming anddatabase queries within a single program; if both are implemented
+as embeddings into Haskell then integration is as straightforwardas combining any other two libraries.
+
+Perhaps the most familiar example of an embedded DSL is themonadic language for imperative programming that is part of the
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.
+Haskell'09, September 3, 2009, Edinburgh, Scotland, UK.Copyright cfl 2009 ACM 978-1-60558-508-6/09/09.. . $5.00
+
+Haskell standard library. A notable feature of the monadic languageis the separation between the definition of the symbols of the
+language, which are introduced as the methods of the Monad typeclass, and the interpretation of those symbols, given as instances
+of the class. This approach enables a range of interpretations to beassociated with a single language -- a contrast to the embedded
+languages enumerated earlier, which generally each admit a singleinterpretation.
+
+If the embedded language supports binding a number of diffi-culties may arise. The interface to the embedded language must
+ensure that there are no mismatches between bindings and usesof variables (such as attempts to use unbound or incorrectly-typed
+variables); issues such as substitution and alpha-equivalence intro-duce further subtleties. Higher-order abstract syntax [Pfenning and
+Elliott 1988] (HOAS) provides an elegant solution to these diffi-culties. HOAS uses the binding constructs of the host language to
+provide binding in the embedded language, resulting in embeddedlanguage binders that are easy both to use and to interpret.
+
+However, while HOAS provides a convenient interface to anembedded language, it is a less convenient representation for encoding certain analyses. In particular, it is difficult to perform in-tensional analyses such as closure conversion or the shrinking reductions optimisation outlined in Section 2.4, as the representationis constructed from functions, which cannot be directly manipulated.It is clear that higher-order abstract syntax and inductive term
+representations each have distinct advantages for embedded lan-guages. Elsewhere, the first author provides a proof that the higherorder abstract syntax representation of terms is isomorphic to aninductive representation [Atkey 2009a]. Here we apply Atkey's result, showing how to convert between the two representations, andso reap the benefits of both.
+
+We summarise the contents and contributions of this paper asfollows:
+
+* We start in Section 2 with an embedding of the untyped *-
+
+calculus, using the parametric polymorphic representation ofhigher-order abstract syntax terms. This representation was advocated by Washburn and Weirich [2008], but dates back to atleast Coquand and Huet [1985]. We show how to convert this
+representation to a concrete de Bruijn one, using the mappingdefined in Atkey [2009a]. This allows more straightforward expression of intensional analyses, such as the shrinking reduc-tions optimisation.
+
+We then examine the proof of the isomorphism between theHOAS and de Bruijn representations in more detail to produce an almost fully well-typed conversion between the HaskellHOAS type and a GADT representing well-formed de Bruijn
+terms. Interestingly, well-typing of this conversion relies on theparametricity of Haskell's polymorphism, and so even complex
+extensions to Haskell's type system, such as dependent types,would not be able to successfully type this translation. Our first
+
+main contribution is the explanation and translation of the proofinto Haskell.
+
+* Our representation of embedded languages as type classes is putto use in Section 3, where we show how to modularly construct
+
+embedded language definitions. For example, we can indepen-dently define language components such as the
+
+*-calculus,booleans and arithmetic. Our second main contribution is to
+
+show how to extend an embedded language with flexible patternmatching and how to translate back-and-forth to well-formed
+de Bruijn terms.*
+Having explored the case for untyped languages we turn totyped languages in Section 4. We carefully examine the issue of
+
+how embedded language types are represented, and work to en-sure that type variables used in the representation of embedded
+language terms do not leak into the embedded language itself.Thus we prevent exotically typed terms as well as exotic terms
+in our HOAS representation. As far as we are aware, this dis-tinction has not been noted before by other authors using typed
+HOAS, e.g. [Carette et al. 2009]. Our third main contributionis the extension of the well-typed conversion from HOAS to de
+Bruijn to the typed case, identifying where we had to circum-vent the Haskell typechecker. Another contribution is the identification and explanation of exotically typed terms in Churchencodings, a subject we feel deserves further study.
+
+* Our final contributions are two larger examples in Section 5:
+
+unembedding of mobile code from a convenient higher-orderabstract syntax representation, and an embedding of the Nested
+
+Relational Calculus via higher-order abstract syntax.*
+Section 6 surveys related work.
+The source file for this paper is a literate Haskell program. Theextracted code and further examples are available at the following
+
+URL:
+http://homepages.inf.ed.ac.uk/ratkey/unembedding/.
+
+2. Unembedding untyped languages
+We first explore the case for untyped embedded languages. Evenwithout types at the embedded language level, an embedding of this
+
+form is not straightforward, due to the presence of variable bindingand
+
+ff-equivalence in the embedded language. We start by showinghow to handle the prototypical language with binding.
+
+2.1 Representing the *-calculus
+Traditionally, the *-calculus is presented with three term formers:variables,
+
+*-abstractions and applications. Since we are using thehost-language to represent embedded language variables, we reduce the term formers to two, and place them in a type class:
+class UntypedLambda exp where
+
+lam :: (exp ! exp) ! exp
+app :: exp ! exp ! exp
+
+To represent closed terms, we abstract over the type variable exp,where
+
+exp is an instance of UntypedLambda:
+
+type Hoas = 8 exp. UntypedLambda exp ) exp
+
+Encoding a given untyped *-calculus term in this representationbecomes a matter of taking the term you first thought of, inserting
+
+lams and apps into the correct places, and using Haskell's ownbinding and variables for binding and variables in the embeddedlanguage. For example, to represent the *-calculus term *x.*y.xy,we use:
+
+example1 :: Hoas
+example1 = lam (*x ! lam (*y ! x `app` y))
+
+Our host language, Haskell, becomes a macro language for ourembedded language. As an example, this function creates Church
+numerals for any given integer:
+numeral :: Integer ! Hoas
+numeral n = lam (*s ! (lam (*z ! body s z n)))
+
+where body s z 0 = z
+
+body s z n = s `app` (body s z (n-1))
+
+Following the work of Pfenning and Elliott [1988], the use ofhost language binding to represent embedded language binding has
+
+also been attempted by the use of algebraic datatypes. For example,Fegaras and Sheard [1996] start from the following datatype:
+
+data Term = Lam (Term ! Term)|
+
+App Term Term
+
+One can use this datatype to write down representations of terms,but Fegaras and Sheard are forced to extend this in order to define
+
+folds over the abstract syntax trees:
+data Term a = Lam (Term a ! Term a)|
+
+App (Term a) (Term a)|
+Var a
+
+The additional constructor and type argument are used in the imple-mentation of the
+
+fold function to pass accumulated values through.It is not intended that the
+
+Var constructor be used in user programs.The problem with this representation is that it permits so-called
+
+exotic terms, members of the type that are not representatives of
+*-calculus terms. For example:
+
+Lam (*x ! case x of Lam _ ! x|
+
+App _ _ ! Lam (*x ! x))
+
+The body of the *-abstraction in this "term" is either x or *x.x, de-pending on whether the passed in term is itself a
+
+*-abstraction or anapplication. Fegaras and Sheard mitigate this problem by defining
+
+an ad-hoc type system that distinguishes between datatypes thatmay be analysed by cases and those that may be folded over as
+HOAS. The type system ensures that the Var constructor is neverused by the programmer.
+
+The advantage of the HOAS representation that we use, whichwas originally proposed by Coquand and Huet [1985], is that exotic
+terms are prohibited [Atkey 2009a] (with the proviso that infiniteterms are allowed when we embed inside Haskell). In our opinion,
+it is better to define types that tightly represent the data we wish tocompute with, and not to rely on the discipline of failible programmers or ad-hoc extensions to the type system.
+2.2 Folding over Syntax
+Our representation of closed *-terms amounts to a Church encod-ing of the syntax of the calculus, similar to the Church encodings
+
+of inductive datatypes such as the natural numbers. Unfolding thetype
+
+Hoas, we can read it as the System F type:
+
+C* = 8ff.((ff ! ff) ! ff) ! (ff ! ff ! ff) ! ff
+Compare this to the Church encoding of natural numbers:
+
+Cnat = 8ff.ff ! (ff ! ff) ! ff
+For Cnat, we represent natural numbers by their fold operators. Avalue of type
+
+Cnat, given some type ff and two constructors, one oftype
+ff and one of type ff ! ff (which we can think of as zero andsuccessor), must construct a value of type
+
+ff. Since the type ff isunknown when the value of type
+Cnat is constructed, we can onlyuse these two constructors to produce a value of type
+
+ff. It is thisproperty that ensures that we only represent natural numbers.
+
+Likewise, for the C* type, we have an abstract type ff, and twoconstructors, one for
+
+*-abstraction and one for application. Theconstruction for
+*-abstraction is special in that there is a negative
+
+occurence of ff in its arguments. This does not fit into the classicaltheory of polymorphic Church encodings, but is crucial to the
+HOAS representation of binding. We sketch how parametricity isused below, in Section 2.6.
+
+As for the Church encoded natural numbers, we can treat thetype
+
+C* as a fold operator over terms represented using HOAS. Wecan use this to compute over terms, as demonstrated by Washburn
+
+and Weirich [2008]. Returning to Haskell, folds over terms areexpressed by giving instances of the
+
+UntypedLambda type class.For example, to compute the size of a term:
+
+newtype Size = Size { size :: Integer }
+instance UntypedLambda Size where
+
+lam f = Size $ 1 + size (f (Size 1))
+x `app` y = Size $ 1 + size x + size y
+
+getSize :: Hoas ! Integer
+getSize term = size term
+
+The case for app is straightforward; the size of an application isone plus the sizes of its subterms. For a
+
+*-abstraction, we first addone for the
+* itself, then we compute the size of the body. As werepresent bodies by host-language
+
+*-abstractions we must applythem to something to get an answer. In this case the body
+
+f willhave type
+Size ! Size, so we pass in what we think the sizeof a variable will be, and we will get back the size of the whole
+
+subterm.A more exotic instance of a fold over the syntax of a
+
+*-termis the denotational semantics of a term, i.e. an evaluator. We first
+
+define a "domain" for the semantics of the call-by-name *-calculus:
+data Value = VFunc (Value ! Value)
+
+Now the definitions for lam and app are straightforward:
+instance UntypedLambda Value where
+
+lam f = VFunc f
+(VFunc f) `app` y = f y
+
+eval :: Hoas ! Value
+eval term = term
+
+2.3 Unembedding the *-calculus
+Writing computations over the syntax of our embedded language isall well and good, but there are many functions that we may wish
+
+to express that are awkward, inefficient, or maybe impossible to ex-press as folds. However, the HOAS representation is certainly convenient for embedding embedded language terms inside Haskell,so we seek a conversion from HOAS to a form that is amenable to
+intensional analysis.A popular choice for representing languages with binding is
+de Bruijn indices, where each bound variable is represented asa pointer to the binder that binds it [de Bruijn 1972]. We can
+represent de Bruijn terms by the following type:
+data DBTerm = Var Int|
+
+Lam DBTerm|
+App DBTerm DBTerm
+deriving (Show,Eq)
+
+To convert from Hoas to DBTerm, we abstract over the numberof binders that surround the term we are currently constructing.
+
+newtype DB = DB { unDB :: Int ! DBTerm }
+
+The intention is that unDB x n will return a de Bruijn term, closedin a context of depth
+
+n. To define a fold over the HOAS representa-tion, we give an instance of
+
+UntypedLambda for DB:
+
+instance UntypedLambda DB where
+
+lam f = DB $ *i ! let v = *j ! Var (j-(i+1)) in
+
+Lam (unDB (f (DB v)) (i+1))
+app x y = DB $ *i ! App (unDB x i) (unDB y i)
+
+toTerm :: Hoas ! DBTerm
+toTerm v = unDB v 0
+
+Converting a HOAS application to a de Bruijn application isstraightforward; we simply pass through the current depth of the
+
+context to the subterms. Converting a *-abstraction is more com-plicated. Clearly, we must use the
+
+Lam constructor to generate a deBruijn
+*-abstraction, and, since we are going under a binder, wemust up the depth of the context by one. As with the size example
+
+above, we must also pass in a representation of the bound vari-able to the host-language
+
+*-abstraction representing the body ofthe embedded language
+*-abstraction. This representation will beinstantiated at some depth
+
+j, which will always be greater than i.We then compute the difference between the depth of the variable
+
+and the depth of the binder as j-(i+1), which is the correct deBruijn index for the bound variable.
+
+We can represent an open HOAS term as a function from anenvironment, represented as a list of HOAS terms, to a HOAS term.
+
+type Hoas' = 8 exp.UntypedLambda exp ) [exp] ! exp
+
+It is worth pointing out that this encoding is technically incorrectas such functions can inspect the length of the list and so need not
+
+represent real terms. We could rectify the problem by making en-vironments total, that is, restricting them to be infinite lists (where
+cofinitely many entries map variables to themselves). Rather thanworrying about this issue now we resolve it later when we consider
+well-formed de Bruijn terms in Section 2.6.Now we can convert an open HOAS term to a de Bruijn term by
+first supplying it with a total environment mapping every variable toitself, interpreting everything in the
+
+DB instance of UntypedLambdaas we do for closed terms.
+
+toTerm' :: Hoas' ! DBTerm
+toTerm' v = unDB w 0
+
+where w = v (env 0)
+
+env j = DB (*i ! Var (i+j)) : env (j+1)
+
+Conversion from HOAS to de Bruijn representations have al-ready been presented by other workers; see, for example, some
+
+slides of Olivier Danvy1. In his formulation, the HOAS terms arerepresented by the algebraic datatype we saw in Section 2.1. Hence
+exotic terms are permitted by the type, and it seems unlikely thathis conversion to de Bruijn could be extended to a well-typed one
+in the way that we do below in Section 2.6.
+2.4 Intensional analysis
+The big advantage of converting HOAS terms to de Bruijn termsis that this allows us to perform intensional analyses. As a simple example of an analysis that is difficult to perform directly onHOAS terms we consider shrinking reductions [Appel and Jim
+1997]. Shrinking reductions arise as the restriction of fi-reduction(i.e. inlining) to cases where the bound variable is used zero (deadcode elimination) or one (linear inlining) times. As well as reducingfunction call overhead, shrinking reductions expose opportunities
+for further optimisations such as common sub-expression elimina-tion and more aggressive inlining.
+
+The difficulty with implementing shrinking reductions is thatdead-code elimination at one redex can expose further shrinking reductions at a completely different position in the term, so attemptsat writing a straightforward compositional algorithm fail. We give
+
+1 http://www.brics.dk/~danvy/Slides/mfps98-up2.ps. Thanks to
+an anonymous reviewer for this link.
+
+a naive algorithm that re-traverses the whole reduct whenever a re-dex is reduced. The only interesting case in the
+
+shrink functionis that of a
+fi-redex where the number of uses is less than or equalto one. This uses the standard de Bruijn machinery to perform the
+
+substitution [Pierce 2002]. More efficient imperative algorithms ex-ist [Appel and Jim 1997, Benton et al. 2004, Kennedy 2007]. The
+key point is that these algorithms are intensional. It seems unlikelythat shrinking reductions can be expressed easily as a fold.
+
+usesOf n (Var m) = if n==m then 1 else 0
+usesOf n (Lam t) = usesOf (n+1) t
+usesOf n (App s t) = usesOf n s + usesOf n t
+
+lift m p (Var n) | n < p = Var n|
+
+otherwise = Var (n+m)
+lift m p (Lam body) = Lam (lift m (p+1) body)
+lift m p (App s t) = App (lift m p s) (lift m p t)
+
+subst m t (Var n) | n==m = t|
+
+n > m = Var (n-1)|
+otherwise = Var n
+subst m t (Lam s) = Lam (subst (m+1) (lift 1 0 t) s)
+subst m t (App s s') = App (subst m t s) (subst m t s')
+
+shrink (Var n) = Var n
+shrink (Lam t) = Lam (shrink t)
+shrink (App s t) =
+
+case s' of
+
+Lam u | usesOf 0 u <= 1 ! shrink (subst 0 t' u)
+_ ! App s' t'
+where s' = shrink s
+
+t' = shrink t
+
+2.5 Embedding again
+Before we explain why the unembedding process works, we notethat going from closed de Bruijn terms back to the HOAS representation is straightforward.
+fromTerm' :: DBTerm ! Hoas'
+fromTerm' (Var i) env = env !! i
+fromTerm' (Lam t) env = lam (*x ! fromTerm' t (x:env))
+fromTerm' (App x y) env =
+
+fromTerm' x env `app` fromTerm' y env
+
+fromTerm :: DBTerm ! Hoas
+fromTerm term = fromTerm' term []
+
+We maintain an environment storing all the representations ofbound variables that have been acquired down each branch of the
+
+term. When we go under a binder, we extend the environment bythe newly abstracted variable. This definition is unfortunately partial (due to the indexing function (!!)) since we have not yetguaranteed that the input will be a closed de Bruijn term. In the
+next sub-section we resolve this problem.
+2.6 Well-formed de Bruijn terms
+We can guarantee that we only deal with closed de Bruijn terms byusing the well-known encoding of de Bruijn terms into GADTs
+
+[Sheard et al. 2005]. In this representation, we explicitly recordthe depth of the context in a type parameter. We first define two
+vacuous type constructors to represent natural numbers at the typelevel.
+
+data Zero
+data Succ a
+
+To represent variables we make use of the Fin GADT, wherethe type
+
+Fin n represents the type of natural numbers less than n.The
+Zero and Succ type constructors are used as phantom types.
+
+data Fin :: ? ! ? where
+
+FinZ :: Fin (Succ a)
+FinS :: Fin a ! Fin (Succ a)
+
+The type of well-formed de Bruijn terms for a given context iscaptured by the following GADT. The type
+
+WFTerm Zero will thenrepresent all closed de Bruijn terms.
+
+data WFTerm :: ? ! ? where
+
+WFVar :: Fin a ! WFTerm a
+WFLam :: WFTerm (Succ a) ! WFTerm a
+WFApp :: WFTerm a ! WFTerm a ! WFTerm a
+
+Writing down terms in this representation is tedious due to theuse of
+
+FinS (FinS FinZ) etc. to represent variables. The HOASapproach has a definite advantage over de Bruijn terms in this
+
+respect.The
+
+toTerm function we defined above always generates closedterms, and we now have a datatype that can be used to represent
+
+closed terms. It is possible to give a version of toTerm that hasthe correct type, but we will have to work around the Haskell type
+system for it to work. To see why, we sketch the key part of theproof of adequacy of the Church encoding of
+
+*-calculus syntax--the type
+C*--given by the first author [Atkey 2009a].As alluded to above, the correctness of the Church encoding
+
+method relies on the parametric polymorphism provided by the 8ffquantifier. Given a value of type
+
+ff, the only action we can performwith this value is to use it as a variable; we cannot analyse values of
+
+type ff, for if we could, then our function would not be parametricin the choice of
+
+ff. The standard way to make such arguments rig-orous is to use Reynolds' formalisation of parametricity [Reynolds
+
+1974] that states that for any choices o/1 and o/2 for ff, and any bi-nary relation between
+
+o/1 and o/2, this relation is preserved by theimplementation of the body of the type abstraction.
+
+To prove that the toTerm function always produces well-formedde Bruijn terms, we apply Reynolds' technique with two minor
+modifications: we restrict to unary relations and we index our rela-tions by natural numbers. The indexing must satisfy the constraint
+that if Ri(x) and j >= i, then Rj(x). This means that we requireKripke relations over the usual ordering on the natural numbers.
+
+In the toTerm function, we instantiate the type ff with the type
+Int ! DBTerm. The Kripke relation we require on this type is
+Ri(t) , 8j >= i. j ` (t j), where j ` t means that the de Bruijnterm
+
+t is well-formed in contexts of depth j. If we know R0(t),then
+t 0 will be a closed de Bruijn term. Following usual proofsby parametricity, we prove this property for
+
+toTerm by showingthat our implementations of
+lam and app preserve R. For app thisis straightforward. For
+lam, it boils down to showing that for acontext of depth
+i the de Bruijn representation of variables we passin always gives a well-formed variable in some context of depth
+
+j, where j >= i + 1, and in particular j > 0. The machineryof Kripke relations always ensures that we know that the context
+depths always increase as we proceed under binders in the term(see [Atkey 2009a] for more details).
+
+We give a more strongly typed conversion from HOAS to deBruijn, using the insight from this proof. First we simulate part
+of the refinement of the type Int ! DBTerm by the relation R,using a GADT to reflect type-level natural numbers down to the
+term level:
+data Nat :: ? ! ? where
+
+NatZ :: Nat Zero
+NatS :: Nat a ! Nat (Succ a)
+
+newtype WFDB = WFDB { unWFDB :: 8 j. Nat j ! WFTerm j }
+
+We do not include the part of the refinement that states that j isgreater than some
+
+i (although this is possible with GADTs) becausethe additional type variable this would entail does not appear in
+
+the definition of the class UntypedLambda. The advantage of the
+
+HOAS representation over the well-formed de Bruijn is that we donot have to explicitly keep track of contexts; the Kripke indexing of
+our refining relation keeps track of the context for us in the proof.The little piece of arithmetic
+
+j - (i + 1) in the toTerm functionabove must now be represented in a way that demonstrates to the
+
+type checker that we have correctly accounted for the indices. Thefunctions
+
+natToFin and weaken handle conversion from naturalsto inhabitants of the
+
+Fin type and injection of members of Fintypes into larger ones. The
+
+shift function does the actual arith-metic.
+
+natToFin :: Nat a ! Fin (Succ a)
+natToFin NatZ = FinZ
+natToFin (NatS n) = FinS (natToFin n)
+
+weaken :: Fin a ! Fin (Succ a)
+weaken FinZ = FinZ
+weaken (FinS n) = FinS (weaken n)
+
+shift :: Nat j ! Nat i ! Fin j
+shift NatZ _ = ?
+shift (NatS x) NatZ = natToFin x
+shift (NatS x) (NatS y) = weaken $ shift x y
+
+By the argument above, the case when the first argument of shiftis
+
+NatZ will never occur when we invoke it from within the foldover the the HOAS representation, so it is safe to return ? (i.e.
+
+undefined). In any case, there is no non-? inhabitant of the type
+Fin Zero to give here.The actual code to carry out the conversion is exactly the same
+
+as before, except with the arithmetic replaced by the more strongly-typed versions.
+
+instance UntypedLambda WFDB where
+
+lam f = WFDB $
+
+*i ! let v = *j ! WFVar (shift j i)
+
+in
+
+WFLam (unWFDB (f (WFDB v)) (NatS i))
+x `app` y = WFDB $
+
+*i ! WFApp (unWFDB x i) (unWFDB y i)
+
+toWFTerm :: Hoas ! WFTerm Zero
+toWFTerm v = unWFDB v NatZ
+
+The point where Haskell's type system does not provide us withenough information is in the call to
+
+shift, where we know fromthe parametricity proof that
+j >= i + 1 and hence j > 0. Movingto a more powerful type system with better support for reasoning
+
+about arithmetic, such as Coq [The Coq development team 2009]or Agda [The Agda2 development team 2009], would not help us
+here. One could easily write a version of the shift function thattakes a proof that
+
+j >= i + 1 as an argument, but we have noway of obtaining a proof of this property without appeal to the
+
+parametricity of the HOAS representation. We see two options herefor a completely well-typed solution: we could alter the HOAS
+interface to include information about the current depth of bindersin terms, but this would abrogate the advantage of HOAS, which
+is that contexts are handled by the meta-language; or, we couldincorporate parametricity principles into the type system, as has
+been done previously in Plotkin-Abadi Logic [Plotkin and Abadi1993] and System R [Abadi et al. 1993]. The second option is
+complicated by our requirement here for Kripke relations and to useparametricity to prove well-typedness rather than only equalities
+between terms.In order to handle open terms we introduce a type of environments WFEnv which takes two type arguments: the type of valuesand the size of the environment.
+
+data WFEnv :: ? ! ? ! ? where
+
+WFEmpty :: WFEnv exp Zero
+
+WFExtend :: WFEnv exp n ! exp ! WFEnv exp (Succ n)
+lookWF :: WFEnv exp n ! Fin n ! exp
+lookWF (WFExtend _ v) FinZ = v
+lookWF (WFExtend env _) (FinS n) = lookWF env n
+
+Open well-formed HOAS terms with n free variables are de-fined as functions from well-formed term environments of size
+
+n toterms.
+
+type WFHoas' n =8
+
+exp.UntypedLambda exp ) WFEnv exp n ! exp
+
+Now we can define the translation from well-formed openhigher-order abstract syntax terms to well-formed open de Bruijn
+
+terms. Whereas toTerm' had to build an infinite environment map-ping free variables to themselves, because the number of free variables did not appear in the type, we now build a finite environmentwhose length is equal to the number of free variables. We also
+need to supply the length at the term level using the natural numberGADT.
+
+toWFTerm' :: Nat n ! WFHoas' n ! WFTerm n
+toWFTerm' n v = unWFDB (v (makeEnv n)) n
+
+where
+
+makeEnv :: Nat n ! WFEnv WFDB n
+makeEnv NatZ = WFEmpty
+makeEnv (NatS i) =
+
+WFExtend
+
+(makeEnv i)
+(WFDB (*j ! WFVar (shift j i)))
+
+Conversion back from WFTerm to Hoas is straightforward.
+toWFHoas' :: WFTerm n ! WFHoas' n
+toWFHoas' (WFVar n) = *env ! lookWF env n
+toWFHoas' (WFLam t) =
+
+*env ! lam (*x ! toWFHoas' t (WFExtend env x))
+toWFHoas' (WFApp f p) =
+
+*env ! toWFHoas' f env `app` toWFHoas' p env
+
+toWFHoas :: WFTerm Zero ! Hoas
+toWFHoas t = toWFHoas' t WFEmpty
+
+The functions toWFTerm and toWFHoas are in fact mutually in-verse, and hence the two representations are isomorphic. See Atkey
+
+[2009a] for the proof.
+3. Language extensions
+Having established the main techniques for moving between induc-tive and higher-order encodings of embedded languages, we now
+
+consider a number of extensions.
+3.1 More term constructors
+We begin by adding boolean terms. As before, we create a typeclass containing the term formers of our language: constants for
+
+true and false, and a construct for conditional branching.
+class Booleans exp where
+
+true :: exp
+false :: exp
+cond :: exp ! exp ! exp ! exp
+
+We do not need to combine this explicitly with UntypedLambda:terms formed from
+
+true, false, cond, lam and app may bemingled freely. For example, we can define a function
+
+not asfollows:
+
+not = lam (*x ! cond x false true)
+This receives the following type:
+not :: (Booleans exp, UntypedLambda exp) ) exp
+
+However, for convenience we may wish to give a name to theembedded language that includes both functions and booleans,
+and we can do so by defining a new class that is a subclass of
+UntypedLambda and Booleans.
+
+class (Booleans exp, UntypedLambda exp) )
+
+BooleanLambda exp
+
+We can now give our definition of not the following more concisetype:
+
+not :: BooleanLambda exp ) exp
+
+In Section 2 we defined a number of functions on untyped * ex-pressions. We can extend these straightforwardly to our augmented
+
+language by defining instances of Booleans. For example, we canextend the
+
+size function by defining the following instance:
+
+instance Booleans Size where
+
+true = Size $ 1
+false = Size $ 1
+cond c t e = Size $ size c + size t + size e
+
+In order to extend the functions for evaluation and conversion tode Bruijn terms we must modify the datatypes used as the domains
+
+of those functions. For evaluation we must add constructors for
+true and false to the Value type.
+
+data Value = VFunc (Value ! Value) | VTrue | VFalse
+
+Then we can extend the evaluation function to booleans by writingan instance of
+
+Booleans at type Value.
+
+instance Booleans Value where
+
+true = VTrue
+false = VFalse
+cond VTrue t _ = t
+cond VFalse _ e = e
+
+Note that the definitions for both cond and app are now partial,since the embedded language is untyped: there is nothing to prevent
+
+programs which attempt to apply a boolean, or use a function as thefirst argument to
+
+cond. In Section 4 we investigate the embeddingof typed languages, with total interpreters.
+
+For conversion to well-formed de Bruijn terms we must modifythe
+
+WFTerm datatype to add constructors for true, false and
+cond.
+
+data WFTerm :: ? ! ? where
+
+WFVar :: Fin a ! WFTerm a
+WFLam :: WFTerm (Succ a) ! WFTerm a
+WFApp :: WFTerm a ! WFTerm a ! WFTerm a
+WFTrue :: WFTerm a
+WFFalse :: WFTerm a
+WFCond :: WFTerm a ! WFTerm a ! WFTerm a!
+
+WFTerm a
+
+Extending the conversion function to booleans is then a simplematter of writing an instance of
+
+Booleans at the type WFDB.
+
+instance Booleans WFDB where
+
+true = WFDB (*i ! WFTrue)
+false = WFDB (*i ! WFFalse)
+cond c t e = WFDB (*i ! WFCond (unWFDB c i)
+
+(unWFDB t i)
+(unWFDB e i))
+
+Term formers for integers, pairs, sums, and so on, can be addedstraightforwardly in the same fashion.
+
+Adding integers is of additional interest in that it allows inte-gration with the standard
+
+Num type class. We can extend the Valuedatatype with an additional constructor for integers, and then use
+
+the arithmetic operations of the Num class within terms of the em-bedded language. For example, the following term defines a binary
+addition function in the embedded language:
+
+lam (*x ! lam (*y ! x + y))
+
+:: (UntypedLambda exp, Num exp) ) exp
+
+We can, of course, extend evaluation to such terms by defining in-stances of
+
+Num at the Value type; the other functions, such as con-version to the de Bruijn representation, can be extended similarly.
+
+3.2 Conflating levels
+The embedded languages we have looked at so far have all main-tained a strict separation between the host and embedded levels.
+
+A simple example where we mix the levels, which was also usedin Atkey [2009a], is a language of arithmetic expressions with a
+"let" construct and with host language functions contained withinterms.
+
+class ArithExpr exp where
+
+let_ :: exp ! (exp ! exp) ! exp
+integer :: Int ! exp
+binop :: (Int ! Int ! Int) ! exp ! exp ! exp
+
+type AExpr = 8 exp. ArithExpr exp ) exp
+
+An example term in this representation is:
+example8 :: AExpr
+example8 = let_ (integer 8) $ *x !
+
+let_ (integer 9) $ *y !
+
+binop (+) x y
+
+Using the techniques described in Section 2.6, it is clear to see howwe can translate this representation to a type of well-formed de
+
+Bruijn terms.The point of this example is to show how function types can
+be used in two different ways in the HOAS representation. In the
+let operation, functions are used to represent embedded languagebinding. In the
+
+binop operation we use the function type compu-tationally as a host language function. Licata et al. [2008] define a
+
+new logical system based on a proof theoretic analysis of focussingto mix the computational and representation function spaces. Using
+parametric polymorphism, we get the same functionality for free.
+3.3 Pattern matching
+To this point, we have only considered languages where variablesare bound individually. Realistic programming languages feature
+
+pattern matching that allows binding of multiple variables at once.It is possible to simulate this by the use of functions as cases in
+pattern matches, but this gets untidy due to the additional lamconstructors required. Also, we may not want to have
+
+*-abstractionin our embedded language. To see how to include pattern matching,
+
+we start by considering a language extension with sums and pairs.We define a type class for introduction forms for pairs and sums:
+
+class PairsAndSums exp where
+
+pair :: exp ! exp ! exp
+inl :: exp ! exp
+inr :: exp ! exp
+
+A simple language extension that allows pattern matching on pairsand sums can be captured with the following type class:
+
+class BasicPatternMatch exp where
+
+pair_match :: exp ! ((exp,exp) ! exp) ! exp
+sum_match :: exp ! (exp ! exp) ! (exp ! exp)!
+
+exp
+
+These operations are certainly complete for matching against pairsand sums, but we do not have the flexibility in matching patterns
+
+that exists in our host language. To get this flexibility we mustabstract over patterns. We represent patterns as containers of kind
+? ! ?:
+
+data Id a = V a
+data Pair f1 f2 a = f1 a * f2 a
+data Inl f a = Inl (f a)
+data Inr f a = Inr (f a)
+
+The HOAS representation of a pattern matching case will takea function of type
+
+f exp ! exp, where we require that f is acontainer constructed from the above constructors. For example, to
+
+match against the left-hand component of a sum, which contains apair, we would use a function like:
+
+*(Inl (V x * V y)) ! pair x y)
+
+:: (Inl (Pair Id Id) exp ! exp)
+
+Note that when f is Pair, this will give the same type as the
+pair match combinator above.We must be able to restrict to containers generated by the above
+
+constructors. We do so by employing the following GADT:
+data Pattern :: (? ! ?) ! ? ! ? where
+
+PVar :: Pattern Id (Succ Zero)
+PPair :: Nat x ! Pattern f1 x ! Pattern f2 y !
+
+Pattern (Pair f1 f2) (x :+: y)
+PInl :: Pattern f x ! Pattern (Inl f) x
+PInr :: Pattern f x ! Pattern (Inr f) x
+
+The second argument in this GADT records the number of vari-ables in the pattern. This numeric argument will be used to account
+
+for the extra context used by the pattern in the de Bruijn represen-tation. The spare-looking
+
+Nat x argument in PPair is used as awitness for constructing proofs of type equalities in the conversion
+
+between HOAS and de Bruijn. We define type-level addition by thefollowing type family:
+
+type family n :+: m :: ?
+type instance Zero :+: n = n
+type instance (Succ n) :+: m = Succ (n :+: m)
+
+A HOAS pattern matching case consists of a pattern representa-tion and a function to represent the variables bound in the pattern:
+
+data Case exp = 8 f n. Case (Pattern f n) (f exp ! exp)
+
+A type class defines our pattern matching language extension:
+class PatternMatch exp where
+
+match :: exp ! [Case exp] ! exp
+
+This representation is hampered by the need to explicitly describeeach pattern before use:
+
+matcher0 x = match x
+
+[ Case (PPair (NatS NatZ) PVar PVar) $
+
+*(V x * V y) ! pair x y
+, Case (PInl PVar) $ *(Inl (V x)) ! x ]
+
+We get the compiler to do the work for us by using an existentialtype and a type class:
+
+data IPat f = 8 n. IPat (Nat n) (Pattern f n)
+class ImplicitPattern f where
+
+patRep :: IPat f
+
+We define instances for each f that interests us. The additional Nat
+n argument in IPat is used to fill in the Nat x argument in the
+PPair constructor. We can now define a combinator that allowsconvenient expression of pattern matching cases:
+
+clause :: 8 f exp.
+
+ImplicitPattern f ) (f exp ! exp) ! Case exp
+clause body = case patRep of
+
+IPat _ pattern ! Case pattern body
+
+This combinator gives a slicker syntax for pattern matching:
+
+matcher x = match x
+
+[ clause $ *(V x * V y) ! pair x y
+, clause $ *(Inl (V x)) ! x ]
+
+We can unembed this HOAS representation to guaranteed well-formed de Bruijn terms by a process similar to the one we used
+
+above. The de Bruijn representation of pattern match cases consistsof a pair of a pattern and a term. In this representation we must
+explicitly keep track of the context, something that the HOASrepresentation handles for us.
+
+data WFCase a =8
+
+f b. WFCase (Pattern f b) (WFTerm (a :+: b))
+
+data WFTerm :: ? ! ? where
+
+WFVar :: Fin a ! WFTerm a
+WFMatch :: WFTerm a ! [WFCase a] ! WFTerm a
+WFPair :: WFTerm a ! WFTerm a ! WFTerm a
+WFInl :: WFTerm a ! WFTerm a
+WFInr :: WFTerm a ! WFTerm a
+WFLam :: WFTerm (Succ a) ! WFTerm a
+WFApp :: WFTerm a ! WFTerm a ! WFTerm a
+
+As above, we translate from HOAS to de Bruijn representation bydefining a fold over the HOAS term. The case for
+
+match is:
+
+instance PatternMatch WFDB where
+
+match e cases = WFDB $
+
+*i ! WFMatch (unWFDB e i) (map (doCase i) cases)
+
+where
+
+doCase :: 8 i. Nat i ! Case WFDB ! WFCase i
+doCase i (Case pattern f) =
+
+let (x, j) = mkPat pattern i
+
+in WFCase pattern (unWFDB (f x) j)
+
+The helper function used here is mkPat, which has type
+mkPat :: Pattern f n ! Nat i ! (f WFDB, Nat (i :+: n))
+This function takes a pattern representation, the current size of thecontext and returns the appropriate container full of variable representations and the new size of the context. We omit the imple-mentation of this function for want of space. The core of the implementation relies on an idiomatic traversal [McBride and Paterson2008] of the shape of the pattern, generating the correct variable
+representations as we go and incrementing the size of the context.To keep track of the size of the context in the types, we use a parameterised applicative functor [Cooper et al. 2008], the idiomaticanalogue of a parameterised monad [Atkey 2009b]. The term-level
+representations of natural numbers used in patterns are used to con-struct witnesses for the proofs of associativity and commutativity of
+plus, which are required to type this function.Conversion back again from de Bruijn to HOAS relies on a
+helper function of the following type:
+mkEnv :: 8 i exp f j.
+
+Nat i ! WFEnv exp i ! Pattern f j !
+
+f exp ! WFEnv exp (i :+: j)
+
+This function takes the current size of the context (which can al-ways be deduced from the environment argument), a conversion
+
+environment and a pattern representation, and returns a functionthat maps pattern instances to extended environments. By composing mkEnv with the main conversion function from de Bruijn terms,we obtain a conversion function for the de Bruijn representation of
+pattern matching cases.
+4. Unembedding typed languages
+We now turn to the representation and unembedding of typed lan-guages, at least when the types of our embedded language is a subset of the types of Haskell. This is mostly an exercise in decorating
+
+the constructions of the previous sections with type information,but there is a subtlety involved in representing the types of the embedded language, which we relate in our first subsection.
+4.1 Simply-typed *-calculus, naively
+Given the representation of the untyped *-calculus above, an obvi-ous way to represent a typed language in the manner we have used
+
+above is by the following type class, where we decorate all the oc-curences of
+
+exp with type variables. This is the representation oftyped embedded languages used by Carette et al. [2009].
+
+class TypedLambda0 exp where
+
+tlam0 :: (exp a ! exp b) ! exp (a ! b)
+tapp0 :: exp (a ! b) ! exp a ! exp b
+
+Closed simply-typed terms would now be represented by the type:
+type THoas0 a = 8 exp. TypedLambda0 exp ) exp a
+
+and we can apparently go ahead and represent terms in the simply-typed
+
+*-calculus:
+
+example3 :: THoas0 (Bool ! (Bool ! Bool) ! Bool)
+example3 = tlam0 (*x ! tlam0 (*y ! y `tapp0` x))
+
+However, there is a hidden problem lurking in this representa-tion. The type machinery that we use to ensure that bound variables
+
+are represented correctly may leak into the types that are used in therepresented term. We can see this more clearly by writing out the
+type TypedLambda0 explicitly as an F! type, where the polymor-phism is completely explicit:
+
+*o/.8ff : ? ! ?. (8oe1oe2. (ff oe1 ! ff oe2) ! ff (oe1 ! oe2)) !
+
+(8oe1oe2. ff (oe1 ! oe2) ! ff oe1 ! ff oe2) !
+ff o/
+
+Now consider a typical term which starts with \Lambda ff.*tlam.tapp....and goes on to apply
+
+tlam and tapp to construct a representationof a simply-typed
+*-calculus term. The problem arises becausewe have a type constructor
+
+ff available for use in constructing therepresented term. We can instantiate the types
+
+oe1 and oe2 in the twoconstructors using
+ff. This will lead to representations of simply-typed
+*-calculus terms that contain subterms whose types dependon the result type of the specific fold operation that we perform
+
+over terms. Hence, while this representation does not allow "exoticterms", it does allow exotically typed terms.
+
+An example of an exotically typed term in this representation isthe following:
+
+exotic :: 8 exp. TypedLambda0 exp ) exp (Bool ! Bool)
+exotic = tlam0 (*x ! tlam0 (*y ! y))
+
+`tapp0` (tlam0 (*(z :: exp (exp Int)) ! z))
+
+This "represents" the simply typed term:
+
+(*xexp(Int)!exp(Int).*yBool.y)(*zexp(Int).z)
+When we write a fold over the representation exotic, we will in-stantiate the type
+
+exp with the type we are using for accumulation.Thus the term
+exotic will technically represent different simply-typed terms for different folds.
+
+This confusion between host and embedded language typesmanifests itself in the failure of the proof of an isomorphism between this church encoding of typed HOAS and the de Bruijn rep-resentation. After the conversion of
+
+exotic to de Bruijn, we willhave a representation of the simply typed term:
+
+(*xTDB(Int)!TDB(Int).*yBool.y)(*zTDB(Int).z)
+where the placeholder exp has been replaced by the type construc-tor
+
+TDB used in the conversion to de Bruijn. Converting this termback to typed HOAS preserves this constructor, giving a term that
+
+differs in its types to the original term.
+
+An interesting question to ask is: exactly what is being repre-sented by the type
+
+THoas0, if it is not just the simply-typed terms?We currently have no answer to this. Maybe we are representing
+
+terms with the term syntax of the simply-typed *-calculus, but thetypes of Haskell. On the other hand, the fact that the quantified constructor exp used in the representation will change according to thetype of the fold that we perform over represented terms is troubling.
+
+Note that, due to the fact that the type variable a, which repre-sents the type of the whole term, appears outside the scope of
+
+expin the type
+THoas0, we can never get terms that are exotically typedat the top level; only subterms with types that do not contribute to
+
+the top-level type may be exotically typed, as in the exotic exam-ple above.
+
+Aside from the theoretical problem, there is a point about whichtype system our embedded language should be able to have. If we
+are going to unembed an embedded language effectively, then weshould be able to get our hands on representations of object-level
+types. Moreover, many intensional analyses that we may wish toperform are type-directed, so explicit knowledge of the embedded
+language types involved is required. To do this we cannot straight-forwardly piggy-back off Haskell's type system (though we are
+forced to rely on it to represent object-level types, by the stratifica-tion between types and terms in Haskell's type theory). To fix this
+problem, we define explicit representations for embedded languagetypes in the next subsection.
+
+4.2 The closed kind of simple types
+We define a GADT Rep for representing simple types and henceprecluding exotic types. This connects a term-level representation
+
+of simple types with a type-level representation of types (in whichthe underlying types are Haskell types). Explicitly writing type
+representations everywhere would be tedious, so we follow Cheneyand Hinze [2002] and define the type class
+
+Representable ofsimple types. This allows the compiler to infer and propagate many
+
+type representations for us.
+data Rep :: ? ! ? where
+
+Bool :: Rep Bool
+(:!) :: (Representable a, Representable b) )
+
+Rep a ! Rep b ! Rep (a!b)
+
+class Representable a where rep :: Rep a
+instance Representable Bool where rep = Bool
+instance (Representable a, Representable b) )
+
+Representable (a!b) where
+
+rep = rep :! rep
+
+Note that the leaves of a Rep must be Bool constructors, andso it is only possible to build representations of simple types.
+
+The restriction to simple types is made more explicit with the
+Representable type class. In effect Representable is the closedkind of simple types.
+
+A key function that we can define against values of type Rep isthe conditional cast operator, which has type:
+
+cast :: Rep a ! Rep b ! Maybe ( 8 f. f a ! f b)
+We omit the implementation of this function to save space. Thebasic implementation idea is given by Weirich [2004].
+
+4.3 Simply-typed *-calculus, wisely
+The type class for simply-typed lambda terms is just like the naiveone we gave above, except that the constructors are now augmented
+
+with type representations.
+class TypedLambda exp where
+
+tlam :: (Representable a, Representable b) )
+
+(exp a ! exp b) ! exp (a ! b)
+tapp :: (Representable a, Representable b) )
+
+exp (a ! b) ! exp a ! exp b
+
+type THoas a = 8 exp. TypedLambda exp ) exp a
+
+Although the Representable type class restricts THoas termsto simple types, we can still assign a
+
+THoas term a polymorphictype.
+
+example4 :: (Representable a, Representable b) )
+
+THoas ((a ! b) ! a ! b)
+example4 = tlam (*x ! tlam (*y ! x `tapp` y))
+
+Of course, this polymorphism is only at the meta level; we are infact defining a family of typing derivations of simply-typed terms.
+
+We can instantiate example4 many times with different simpletypes for
+
+a and b. However, if we wish to unembed it (usingthe function
+
+toTTerm that we define below) then we must pick aspecific type by supplying an explicit type annotation.
+
+example5 =
+
+toTTerm (example4 :: THoas ((Bool!Bool)!Bool!Bool))
+
+Sometimes the compiler will not be able to infer the types thatwe need in terms. This happens when a subterm contains a type that
+
+does not contribute to the top-level type of the term. These are alsothe situations in which exotically typed terms arise. For example,
+the declaration
+example6 :: (Representable a) ) THoas (a ! a)
+example6 = tlam (*x ! tlam (*y ! y))
+
+`tapp` tlam (*z! z)
+
+causes GHC to complain that there is an ambiguous type variablearising from the third use of
+
+tlam. We must fix the type of z to someconcrete simple type in order for this to be a proper representation.
+
+It is possible to do this by using type ascriptions at the Haskelllevel, but it is simpler to do so by defining a combinator that takes
+an explicit type representation as an argument:
+tlam' ::
+
+(Representable a, Representable b, TypedLambda exp) )
+
+Rep a ! (exp a ! exp b) ! exp (a ! b)
+tlam' _ = tlam
+
+The term can now be accepted by the Haskell type checker by fixingthe embedded language type of
+
+z:
+
+example7 :: (Representable a) ) THoas (a ! a)
+example7 = tlam (*x ! tlam (*y ! y))
+
+`tapp` (tlam' Bool (*z ! z))
+
+Defining an evaluator for these terms is now straightforward.We can simply interpret each embedded language type by its host
+
+language counterpart:
+newtype TEval a = TEval { unTEval :: a }
+
+The instance of TypedLambda for TEval is straightforward:
+instance TypedLambda TEval where
+
+tlam f = TEval (unTEval ffi f ffi TEval)
+TEval f `tapp` TEval a = TEval (f a)
+
+teval :: THoas a ! a
+teval t = unTEval t
+
+We note that the HOAS representation is usually very convenientfor defining evaluators. In particular, this representation frees us
+
+from keeping track of environments. Also, note that exoticallytyped terms do not prevent us from writing an evaluator. If evaluation is all one wants to do with embedded terms, then restrictingterms to a subset of types is not required.
+
+4.4 Translating to de Bruijn and back
+Where we used the natural numbers GADT to record the depthof a context in the representation of well-formed de Bruijn terms,
+
+we now need to include the list of types of the variables in thatcontext. At the type level, we use the unit type to represent the
+empty context, and pair types to represent a context extended by anadditional type. At the term level, we maintain a list of (implicit)
+type representations:
+data Ctx :: ? ! ? where
+
+CtxZ :: Ctx ()
+CtxS :: Representable a ) Ctx ctx ! Ctx (a, ctx)
+
+The simply-typed analogue of the Fin GADT is the GADT
+Index. At the type level this encodes a pair of a type list andthe type of a distinguished element in that list; at the term level
+
+it encodes the index of that element.
+data Index :: ? ! ? ! ? where
+
+IndexZ :: Index (a, ctx) a
+IndexS :: Index ctx a ! Index (b, ctx) a
+
+The type constructor TTerm for simply-typed de Bruijn termstakes two parameters: the first is a type list encoding the types of
+
+the free variables, and the second is the type of the term itself.
+data TTerm :: ? ! ? ! ? where
+
+TVar :: Representable a ) Index ctx a ! TTerm ctx a
+TLam :: (Representable a, Representable b) )
+
+TTerm (a, ctx) b ! TTerm ctx (a ! b)
+TApp :: (Representable a, Representable b) )
+
+TTerm ctx (a!b) ! TTerm ctx a ! TTerm ctx b
+
+The translation to de Bruijn terms is similar to that for well-formed untyped terms. We again give the basic fold over the HOAS
+
+term representation as an instance of the TypedLambda class:
+newtype TDB a =
+
+TDB { unTDB :: 8 ctx. Ctx ctx ! TTerm ctx a }
+
+instance TypedLambda TDB where
+
+tlam (f::TDB a ! TDB b) =
+
+TDB$ *i! let v = *j ! TVar (tshift j (CtxS i))
+
+in TLam (unTDB (f (TDB v)) (CtxS i))
+(TDB x) `tapp` (TDB y) = TDB$ *i ! TApp (x i) (y i)
+
+The key difference is in the replacement of the shift functionthat computes the de Bruijn index for the bound variable by the
+
+type-aware version tshift. To explain the tshift function, were-examine the proof that this fold always produces well-formed
+de Bruijn terms. In the untyped case, the proof relies on Kripkerelations indexed by natural numbers, where the natural number
+records the depth of the context. Now that we also have typesto worry about, we use relations indexed by lists of embedded
+language types, ordered by the standard prefix ordering; we define
+R\Gamma oe(t) , 8\Gamma 0 >= \Gamma .\Gamma 0 ` (t \Gamma 0) : oe, where \Gamma  ` t : oe is the typingjudgement of the simply-typed
+
+*-calculus.In the case for
+tlam, we again have two contexts i and j, where
+i is the context surrounding the *-abstraction, and j is the con-text surrounding the bound variable occurence. By a parametricity
+
+argument, and the way in which we have defined our Kripke re-lation, we know that
+
+(a, i) will always be a prefix of j, and sowe obtain a well-formed de Bruijn index by computing the difference between the depths of the contexts. We implement this by thefollowing functions:
+
+len :: Ctx n ! Int
+len CtxZ = 0
+len (CtxS ctx) = 1 + len ctx
+
+tshift' :: Int ! Ctx j ! Ctx (a, i) ! Index j a
+
+tshift' _ CtxZ _ = ?
+tshift' 0 (CtxS _) (CtxS _) =
+
+fromJust (cast rep rep) IndexZ
+tshift' n (CtxS c1) c2 =
+
+IndexS (tshift' (n-1) c1 c2)
+
+tshift :: Ctx j ! Ctx (a, i) ! Index j a
+tshift c1 c2 = tshift' (len c1 - len c2) c1 c2
+
+As with the untyped case, we have had to feed the Haskell typechecker with bottoms to represent cases that can never occur.
+
+Firstly, the case when j is shorter than (a,i) can never happen,as with the untyped version. Secondly, we use a well-typed cast to
+show that the type a does occur in j at the point we think it should.Given that we know the cast will succeed, it would likely be more
+efficient to simply replace the cast with a call to unsafeCoerce.We chose not to here because we wanted to see how far we could
+push the type system.Were we to use the representation given by the type
+
+THoas0,which allows exotically typed terms, it would still be possible to
+
+write a conversion to de Bruijn representation, but it would be nec-essary to replace the use of
+
+cast in tshift' with unsafeCoerce,since we do not have any type representations to check. Also,
+
+the de Bruijn representation would not be able to contain any
+Representable typeclass constraints, meaning that we could notwrite intensional analyses that depend on the types of embeddedlanguage terms.In order to be able to define the type of open simply-typed
+HOAS we need to define a GADT for environments.
+data TEnv :: (? ! ?) ! ? ! ? where
+
+TEmpty :: TEnv exp ()
+TExtend :: TEnv exp ctx ! exp a ! TEnv exp (a, ctx)
+
+lookT :: TEnv exp ctx ! Index ctx a ! exp a
+lookT (TExtend _ v) IndexZ = v
+lookT (TExtend env _) (IndexS n) = lookT env n
+
+Now we can define a type for open simply-typed HOAS terms.
+type THoas' ctx a = 8 (exp :: ? ! ?).
+
+TypedLambda exp ) TEnv exp ctx ! exp a
+
+The translations between HOAS and de Bruijn representations andvice-versa fall out naturally.
+
+toTHoas' :: TTerm ctx a ! THoas' ctx a
+toTHoas' (TVar n) = *env ! lookT env n
+toTHoas' (TLam t) =
+
+*env ! tlam (*x ! toTHoas' t (TExtend env x))
+toTHoas' (TApp f p) =
+
+*env ! toTHoas' f env `tapp` toTHoas' p env
+
+toTHoas :: TTerm () a ! THoas a
+toTHoas t = toTHoas' t TEmpty
+
+toTTerm' :: Ctx ctx ! THoas' ctx a ! TTerm ctx a
+toTTerm' ctx v = unTDB w ctx
+
+where w = v (makeEnv ctx)
+
+makeEnv :: Ctx ctx ! TEnv TDB ctx
+makeEnv CtxZ = TEmpty
+makeEnv (CtxS j) =
+
+TExtend (makeEnv j)
+
+(TDB (*i ! TVar (tshift i (CtxS j))))
+
+toTTerm :: THoas a ! TTerm () a
+toTTerm v = unTDB v CtxZ
+
+5. Examples
+We give two examples where unembedding plays an essential role.
+
+5.1 Mobile code
+Our first example involves sending programs of an embedded lan-guage over a network to be executed at some remote location. In
+
+order to make the programs a little more useful than pure lambdaterms we extend the embedding of typed
+
+* calculus given in Sec-tion 4.3 to include constructors and destructors for booleans. We
+
+define the TypedBooleans class independently of TypedLambda,and define a new class,
+
+Mobile, for the language formed by com-bining the two.
+
+class TypedBooleans exp where
+
+ttrue :: exp Bool
+tfalse :: exp Bool
+tcond ::
+
+Representable a )
+
+exp Bool ! exp a ! exp a ! exp a
+
+class (TypedBooleans exp, TypedLambda exp) ) Mobile exp
+
+Next, we define concrete representations for types and terms, to-gether with automatically-derived parsers and printers.
+
+data URep = UBool | URep u! URep deriving (Show, Read)
+data MTerm = MVar Int|
+
+MLam URep MTerm | MApp MTerm MTerm|
+MTrue | MFalse | MCond MTerm MTerm MTerm
+
+deriving (Show, Read)
+
+Section 2 showed how to unembed untyped HOAS terms tountyped de Bruijn terms; obtaining untyped de Bruijn terms from
+
+typed terms is broadly similar. The type MDB is analogous to DB(Section 2.3), but the phantom parameter discards type information.
+
+newtype MDB a = MDB { unMDB :: Int ! MTerm }
+
+Defining instances of Mobile and its superclasses for MDB gives atranslation to
+
+MTerm; composing this translation with show givesus a marshalling function for
+
+Mobile. (In an actual program itwould, of course, be preferable to use a more efficient marshalling
+
+scheme.) We omit the details of the translation, which follow thepattern seen in Section 2.3.
+
+marshal :: ( 8 exp. Mobile exp ) exp a) ! String
+marshal t = show (unMDB t 0)
+
+Erasing types during marshalling is comparatively straightfor-ward; reconstructing types is more involved. We begin with a definition, Typed, that pairs a term with a representation of its type,hiding the type variable that carries the type information.
+
+data Typed :: (? ! ?) ! ? where
+
+(:::) :: Representable a ) exp a ! Rep a ! Typed exp
+
+We use Typed to write a function that re-embeds MTerm values astyped HOAS terms. The function
+
+toHoas takes an untyped termand an environment of typed terms for the free variables; it returns
+
+a typed term. Since type checking may fail -- the term may refer tovariables not present in the environment, or may be untypeable --
+the function is partial, as indicated by the Maybe in the return type.
+toHoas :: (TypedLambda exp, TypedBooleans exp) )
+
+MTerm ! [Typed exp] ! Maybe (Typed exp)
+
+We omit the implementation, but the general techniques for re-constructing typed terms from untyped representations are wellknown: see, for example, work by Baars and Swierstra [2002].Composing
+
+toHoas with the parser for MTerm gives an unmar-shalling function for closed terms.
+
+unmarshal :: String !
+
+( 8 exp. Mobile exp ) Maybe (Typed exp))
+unmarshal s = toHoas (read s) []
+
+Combined with an evaluator for terms as defined in Section 4.3,
+marshal and unmarshal allow us to construct HOAS terms, sendthem over a network, and evaluate them on another host.
+
+5.2 Nested relational calculus
+Our second example is based on the Nested Relational Calculus(NRC) [Tannen et al. 1992]. NRC is a query language based on
+
+comprehensions, with terms for functions, pairs, unit, booleans andsets. As the name suggests, NRC permits nested queries, unlike
+SQL, which restricts the type of queries to a collection of recordsof base type. However, there are translations from suitably-typed
+NRC terms to flat queries [Cooper 2009, Grust et al. 2009]. Thespecification of these translations involves intensional analysis; it
+is therefore easier to define them on a concrete representation ofterms than as a mapping from higher-order abstract syntax.
+
+Once again we can reuse the embeddings presented in earliersections. We combine the
+
+TypedLambda and TypedBoolean lan-guages of Sections 4.3 and 5.1 with embeddings of term formers
+
+for pairs, units and sets; these are straightforward, so we give onlythe case for sets as an example. There are four term formers, for
+empty and singleton sets, set union, and comprehension; this lastuses Haskell's binding to bind the variable, in standard HOAS style.
+
+class TypedSets exp where
+
+empty :: Representable a )
+
+exp (Set a)
+single :: Representable a )
+
+exp a ! exp (Set a)
+union :: Representable a )
+
+exp (Set a) ! exp (Set a) ! exp (Set a)
+for :: (Representable a, Representable b) )
+
+exp (Set a) ! (exp a!exp (Set b)) ! exp (Set b)
+
+class (TypedLambda exp, TypedBooleans exp,
+
+TypedUnit exp, TypedPairs exp,
+
+TypedSets exp) ) NRC exp
+
+We must also extend the Rep datatype and Representableclass to include the new types.
+
+data Rep :: ? ! ? where
+
+. . .
+
+Set :: Representable a ) Rep a ! Rep (Set a)
+
+instance Representable a ) Representable (Set a) where
+
+rep = Set rep
+
+Using the techniques presented in earlier sections, we can unembedterms of
+
+NRC to obtain a concrete representation on which trans-lations to a flat calculus can be defined. The term formers of the
+
+language ensure that embedded terms are correctly typed; we canalso assign a type to the translation function that restricts its input
+to queries that can be translated to a flat query language such asSQL. Given these guarantees, we are free to dispense with types
+in the concrete representation used internally, making it easier towrite the translation of interest.
+
+The combination of a carefully-typed external interface and anuntyped core is used in a number of embedded languages; for example, by Leijen and Meijer [1999] for SQL queries and by Lindley[2008] for statically-typed XHTML contexts. Our presentation here
+has the additional property that the external language (based onHOAS) is more convenient for the user than the internal language
+(de Bruijn terms), while the internal language is more convenientfor analysis.
+
+6. Related work
+The idea of encoding syntax with binding using the host language'sbinding constructs goes back to Church [1940]. As far as we are
+
+aware Coquand and Huet [1985] were the first to remark that
+
+the syntax of untyped lambda-calculus can be encoded using theuniversally quantified type:
+
+8ff.((ff ! ff) ! ff) ! (ff ! ff ! ff) ! ff
+Pfenning and Elliott [1988] proposed higher-order abstract syntaxas a general means for encoding name binding using the meta
+
+language. Washburn and Weirich [2008] also present essentiallythis type and show how functions can be defined over the syntax
+by means of folds.Programming with explicit folds is awkward. Carette et al.
+[2009] give a comprehensive account of how to achieve the sameeffect using Haskell type classes or ML modules. Our work is in
+the same vein. Where Carette et al concentrate on implementingdifferent compositional interpretations of HOAS our main focus is
+on unembedding to a first-order syntax in order to allow intensionalanalyses. Hofer et al. [2008] apply Carette et al's techniques in the
+context of Scala. As they remark, many standard optimisations onewants to perform in a compiler are difficult to define compositionally. Our unembedding provides a solution to this problem. Hoferet al also discuss composing languages in a similar way to us. Their
+setting is somewhat complicated by the object-oriented features ofScala.
+
+Meijer and Hutton [1995] and Fegaras and Sheard [1996] showhow to define folds or catamorphisms for data types with embedded functions. As we discussed in Section 2.1, the data type thatFegaras and Sheard use to represent terms does not use parametricity to disallow exotic terms, and so does not allow an unembeddingfunction to be defined. Fegaras and Sheard also use HOAS to represent cyclic data structures and graphs, essentially by encodingthen using explicit sharing via a
+
+let construct and recursion usinga
+fix construct. Ghani et al. [2006] represent cyclic data structuresusing a de Bruijn representation in nested datatypes. Our unemebdding process gives a translation from Fegaras and Sheard's HOASrepresentation to the Ghani et al.'s de Bruijn representation.
+
+Pientka [2008] introduces a sophisticated type system that pro-vides direct support for recursion over HOAS datatypes. In contrast, our approach supports recursion over HOAS datatypes withinthe standard Haskell type system. There is a similarity between our
+representation of open simply-typed terms using HOAS and hers,but we must leave a detailed comparison to future work.
+
+Elliott et al. [2003] give an in-depth account of how to compiledomain-specific embedded languages, but they do not treat HOAS.
+Rhiger [2003] details an interpretation of simply-typed HOASas an inductive datatype. His work differs from ours in that he only
+considers a single interpretation and he relies on a single globalabstract type to disallow exotic terms and to ensure that the target
+terms are well-typed.In their work on implementing type-preserving compilers in
+Haskell, Guillemette and Monnier [2007, 2008] mention conver-sion of HOAS to a de Bruijn representation. Their implementation
+sounds similar to ours, but they do not spell out the details. They donot mention the need to restrict the type representations in the embedded language. Their work does provide a good example of anintensional analysis--closure conversion--that would be difficult
+to express as a fold over the HOAS representation.Pfenning and Lee [1991] examine the question of embedding a
+polymorphic language within F!, with a view to defining a well-typed evaluator function. They use a nearly-HOAS representation
+with parametricity, where *-abstraction case is represented by aconstructor with type 8
+
+fffi.(ff ! exp fi) ! exp (ff ! fi). Hencethey do not disallow exotic terms. They are slightly more ambitious
+
+in that they attempt to embed a polymorphic language, somethingthat we have not considered here. Guillemette and Monnier [2008]
+embed a polymorphic language using HOAS, but they resort to
+
+using de Bruijn indices to represent type variables, which makesthe embedding less usable.
+
+d. S. Oliveira et al. [2006] investigate modularity in the contextof generic programming. Our use of type classes to give modular
+extensions of embedded DSLs is essentially the same as their en-coding of extensible generic functions.
+
+Our unembedding translations are reminiscent of normalisationby evaluation (NBE) [Berger et al. 1998]. The idea of NBE is to
+obtain normal forms by first interpreting terms in some model andthen defining a reify function mapping values in the model back to
+normal forms. The key is to choose a model that includes enoughsyntactic hooks in order to be able to define the reify function. In
+fact our unembeddings can be seen as degenerate cases of NBE.HOAS is a model of
+
+ff-conversion and the reify function is givenby the
+DB instance of the UntypedLambda type class.
+
+Acknowledgements Atkey is supported by grant EP/G006032/1from EPSRC. We would like to thank the anonymous reviewers for
+
+helpful comments, and Bruno Oliveira for pointing us to relatedwork.
+
+References
+Mart'in Abadi, Luca Cardelli, and Pierre-Louis Curien. Formal parametricpolymorphism. In POPL, pages 157-170, 1993.
+
+Andrew W. Appel and Trevor Jim. Shrinking lambda expressions in lineartime. Journal of Functional Programming, 7(5):515-540, 1997.
+Robert Atkey. Syntax for free: Representing syntax with binding usingparametricity. In Typed Lambda Calculi and Applications (TLCA), volume 5608 of Lecture Notes in Computer Science, pages 35-49. Springer,2009a. To appear.
+Robert Atkey. Parameterised notions of computation. Journal of FunctionalProgramming, 19(3 & 4):355-376, 2009b.
+Lennart Augustsson, Howard Mansell, and Ganesh Sittampalam. Paradise:a two-stage dsl embedded in Haskell. In ICFP, pages 225-228, 2008.
+Arthur I. Baars and S. Doaitse Swierstra. Typing dynamic typing. In ICFP'02, pages 157-166, New York, NY, USA, 2002. ACM.
+Nick Benton, Andrew Kennedy, Sam Lindley, and Claudio V. Russo.Shrinking reductions in SML.NET. In IFL, pages 142-159, 2004.
+Ulrich Berger, Matthias Eberl, and Helmut Schwichtenberg. Normalisationby evaluation. In Prospects for Hardware Foundations, 1998.
+Jacques Carette, Oleg Kiselyov, and Chung chieh Shan. Finally tagless,partially evaluated. Journal of Functional Programming, 2009. To
+
+appear.
+James Cheney and Ralf Hinze. A lightweight implementation of genericsand dynamics. In Haskell '02, New York, NY, USA, 2002. ACM.
+
+Alonso Church. A formulation of the simple theory of types. Journal ofSymbolic Logic, 5:56-68, 1940.
+Ezra Cooper. The script-writer's dream: How to write great sql in your ownlanguage, and be sure it will succeed. In DBPL, 2009. To appear.
+Ezra Cooper, Sam Lindley, Philip Wadler, and Jeremy Yallop. The essenceof form abstraction. In APLAS, December 2008.
+Thierry Coquand and G'erard P. Huet. Constructions: A higher order proofsystem for mechanizing mathematics. In European Conference on Computer Algebra (1), pages 151-184, 1985.
+Bruno C. d. S. Oliveira, Ralf Hinze, and Andres L"oh. Extensible andmodular generics for the masses. In Trends in Functional Programming,
+
+pages 199-216, 2006.
+Nicolaas Govert de Bruijn. Lambda calculus notation with nameless dum-mies: A tool for automatic formula manipulation, with application to the
+
+church-rosser theorem. Indagationes Mathematicae, 1972.
+Conal Elliott, Sigbjorn Finne, and Oege de Moor. Compiling embeddedlanguages. Journal of Functional Programming, 13(3):455-481, 2003.
+
+Leonidas Fegaras and Tim Sheard. Revisiting catamorphisms overdatatypes with embedded functions (or, programs from outer space). In
+
+POPL, pages 284-294, 1996.
+N. Ghani, M. Hamana, T. Uustalu, and V. Vene. Representing cyclicstructures as nested datatypes. In H. Nilsson, editor, Proc. of 7th Symp.
+
+on Trends in Functional Programming, TFP 2006 (Nottingham, Apr.
+
+2006), 2006.
+Torsten Grust, Manuel Mayr, Jan Rittinger, and Tom Schreiber. Ferry:Database-supported program execution. In SIGMOD 2009, Providence,
+
+Rhode Island, June 2009. To appear.
+Louis-Julien Guillemette and Stefan Monnier. A type-preserving closureconversion in Haskell. In Haskell, pages 83-92, 2007.
+
+Louis-Julien Guillemette and Stefan Monnier. A type-preserving compilerin Haskell. In ICFP, pages 75-86, 2008.
+Christian Hofer, Klaus Ostermann, Tillmann Rendel, and Adriaan Moors.Polymorphic embedding of dsls. In GPCE, pages 137-148, 2008.
+Andrew Kennedy. Compiling with continuations, continued. In ICFP,2007.
+Marco Kuhlmann. Functional metapost for latex, 2001.
+Daan Leijen and Erik Meijer. Parsec: Direct style monadic parser combina-tors for the real world. Technical Report UU-CS-2001-27, Department
+
+of Computer Science, Universiteit Utrecht, 2001.
+Daan Leijen and Erik Meijer. Domain specific embedded compilers. InDSL'99, pages 109-122, Austin, Texas, October 1999.
+
+Daniel R. Licata, Noam Zeilberger, and Robert Harper. Focusing on Bind-ing and Computation. In LICS, pages 241-252, 2008.
+Sam Lindley. Many holes in Hindley-Milner. In ML '08, 2008.
+The Coq development team. The Coq proof assistant reference manual.LogiCal Project, 2009. URL
+
+http://coq.inria.fr. Version 8.2.
+
+Conor McBride and Ross Paterson. Applicative programming with effects.Journal of Functional Programming, 18(1), 2008.
+
+Erik Meijer and Graham Hutton. Bananas in space: Extending fold andunfold to exponential types. In FPCA, pages 324-333, 1995.
+Simon Peyton Jones, Jean-Marc Eber, and Julian Seward. Composingcontracts: an adventure in financial engineering (functional pearl). In
+
+ICFP '00, pages 280-292, New York, NY, USA, 2000. ACM.
+Frank Pfenning and Conal Elliott. Higher-order abstract syntax. In PLDI,pages 199-208, 1988.
+
+Frank Pfenning and Peter Lee. Metacircularity in the polymorphic lambda-calculus. Theor. Comput. Sci., 89(1):137-159, 1991.
+Brigitte Pientka. A type-theoretic foundation for programming with higher-order abstract syntax and first-class substitutions. In POPL, pages 371-
+
+382, 2008.
+Benjamin C. Pierce. Types and Programming Languages. MIT Press, 2002.
+Gordon D. Plotkin and Mart'in Abadi. A logic for parametric polymorphism.In Marc Bezem and Jan Friso Groote, editors, TLCA, volume 664 of
+
+Lecture Notes in Computer Science, pages 361-375. Springer, 1993.ISBN 3-540-56517-5.
+John C Reynolds. Towards a theory of type structure. In ProgrammingSymposium, Proceedings Colloque sur la Programmation, pages 408-
+
+423, London, UK, 1974. Springer-Verlag.
+Morten Rhiger. A foundation for embedded languages. ACM Trans.Program. Lang. Syst., 25(3):291-315, 2003.
+
+Tim Sheard, James Hook, and Nathan Linger. GADTs + extensible kindsystem = dependent programming. Technical report, Portland State
+
+University, 2005.
+Val Tannen, Peter Buneman, and Limsoon Wong. Naturally embeddedquery languages. In ICDT '92, pages 140-154. Springer-Verlag, 1992.
+
+The Agda2 development team. The agda2 website. http://wiki.
+
+portal.chalmers.se/agda/, 2009.
+
+Peter Thiemann. WASH/CGI: Server-side web scripting with sessions andtyped, compositional forms. In PADL, pages 192-208, 2002.
+
+Geoffrey Washburn and Stephanie Weirich. Boxes go bananas: Encodinghigher-order abstract syntax with parametric polymorphism. Journal of
+
+Functional Programming, 18(1):87-140, 2008.
+Stephanie Weirich. Type-safe cast. Journal of Functional Programming, 14(6):681-695, 2004.

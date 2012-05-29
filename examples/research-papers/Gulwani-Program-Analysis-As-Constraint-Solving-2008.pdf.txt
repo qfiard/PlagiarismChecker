@@ -1,0 +1,1425 @@
+
+
+Program Analysis as Constraint Solving
+Sumit GulwaniMicrosoft Research, Redmond
+sumitg@microsoft.com
+
+Saurabh Srivastava *University of Maryland, College Park
+
+saurabhs@cs.umd.edu
+
+Ramarathnam VenkatesanMicrosoft Research, Redmond
+
+venkie@microsoft.com
+
+AbstractA constraint-based approach to invariant generation in programs
+translates a program into constraints that are solved using off-the-shelf constraint solvers to yield desired program invariants.
+
+In this paper we show how the constraint-based approach canbe used to model a wide spectrum of program analyses in an expressive domain containing disjunctions and conjunctions of lin-ear inequalities. In particular, we show how to model the problem
+of context-sensitive interprocedural program verification. We alsopresent the first constraint-based approach to weakest precondition
+and strongest postcondition inference. The constraints we gener-ate are boolean combinations of quadratic inequalities over integer
+variables. We reduce these constraints to SAT formulae using bit-vector modeling and use off-the-shelf SAT solvers to solve them.
+
+Furthermore, we present interesting applications of the aboveanalyses, namely bounds analysis and generation of most-general
+counter-examples for both safety and termination properties. Wealso present encouraging preliminary experimental results demonstrating the feasibility of our technique on a variety of challengingexamples.
+
+Categories and Subject Descriptors D.2.4 [Software Engineer-ing]: Software/Program Verification; F.3.1 [Logics and Meanings
+of Programs]: Specifying and Verifying and Reasoning about Pro-grams; F.3.2 [Logics and Meanings of Programs]: Semantics of
+Programming Languages--Program analysisGeneral Terms Algorithms, Theory, Veri
+
+ficationKeywords Program Veri
+fication, Weakest Precondition, StrongestPostcondition, Most-general Counterexamples, Bounds Analysis,
+
+Non-termination Analysis, Constraint Solving
+
+1. IntroductionDiscovering inductive program invariants is critical for both proving program correctness and finding bugs. Traditionally, iterativefixed-point computation based techniques like data-flow analyses [25], abstract interpretation [11] or model checking [13] havebeen used for discovering these invariants. An alternative is to use
+a constraint-based invariant generation [8, 10, 7, 32] approach thattranslates (the second-order constraints represented by) a program
+
+* This author performed the work reported here during a summer internshipat Microsoft Research.
+
+Permission to make digital or hard copies of all or part of this work for personal orclassroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citationon the first page. To copy otherwise, to republish, to post on servers or to redistribute
+to lists, requires prior specific permission and/or a fee.PLDI'08, June 7-13, 2008, Tucson, Arizona, USA.
+
+Copyright c! 2008 ACM 978-1-59593-860-2/08/06. . . $5.00.
+
+into (first-order quantifier-free) satisfiability constraints that can besolved using off-the-shelf solvers. The last decade has witnessed a
+revolution in SAT/SMT based methods enabling solving of indus-trial sized satisfiability instances. This presents a real opportunity
+to leverage these advances for solving hard program analysis prob-lems.
+
+Constraint-based techniques offer two other advantages overfixed-point computation based techniques. First, they are goaldirected and hence have the potential to be more efficient. Sec-ondly, they do not require the use of widening heuristics that are
+used by fixed-point based techniques leading to loss of precisionthat is often hard to control.
+
+In this paper, we present constraint-based techniques for threeclassical program analysis problems, namely program verification,
+weakest precondition generation and strongest postcondition gen-eration over the abstraction of linear arithmetic. Using this core
+framework of analyses we further show interesting applicationsto bounds analysis and finding most-general counterexamples to
+safety and termination properties. A distinguishing feature of ourpreliminary tool is that it can uniformly handle a large variety of
+challenging examples that otherwise require many different spe-cialized techniques for analysis. The key contributions of this paper lie in the uniform constraint-based approach to core programanalyses (Sections 2-5) and their novel applications (Section 6).
+
+The goal of program verification is to discover invariants thatare strong enough to verify given assertions in a program. Current
+constraint-based techniques are limited to discovering conjunctiveinvariants in an intraprocedural setting. We present a constraintbased technique that can generate linear arithmetic invariants withbounded boolean structure (Section 2), which also allows us to
+extend our approach to a context-sensitive interprocedural setting(Section 3). A key idea of our approach is a scheme for reducing second-order constraints to SAT constraints and this can be re-garded as an independent contribution to solving a special class of
+second-order formulas. Another key idea concerns an appropriatechoice of cut-set, which has until now been overlooked in other
+constraint-based techniques. Our tool can verify assertions (safetyproperties) in benchmark programs (used by alternative state-ofthe-art techniques) that require disjunctive invariants and sophis-ticated procedure summaries. We also show how constraint-based
+invariant generation can be applied to verifying termination proper-ties as well as the harder problem of bounds analysis (Section 6.1).
+
+The goal of strongest postcondition generation is to infer pre-cise invariants in a given program so as to precisely characterize
+the set of reachable states of the program. Current constraint-basedinvariant generation techniques work well only in a program verification setting, when the problem enforces the constraint that theinvariant should be strong enough to verify the assertions. However, in absence of assertions in programs, there is no guaranteeabout the precision of invariants. We describe a constraint-based
+technique that can be used to discover some form of strongest in-variants (Section 5). In the area of fixed-point computation based
+
+techniques, the problem of generating precise invariants has led todevelopment of several widening heuristics that are tailored to specific classes of programs [40, 18, 16, 17]. Our tool can uniformlydiscover precise invariants for all such programs.
+
+The goal of weakest precondition generation is to infer theweakest precondition that ensures validity of all assertions in a
+given program. We present a constraint-based technique for dis-covering some form of weakest preconditions (Section 4). Our tool
+can generate weakest preconditions of safety as well as terminationproperties for a wide variety of programs that cannot be analyzed
+uniformly by any other technique.We also describe an interesting application of weakest precondition generation, namely generating most-general counterexamplesfor both safety (Section 6.2) and termination (Section 6.3) properties. The appeal of generating most-general counterexamples (asopposed to generating any counterexample) lies in characterizing
+all counterexamples in a succinct specification that provides betterintuition to the programmer. For example, if a program has a bug
+when (n >= 200 + y) " (9 > y > 0), then this information ismore useful than simply generating any particular counterexample,
+say n = 356 " y = 7 (Figure 10). We have also successfully ap-plied our tool to generate weakest counterexamples for termination
+of some programs (taken from recent work [22]).
+
+2. Program VerificationGiven a program with some assertions, the program veri
+
+ficationproblem is to verify whether or not the assertions are valid. The
+
+challenge in program verification is to discover the appropriate in-variants at different program points, especially inductive loop invariants that can be used to prove the validity of the given asser-tions. (The issue of discovering counterexamples, in case the assertions are not valid, is addressed in Section 6.2.)Program model In this paper, we consider programs that have
+
+linear assignments, i.e., assignments of the form x := e, or non-deterministic assignments
+
+x :=?. We also allow for assume andassert statements of the form
+
+assume(p) and assert(p), where pis some boolean combination of linear inequalities
+
+e >= 0. Here
+x denotes some program variable that takes integral values, and
+e denotes some linear arithmetic expression. Since we allow for
+assume statements, without loss of generality, we assume that allconditionals in the program are non-deterministic.
+
+2.1 Background: Conversion of programs to constraintsThe problem of program veri
+
+fication can be reduced to the problemof finding solutions to a second-order constraint. The second-order
+
+unknowns in this constraint are the unknown program invariantsthat are inductive and strong enough to prove the desired assertions. In this section we describe the conversion of programs toconstraints.
+
+We first illustrate the process of constraint generation for anexample program. Consider the program in Figure 1(a) with its
+control flow graph in Figure 1(b). The program's precondition is
+true and postcondition is y > 0. To prove the postcondition, weneed to find a loop invariant
+
+I at the loop header. There are threepaths in the program that constrain
+
+I. The first corresponds to theentry case; the path from
+true to I. The second corresponds to theinductive case; the path that starts and ends at
+
+I and goes aroundthe loop. The third corresponds to the exit case; the path from
+
+I to
+y > 0. Figure 1(c) shows the corresponding formal constraints.We now show how to generate such constraints in a more general setting of any arbitrary procedure. The first step is to choose acut-set. A cut-set is a set of program locations (called cut-points)
+such that each cycle in the control flow graph passes through someprogram location in the cut-set. One simple way to choose a cut-set
+
+PV1 (int y) {
+
+x := -50;
+while (x < 0) {
+
+x := x + y;
+y++;}
+
+assert(y > 0)}
+
+y > 0
+
+true
+
+x < 0
+x := x + y
+
+y++
+
+Y
+
+N
+
+I
+x := -50
+
+(a) (b)
+#x,y!(I):
+
+true $ I[-50/x]
+I % x < 0 $ I[(y+1)/y, (x+y)/x]
+I % x >= 0 $ y > 0(c)
+
+Figure 1. (a) A program verification example (b) The correspond-ing control flow graph (c) Constraint generated from the program
+over the unknown loop invariant I at loop header. Our tool gener-ates a disjunctive solution
+
+(x < 0 # y > 0) for the invariant I.
+
+is to include all targets of back-edges in any depth first traversalof the control-flow graph. (In case of structured programs, where
+all loops are natural loops, this corresponds to choosing the headernode of each loop.) However, as we will discuss in Section 2.3,
+some other choices of cut-set may be more desirable from an effi-ciency/precision viewpoint. For notational convenience, we assume
+that the cut-set always includes the program entry location !entryand exit location
+
+!exit.We then associate each cut-point
+
+! with a relation I! overprogram variables that are live at
+!. The relations I!entry and I!exitat program's entry and exit locations respectively are set to
+
+true,while the relations at all other cut-points are unknown relations
+
+that we seek to discover. Two cut-points are adjacent if thereis a path in the control flow graph from one to the other that
+does not pass through any other cut-point. We establish constraintsbetween the relations at adjacent cut-points
+
+!1 and !2 as follows.Let
+Paths(!1, !2) denote the set of paths between !1 and !2that do not pass through any other cut-point. We use the notation
+
+VC(!1, !2) to denote the constraint that the relations I!1 and I!2at adjacent cut-points
+
+!1 and !2 respectively are consistent withrespect to each other:
+
+VC(!1, !2) = $X 0@ ^
+
+""Paths(!1,!2)
+
+(I!1 % "(#, I!2))1A
+
+Above, X denotes the set of program and fresh variables that occurin
+
+I!1 and "(#, I!2). The notation "(#, I) denotes the weakest pre-condition of path
+
+# (which is a sequence of program instructions)with respect to
+I and is as defined below:
+
+"(skip, I) = I
+"(x := e, I) = I[e/x]
+
+"(x :=?, I) = I[r/x]
+
+"(assume p, I) = p % I
+"(assert p, I) = p " I
+
+"(S1; S2, I) = "(S1, "(S2, I))where
+
+r is some fresh variable and the notation [e/x] denotessubstitution of
+
+x by e and may not be eagerly carried out acrossunknown relations.
+
+Let !1, !2 range over pairs of adjacent cut-points. Then anysolution to the unknown relations
+
+I! in the following (verification)constraint (which may also have substitutions), yields a valid proof
+
+of correctness.
+
+^
+!1,!2
+
+VC(!1, !2) (1)
+
+Observe that this constraint is universally quantified over the pro-gram variables and is a function of $
+
+I, the vector of relations I! at allcut-points (including
+I!entry , I!exit). We therefore write it as theverification constraint $
+
+X.%($I). For program verification I!entryand
+I!exit are set to true. Going back to the example, the second-order constraints corresponding to the program in Figure 1(a) are
+
+shown in Figure 1(c) and correspond to the entry, inductive and exitconstraints for the loop.
+
+2.2 Constraint solvingIn this section we show how to solve the second-order constraint
+from Eq. 1 that represents the verification condition of unknownrelations at cut-points. One way to solve these constraints for discovering the unknown invariants I! is to use fixed-point based tech-niques like abstract interpretation. Another (significantly manual)
+approach is to require the programmer to provide the invariants atthe cut-points, which can then be verified using a theorem prover.
+Instead, we take the approach of reducing the second-order con-straint into a boolean formula such that a satisfying assignment to
+the formula maps to a satisfying assignment for the second-orderconstraint. Throughout this section, we will illustrate our reduction
+over the constraints from Figure 1(c).Our constraint-solving approach involves three main steps.
+First, we assume some invariant templates (possibly disjunctive)and reduce the second-order constraints to first-order constraints
+over the unknown parameters of the templates. We then make use ofFarkas' lemma [38] to translate the first-order constraints (with universal quantification) into an existentially quantified multi-linearquadratic constraint. These constraints are then translated into a
+SAT formula using bit-vector modeling (instead of solving themusing specialized mathematical solvers [8, 10]). These three steps
+are detailed below.
+Step 1 First, we convert second-order unknowns to first-order un-knowns. Instead of searching for a solution to unknown relations
+(which are second-order entities) from an arbitrary domain, we re-strict the search to a template that is some boolean combination of
+linear inequalities among program variables. For example, an un-known relation can have the template
+
+(P
+
+i a
+
+ixi >= 0 " P
+
+i b
+
+ixi >=
+
+0) # (P
+
+i c
+
+ixi >= 0 " P
+
+i d
+
+ixi >= 0), where ai, bi, ci, di are all un-known integer constants and
+
+xi are the program variables. The tem-plate can either be provided by the user (for example, by specifying
+
+the maximum number of conjuncts and disjuncts in DNF represen-tation of any unknown relation), or we can have an iterative scheme
+in which we progressively increase the size of the template until asolution is found. Given such templates, we replace the unknown
+relations in the constraint in Eq. 1 by the templates and then applyany pending substitutions to obtain a first-order logic formula with
+unknowns that range over integers.For the example in Figure 1(a), a relevant invariant template
+is a1x + a2y + a3 >= 0 # a4x + a5y + a6 >= 0, where the
+ai's are (integer) unknowns to be discovered. If the chosen domainfor the template is not expressive enough then the constraints will
+
+be unsatisfiable. On the other hand if there is redundancy thenredundant templates can always be instantiated with
+
+true or falseas required. This step of the reduction translates the verification
+
+constraint in Figure 1(c) with second-order unknowns I to first-order unknowns
+
+ai's. For example, the first constraint in Figure 1(c)after Step 1 is
+true % (-50a1 + a2y + a3 >= 0) # (-50a4 +
+a5y + a6 >= 0).
+
+Step 2 Next, we translate first-order universal quantification tofirst-order existential quantification using Farkas' lemma (at the
+cost of doing away with some integral reasoning). Farkas' lemmaimplies that a conjunction of linear inequalities
+
+ei >= 0 (withintegral coefficients) is unsatisfiable over rationals iff some nonnegative (integral) linear combination of ei yields a negative quan-tity, i.e.,
+
+$X  ~(^
+
+i
+
+ei >= 0)! '%
+
+(& > 0, &i >= 0 "$X  X
+
+i
+
+&iei ) -&!#
+
+The reverse direction of the above lemma is easy to see since it isnot possible for a non-negative linear combination of non-negative
+expressions ei to yield a negative quantity. The forward directionalso holds since the only way to reason about linear inequalities
+over rationals is to add them, multiply them by a non-negativequantity or add a non-negative quantity.
+
+The universal quantification on the right hand side of the aboveequivalence is over a polynomial equality, and hence can be gotten
+rid of by equating the coefficients of the program variables X onboth sides of the polynomial equality.
+
+We can convert any universally quantified linear arithmetic for-mula $
+
+X(%) into an existentially quantified formula using Farkas'lemma as follows. We convert
+
+% in conjunctive normal form V
+
+i %
+
+i,where each conjunct
+
+%i is a disjunctions of inequalities W
+
+j e
+
+j
+i >= 0.Observe that $
+
+X(%) = V
+
+i $X(%
+
+i) and that %i can be rewritten as
+
+~ V
+
+j (-e
+
+j
+i - 1 >= 0). Hence, Farkas' lemma, as stated above, can beapplied to each $
+
+X(%i).We illustrate the application of this step over the first constraint
+
+from Figure 1(c) that we obtained after Step 1. After Step 1 we have
+true % e1 >= 0#e2 >= 0 (where e1 ) -50a1 +a2y +a3 >= 0 and
+e2 ) -50a4 + a5y + a6 >= 0 as obtained earlier). After expandingthe implication we get a constraint that is already in CNF form and
+
+therefore the corresponding unsatisfiability constraint is ~((-e1 -
+1 >= 0) " (-e2 - 1 >= 0)). Farkas' lemma can now be applied toyield (
+
+&1, &2 >= 0, & > 0($x,y&1(-e1-1)+&2(-e2-1) ) -&).Now we can collect the coefficients for
+
+x, y to get a first-orderexistential constraint. Notice that
+&1 (respectively &2) is multipliedwith the coefficients inside
+e1 (respectively e2) and therefore this isa multi-linear quadratic constraint over integer variables. Equating
+
+the coefficients of y and the constant term we get the constraints:
+(50a1&1 - a3&1 - &1) + (50a4&2 - a6&2 - &2) = -& and
+a2&1 + a5&2 = 0.Application of Farkas' lemma leads to a loss of completeness
+
+since we do away with some integral reasoning. For example,Farkas' lemma cannot help us prove unsatisfiability of
+
+3x >= 1 "
+2x <= 1, where x ranges over integers. However, we have not foundthis loss of completeness to be a hindrance in any of our benchmark
+
+examples.
+Step 3 Next, we convert the first-order existentially quantified (orquantifier-free) formula obtained from Step 2 to a SAT formula.
+
+The formula that we obtain from Step 2 is a conjunction of (multi-linear quadratic polynomials) over integer variables. We convert
+such a formula into a SAT formula by modeling integer variablesas bit-vectors and encoding integer operations like arithmetic, multiplication, and comparison as boolean operations over bit-vectors.Our approach to constraint solving is sound in the sense that any
+satisfying solution to the SAT formula yields a valid proof of cor-rectness. However, it is not complete, i.e., there might exist a valid
+
+proof of correctness but the SAT formula might not be satisfiable.This is not unexpected since program verification in general is an
+undecidable problem, and no algorithm can be expected to be bothsound and complete. However, our constraint solving approach is
+complete under two assumptions (i) the unknown invariants are in-stances of given templates, (ii) checking consistency of invariants
+at adjacent cut-points does not require integral reasoning. We havefound that both these assumptions are easily met for our benchmark
+examples. The real challenge instead lies in finding the satisfiabilityassignment for the SAT formula, for which the recent engineering
+advances in SAT solvers seem to stand up to the task.
+2.3 Choice of cut-setThe choice of a cut-set affects the precision and ef
+
+ficiency of ouralgorithm (or, in fact, of any other constraint-based technique).
+
+The choice of a cut-set has been overlooked in constraint-basedapproaches. [4] recently proposed a technique for performing fixedpoint computation on top of constraint-based technique to regainsome precision, which we claim was inherently lost in the first
+place because of a non-optimal choice of cut-set. In this section,we describe a novel strategy for choosing a cut-set that strikes a
+good balance between precision and efficiency.From definition of a cut-set, it follows that we need to include
+some program locations from each loop into the cut-set. One simplestrategy is to include all header nodes (or targets of back-edges) as
+cut-points. Such a choice of cut-set necessitates searching/solvingfor unknown relations over disjunctive relations when the proof of
+correctness involves a disjunctive loop invariant. It is interesting tonote that for several programs that require disjunctive loop invariants, there is another choice for cut-set that requires searching forunknown relations over only conjunctive domains. Furthermore,
+even the number of conjuncts required are less compared to thoserequired when the header nodes are chosen to be cut-points. This
+choice for cut-set corresponds to choosing one cut-point on eachpath inside the loop. In presence of multiple sequential conditionals inside a loop, this requires expanding the control-flow inside theloop into disjoint paths and choosing a cut-point anywhere on each
+disjoint path. In fact, this choice for cut-set leads to the greatestprecision in the following sense.
+
+THEOREM 1. Let C be a cut-set that includes a program locationon each acyclic path inside a loop (after expansion of control
+flow inside the loop into disjoint paths). Suppose that the searchspace for unknown relations is restricted to templates that have a
+specified boolean structure. If there exists a solution for unknownrelations corresponding to any cut-set, then there also exists a
+solution for unknown relations corresponding to cut-set C.
+The proof of Theorem 1 is given in the full version of this pa-per [21]. Furthermore, there are several examples that show that
+
+the reverse direction in Theorem 1 is not true (i.e., there exists asolution to the unknown relations corresponding to cut-set
+
+C, butthere is no solution to unknown relations corresponding to some
+
+other choice of cut-set). This is illustrated by the example in Fig-ure 2 (discussed below).
+
+Examples Consider the example shown in Figure 2. Let !i denotethe program point that immediately precedes the statement at line
+i in the program. The simplest choice of cut-set corresponds tochoosing the loop header (program location
+
+!2). The inductiveinvariant that is required at the loop header, and is discovered by
+
+our tool, is the disjunction (0 <= x <= 51 " x = y) # (x >=
+51 " y >= 0 " x + y = 102). If we instead choose the cut-set to be{
+
+!4, !6} (based on the strategy described in Theorem 1), then theinductive invariant map is conjunctive. This is significant because
+
+conjunctive invariants are easier to discover. Our tool discovers the
+
+PV2() {1
+
+x := 0; y := 0;2
+while (true) {3
+
+if (x <= 50)4
+
+y++;5
+else6
+
+y--;7
+if (y < 0)8
+
+break;9
+x++;10 }
+
+11 assert(x = 102)}
+
+Figure 2. Another program verification example (taken from [16])that requires a disjunctive invariant at the loop header. However, a
+non-standard choice of cutset (as suggested in Theorem 1) leads toconjunctive invariants.
+
+inductive invariant map {!4 +, (y >= 0 " x <= 50 " x = y), !6 +,
+(y >= 0 " x >= 50 " x + y = 102)} in such a case.However, the choice of cut-set mentioned in Theorem 1 does not
+
+always obviate the need for disjunctive invariants. The example inFigure 1(a) has no conditionals inside the loop, and yet any (linear)
+inductive invariant required to prove the assertion is disjunctive(e.g.,
+
+(x < 0) # (y > 0), which is what our tool discovers).Heuristic proposals [34, 4] for handling disjunction will fail to
+
+discover invariants for such programs.
+
+3. Interprocedural AnalysisThe
+
+" computation described in previous section is applicable onlyin an intraprocedural setting. In this section, we show how to extend
+
+our constraint-based method to perform a precise (i.e., context-sensitive) interprocedural analysis.
+
+Precise interprocedural analysis is challenging because the be-havior of the procedures needs to be analyzed in a potentially unbounded number of calling contexts. Procedure inlining is one wayto do precise interprocedural analysis. However, there are two problems with this approach. First, procedure inlining may not be possi-ble at all in presence of recursive procedures. Second, even if there
+are no recursive procedures, procedure inlining may result in anexponential blowup of the program.
+
+A more standard way to do precise interprocedural analysis is tocompute procedure summaries, which are relations between procedure inputs and outputs. These summaries are usually structured assets of pre/postcondition pairs
+
+(Ai, Bi), where Ai is some relationover procedure inputs and
+Bi is some relation over procedure in-puts and outputs. The pre/postcondition pair
+
+(Ai, Bi) denotes thatwhenever the procedure is invoked in a calling context that satisfies
+
+constraint Ai, the procedure ensures that the outputs will satisfy theconstraint
+
+Bi. However, there is no automatic recipe to efficientlyconstruct or even represent these procedure summaries, and abstraction specific techniques may be required. Data structures andalgorithms for representing and computing procedure summaries
+have been described over the abstraction of linear constants [33],and linear equalities [29]. Recently, some heuristics have been described for the abstraction of linear inequalities [39].In this section, we show that a constraint-based approach is
+particularly suited to discovering such useful pre/postcondition
+(Ai, Bi) pairs. The key idea is to observe that the desired behaviorof most procedures can be captured by a small number of such
+
+(unknown) pre/postcondition pairs. We then replace the procedurecalls by these unknown behaviors and assert that the procedure,
+in fact, has such behaviors as in assume-guarantee style reason-ing [23]. For ease of presentation and without loss of generality, let
+
+IP1() {
+
+x := 5; y := 3;
+result := Add(x, y);
+assert(result = 8);}
+
+Add(int i, j) {
+
+if i <= 0
+
+ret := j;
+else
+
+b := i - 1;
+c := j + 1;
+ret := Add(b, c);
+return ret;}
+
+IP2() {
+
+result :=M(19)+M(119);
+assert(result = 200);}
+
+M(int n) {
+
+if(n > 100)
+
+return n - 10;
+else
+
+return M(M(n + 11));}
+
+(a) (b)
+Figure 3. Interprocedural analysis examples. (a) is taken from [39,30]. (b) is the famous McCarthy 91 function [28, 27, 26], which
+
+requires multiple pre/postcondition pairs.
+
+us assume that a procedure does not read/modify any global vari-ables; instead all global variables that are read by the procedure are
+passed in as inputs, and all global variables that are modified by theprocedure are returned as outputs.
+
+Suppose we conjecture that there are q interesting pre/post-condition pairs for procedure
+
+P (x){S; return y; } with the vectorof formal arguments
+x and vector of return values y. In practice, thevalue of
+q can be iteratively increased until invariants are found thatmake the constraint system satisfiable. Then, we can summarize the
+
+behavior of procedure P using q tuples (Ai, Bi) for 1 <= i <= q,where
+
+Ai is some relation over procedure inputs x, while Bi issome relation over procedure inputs and outputs
+
+x and y. We assertthat this is indeed the case by generating constraints for each
+
+i asbelow and asserting their conjunction:
+
+assume(Ai); S; assert(Bi); (2)We compile away procedure calls
+
+v := P (u) on any simple pathby replacing them with the following code fragment:
+
+v :=?; assume  ^
+
+i
+
+(Ai[u/x] % Bi[u/x, v/y])! ; (3)
+
+Observe that in our approach, there is no need, in theory, tohave
+
+q different pre/postcondition pairs. In fact, the summary of aprocedure can also be represented as some formula
+
+%(x, y) (witharbitrary Boolean structure) that represents relation between procedure inputs x and outputs y. In such a case, we assert that %indeed is the summary of procedure
+
+P by generating constraintfor {
+S; assert(%(x, y)); }, and we compile away a procedurecall
+v := P (u) by replacing it by the code fragment v :=
+?; assume(%[u/x, v/y]). However, our approach of maintainingmultiple symbolic pre/postcondition pairs (which is also inspired
+
+by the data structures used by the traditional fixed-point computa-tion algorithms) is more efficient since it enforces more structure on
+the assume-guarantee proof and leads to lesser unknown quantitiesand simpler constraints.
+
+Examples Consider the example shown in Figure 3(a). Our toolverifies the assertion by generating the pre/post pair
+
+(i >= 0, ret =
+i+j) for procedure Add. This example illustrates that only relevantpairs are computed for each procedure. In addition to serving as
+
+the base case of the recursion the true branch of the conditioninside
+
+Add has the concrete effect formalized by the pre/post pair
+(i < 0, ret = j). However, this behavior is not needed to proveany assertion in the program and is therefore suppressed.
+
+The procedure M(int n) in Figure 3(b) is the widely knownMcCarthy91 function whose most accurate description is given
+
+by the pre/post pairs (n > 100, ret = n - 10) and (n <=
+100, ret = 91). The function has often been used as a benchmarktest for automated program verification. The goal directed nature
+
+of the verification problem allows our tool to derive (101 <= n <=
+119, ret = n - 10) and (n <= 100, ret = 91) as the pairs thatprove the program assertion. As such, it discovers only as much as
+
+is required for the proof.
+
+4. Weakest PreconditionGiven a program with some assertions, the problem of weakest
+precondition generation is to infer the weakest precondition I!entrythat ensures that whenever the program is run in a state that satisfies
+I!entry, the assertions in the program hold. In Section 6 we showthat a solution to this problem can be a useful tool for a wide range
+of applications.In this section, we present a constraint-based approach to inferring weakest preconditions under a given template. Since a precisesolution to this problem is undecidable, we work with a relaxed
+notion of weakest precondition. For a given template structure (asdefined in step 2.1 in Section 2), we say that
+
+A is a weakest pre-condition if
+A is a precondition that fits the template and involvesconstants whose absolute value is at most
+
+c (where c is some givenconstant such that the solutions of interest are those that involve
+
+constants whose absolute value is at most c) and there does notexist a weaker precondition than
+
+A with similar properties.The first step in a constraint-based approach to weakest precondition generation is to treat the precondition I!entry as an unknownrelation in Eq. 1, unlike in program verification where we set
+
+I!entryto be
+true. However, this small change merely encodes that anyconsistent assignment to
+
+I!entry is a valid precondition, not neces-sarily the weakest one. In fact, when we run our tool with this small
+
+change for any example, it returns false as a solution for I!entry .Note that
+
+false is always a valid precondition, but not necessarilythe weakest one.
+
+One simple approach to finding the weakest precondition maybe to search for a precondition that is weaker then the current
+solution (which can be easily enforced by adding another constraintto Eq. 1), and to iterate until none exists. However, this approach
+can have a very slow progress. When we analyzed Figure 4(a)(discussed below) using this approach, our tool iteratively produced
+i >= j+127, i >= j+126, . . . , i >= j under a modeling that used 8-bittwo's-complement integers. In general this na"ive iterative technique
+will be infeasible. We need to augment the constraint system toencode the notion of a weakest relation.
+
+We can encode that I!entry is a weakest precondition as follows.The verification constraint in Eq. 1 can be regarded as function of
+two arguments I!entry and Ir, where Ir denote the relations at allcut-points except at the program entry location, and can thus be
+written as $X.%(I!entry, Ir). Now, for any other relation I# that isstrictly weaker than
+
+I!entry, it should not be the case that I# is avalid precondition. This can be stated as the following constraint.
+
+$X.%(I!entry, Ir) "$
+
+I#, I#r `weaker(I#, I!entry) % ~$X.%(I#, I#r)'
+
+where weaker(I#, I!entry) def= ($X.(I!entry % I#) " (X.(I# "~
+
+I!entry)).The trick of using Farkas' lemma to get rid of universal quantification (Step 2.2 in Section 2) cannot be applied here because thereis existential quantification nested inside universal quantification.
+In this section we describe some iterative techniques for generatingweakest preconditions. We present two different novel approaches
+in Sections 4.1 and 4.2.
+
+WP1(int i, j) {
+
+x := y := 0;
+while (x <= 100) {
+
+x := x + i;
+y := y + j;}
+
+assert(x >= y)}
+
+Merge(int m1, m2, m3) {
+
+assert(m1 >= 0 % m2 >= 0)
+k := i := 0;
+while (i < m1) {
+
+assert(0 <= k < m3)
+A[k++] = B[i++];}
+
+i := 0;
+while (i < m2) {
+
+assert(0 <= k < m3)
+A[k++] = C[i++];}
+
+}(a) (b)
+
+Figure 4. Weakest Precondition Examples.
+
+Examples For the procedure in Figure 4(a), our tool generatestwo different conjunctive preconditions (which individually ensure
+the validity of the given assertion): (i) (i >= j), which ensures thatwhen the loop terminates then
+
+x >= y, (ii) (i <= 0), which ensuresthat the loop never terminates making the assertion unreachable and
+
+therefore trivially true.Figure 4(b) shows an array merge procedure that is called to
+merge two arrays B, C of sizes m1, m2 respectively into a thirdone
+
+A of size m3. The procedure is correct if no invalid array accessare made (stated as the assertions inside the loops) when it is run
+
+in an environment where the input arrays B and C are proper (i.e.
+m1, m2 >= 0, which is specified as an assertion at the procedureentry). For the
+
+Merge procedure in Figure 4(b), our tool generatestwo different conjunctive preconditions
+
+m3 >= m1 + m2 " m1 >=
+0 " m2 >= 0 and m1 = 0 " m2 = 0.
+
+4.1 Binary search strategyFirst, note that without loss of generality we can assume that the
+
+weakest precondition to be discovered is a conjunctive invariant.This is because we can obtain the disjunctive weakest precondition
+as disjunctions of disjoint weakest conjunctive solutions. 1
+
+THEOREM 2. Let I )
+
+nV
+
+i=1 e
+
+i >= 0 be some non-false precondition.For any
+
+n * (n + 1) matrix D of non-negative constants, let I(D)
+
+denote the formula
+
+nV
+
+i=1  D
+
+i,n+1 +
+
+nP
+
+j=1 D
+
+i,jei >= 0!. Let I# be
+
+some weakest precondition (in our template structure) s.t. I % I#.Then,
+
+A1. There exists a non-negative matrix D# such that I# = I(D#).A2. For any matrix
+
+D## that is strictly larger than D# (i.e., D##i,j >=
+D#i,j for all i, j and D##i,j > D#i,j for some i, j), I(D##) is not aprecondition (in our template structure).
+
+A3. For any (non-negative) matrix D### that is smaller than D# (i.e.,
+
+D###i,j >= D#i,j for all i, j), I(D###) is a precondition.
+
+PROOF: A1 follows from Farkas' lemma. A2 follows from thefact that
+
+I(D##) is strictly weaker than I(D#) and I(D#) is aweakest precondition. A3 follows from the fact that
+
+I(D###) isstronger than
+I(D#). !
+
+1 The significance of generating a weakest conjunctive solution that isdisjoint with other weakest conjunctive solutions already generated lies in
+the fact that the number of weakest conjunctive solutions may potentially beunbounded. However, the number of weakest disjoint conjunctive solutions
+is finite.
+
+WPreFromPre(Input: Precondition I)1
+
+Di,j := 0;2
+foreach 1 <= i, j <= n:3
+
+low := 0; high := MaxN;4
+while (high - low > 1MaxD )5
+
+mid := (high + low)/2;6
+Di,j := mid;7
+if ( a precondition I# s.t. I(D) % I#8
+
+then low := mid;9
+else high := mid;10
+Di,j := low;11
+Output a precondition I# s.t. I(D) % I#.
+
+Figure 5. A binary-search based iterative algorithm for computinga weakest precondition starting from any non-false precondition.
+
+Theorem 2 suggests a binary search based algorithm (describedin Figure 5) for finding a weakest precondition. The parameters
+MaxN and MaxD denote an upper bound on the values of the numer-ator and denominator of any rational entry of the matrix
+
+D# referredto in Theorem 2(A1). Since the absolute values of all coefficients
+
+in I and I# are bounded above by c, MaxD and MaxN are boundedabove by
+
+NN/2 * cN , where N = n2. 2Observe that the preconditions in line 7 and line 11 can be
+
+generated by simply adding the additional constraint I(D) %
+I!entry to the verification condition for the procedure, and thensolving for the resulting constraint using the technique discussed
+
+in Section 2. Also note that the matrix D computed at the end isnot exactly the matrix
+
+D# referred to in Theorem 2(A1) but is closeenough in the sense that any precondition weaker than
+
+I(D) is aweakest one.
+
+The algorithm in Figure 5 involves making a maximum of
+n2*log (MaxN * MaxD) queries to the constraint solver. Hence, it isuseful to start with a non-false precondition with the least value of
+
+n(where
+n denotes the number of conjunctions of linear inequalitiesin the input precondition
+
+I). Such a precondition can be found byiteratively increasing the number of conjuncts in the template for
+
+the precondition until one is found.In the next Section, we describe another algorithm for generating a weakest precondition, which we found to be more efficientfor our benchmark examples.
+
+4.2 Locally pointwise-weakest strategyFor simplicity of presentation, we assume that each non-trivial
+maximally strongly connected component in the control flow graphhas exactly one cut-point (an assumption that can also be ensured
+by simple transformations [21]). However, the results in this sectioncan be extended to the general setting without this assumption.
+
+The algorithm for generating a weakest precondition is de-scribed in Figure 6. Line 8 initializes
+
+I! to a pointwise-weakestrelation (defined below) for each cut-point
+
+! in reverse topologi-cal order of the control dependences between different cut-points.
+
+(Note that since we assume that each maximal SCC does not havemore than one cut-point, there are no cyclic control dependences
+
+2 This is because the entries in matrix D are solutions to a system oflinear equations each of whose coef
+
+ficients are bounded in absolute valueby
+c. These linear equations are obtained by equating the coefficients ofcorresponding variables in the
+
+n equivalences represented by I# = I(D#).The solution to each unknown in a system of linear equations can be
+
+described by ratio of two determinants whose entries are coefficients ofthe linear equations. Since there can be at most
+
+n2 linearly independentequations among
+n2 unknowns, each entry in matrix D can be expressedas ratio of two determinants, each of size at most
+
+N * N where N = n2,and all of whose entries are bounded in absolute value by
+
+c.
+
+WPre(Input: Neighborhood structure N)1
+
+foreach cutpoint ! in reverse topological order:2
+
+I := false;3
+while ( a relation I# at ! s.t.4
+
+(a) V
+
+!!"Successors(!) VC(!, !
+
+#)[I! . I#]
+
+5 (b) I % I# but I# /% I
+6 (c) V
+
+I!!"N(I!)   W!!"Successors(!) ~VC(!, !
+
+#)! [I! . I##]
+
+7 do {I := I#};8
+
+I! := I;9
+Output I!entry;
+
+Figure 6. Another iterative algorithm for computing a weakestprecondition based on an input neighborhood structure
+
+N.
+
+between different cut-points.) We define a relation I at a cut-pointto be pointwise-weakest if it is a weakest relation that is consistent with respect to the relations at its neighboring (successor) cut-points. It is easy to see that the pointwise-weakest relation thus
+generated at the program entry location will be a weakest precon-dition.
+
+The while loop in Line 3 generates a pointwise-weakest relationat a cut-point
+
+! by generating a locally pointwise-weakest relation(as defined below) with respect to the input neighborhood structure N in each iteration and repeating the process to obtain a weakerlocally pointwise-weakest relation until one exists. (This process
+is conceptually similar to iterating over local minimas to obtain aglobal minima.) We say that a relation
+
+I is a locally pointwise-weakest with respect to a neighborhood
+
+N if it is a weakest rela-tion among its neighbors that is consistent with respect to the relation at its neighboring (successor) cut-points. A locally pointwise-weakest relation can be generated by simply solving the constraints
+on Lines 5-6 using the technique discussed in Section 2. Observethat the constraints
+
+I# /% I and ~VC(!, !#) are already exis-tentially quantified, and hence do not require the application of
+
+Farkas' lemma to remove universal quantification. The only dif-ference is that we now obtain quadratic inequalities as opposed to
+quadratic equalities obtained at the end of Step 2 (on Page 3) of ourconstraint-solving methodology. However, the bit-vector modeling
+in Step 3 works equally well for quadratic equalities as well as in-equalities. Also note that the neighborhood structure
+
+N should besuch that it should be possible to enumerate all elements of
+
+N(I#)for any invariant template
+I#.The performance of our algorithm crucially depends on the
+
+choice of the input neighborhood structure, which affects the num-ber of iterations of the loop in Line 3. A denser neighborhood structure may result in lesser number of iterations of the while loop (i.e.,a lesser number of queries to the constraint solver), but a larger
+sized query as a result of the condition in Line 7. We describe be-low a neighborhood structure that we found to be quite efficient for
+our purposes; in fact, it required upto 3 iterations for most of ourbenchmark examples. However, (unlike the binary search strategy
+described in previous section), we have not been able to prove aformal bound on the worst-case number of queries to the constraint
+solver that our choice of neighborhood structure can yield becauseof repeated iterations of the while loop.
+
+4.2.1 Neighborhood StructureIn this section, we describe the neighborhood structure
+
+N that weused in our experiments. The set of relations that are in the neighborhood N of a conjunctive relation (in which, without loss of gen-erality, we assume that all inequalities are independent of each
+
+Swap(int x) {
+
+while (*)
+
+if (x = 1)
+
+x := 2;
+else if (x = 2)
+
+x := 1;
+assert(x <= 8);}
+
+SP2() {
+
+d := t := s := 0;
+while(1)
+
+if (*)
+
+t++; s := 0;
+else if (*)
+
+if (s < 5)
+
+d++; s++;}
+
+(a) (b)
+Figure 7. (a) Weakest precondition example that has two locallypointwise-weakest relations at program entry. (b) Strongest Postcondition example taken from [16, 17].
+
+other) are as described below.
+
+N(
+
+n^
+
+i=1
+
+ei >= 0) = {ej + 1 >= 0 " ^
+
+i$=j
+
+ei >= 0 | 1 <= j <= n} 0
+
+{ej + e# >= 0 " ^
+
+i$=j
+
+ei >= 0 | j /= ' " 1 <= j, ' <= n} (4)
+
+Geometric Interpretation: The neighborhood structure describedabove has a nice geometric interpretation. The neighbors of a convex region V
+
+i e
+
+i >= 0 are obtained by slightly moving any of thehyper-planes
+
+ej >= 0 parallel to itself, or by slightly rotating anyof the hyper-planes
+
+ej >= 0 along its intersection with any otherhyper-plane
+e# >= 0.We extend the neighborhood structure defined above to relations
+
+in DNF form (in which, without loss of generality, we assume thatall disjuncts are disjoint from each other) as:
+
+N(
+
+m_
+
+i=1
+
+Ii) = {I#j # _
+
+i$=j
+
+Ii | 1 <= j <= m; I#j 1 N(Ij)}
+
+Notice how the above choice of the neighborhood structurehelps avoid the repeated iteration over the preconditions
+
+i >= j +
+127, i >= j + 126, . . . , i >= j (as alluded in Section 4 on Page 4)to obtain the weakest precondition
+
+i >= j for the example in Fig-ure 4(a). None of these preconditions except
+
+i >= j is locallypointwise-weakest with respect to the above neighborhood structure. Hence, the use of the above neighborhood structure requiresonly one iteration of the while loop in the algorithm in Figure 6 for
+obtaining weakest precondition for the example in Figure 4(a).However, a locally pointwise-weakest relation with respect to
+the neighborhood structure defined above may not be a pointwise-weakest relation. For example, consider the program in Figure 7(a).
+The relations x <= 0 and x <= 8 are both locally pointwise-weakestrelations (with respect to the above neighborhood structure) at program entry. However, only the relation x <= 8 is a pointwise-weakest relation at program entry (and hence a weakest precondition). Hence, use of the above neighborhood structure requirestwo iterations of the while loop in the algorithm in Figure 6 for
+obtaining weakest precondition for the example in Figure 7(a).
+
+5. Strongest PostconditionThe problem of strongest postcondition is to generate the most precise invariants at a given cut-point. Just as in the weakest precon-dition case, we work with a relaxed notion of strongest postcondition, wherein we are interested in finding a strongest postcondi-tion, whose proof of correctness is expressible in the given template
+structure.Our technique for generating strongest postcondition is very
+similar to the weakest precondition inference technique describedin the previous section. We use the algorithm described in Figure 8
+
+SPost(Input: Neighborhood structure N)1
+
+foreach cutpoint ! in topological order:2
+
+I := true;3
+while exists a relation I# at ! s.t.4
+
+(a) V
+
+!!"Predecessors(!) VC(!
+
+#, !)[I! . I#]
+
+5 (b) I# % I but I /% I#
+6 (c) V
+
+I!!"N(I!)   W!!"Predecessors(!) ~VC(!
+
+#, !)! [I! . I##]
+
+7 do {I := I#};8
+
+I! := I;9
+Output I!exit;
+
+Figure 8. An iterative algorithm for computing a strongest post-condition based on an input neighborhood structure
+
+N.
+
+(in place of the algorithm described in Figure 6) with the followingneighborhood structure (in place of the one mentioned in Eq. 4).
+
+N(
+
+n^
+
+i=1
+
+ei >= 0) = {ej - 1 >= 0 " ^
+
+i$=j
+
+ei >= 0 | 1 <= j <= n} 0
+
+{ej - e# >= 0 " ^
+
+i$=j
+
+ei >= 0 | j /= ' " 1 <= j, ' <= n}
+
+Examples For a more general version of the procedure in Fig-ure 2, wherein we replace the constant
+
+50 by a symbolic constant
+m that is asserted to be non-negative, our tool generates the post-condition
+
+x = 2m + 2.For the procedure in Figure 7(b), our tool generates the strongest
+
+postcondition s + d + t >= 0 " d <= s + 5t.
+6. ApplicationsIn earlier sections, we have described constraint-based techniques
+
+for verification of safety properties. In this section, we show how toapply those techniques for finding counterexamples to safety properties, verification of termination (which is a liveness property), andfinding counterexamples to termination.
+
+6.1 Termination and Bounds AnalysisThe termination problem involves checking whether the given procedure terminates under all inputs. In this section, we show howto use the constraint-based approach to solve a harder problem,
+namely bounds analysis. The problem of bounds analysis is to finda worst-case bound on the running time of a procedure (say in terms
+of the number of instructions executed) expressed in terms of its in-puts.
+
+We build on the techniques that reduce the bounds analysisproblem to discovering invariants of a specific kind [20]. The key
+idea is to compute bounds on loop iterations and number of re-cursive procedure call invocations. Each of these can be bounded
+by appropriately instrumenting counter variables and estimatingbounds on counter variables. In particular, the number of loop iterations of a while loop "while c do S" can be bounded by com-puting upper bound on the instrumented variable
+
+i inside the loopin the following code fragment: "
+i := 0; while c do { i++; S; }".The number of recursive procedure call invocations of a procedure
+
+"P (x) { S }" can be bounded similarly by computing an upperbound on global variable
+
+i inside procedure P in the following codefragment: "
+P (x) { i := 0; P #(x); }; P #(x#) { i++; S[x#/x]; }".C
+
+LAIM 1. Let P be a given program. Let P # be the transformedprogram obtained after instrumenting counters that keep track of
+
+loop iterations and recursive call invocations and introducing par-tial assertions at appropriate locations that assert that the counters
+
+Loop(int n,m,x0,y0) {
+
+assert(x0 < y0);
+x := x0; y := y0;
+while (x < y)
+
+x := x + n;
+y := y + m;}
+
+Loop(int n,m,x0,y0) {
+
+assert(x0 < y0);
+x := x0; y := y0; i := 0;
+while (x < y)
+
+i++;
+assert(i <= f(n, m, x0, y0));
+x := x + n;
+y := y + m;}
+
+Original Program Instrumented Program
+Figure 9. Discovering weakest preconditions for termination.
+
+are bounded above by some function of the inputs. The program Pterminates iff the assert statements in
+
+P # are satisfied.Invariant generation tools such as abstract interpretation can
+
+be used to compute bounds on the counter variables (as proposedin [20]). We show instead that a constraint-based approach is particularly suited for discovering these invariants since they have aspecified form and involve linear arithmetic. We introduce assert
+statements with templates i < a0 + P
+
+i a
+
+ixi (at the counter incre-ment
+
+i++ site in case of loops and at the end of the procedure incase of recursive procedures) for bounding the counter variable.
+
+Besides the counter instrumentation strategy mentioned above,[20] also describes some other counter instrumentation strategies
+that can be used to compute non-linear bounds as a compositionof linear bounds on multiple instrumentation counters. Such techniques can also be used in our framework to compute non-linearbounds using linear templates.
+
+Additionally, the constraint-based approach solves an evenharder problem, namely inferring preconditions under which the
+procedure terminates and inferring a bound under that precondition.For this purpose, we simply run the tool in weakest precondition
+inference mode. This is particularly significant when proceduresare expected to be called under certain preconditions and would
+not otherwise terminate under all inputs. We are not aware of anytechnique that can compute such conditional bounds.
+
+Example For the example in Figure 9, our tool computes theweakest precondition
+
+n >= m + 1 " x0 <= y0 - 1 and the bound
+y0 -x0. The latter requires discovering the inductive loop invariant
+i <= (x - x0) - (y - y0).
+
+6.2 Counterexamples for Safety PropertiesSince program analysis is an undecidable problem, we cannot have
+
+tools that can prove correctness of all correct programs or find bugsin all incorrect programs. Hence, to maximize the practical success
+rate of verification tools, it is desirable to search for both proofsof correctness as well as counterexamples in parallel. Earlier, we
+showed how to find proofs of correctness of safety and termina-tion properties. In this section, we show how to find most-general
+counterexamples to safety properties.The problem of generating a most-general counterexample for
+a given set of (safety) assertions involves finding the most generalcharacterization of inputs that leads to the violation of some reachable safety assertion. We show how to find such a characterizationusing the techniques discussed in Section 4 and Section 6.1.
+
+The basic idea is to reduce the problem to that of finding theweakest precondition for an assertion. This reduction involves constructing another program from the given program P using the fol-lowing transformations:
+
+B1 Instrumentation of program with an error variable: We intro-duce a new error variable that is set to
+
+0 at the beginning of theprogram. Whenever violation of any assertion occurs (i.e., the
+
+negation of that assertion holds), we set the error variable to 1
+
+Bug1(int y, n) {1
+
+x := 0;2
+if (y < 9)3
+
+while (x < n)4
+
+assert(x < 200);5
+x := x + y;6
+else7
+
+while (x >= 0)8
+
+x++;}
+
+Bug1(int y, n) {1
+
+x := err := i1 := i2 := 0;2
+if (y < 9)3
+
+while (x < n)4
+
+i1++;5
+assert(i1 <= f1(n, y));6
+if (x >= 200)7
+
+err := 1; goto L;8
+x := x + y;9
+else10
+
+while (x >= 0)11
+
+i2++;12
+assert(i2 <= f2(n, y));13
+x++;14
+L: assert(err = 1);}
+
+(a) Original Program (b) Instrumented Program
+Figure 10. A most-general counterexample that leads to violationof the safety assertion in the original program is
+
+(n >= 200 +
+y) " (0 < y < 9). Our tool discovers this by instrumenting theprogram appropriately and then running our weakest precondition
+
+algorithm.
+
+and jump to the end of the program, where we assert that theerror variable is equal to
+
+1. We remove the original assertionsfrom the program.
+
+B2 Instrumentation to ensure termination of all loops: For this weuse the strategy described in Section 6.1, wherein we instrument
+
+the program with counter variables and introduce assertion tem-plates that assert that the counter variable is upper bounded by
+some function of loop inputs or procedure inputs.C
+LAIM 2. Let P be a program with some safety assertions. Let P#be the program obtained from program
+
+P by using the transfor-mation described above. Then,
+P has an assertion violation iff theassertions in program
+P# hold.Claim 2 holds and its signi
+
+ficance lies in the fact that now wecan use weakest precondition inference (Section 4) on the transformed program to discover most-general characterization of inputsunder which there is a safety violation in the original program.
+
+Example The program shown in Figure 10(a) is instrumentedusing transformations B1 and B2 and the resulting program is
+shown in Figure 10(b). Our tool discovers the precondition (n >=
+200 + y) " (9 > y > 0). The loop invariant (at line 3) thatestablishes all assertions in the instrumented program is
+
+(n >=
+200 + y) " (i <= x) " (9 > y > 0) " (x < n). Note that thisinvariant implies the instantiation
+
+n for the loop bound function
+f1(n, y). On the other hand the precondition y < 9 implies that theloop on line 10 is unreachable, and hence any arbitrary
+
+f2 suffices.Observe the importance of transformation B1. An alternative to
+
+transformation B1 that one might consider is to simply negate theoriginal safety assertion instead of introducing an error variable.
+This is incorrect for two reasons: (a) It is too stringent a criterionbecause it insists that in each iteration of the loop the original assertion does not hold, (b) It does not ensure reachability and allowsfor those preconditions under which the assert statement is never
+executed. In fact, when we run our tool with such an alternativetransformation on the example in Figure 10(a), we obtain
+
+n <= 0 asthe weakest precondition.
+
+Also, observe the importance of transformation B2. If we do notperform transformation B2 on the example in Figure 10(a), then
+the tool comes up with the following weakest precondition: y <= 0.Note that under this precondition, the assertion at the end of the
+program always holds since that location is unreachable.
+
+NT1(int x, y) {
+
+while (x >= 0)
+
+x := x + y;
+y++;}
+
+NT2(int i) {
+
+even := 0;
+while (i >= 0)
+
+if (even = 0)
+
+i--;
+else
+
+i++;
+even := 1 - even;}
+
+(a) (b)
+Figure 11. Non-termination examples taken from [22].
+
+Note that the transformation B2 does not ensure termination ofall loops in the original program. The transformation B2 ensures
+termination of only those loops that are reachable under the to-be-discovered weakest precondition and that too in the program
+obtained after transformation B1, which introduces extra control-flow that causes loops to terminate as soon as the violation of
+any safety property occurs. For example, the loop on line 10 inFigure 10(b) is unreachable under the discovered preconditions and
+therefore any arbitrary function f2 suffices.
+6.3 Counterexamples for TerminationThe problem of generating a most-general counterexample for program termination involves finding the most-general characteriza-tion of inputs that leads to non-termination of the program. Without
+loss of generality we assume that the program has at most one exitpoint.
+
+CLAIM 3. Let P be a given program with a single exit point. Let
+P # be the program obtained from P by adding the assert statement"
+
+assert(false)" at the end of the program. Then, P is non-terminating iff the assert statement in
+
+P # is satisfied.
+
+The significance of Claim 3 lies in the fact that now we canuse weakest precondition inference (Section 4) on the transformed
+program to discover most-general characterization of inputs underwhich the original program is non-terminating.
+
+Examples Consider the example shown in Figure 11(a). If weinstrument
+
+assert(false) at the end of the program, then ourtool generates the precondition
+
+x >= 0 " y >= 0, which is oneof the weakest affine conditions under which the program is nonterminating.Now consider the program shown in Figure 11(b). If we instrument assert(false) at the end of this program, then our toolgenerates the precondition
+
+i >= 1. Notice that the loop guard i >= 0is not sufficient to guarantee non-termination.
+
+7. ExperimentsIn previous sections, we have shown how to reduce various program analysis problems to the problem of solving SAT constraints.We now present encouraging experimental results illustrating that
+SAT solvers can in fact solve the constraints generated from ourchosen set of examples in a reasonable amount of time. Our examples are drawn from benchmarks used by state-of-the-art alternativetechniques.
+
+Our reduction technique is parameterized by several parameters(such as the cut-set, the number of bits used in bit-vector modeling,
+and the size of templates in terms of the number of conjuncts anddisjuncts) whose choice presents a completeness/efficiency tradeoff. An increase in size of these parameters increases the chancethat the required invariant/pre-condition would fit the template, but
+at the cost of generating a bigger SAT formula.
+
+Name Time Num.(secs) Clauses
+cegar1 [19] 0.08 5 Kcegar2 [19] 0.80 50 K
+barbr [18] 0.41 76 Kberkeley [18] 3.00 441 K
+bk-nat [18] 5.30 174 Kseesaw [18] 3.23 70 K
+hsortprime [18] 0.51 54 Klifnatprime [18] 1.27 51 K
+swim [18] 1.63 45 Kcars [18] 2.93 86 K
+ex1 [18] 0.10 10 Kex2 [18] 0.75 92 K
+fig1a [18] 0.14 20 Kfig2 [18] 0.56 239 K
+fig3 [18] 16.60 547 Kw1 [5], pg12 0.14 25 K
+w2 [5], pg12 1.80 165 K(a)
+
+Name Time Num.(secs) Clauses
+Fig 3(a), [39] 0.57 63 Ka1 [31], pg9 9.90 174 K
+a2 [29], pg2 0.50 75 Kmergesort 0.19 43 K
+quicksort 0.45 133 Kfibonacci 11.00 90 K
+Fig 3(b) 72.00 558 K(b)
+
+Name Time Num.(secs) Clauses
+Fig 2 [16, 17] 1.40 107 KFig 7(b)
+
+16.10 273 Kw1 [5], pg12
+
+0.60 60 Kspeed [17], pg10
+18.20 41 Kmerge [16], pg 11
+
+3.90 128 Kburner [15], pg14
+
+1.50 91 K
+
+(d)
+
+Name Time Num.(secs) Clauses
+[22], pg3 0.80 42 KFig 11(b) [22]
+
+0.40 57 KFig 11(a) [22]
+0.60 43 KFig 4(a)
+14.40 119 KFig 4(b)
+80.00 221 KFig 7(a)
+
+0.50 50 KFig 9
+11.60 118 KFig 10
+68.00 135 K
+
+(c)
+
+Table 1. (a) Program verification examples (b) Interprocedural analysis examples (c) Weakest precondition inference (including non-termination and bug-finding) examples. (d) Strongest postcondition inference examples
+
+In our experiments, we used the cut-set suggested by Theo-rem 1. For discovering the remaining parameters, we used an incremental strategy. We progressively increased the number of bitsrequired for bit-vector modeling by 2 bits (starting from 3 bits for
+unknown coefficients and 6 bits for unknown constants and 1 bitfor the multipliers
+
+&'s used in Farkas' lemma). The number of dis-juncts and conjuncts were progressively increased by 1 (starting
+
+with 1 disjunct and 2 conjuncts). The increment was performed un-til the SAT solver stopped saying UNSAT. For most of our benchmark examples, our choice of parameters required upto 2 iterationsteps. The specific choice of these parameters was motivated by
+the observation that for most of our examples, the required invari-ants involved only one disjunct and one bit for the multiplier
+
+&'s.We also observed that working with a smaller number of disjuncts
+
+and a smaller number of bits for the multiplier &'s is important forefficiency reasons because the size of the generated SAT formula
+usually blows up with these two particular parameters.Table 1 describes the results of our analysis on our benchmark
+examples. It shows the number of clauses in the generated CNFformula (for the choice of parameters for which the SAT solver
+was able to find a satisfying assignment) and the time taken bythe SAT solver (Z3 [12]) to find a satisfying assignment under the
+discovered parameters.Table 1(a) shows the time taken by our tool on several program verification examples. Most of these examples are taken frombenchmarks used by some state-of-the-art abstraction refinement
+based techniques [19, 18], which also provide exhaustive compar-ison against similar techniques. The last two examples
+
+w1 and w2are taken from [5].
+w1 is a simple loop iteration but with x <= nreplaced with
+x /= n while w2 is a loop with the guard moved in-side a non-deterministic conditional. Standard narrowing is unable
+
+to capture the precision lost due to widening in these instances. Oursolution times compare favorably against previous techniques.
+
+Table 1(b) shows the time taken by our tool for generating re-quired invariants for establishing validity of assertions in an interprocedural setting for different examples. The first three examplesare taken from alternate proposals [29, 31, 39] for discovering linear invariants in an interprocedural setting. We also analyze somerecursive procedures (Mergesort, Quicksort and Fibonacci) for discovering invariants that establish upper bounds on the number ofrecursive procedure call invocations after the respective procedures
+have been instrumented with the counter instrumentation strategydescribed in Section 6.1. The invariants for all of these examples
+required producing one pre/post pair for each procedure. Provingcorrectness of the McCarthy91 function in Figure 3(b), however,
+required computing two pre/post pairs.Table 1(c) shows the time taken by our tool for generating weakest preconditions for respective examples. Our tool implementsthe methodology described in Section 4.2 for generation weakest precondition. The first three examples in Table 1(c) are takenfrom [22], and we infer the weakest preconditions that ensure nontermination of these examples. Our most challenging example (Fig-ure 10) takes 68 seconds.
+
+Table 1(d) shows the time taken by our tool for generatingstrongest postconditions for respective examples taken from benchmarks used by some sophisticated widening techniques [5, 15, 16,17]. For each of these examples, we compute the strongest linear
+invariants that hold at the end of the respective procedures. Theexamples
+
+speed, merge, and burner model hybrid automaton forsome real systems.
+
+8. Related WorkConstraint solving based techniques Theoretical expositions of
+program analysis techniques frequently formulate them as con-straints (constraint-based CFA, type inference, reachable states in
+abstract interpretation [11], model checking among others) andtypically solve them using fixed-point computation. We instead
+concentrate on techniques that reduce the analysis problem to con-straints that can be solved using SAT/SMT solvers. Constraintbased techniques have been successfully applied for discoveringconjunctive linear arithmetic invariants [8, 36, 35, 37] in an intraprocedural setting. In contrast, our approach discovers lineararithmetic invariants with arbitrary (but pre-specified) boolean
+structure in a context-sensitive interprocedural manner.Constraint-based techniques have also been applied for discovering non-linear polynomial invariants [24] and invariants inthe combined theory of linear arithmetic and uninterpreted functions [3], but again in a conjunctive and intraprocedural setting. Itis possible to combine these techniques with our formulation to lift
+them to disjunctive and context-sensitive interprocedural settings.Constraint-based techniques, being goal-directed, work naturally in program verification mode where the task is to discoverinductive loop invariants for the verification of assertions. Otherwise, there is no guarantee on the precision of invariants gen-erated. [6] describes a simple iterative strategy of rerunning the
+solver with the additional constraint that the new solution should bestronger than the previous solution. Such a strategy can have a very
+slow progress. Our approach for strongest postcondition providesa more efficient solution. Additionally, we present a methodology
+for generating weakest preconditions.Constraint solvers have been used for finding bugs in loop-free
+programs [41] (obtained by unrolling loops in programs heuristi-cally). In contrast, our methodology can be used to find a mostgeneral counterexample and also find bugs in programs that requirean unbounded or a large number of loop iterations for the bug to
+manifest.Abstract interpretation based techniques for discovering linear
+
+arithmetic invariants There is a large body of work on sophisti-cated widening techniques [16, 17], abstraction refinement [40, 18]
+and specialized extensions (using acceleration [15], trace partition-ing and loop unrolling [5]) for discovering conjunctive linear inequality invariants in an intraprocedural setting. Powerset exten-sions [14, 19] of linear inequalities domain and derived techniques
+utilizing control flow structure [34, 4] have been proposed for dis-junctive invariants. All these are specialized to work for specific
+classes of programs. In contrast, our approach can uniformly dis-cover precise invariants in all such classes of programs in strongest
+postcondition setting, while also offering the added advantage ofbeing goal-directed in verification setting.
+
+There has been work on interprocedurally discovering linearequality relationships [33, 29]; however the problem of discovering linear inequalities in an interprocedural setting has not beeneffectively addressed. Recently, some heuristics have been proposed [39] to discover linear inequality relationships in an inter-procedural setting based on extension of an earlier work on transition matrices and postponing conditional evaluation. The preci-sion of these techniques is unclear in the presence of conditionals.
+Since our approach facilitates disjunctive reasoning, our approachdiscovers linear inequalities interprocedurally as naturally (and as
+precisely) as it does so in an intraprocedural setting.Proofs and counterexamples to termination There is a large
+
+body of work on proving termination properties by synthesizingranking functions [9, 32, 7, 1, 2, 10] using a variety of techniques
+including those based on constraint solving. We show how to useconstraint solving to solve the harder problem of timing analysis.
+Moreover, we also show how to do conditional termination analy-sis, wherein we infer preconditions for termination.
+
+Recently, finding counterexamples to termination was ad-dressed in [22]. Their technique finds counterexamples to termination properties by means of identifying lassos (linear programpaths that end in a non-terminating cycle) using a constraint-based
+approach to find recurring sets of states. In contrast, our schemefor proving non-termination is based on inferring weakest preconditions, thereby inferring a most-general counterexample to termi-nation.
+
+9. Conclusion and Future WorkThis paper describes how to model a wide spectrum of program
+analysis problems as constraints that can be solved using off-the-shelf constraint solvers. We show how to model the problem of discovering invariants that involve (conjunctions and disjunctions of)
+
+linear inequalities (both intraprocedurally and interprocedurally),and apply it to the problem of checking safety properties and timing
+analysis of programs. We also show how to model the problem ofdiscovering weakest preconditions (and strongest postconditions)
+and apply it to inferring most-general counterexamples for bothsafety and termination properties. The constraints that we generate are boolean combinations of quadratic inequalities over integervariables, which we reduce to SAT formulas using bit-vector modeling. We show experimentally that the SAT solver can efficientlysolve such constraints generated from hard benchmarks.
+
+The work described here can be extended in two directions. Thefirst one is to extend these techniques to discover a richer class
+of invariants involving arrays, pointers, and even quantifiers. Sec-ondly, one can also consider new constraint solving techniques, in
+particular QBF (Quantified Boolean Formula) solvers. This wouldalleviate the need for applying Farkas' lemma to compile away universal quantification, leading to smaller sized SAT formulas, butthose that are universally quantified.
+
+References[1] I. Balaban, A. Cohen, and A. Pnueli. Ranking abstraction of recursive
+
+programs. In VMCAI, pages 267-281, 2006.[2] J. Berdine, A. Chawdhary, B. Cook, D. Distefano, and P. W. O'Hearn.
+Variance analyses from invariance analyses. In POPL, pages 211-224, 2007.
+[3] D. Beyer, T. Henzinger, R. Majumdar, and A. Rybalchenko. Invariantsynthesis for combined theories. In VMCAI'07, pages 378-394, 2007.
+[4] D. Beyer, T. A. Henzinger, R. Majumdar, and A. Rybalchenko. Pathinvariants. In PLDI, pages 300-309, 2007.
+[5] B. Blanchet, P. Cousot, R. Cousot, J. Feret, L. Mauborgne, A. Min'e,D. Monniaux, and X. Rival. Design and implementation of a
+
+special-purpose static program analyzer for safety-critical real-timeembedded software. In The Essence of Computation: Complexity,
+Analysis, Transformation., LNCS 2566, pages 85-108. Oct. 2002.[6] A. R. Bradley and Z. Manna. Veri
+
+fication constraint problems withstrengthening. In ICTAC, pages 35-49, 2006.
+
+[7] A. R. Bradley, Z. Manna, and H. B. Sipma. Linear ranking withreachability. In Proc.
+
+17th Intl. Conference on Computer AidedVerification (CAV), volume 3576 of Lecture Notes in Computer
+
+Science. Springer Verlag, July 2005.[8] M. Col'on, S. Sankaranarayanan, and H. Sipma. Linear invariant
+
+generation using non-linear constraint solving. In CAV, pages 420-432, 2003.
+[9] M. Col'on and H. Sipma. Practical methods for proving programtermination. In CAV '02: Proceedings of the 14th International
+
+Conference on Computer Aided Verification, pages 442-454.Springer-Verlag, 2002.
+
+[10] P. Cousot. Proving program invariance and termination by parametricabstraction, lagrangian relaxation and semidefinite programming. In
+
+VMCAI, pages 1-24, 2005.[11] P. Cousot and R. Cousot. Abstract interpretation: A uni
+
+fiedlattice model for static analysis of programs by construction or
+
+approximation of fixpoints. In POPL, pages 238-252, 1977.[12] L. M. de Moura and N. Bjo/rner. Ef
+
+ficient e-matching for smt solvers.In CADE, pages 183-198, 2007.
+
+[13] J. Edmund M. Clarke, O. Grumberg, and D. A. Peled. Modelchecking. MIT Press, Cambridge, MA, USA, 1999.
+[14] R. Giacobazzi and F. Ranzato. Optimal domains for disjunctiveabstract interpretation. Sci. of Comp. Prg., 32(1-3):177-210, 1998.
+[15] L. Gonnord and N. Halbwachs. Combining widening and accelerationin linear relation analysis. In 13th International Static Analysis
+
+Symposium, SAS'06, LNCS 4134, Aug. 2006.
+
+[16] D. Gopan and T. W. Reps. Lookahead widening. In CAV, pages452-466, 2006.
+[17] D. Gopan and T. W. Reps. Guided static analysis. In SAS, pages349-365, 2007.
+[18] B. S. Gulavani, S. Chakraborty, A. V. Nori, and S. K. Rajamani.Automatically refining abstract interpretations. Technical Report
+
+TR-07-23, IIT Bombay, 2007.[19] B. S. Gulavani and S. K. Rajamani. Counterexample driven
+
+refinement for abstract interpretation. In TACAS, pages 474-488,2006.
+[20] S. Gulwani, K. Mehra, and T. Chilimbi. Statically computingcomplexity bounds for programs with recursive data-structures.
+
+Technical Report MSR-TR-2008-16, Microsoft Research, Jan. 2008.[21] S. Gulwani, S. Srivastava, and R. Venkatesan. Program analysis as
+
+constraint solving. Full version. Technical Report MSR-TR-2008-44,Microsoft Research, Mar. 2008.
+[22] A. Gupta, T. Henzinger, R. Majumdar, A. Rybalchenko, and R.-G.Xu. Proving non-termination. In POPL, 2008.
+[23] C. B. Jones. Specification and design of (parallel) programs. In IFIPCongress, pages 321-332, 1983.
+[24] D. Kapur. Automatically generating loop invariants using quantifierelimination. In Deduction and Applications, 2005.
+[25] G. A. Kildall. A unified approach to global program optimization. InPOPL, pages 194-206, 1973.
+[26] Z. Manna. Mathematical Theory of Computation. McGraw-Hill, NewYork, '74.
+[27] Z. Manna and J. McCarthy. Properties of programs and partialfunction logic. Machine Intelligence, 5, 1970.
+[28] Z. Manna and A. Pnueli. Formalization of properties of functionalprograms. Journal of the ACM, 17(3):555-569, 1970.
+[29] M. M"uller-Olm and H. Seidl. Precise interprocedural analysis throughlinear algebra. In POPL, pages 330-341, 2004.
+[30] M. M"uller-Olm, H. Seidl, and B. Steffen. Interprocedural analysis(almost) for free. In Technical Report 790, Fachbereich Informatik,
+
+Universitt Dortmund, 2004.[31] M. M"uller-Olm, H. Seidl, and B. Steffen. Interprocedural herbrand
+
+equalities. In ESOP, pages 31-45, 2005.[32] A. Podelski and A. Rybalchenko. A complete method for the
+synthesis of linear ranking functions. In VMCAI, pages 239-251,2004.
+[33] S. Sagiv, T. W. Reps, and S. Horwitz. Precise interprocedural dataflowanalysis with applications to constant propagation. Theor. Comput.
+
+Sci., 167(1&2):131-170, 1996.[34] S. Sankaranarayanan, F. Ivancic, I. Shlyakhter, and A. Gupta. Static
+
+analysis in disjunctive numerical domains. In SAS, pages 3-17, 2006.[35] S. Sankaranarayanan, H. Sipma, and Z. Manna. Non-linear loop
+invariant generation using gr"obner bases. In POPL, pages 318-329,2004.
+[36] S. Sankaranarayanan, H. B. Sipma, and Z. Manna. Constraint-basedlinear-relations analysis. In SAS, pages 53-68, 2004.
+[37] S. Sankaranarayanan, H. B. Sipma, and Z. Manna. Scalable analysisof linear systems using mathematical programming. In VMCAI, pages
+
+25-41, 2005.[38] A. Schrijver. Theory of Linear and Integer Programming. 1986.
+
+[39] H. Seidl, A. Flexeder, and M. Petter. Interprocedurally analysinglinear inequality relations. In ESOP, pages 284-299, 2007.
+[40] C. Wang, Z. Yang, A. Gupta, and F. Ivancic. Using counterex. forimprov. the prec. of reachability comput. with polyhedra. In CAV,
+
+pages 352-365, 2007.[41] Y. Xie and A. Aiken. Saturn: A sat-based tool for bug detection. In
+
+CAV, pages 139-143, 2005.
