@@ -1,8 +1,10 @@
 import java.io.*;
+
 import java.util.*;
 
 import structures.*;
 import utilities.*;
+import normalization.*;
 
 /**
 * La classe Plagiats est la classe de base du programme, qui contient la fonction main.
@@ -36,6 +38,9 @@ public class Plagiats {
 	 */
 	public static void main(String[] arguments)
 	{
+		System.out.println("Projet de programmation INF431");
+		System.out.println("Algorithme de détection de plagiats");
+		System.out.println();
 		boolean showRequested = false;
 		
 		LinkedList<File> files = new LinkedList<File>();
@@ -52,7 +57,7 @@ public class Plagiats {
 				
 				if(!file.exists())
 				{
-					throw new IllegalArgumentException("Le fichier "+path+" n'existe pas.");
+					throw new IllegalArgumentException("Le fichier "+file.getAbsolutePath()+" n'existe pas.");
 				}
 				
 				if(file.isDirectory())
@@ -74,20 +79,34 @@ public class Plagiats {
 			int i=0;
 			for(File file : files)
 			{
-				documents[i] = new Document(file);
+				documents[i] = new Document(file,new TextNormalizer());
 				i++;
 			}
 		}
 		
-		ComparisonResult[] results = new ComparisonResult[(nbFiles*(nbFiles-1))/2];
+		int nbComparaisons = (nbFiles*(nbFiles-1))/2;
 		
-		for(int i=0 ; i<nbFiles-1 ; i++)
+		ComparisonResult[] results = new ComparisonResult[nbComparaisons];
+		
+		double avancement = 0;
+		int pourcentage = 0;
+		
+		for(int i=0 ; i<nbFiles ; i++)
 		{
-			for(int j=i+1 ; j<nbFiles ; j++)
+			for(int j=0 ; j<i ; j++)
 			{
+				avancement += 100./nbComparaisons;
+				
+				//if(avancement>=pourcentage+1)
+				{
+					pourcentage = (int)Math.round(avancement);
+					//System.out.println("Avancement : "+pourcentage+"%");
+					System.out.println("Avancement : "+avancement+"%");
+				}
+				
 				Document doc1 = documents[i];
 				Document doc2 = documents[j];
-				results[i*(nbFiles-1)+j] = doc1.compareWith(doc2);
+				results[i*(i-1)/2+j] = doc1.compareWith(doc2);
 			}
 		}
 		

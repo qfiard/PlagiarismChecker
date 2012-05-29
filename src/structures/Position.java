@@ -51,4 +51,9 @@ public class Position {
 			return 0;
 		}
 	}
+	
+	public void addToPosition(int n)
+	{
+		this.position += n;
+	}
 }

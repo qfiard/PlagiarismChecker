@@ -5,6 +5,15 @@ public class SharedFingerprint {
 	private Document[] documents = new Document[2];
 	private Fingerprint[] fingerprints = new Fingerprint[2];
 	
+	public SharedFingerprint(Document doc1, Fingerprint f1, Document doc2, Fingerprint f2)
+	{
+		documents[0] = doc1;
+		documents[1] = doc2;
+		
+		fingerprints[0] = f1;
+		fingerprints[1] = f2;
+	}
+	
 	public void display()
 	{
 		System.out.println("Position dans le fichier "+documents[0].name()+" :");
