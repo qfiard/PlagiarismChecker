@@ -5,7 +5,7 @@ import java.util.*;
 
 public class FingerprintStream implements Stream<Fingerprint> {
 
-	public static final int guarantyThreshold = 64;
+	public static int guarantyThreshold = 64;
 	
 	private LinkedList<Hash> window;
 	private HashStream stream;

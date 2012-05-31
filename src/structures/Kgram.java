@@ -4,7 +4,7 @@ import java.util.*;
 
 public class Kgram extends LinkedList<CharacterWithPosition> {
 	
-	public static final int kgramSize = 32;
+	public static int kgramSize = 32;
 	
 	public void roll(CharacterWithPosition nextCharacter)
 	{
